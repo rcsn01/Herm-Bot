@@ -1,0 +1,3 @@
+# Unsigned IPA build output (`npm run ipa`); *.ipa files inside are also
+# ignored by client/.gitignore, this keeps the directory itself quiet.
+output/

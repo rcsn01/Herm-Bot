@@ -1,0 +1,340 @@
+import { App } from '@capacitor/app'
+import { Haptics, ImpactStyle } from '@capacitor/haptics'
+import { JsonRpcGatewayClient, resolveGatewayWsUrl, type GatewayEvent } from '@hermes/shared'
+
+import type { ChatState, SessionMessage, StoredSession, TranscriptMessage } from '~/lib/types'
+import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
+import { emptyChatState, reduceGatewayEvent } from '~/state/event-reducer'
+import { $chat, $connection, $preferences, $queuedPrompts, $sessions, savePreferences } from '~/state/store'
+
+interface SessionRPCResponse {
+  info?: Record<string, unknown>
+  messages?: SessionMessage[]
+  session_id: string
+  stored_session_id?: string
+}
+
+interface SessionHistoryResponse {
+  messages: SessionMessage[]
+}
+
+const MINIMUM_CONTRACT = 3
+const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
+
+export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage[] {
+  return messages.map((message, index) => ({
+    content: String(message.content ?? ''),
+    id: String((message as { id?: string }).id ?? `history-${index}`),
+    reasoning: typeof (message as { reasoning?: unknown }).reasoning === 'string'
+      ? (message as { reasoning: string }).reasoning
+      : undefined,
+    role: (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role'],
+    streaming: false
+  }))
+}
+
+export class GatewayController {
+  readonly client = new JsonRpcGatewayClient({
+    closedErrorMessage: 'Remote Hermes disconnected.',
+    connectErrorMessage: 'Could not reach the remote Hermes WebSocket.',
+    requestIdPrefix: 'ios',
+    requestTimeoutMs: 120_000
+  })
+  private reconnectGeneration = 0
+  private disposed = false
+  private activeListener?: Awaited<ReturnType<typeof App.addListener>>
+
+  constructor(private readonly connection: HermesConnectionPlugin = HermesConnection) {
+    this.client.onAny(event => this.onEvent(event))
+    this.client.onState(state => {
+      if (state === 'closed' && !this.disposed && $connection.get().phase === 'connected') {
+        $connection.set({ ...$connection.get(), phase: 'disconnected' })
+      }
+    })
+  }
+
+  async initialize() {
+    this.activeListener = await App.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) void this.reconnect(true)
+      else this.client.close()
+    })
+    if ($preferences.get().remoteURL) await this.connect().catch(() => undefined)
+  }
+
+  async configure(remoteURL: string, token?: string) {
+    const configured = await this.connection.configure({ remoteURL, token })
+    savePreferences({ remoteURL: configured.remoteURL })
+    const { authMode, status } = await this.connection.probe()
+    savePreferences({ authMode })
+    $connection.set({ authMode, error: null, phase: 'disconnected', status })
+    if (authMode === 'interactive') {
+      try {
+        await this.connection.request({ path: '/api/auth/me' })
+      } catch {
+        return
+      }
+    }
+    return this.connect()
+  }
+
+  async connect() {
+    const generation = ++this.reconnectGeneration
+    $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
+    const { authMode, status } = await this.connection.probe()
+    savePreferences({ authMode })
+    $connection.set({ authMode, error: null, phase: 'connecting', status })
+    await this.openSocket(generation)
+    await this.restoreOrCreateSession()
+    $connection.set({ authMode, error: null, phase: 'connected', status })
+    await this.refreshSessions()
+  }
+
+  async login(provider: string) {
+    await this.connection.login({ provider })
+    return this.connect()
+  }
+
+  async passwordLogin(provider: string, username: string, password: string) {
+    await this.connection.passwordLogin({ password, provider, username })
+    return this.connect()
+  }
+
+  async logout() {
+    this.client.close()
+    await this.connection.logout()
+    $chat.set(emptyChatState())
+    $connection.set({ ...$connection.get(), phase: 'disconnected' })
+  }
+
+  async newSession() {
+    const response = await this.client.request<SessionRPCResponse>('session.create', {
+      profile: $preferences.get().profile,
+      source: 'ios'
+    })
+    this.adoptSession(response)
+    await this.enforceContract(response)
+  }
+
+  async resumeSession(storedSessionId: string) {
+    const response = await this.client.request<SessionRPCResponse>('session.resume', {
+      profile: $preferences.get().profile,
+      session_id: storedSessionId,
+      source: 'ios'
+    })
+    this.adoptSession(response)
+    await this.enforceContract(response)
+    await this.reconcileHistory()
+  }
+
+  async refreshSessions() {
+    const response = await this.client.request<{ sessions: StoredSession[] }>('session.list', {
+      profile: $preferences.get().profile,
+      limit: 200
+    })
+    $sessions.set(response.sessions ?? [])
+  }
+
+  async renameSession(storedSessionId: string, title: string) {
+    await this.connection.request({
+      body: { title },
+      method: 'PATCH',
+      path: `/api/sessions/${encodeURIComponent(storedSessionId)}`
+    })
+    await this.refreshSessions()
+  }
+
+  async deleteSession(storedSessionId: string) {
+    await this.connection.request({ method: 'DELETE', path: `/api/sessions/${encodeURIComponent(storedSessionId)}` })
+    if ($chat.get().storedSessionId === storedSessionId) await this.newSession()
+    await this.refreshSessions()
+  }
+
+  async archiveSession(storedSessionId: string) {
+    await this.connection.request({
+      body: { archived: true },
+      method: 'PATCH',
+      path: `/api/sessions/${encodeURIComponent(storedSessionId)}`
+    })
+    await this.refreshSessions()
+  }
+
+  async branchSession() {
+    const current = $chat.get()
+    if (!current.runtimeSessionId || !current.storedSessionId) return
+    const response = await this.client.request<SessionRPCResponse>('session.branch', {
+      session_id: current.runtimeSessionId
+    })
+    this.adoptSession(response)
+    await this.refreshSessions()
+  }
+
+  async send(text: string) {
+    const content = text.trim()
+    if (!content) return
+    const current = $chat.get()
+    if (!current.runtimeSessionId) throw new Error('No active session.')
+    if (current.running) {
+      $queuedPrompts.set([...$queuedPrompts.get(), content])
+      return
+    }
+    $chat.set({
+      ...current,
+      error: null,
+      messages: [...current.messages, { content, id: crypto.randomUUID(), role: 'user' }],
+      running: true
+    })
+    await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
+    await this.client.request('prompt.submit', { session_id: current.runtimeSessionId, text: content }, 1_800_000)
+  }
+
+  async interrupt() {
+    const sessionId = $chat.get().runtimeSessionId
+    if (sessionId) await this.client.request('session.interrupt', { session_id: sessionId })
+  }
+
+  async retryFrom(userOrdinal: number, text: string) {
+    const sessionId = $chat.get().runtimeSessionId
+    if (!sessionId) return
+    await this.client.request('prompt.submit', {
+      session_id: sessionId,
+      text,
+      truncate_before_user_ordinal: userOrdinal
+    }, 1_800_000)
+  }
+
+  async attach(file: File) {
+    const sessionId = $chat.get().runtimeSessionId
+    if (!sessionId) throw new Error('No active session.')
+    const dataUrl = await fileToDataURL(file)
+    if (file.type.startsWith('image/')) {
+      return this.client.request('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
+    }
+    return this.client.request('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
+  }
+
+  async respond(value: string, choice?: string) {
+    const pending = $chat.get().pendingPrompt
+    const sessionId = $chat.get().runtimeSessionId
+    if (!pending || !sessionId) return
+    const fields: Record<string, unknown> = { request_id: pending.requestId, session_id: sessionId }
+    const method = `${pending.kind}.respond`
+    if (pending.kind === 'clarify') fields.answer = value
+    else if (pending.kind === 'approval') fields.choice = choice ?? value
+    else if (pending.kind === 'sudo') fields.password = value
+    else fields.value = value
+    $chat.set({ ...$chat.get(), pendingPrompt: null })
+    await this.client.request(method, fields)
+  }
+
+  async reconcileHistory() {
+    const sessionId = $chat.get().runtimeSessionId
+    if (!sessionId) return
+    const response = await this.client.request<SessionHistoryResponse>('session.history', { session_id: sessionId })
+    $chat.set({ ...$chat.get(), messages: toTranscript(response.messages), running: Boolean($chat.get().info?.running) })
+  }
+
+  async request<T>(method: string, params: Record<string, unknown> = {}) {
+    return this.client.request<T>(method, params)
+  }
+
+  dispose() {
+    this.disposed = true
+    this.client.close()
+    void this.activeListener?.remove()
+  }
+
+  private async reconnect(reconcile: boolean) {
+    const generation = ++this.reconnectGeneration
+    this.client.close()
+    for (const delay of RETRY_DELAYS) {
+      if (generation !== this.reconnectGeneration || this.disposed) return
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay))
+      try {
+        $connection.set({ ...$connection.get(), phase: 'connecting' })
+        await this.openSocket(generation)
+        await this.restoreOrCreateSession()
+        if (reconcile) await this.reconcileHistory()
+        $connection.set({ ...$connection.get(), error: null, phase: 'connected' })
+        return
+      } catch (error) {
+        if (isReauthenticationError(error)) {
+          $connection.set({ ...$connection.get(), error: 'Your Hermes session expired. Sign in again.', phase: 'error' })
+          return
+        }
+        if (delay === RETRY_DELAYS.at(-1)) {
+          $connection.set({ ...$connection.get(), error: errorMessage(error), phase: 'error' })
+        }
+      }
+    }
+  }
+
+  private async openSocket(generation: number) {
+    const { authMode, profile } = $preferences.get()
+    const url = await resolveGatewayWsUrl(
+      { getGatewayWsUrl: async selected => (await this.connection.getWebSocketURL({ profile: selected })).url },
+      { authMode: authMode === 'interactive' ? 'oauth' : 'token', profile, wsUrl: '' }
+    )
+    if (generation !== this.reconnectGeneration) return
+    await this.client.connect(url)
+  }
+
+  private async restoreOrCreateSession() {
+    const stored = $chat.get().storedSessionId
+    if (stored) await this.resumeSession(stored)
+    else await this.newSession()
+  }
+
+  private adoptSession(response: SessionRPCResponse) {
+    const info = response.info ?? {}
+    $chat.set({
+      ...emptyChatState(),
+      contractVersion: Number(info.desktop_contract ?? 0) || null,
+      info: info as unknown as ChatState['info'],
+      messages: toTranscript(response.messages),
+      runtimeSessionId: response.session_id,
+      storedSessionId: (response.stored_session_id ?? String(info.stored_session_id ?? '')) || null
+    })
+  }
+
+  private async enforceContract(response: SessionRPCResponse) {
+    const version = Number(response.info?.desktop_contract ?? 0)
+    if (version < MINIMUM_CONTRACT) {
+      this.client.close()
+      const error = 'This remote Hermes is too old for Hermes Mobile. Update the remote gateway (contract 3 or newer).'
+      $connection.set({ ...$connection.get(), error, phase: 'unsupported' })
+      throw new Error(error)
+    }
+  }
+
+  private onEvent(event: GatewayEvent) {
+    const previous = $chat.get()
+    const next = reduceGatewayEvent(previous, event)
+    $chat.set(next)
+    if (event.type === 'message.complete') {
+      void this.reconcileHistory()
+      const [queued, ...rest] = $queuedPrompts.get()
+      if (queued) {
+        $queuedPrompts.set(rest)
+        void this.send(queued)
+      }
+    }
+  }
+}
+
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read attachment.'))
+    reader.onload = () => resolve(String(reader.result))
+    reader.readAsDataURL(file)
+  })
+}
+
+export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
+
+export function isReauthenticationError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown } | null
+  if (candidate?.code === 'AUTH_REQUIRED') return true
+  const message = String(candidate?.message ?? error).toLowerCase()
+  return message.includes('http 401') || message.includes('unauthorized') || message.includes('no_cookie')
+}

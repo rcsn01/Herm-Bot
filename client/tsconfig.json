@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "~/*": ["./src/*"],
+      "@/lib/utils": ["./src/compat/desktop-utils.ts"],
+      "@hermes/shared": ["../../shared/src/index.ts"],
+      "@tabler/icons-react": ["./node_modules/@tabler/icons-react"],
+      "class-variance-authority": ["./node_modules/class-variance-authority"],
+      "radix-ui": ["./node_modules/radix-ui"],
+      "react": ["./node_modules/@types/react/index.d.ts"],
+      "react/*": ["./node_modules/@types/react/*"]
+    }
+  },
+  "include": ["src", "vite.config.ts", "capacitor.config.ts", "scripts", "../../shared/src"]
+}
