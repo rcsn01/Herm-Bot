@@ -1,0 +1,10 @@
+name: bark-notify
+version: 1.0.0
+description: "Automatic iPhone push via Bark when a Hermes turn runs long; taps deep-link into Hermes Mobile."
+author: "Hermes user plugin"
+hooks:
+  - on_stream_start
+  - on_stream_end
+requires_env:
+  - BARK_URL
+  - BARK_KEY
