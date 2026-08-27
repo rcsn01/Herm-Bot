@@ -203,6 +203,10 @@ export class GatewayController {
 
   async renameSession(storedSessionId: string, title: string) {
     await this.mutateStoredSession(storedSessionId, 'PATCH', { title })
+    const current = $chat.get()
+    if (current.storedSessionId === storedSessionId && current.info) {
+      $chat.set({ ...current, info: { ...current.info, title } as typeof current.info })
+    }
     await this.refreshSessions()
   }
 

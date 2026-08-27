@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('~/compat/primitives', () => ({
   Badge: ({ children }: React.ComponentProps<'span'>) => <span>{children}</span>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => <button {...props}>{children}</button>,
+  Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
   Textarea: (props: React.ComponentProps<'textarea'>) => <textarea {...props} />
 }))
 
@@ -13,8 +14,11 @@ import { emptyChatState } from '~/state/event-reducer'
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
 
 const controllerStub = () => ({
+  archiveSession: vi.fn().mockResolvedValue(undefined),
   attach: vi.fn(),
+  branchSession: vi.fn().mockResolvedValue(undefined),
   interrupt: vi.fn(),
+  renameSession: vi.fn().mockResolvedValue(undefined),
   request: vi.fn(),
   respond: vi.fn(),
   retryFrom: vi.fn(),
@@ -97,6 +101,29 @@ describe('edit and retry', () => {
     })
     rerender(<ChatScreen controller={controller} />)
     expect((screen.getByRole('button', { name: 'Edit & retry' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('session management', () => {
+  it('offers rename and archive only from inside a stored session', async () => {
+    $chat.set({
+      ...emptyChatState(),
+      info: { title: 'Planning session' } as never,
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'session-1'
+    })
+    const controller = controllerStub()
+    render(<ChatScreen controller={controller} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Session options' }))
+    expect(screen.getByRole('button', { name: 'Edit name' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Archive' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Branch' })).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit name' }))
+    fireEvent.change(screen.getByLabelText('Session title'), { target: { value: 'Renamed session' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(controller.renameSession).toHaveBeenCalledWith('session-1', 'Renamed session'))
   })
 })
 

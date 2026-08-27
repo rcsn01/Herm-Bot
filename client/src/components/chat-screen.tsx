@@ -1,10 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { IconMicrophone, IconPaperclip, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
+import { IconArchive, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
+import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { TextDialog } from '~/components/ui/text-dialog'
 import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
@@ -38,6 +40,9 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
   const [slashItems, setSlashItems] = useState<SlashItem[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [showSessionActions, setShowSessionActions] = useState(false)
+  const [renameSession, setRenameSession] = useState(false)
+  const [archiveSession, setArchiveSession] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const slashCompletionGeneration = useRef(0)
 
@@ -46,6 +51,9 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
     slashCompletionGeneration.current += 1
     setEditTarget(null)
     setSlashItems([])
+    setShowSessionActions(false)
+    setRenameSession(false)
+    setArchiveSession(false)
   }, [chat.runtimeSessionId])
 
   const userOrdinals = useMemo(() => {
@@ -106,6 +114,16 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
   return (
     <section className="chat-screen">
       <div className="transcript" aria-live="polite">
+        {chat.storedSessionId && (
+          <div className="session-management">
+            <Button aria-expanded={showSessionActions} onClick={() => setShowSessionActions(value => !value)} size="sm" variant="secondary"><IconDots size={17} /> Session options</Button>
+            {showSessionActions && <div className="session-management-actions">
+              <Button onClick={() => setRenameSession(true)} size="sm" variant="ghost"><IconPencil size={16} /> Edit name</Button>
+              <Button onClick={() => setArchiveSession(true)} size="sm" variant="ghost"><IconArchive size={16} /> Archive</Button>
+              <Button onClick={() => { setShowSessionActions(false); void controller.branchSession().catch(caught => setError(errorMessage(caught))) }} size="sm" variant="ghost"><IconGitBranch size={16} /> Branch</Button>
+            </div>}
+          </div>
+        )}
         {chat.messages.length === 0 && (
           <div className="empty-chat">
             <div className="brand-mark small">H</div>
@@ -161,6 +179,8 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
         <div ref={bottomRef} />
       </div>
 
+      {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); void controller.renameSession(id, title).catch(caught => setError(errorMessage(caught))) }} title="Edit session name" />}
+      {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); void controller.archiveSession(id).catch(caught => setError(errorMessage(caught))) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard controller={controller} />}
       {(error || chat.error) && <div className="error-banner" role="alert">{error || chat.error}</div>}
       {queued.length > 0 && <div className="queue-banner">{queued.length} prompt{queued.length === 1 ? '' : 's'} queued</div>}
