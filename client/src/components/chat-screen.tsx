@@ -8,9 +8,23 @@ import { errorMessage, type GatewayController } from '~/state/gateway-controller
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
 
 interface SlashItem {
-  command?: string
-  description?: string
-  name?: string
+  display?: string
+  insertText: string
+  kind?: string
+  meta?: string
+  text: string
+}
+
+interface EditTarget {
+  rowId: number
+  userOrdinal: number
+}
+
+function completionInsertion(draft: string, text: string, replaceFrom: number | undefined) {
+  if (typeof replaceFrom === 'number' && replaceFrom > 1 && replaceFrom <= draft.length) {
+    return `${draft.slice(0, replaceFrom)}${text}`
+  }
+  return text.startsWith('/') ? text : `/${text}`
 }
 
 export function ChatScreen({ controller }: { controller: GatewayController }) {
@@ -19,11 +33,18 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
   const queued = useStore($queuedPrompts)
   const [draft, setDraft] = useState('')
   const [attachmentRefs, setAttachmentRefs] = useState<string[]>([])
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
   const [slashItems, setSlashItems] = useState<SlashItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const slashCompletionGeneration = useRef(0)
 
   useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [chat.messages, chat.tools])
+  useEffect(() => {
+    slashCompletionGeneration.current += 1
+    setEditTarget(null)
+    setSlashItems([])
+  }, [chat.runtimeSessionId])
 
   const userOrdinals = useMemo(() => {
     let ordinal = -1
@@ -31,24 +52,40 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
   }, [chat.messages])
 
   const updateDraft = (value: string) => {
+    const generation = ++slashCompletionGeneration.current
     setDraft(value)
     if (!value.startsWith('/')) return setSlashItems([])
-    void controller.request<{ commands?: SlashItem[]; items?: SlashItem[] }>('commands.catalog', {
-      query: value.slice(1),
-      session_id: chat.runtimeSessionId
-    }).then(result => setSlashItems(result.commands ?? result.items ?? [])).catch(() => setSlashItems([]))
+    void controller.request<{
+      items?: Array<Omit<SlashItem, 'insertText'>>
+      replace_from?: number
+    }>('complete.slash', { text: value }).then(result => {
+      if (generation !== slashCompletionGeneration.current) return
+      setSlashItems((result.items ?? []).map(item => ({
+        ...item,
+        insertText: completionInsertion(value, item.text, result.replace_from)
+      })))
+    }).catch(() => {
+      if (generation === slashCompletionGeneration.current) setSlashItems([])
+    })
   }
 
   const submit = async () => {
     const combined = [draft.trim(), ...attachmentRefs].filter(Boolean).join('\n')
     if (!combined) return
+    const target = editTarget
+    slashCompletionGeneration.current += 1
     setDraft('')
     setAttachmentRefs([])
+    setSlashItems([])
     setError(null)
-    await controller.send(combined).catch(caught => {
+    try {
+      if (target) await controller.retryFrom(target.userOrdinal, target.rowId, combined)
+      else await controller.send(combined)
+      setEditTarget(null)
+    } catch (caught) {
       setDraft(combined)
       setError(errorMessage(caught))
-    })
+    }
   }
 
   const attach = async (files: FileList | null) => {
@@ -84,9 +121,15 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
             <div className="message-content">{message.content || (message.streaming ? '…' : '')}</div>
             {message.role === 'user' && (
               <Button
+                disabled={chat.running || message.rowId === undefined}
                 onClick={() => {
+                  if (message.rowId === undefined || chat.running) return
+                  slashCompletionGeneration.current += 1
                   setDraft(message.content)
-                  void controller.retryFrom(userOrdinals[index], message.content)
+                  setAttachmentRefs([])
+                  setEditTarget({ rowId: message.rowId, userOrdinal: userOrdinals[index] })
+                  setSlashItems([])
+                  setError(null)
                 }}
                 size="micro"
                 variant="text"
@@ -119,6 +162,23 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
       {chat.pendingPrompt && <PromptCard controller={controller} />}
       {(error || chat.error) && <div className="error-banner" role="alert">{error || chat.error}</div>}
       {queued.length > 0 && <div className="queue-banner">{queued.length} prompt{queued.length === 1 ? '' : 's'} queued</div>}
+      {editTarget && (
+        <div className="queue-banner">
+          Editing an earlier message
+          <Button
+            aria-label="Cancel edit"
+            onClick={() => {
+              setDraft('')
+              setEditTarget(null)
+              setError(null)
+            }}
+            size="micro"
+            variant="text"
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
       {attachmentRefs.length > 0 && (
         <div className="attachment-chips">
           {attachmentRefs.map((ref, index) => <button key={`${ref}-${index}`} onClick={() => setAttachmentRefs(items => items.filter((_, itemIndex) => index !== itemIndex))}>{ref}</button>)}
@@ -127,10 +187,18 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
       <div className="composer-wrap">
         {slashItems.length > 0 && (
           <div className="slash-popover">
-            {slashItems.slice(0, 8).map((item, index) => {
-              const command = item.command ?? item.name ?? ''
-              return <button key={`${command}-${index}`} onClick={() => { setDraft(`/${command} `); setSlashItems([]) }}><strong>/{command}</strong><span>{item.description}</span></button>
-            })}
+            {slashItems.slice(0, 8).map((item, index) => (
+              <button
+                key={`${item.text}-${index}`}
+                onClick={() => {
+                  slashCompletionGeneration.current += 1
+                  setDraft(`${item.insertText} `)
+                  setSlashItems([])
+                }}
+              >
+                <strong>{item.display ?? item.text}</strong><span>{item.meta}</span>
+              </button>
+            ))}
           </div>
         )}
         <div className="composer">

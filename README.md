@@ -9,7 +9,7 @@ The npm package intentionally lives at `apps/mobile/client/`, below the root `ap
 - Node.js 22 or newer
 - Xcode 26 or newer
 - iOS 15 deployment target
-- A reachable HTTP or HTTPS/WSS Hermes gateway running backend contract 3 or newer
+- A reachable HTTP or HTTPS/WSS Hermes gateway running backend contract 6 or newer
 
 HTTP is accepted for any host, on the assumption that self-hosted gateways ride an already-encrypted network (for example Tailscale). Use public plain-HTTP endpoints at your own risk.
 

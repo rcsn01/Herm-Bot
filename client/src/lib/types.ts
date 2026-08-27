@@ -53,6 +53,7 @@ export interface TranscriptMessage {
   id: string
   reasoning?: string
   role: 'assistant' | 'system' | 'tool' | 'user'
+  rowId?: number
   streaming?: boolean
 }
 

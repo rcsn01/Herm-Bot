@@ -18,19 +18,38 @@ interface SessionHistoryResponse {
   messages: SessionMessage[]
 }
 
-const MINIMUM_CONTRACT = 3
+export const MINIMUM_CONTRACT = 6
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
 
 export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage[] {
-  return messages.map((message, index) => ({
-    content: String(message.content ?? ''),
-    id: String((message as { id?: string }).id ?? `history-${index}`),
-    reasoning: typeof (message as { reasoning?: unknown }).reasoning === 'string'
-      ? (message as { reasoning: string }).reasoning
-      : undefined,
-    role: (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role'],
-    streaming: false
-  }))
+  return messages.map((message, index) => {
+    const projected = message as SessionMessage & {
+      context?: unknown
+      display_content?: unknown
+      id?: unknown
+      name?: unknown
+      reasoning?: unknown
+      reasoning_content?: unknown
+      row_id?: unknown
+      text?: unknown
+    }
+    const role = (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role']
+    const contentValue = projected.display_content !== undefined
+      ? projected.display_content
+      : projected.content ?? projected.text ?? (role === 'tool' ? projected.context ?? projected.name : undefined)
+    const rowIdValue = projected.row_id ?? projected.id
+    const rowId = typeof rowIdValue === 'number' && Number.isInteger(rowIdValue) ? rowIdValue : undefined
+    const reasoningValue = projected.reasoning ?? projected.reasoning_content
+
+    return {
+      content: typeof contentValue === 'string' ? contentValue : '',
+      id: rowId === undefined ? `history-${index}` : `history-row-${rowId}`,
+      reasoning: typeof reasoningValue === 'string' ? reasoningValue : undefined,
+      role,
+      ...(rowId === undefined ? {} : { rowId }),
+      streaming: false
+    }
+  })
 }
 
 export class GatewayController {
@@ -111,8 +130,8 @@ export class GatewayController {
       profile: $preferences.get().profile,
       source: 'ios'
     })
-    this.adoptSession(response)
     await this.enforceContract(response)
+    this.adoptSession(response)
   }
 
   async resumeSession(storedSessionId: string) {
@@ -121,8 +140,8 @@ export class GatewayController {
       session_id: storedSessionId,
       source: 'ios'
     })
-    this.adoptSession(response)
     await this.enforceContract(response)
+    this.adoptSession(response)
     await this.reconcileHistory()
   }
 
@@ -135,26 +154,18 @@ export class GatewayController {
   }
 
   async renameSession(storedSessionId: string, title: string) {
-    await this.connection.request({
-      body: { title },
-      method: 'PATCH',
-      path: `/api/sessions/${encodeURIComponent(storedSessionId)}`
-    })
+    await this.mutateStoredSession(storedSessionId, 'PATCH', { title })
     await this.refreshSessions()
   }
 
   async deleteSession(storedSessionId: string) {
-    await this.connection.request({ method: 'DELETE', path: `/api/sessions/${encodeURIComponent(storedSessionId)}` })
+    await this.mutateStoredSession(storedSessionId, 'DELETE')
     if ($chat.get().storedSessionId === storedSessionId) await this.newSession()
     await this.refreshSessions()
   }
 
   async archiveSession(storedSessionId: string) {
-    await this.connection.request({
-      body: { archived: true },
-      method: 'PATCH',
-      path: `/api/sessions/${encodeURIComponent(storedSessionId)}`
-    })
+    await this.mutateStoredSession(storedSessionId, 'PATCH', { archived: true })
     await this.refreshSessions()
   }
 
@@ -192,12 +203,19 @@ export class GatewayController {
     if (sessionId) await this.client.request('session.interrupt', { session_id: sessionId })
   }
 
-  async retryFrom(userOrdinal: number, text: string) {
+  async retryFrom(userOrdinal: number, rowId: number, text: string) {
     const sessionId = $chat.get().runtimeSessionId
     if (!sessionId) return
+    if (!Number.isInteger(rowId) || rowId <= 0) throw new Error('A durable message row is required to edit history safely.')
+    if (!Number.isInteger(userOrdinal) || userOrdinal < 0) throw new Error('A valid user-message position is required to edit history safely.')
+    const content = text.trim()
+    if (!content) return
     await this.client.request('prompt.submit', {
+      ...(userOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
+      confirm_truncate: true,
       session_id: sessionId,
-      text,
+      text: content,
+      truncate_before_row_id: rowId,
       truncate_before_user_ordinal: userOrdinal
     }, 1_800_000)
   }
@@ -241,6 +259,24 @@ export class GatewayController {
     this.disposed = true
     this.client.close()
     void this.activeListener?.remove()
+  }
+
+  private async mutateStoredSession(
+    storedSessionId: string,
+    method: 'DELETE' | 'PATCH',
+    body?: Record<string, unknown>
+  ) {
+    const profile = $preferences.get().profile
+    const basePath = `/api/sessions/${encodeURIComponent(storedSessionId)}`
+    const path = method === 'DELETE' && profile
+      ? `${basePath}?profile=${encodeURIComponent(profile)}`
+      : basePath
+
+    await this.connection.request({
+      ...(body === undefined ? {} : { body: profile ? { ...body, profile } : body }),
+      method,
+      path
+    })
   }
 
   private async reconnect(reconcile: boolean) {
@@ -298,9 +334,9 @@ export class GatewayController {
 
   private async enforceContract(response: SessionRPCResponse) {
     const version = Number(response.info?.desktop_contract ?? 0)
-    if (version < MINIMUM_CONTRACT) {
+    if (!Number.isFinite(version) || version < MINIMUM_CONTRACT) {
       this.client.close()
-      const error = 'This remote Hermes is too old for Hermes Mobile. Update the remote gateway (contract 3 or newer).'
+      const error = `This remote Hermes is too old for Hermes Mobile. Update the remote gateway (contract ${MINIMUM_CONTRACT} or newer).`
       $connection.set({ ...$connection.get(), error, phase: 'unsupported' })
       throw new Error(error)
     }

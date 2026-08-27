@@ -26,5 +26,5 @@
       "react/*": ["./node_modules/@types/react/*"]
     }
   },
-  "include": ["src", "vite.config.ts", "capacitor.config.ts", "scripts", "../../shared/src"]
+  "include": ["src", "vite.config.ts", "capacitor.config.ts", "scripts"]
 }
