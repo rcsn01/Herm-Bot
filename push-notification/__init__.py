@@ -23,8 +23,14 @@ Configuration — all optional, in ~/.hermes/config.yaml:
             title: "Hermes"               # notification title prefix
 
 Secrets — in ~/.hermes/.env (loaded into the process env at startup):
-    BARK_URL — bark-server base URL, e.g. http://bark-host:8080
+    BARK_URL — bark-server base URL as reachable from THIS Hermes process
+               (localhost:8080 only when the relay shares Hermes' network
+               namespace; inside Docker use the host tailnet/LAN address or
+               a same-compose service name, e.g. http://bark:8080)
     BARK_KEY — device key from the Bark iOS app
+
+Settings are read once at plugin load: restart the gateway after changing
+them, BARK_URL, or BARK_KEY.
 
 Manual pushes from a terminal: ``hermes bark "message"`` (see --help).
 """
@@ -89,6 +95,9 @@ def _on_stream_start(**payload) -> None:
             }
         else:
             turn["last"] = now
+            sid = payload.get("session_id", "")
+            if sid:
+                turn["session_id"] = sid
         timer = _timers.pop(key, None)
     if timer is not None:
         timer.cancel()
@@ -118,6 +127,9 @@ def _on_stream_end(**payload) -> None:
             }
         else:
             turn["last"] = now
+            sid = payload.get("session_id", "")
+            if sid:
+                turn["session_id"] = sid
         turn["final_text"] = str(payload.get("final_text") or "")
         previous = _timers.pop(key, None)
         timer = threading.Timer(
@@ -131,19 +143,18 @@ def _on_stream_end(**payload) -> None:
 
 
 def _push_when_quiet(key: str) -> None:
+    global _last_push_at
     with _lock:
         _timers.pop(key, None)
         turn = _turns.pop(key, None)
         settings = _settings
         if turn is None or settings is None:
             return
-        global _last_push_at
         duration = turn["last"] - turn["start"]
         if duration < settings["min_turn_seconds"]:
             return
         if time.monotonic() - _last_push_at < settings["min_push_interval_seconds"]:
             return
-        _last_push_at = time.monotonic()
 
     body = (turn.get("final_text") or "").strip().replace("\n", " ")
     if len(body) > _BODY_LIMIT:
@@ -157,6 +168,7 @@ def _push_when_quiet(key: str) -> None:
         settings=settings,
     )
     if sent:
+        _last_push_at = time.monotonic()
         logger.debug("bark-notify: pushed turn notification (session=%s)", turn.get("session_id", ""))
 
 
@@ -185,10 +197,17 @@ def _send(title: str, body: str, session_id: str, settings: dict, url_override: 
     )
     try:
         with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT) as response:
-            return 200 <= response.status < 300
-    except (urllib.error.URLError, OSError) as exc:
-        logger.warning("bark-notify: push failed: %s", exc)
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        logger.warning("bark-notify: relay rejected push (http %s)", exc.code)
         return False
+    except (urllib.error.URLError, OSError) as exc:
+        logger.warning("bark-notify: cannot reach bark relay: %s", exc)
+        return False
+    if 200 <= status < 300:
+        return True
+    logger.warning("bark-notify: relay returned unexpected status %s", status)
+    return False
 
 
 def _cli_setup(subparser) -> None:
@@ -221,11 +240,25 @@ def _cli_run(args) -> int:
 
 def register(ctx) -> None:
     global _settings
-    _settings = {key: _setting(ctx, key, default) for key, default in _DEFAULTS.items()}
     try:
-        float(_settings["min_turn_seconds"])
-        float(_settings["debounce_seconds"])
-        float(_settings["min_push_interval_seconds"])
+        _settings = {
+            "min_turn_seconds": float(
+                _setting(ctx, "min_turn_seconds", _DEFAULTS["min_turn_seconds"])
+            ),
+            "debounce_seconds": float(
+                _setting(ctx, "debounce_seconds", _DEFAULTS["debounce_seconds"])
+            ),
+            "min_push_interval_seconds": float(
+                _setting(
+                    ctx,
+                    "min_push_interval_seconds",
+                    _DEFAULTS["min_push_interval_seconds"],
+                )
+            ),
+            "level": str(_setting(ctx, "level", _DEFAULTS["level"])),
+            "group": str(_setting(ctx, "group", _DEFAULTS["group"])),
+            "title": str(_setting(ctx, "title", _DEFAULTS["title"])),
+        }
     except (TypeError, ValueError):
         logger.warning("bark-notify: invalid numeric settings — falling back to defaults")
         _settings = dict(_DEFAULTS)
