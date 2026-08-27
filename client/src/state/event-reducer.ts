@@ -54,7 +54,7 @@ function pendingPrompt(type: string, payload: Record<string, unknown>): PendingP
 
 export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatState {
   const payload = record(event.payload)
-  if (event.session_id && state.runtimeSessionId && event.session_id !== state.runtimeSessionId) return state
+  if (event.session_id && event.session_id !== state.runtimeSessionId) return state
 
   switch (event.type) {
     case 'session.info': {

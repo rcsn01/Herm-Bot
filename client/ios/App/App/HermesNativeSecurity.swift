@@ -87,6 +87,28 @@ enum HermesRemoteURLValidator {
     }
 }
 
+enum HermesExternalURLValidator {
+    static func validate(_ raw: String) throws -> URL {
+        guard let components = URLComponents(string: raw),
+              components.scheme == "http" || components.scheme == "https",
+              components.user == nil, components.password == nil,
+              let host = components.host, !host.isEmpty,
+              let url = components.url else {
+            throw HermesNativeSecurityError.invalidRemoteURL
+        }
+        return url
+    }
+}
+
+enum HermesTemporaryFilePolicy {
+    static func sanitizedFilename(_ filename: String) -> String {
+        let name = filename
+            .replacingOccurrences(of: "[\\r\\n\\\"/\\\\:]", with: "_", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == "." || name == ".." ? "download" : String(name.prefix(180))
+    }
+}
+
 enum HermesSessionCookiePolicy {
     static let baseNames = Set(["hermes_session_at", "hermes_session_rt", "hermes_session_provider"])
 

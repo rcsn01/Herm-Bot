@@ -1,11 +1,15 @@
 import { App } from '@capacitor/app'
 import { Haptics, ImpactStyle } from '@capacitor/haptics'
-import { JsonRpcGatewayClient, resolveGatewayWsUrl, type GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@hermes/shared'
 
+import { clearGatewayQueries, queryClient } from '~/gateway/query-client'
+import { RemoteGateway } from '~/gateway/remote-gateway'
+import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import type { ChatState, SessionMessage, StoredSession, TranscriptMessage } from '~/lib/types'
 import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
+import { resetRoutes } from '~/navigation/navigation-store'
 import { emptyChatState, reduceGatewayEvent } from '~/state/event-reducer'
-import { $chat, $connection, $preferences, $queuedPrompts, $sessions, savePreferences } from '~/state/store'
+import { $chat, $connection, $preferences, $sessions, savePreferences } from '~/state/store'
 
 interface SessionRPCResponse {
   info?: Record<string, unknown>
@@ -53,18 +57,18 @@ export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage
 }
 
 export class GatewayController {
-  readonly client = new JsonRpcGatewayClient({
-    closedErrorMessage: 'Remote Hermes disconnected.',
-    connectErrorMessage: 'Could not reach the remote Hermes WebSocket.',
-    requestIdPrefix: 'ios',
-    requestTimeoutMs: 120_000
-  })
+  readonly gateway: RemoteGateway
+  readonly client: RemoteGateway['client']
   private reconnectGeneration = 0
+  private scopeEpoch = 0
+  private lifecycleGeneration = 0
   private disposed = false
   private activeListener?: Awaited<ReturnType<typeof App.addListener>>
 
   constructor(private readonly connection: HermesConnectionPlugin = HermesConnection) {
-    this.client.onAny(event => this.onEvent(event))
+    this.gateway = new RemoteGateway(connection)
+    this.client = this.gateway.client
+    this.gateway.subscribe(event => this.onEvent(event))
     this.client.onState(state => {
       if (state === 'closed' && !this.disposed && $connection.get().phase === 'connected') {
         $connection.set({ ...$connection.get(), phase: 'disconnected' })
@@ -73,15 +77,30 @@ export class GatewayController {
   }
 
   async initialize() {
-    this.activeListener = await App.addListener('appStateChange', ({ isActive }) => {
+    const lifecycle = ++this.lifecycleGeneration
+    this.disposed = false
+    await this.activeListener?.remove()
+    const listener = await App.addListener('appStateChange', ({ isActive }) => {
       if (isActive) void this.reconnect(true)
       else this.client.close()
     })
+    if (lifecycle !== this.lifecycleGeneration || this.disposed) {
+      await listener.remove()
+      return
+    }
+    this.activeListener = listener
     if ($preferences.get().remoteURL) await this.connect().catch(() => undefined)
   }
 
   async configure(remoteURL: string, token?: string) {
+    const previousURL = $preferences.get().remoteURL
     const configured = await this.connection.configure({ remoteURL, token })
+    if (previousURL && previousURL !== configured.remoteURL) {
+      this.scopeEpoch += 1
+      clearGatewayQueries()
+      this.clearForegroundScope()
+      resetRoutes()
+    }
     savePreferences({ remoteURL: configured.remoteURL })
     const { authMode, status } = await this.connection.probe()
     savePreferences({ authMode })
@@ -100,10 +119,12 @@ export class GatewayController {
     const generation = ++this.reconnectGeneration
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
     const { authMode, status } = await this.connection.probe()
+    if (generation !== this.reconnectGeneration) throw new DOMException('Connection was superseded.', 'AbortError')
     savePreferences({ authMode })
     $connection.set({ authMode, error: null, phase: 'connecting', status })
     await this.openSocket(generation)
     await this.restoreOrCreateSession()
+    if (generation !== this.reconnectGeneration) throw new DOMException('Connection was superseded.', 'AbortError')
     $connection.set({ authMode, error: null, phase: 'connected', status })
     await this.refreshSessions()
   }
@@ -119,38 +140,65 @@ export class GatewayController {
   }
 
   async logout() {
-    this.client.close()
+    ++this.reconnectGeneration
+    ++this.scopeEpoch
+    this.gateway.close()
     await this.connection.logout()
-    $chat.set(emptyChatState())
+    clearGatewayQueries()
+    this.clearForegroundScope()
+    resetRoutes()
     $connection.set({ ...$connection.get(), phase: 'disconnected' })
   }
 
+  async switchProfile(profile: null | string) {
+    if (profile === $preferences.get().profile) return
+    ++this.reconnectGeneration
+    ++this.scopeEpoch
+    this.gateway.close()
+    await queryClient.cancelQueries({ queryKey: ['gateway'] })
+    this.clearForegroundScope()
+    resetRoutes()
+    savePreferences({ profile })
+    await this.connect()
+  }
+
   async newSession() {
+    const epoch = this.scopeEpoch
+    const connectionGeneration = this.reconnectGeneration
     const response = await this.client.request<SessionRPCResponse>('session.create', {
       profile: $preferences.get().profile,
       source: 'ios'
     })
+    this.assertCurrent(epoch, connectionGeneration)
     await this.enforceContract(response)
     this.adoptSession(response)
   }
 
   async resumeSession(storedSessionId: string) {
+    const epoch = this.scopeEpoch
+    const connectionGeneration = this.reconnectGeneration
     const response = await this.client.request<SessionRPCResponse>('session.resume', {
       profile: $preferences.get().profile,
       session_id: storedSessionId,
       source: 'ios'
     })
+    this.assertCurrent(epoch, connectionGeneration)
     await this.enforceContract(response)
     this.adoptSession(response)
     await this.reconcileHistory()
   }
 
   async refreshSessions() {
-    const response = await this.client.request<{ sessions: StoredSession[] }>('session.list', {
-      profile: $preferences.get().profile,
-      limit: 200
+    const scope = this.scopeSnapshot()
+    const response = await queryClient.fetchQuery({
+      queryFn: () => this.gateway.rpc<{ sessions: StoredSession[] }>('session.list', {
+        profile: scope.profile || null,
+        limit: 200
+      }),
+      queryKey: gatewayScopeKey(scope, 'sessions', 'list'),
+      staleTime: 0
     })
-    $sessions.set(response.sessions ?? [])
+    if (this.scopeMatches(scope)) $sessions.set(response.sessions ?? [])
   }
 
   async renameSession(storedSessionId: string, title: string) {
@@ -185,7 +233,11 @@ export class GatewayController {
     const current = $chat.get()
     if (!current.runtimeSessionId) throw new Error('No active session.')
     if (current.running) {
-      $queuedPrompts.set([...$queuedPrompts.get(), content])
+      await this.client.request('prompt.submit', {
+        queued: true,
+        session_id: current.runtimeSessionId,
+        text: content
+      }, 1_800_000)
       return
     }
     $chat.set({
@@ -201,6 +253,18 @@ export class GatewayController {
   async interrupt() {
     const sessionId = $chat.get().runtimeSessionId
     if (sessionId) await this.client.request('session.interrupt', { session_id: sessionId })
+  }
+
+  async steer(text: string) {
+    const sessionId = $chat.get().runtimeSessionId
+    const content = text.trim()
+    if (sessionId && content) await this.client.request('session.steer', { session_id: sessionId, text: content })
+  }
+
+  async redirect(text: string) {
+    const sessionId = $chat.get().runtimeSessionId
+    const content = text.trim()
+    if (sessionId && content) await this.client.request('session.redirect', { session_id: sessionId, text: content })
   }
 
   async retryFrom(userOrdinal: number, rowId: number, text: string) {
@@ -221,6 +285,8 @@ export class GatewayController {
   }
 
   async attach(file: File) {
+    const limit = file.type.startsWith('image/') ? 20 * 1_024 * 1_024 : 50 * 1_024 * 1_024
+    if (file.size > limit) throw new Error(`This attachment exceeds the ${limit / 1_024 / 1_024} MB mobile upload limit.`)
     const sessionId = $chat.get().runtimeSessionId
     if (!sessionId) throw new Error('No active session.')
     const dataUrl = await fileToDataURL(file)
@@ -245,9 +311,12 @@ export class GatewayController {
   }
 
   async reconcileHistory() {
+    const epoch = this.scopeEpoch
     const sessionId = $chat.get().runtimeSessionId
     if (!sessionId) return
     const response = await this.client.request<SessionHistoryResponse>('session.history', { session_id: sessionId })
+    this.assertScopeEpoch(epoch)
+    if ($chat.get().runtimeSessionId !== sessionId) return
     $chat.set({ ...$chat.get(), messages: toTranscript(response.messages), running: Boolean($chat.get().info?.running) })
   }
 
@@ -257,6 +326,7 @@ export class GatewayController {
 
   dispose() {
     this.disposed = true
+    ++this.lifecycleGeneration
     this.client.close()
     void this.activeListener?.remove()
   }
@@ -305,31 +375,38 @@ export class GatewayController {
   }
 
   private async openSocket(generation: number) {
-    const { authMode, profile } = $preferences.get()
-    const url = await resolveGatewayWsUrl(
-      { getGatewayWsUrl: async selected => (await this.connection.getWebSocketURL({ profile: selected })).url },
-      { authMode: authMode === 'interactive' ? 'oauth' : 'token', profile, wsUrl: '' }
-    )
-    if (generation !== this.reconnectGeneration) return
-    await this.client.connect(url)
+    await this.gateway.connect($preferences.get().profile)
+    if (generation !== this.reconnectGeneration) {
+      this.gateway.close()
+      throw new DOMException('Gateway scope changed.', 'AbortError')
+    }
   }
 
   private async restoreOrCreateSession() {
-    const stored = $chat.get().storedSessionId
-    if (stored) await this.resumeSession(stored)
-    else await this.newSession()
+    const stored = $chat.get().storedSessionId ?? this.readSessionBookmark()
+    if (stored) {
+      try {
+        await this.resumeSession(stored)
+        return
+      } catch {
+        this.clearSessionBookmark()
+      }
+    }
+    await this.newSession()
   }
 
   private adoptSession(response: SessionRPCResponse) {
     const info = response.info ?? {}
+    const storedSessionId = (response.stored_session_id ?? String(info.stored_session_id ?? '')) || null
     $chat.set({
       ...emptyChatState(),
       contractVersion: Number(info.desktop_contract ?? 0) || null,
       info: info as unknown as ChatState['info'],
       messages: toTranscript(response.messages),
       runtimeSessionId: response.session_id,
-      storedSessionId: (response.stored_session_id ?? String(info.stored_session_id ?? '')) || null
+      storedSessionId
     })
+    if (storedSessionId) localStorage.setItem(this.sessionBookmarkKey(), storedSessionId)
   }
 
   private async enforceContract(response: SessionRPCResponse) {
@@ -346,14 +423,44 @@ export class GatewayController {
     const previous = $chat.get()
     const next = reduceGatewayEvent(previous, event)
     $chat.set(next)
-    if (event.type === 'message.complete') {
-      void this.reconcileHistory()
-      const [queued, ...rest] = $queuedPrompts.get()
-      if (queued) {
-        $queuedPrompts.set(rest)
-        void this.send(queued)
-      }
-    }
+    if (event.type === 'message.complete') void this.reconcileHistory()
+  }
+
+  private assertScopeEpoch(epoch: number) {
+    if (epoch !== this.scopeEpoch) throw new DOMException('Gateway scope changed.', 'AbortError')
+  }
+
+  private assertCurrent(epoch: number, connectionGeneration: number) {
+    this.assertScopeEpoch(epoch)
+    if (connectionGeneration !== this.reconnectGeneration) throw new DOMException('Connection was superseded.', 'AbortError')
+  }
+
+  private clearForegroundScope() {
+    $chat.set(emptyChatState())
+    $sessions.set([])
+  }
+
+  private scopeSnapshot() {
+    const preferences = $preferences.get()
+    return { connectionKey: preferences.remoteURL, profile: preferences.profile }
+  }
+
+  private scopeMatches(scope: { connectionKey: string; profile?: null | string }) {
+    const current = this.scopeSnapshot()
+    return current.connectionKey === scope.connectionKey && current.profile === scope.profile
+  }
+
+  private sessionBookmarkKey() {
+    const scope = this.scopeSnapshot()
+    return `hermes.mobile.session:${encodeURIComponent(scope.connectionKey)}:${encodeURIComponent(scope.profile ?? 'default')}`
+  }
+
+  private readSessionBookmark() {
+    return localStorage.getItem(this.sessionBookmarkKey())
+  }
+
+  private clearSessionBookmark() {
+    localStorage.removeItem(this.sessionBookmarkKey())
   }
 }
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const derived = path.join(root, 'build', 'DerivedData')
-const app = path.join(derived, 'Build', 'Products', 'Release-iphoneos', 'Hermes Mobile.app')
+const app = path.join(derived, 'Build', 'Products', 'Release-iphoneos', 'App.app')
 const outputDir = path.resolve(root, '../output')
 const output = path.join(outputDir, 'Hermes-Mobile.ipa')
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' })
@@ -24,7 +24,7 @@ run('xcodebuild', [
   'CODE_SIGN_IDENTITY='
 ])
 
-if (!existsSync(path.join(app, 'Hermes Mobile')) || !existsSync(path.join(app, 'Info.plist'))) {
+if (!existsSync(path.join(app, 'App')) || !existsSync(path.join(app, 'Info.plist'))) {
   throw new Error(`unsigned app is incomplete: ${app}`)
 }
 

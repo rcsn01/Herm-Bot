@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT, toTranscript } from '~/state/gateway-controller'
-import { $chat, $preferences } from '~/state/store'
+import { $chat, $preferences, $sessions } from '~/state/store'
 import { emptyChatState } from '~/state/event-reducer'
 
 beforeEach(() => {
   $chat.set(emptyChatState())
+  $sessions.set([])
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
 })
 
@@ -99,6 +100,21 @@ describe('prompt submission safety', () => {
     controller.dispose()
   })
 
+  it('queues active-turn prompts at the gateway instead of client memory', async () => {
+    $chat.set({ ...emptyChatState(), running: true, runtimeSessionId: 'runtime-1' })
+    const controller = new GatewayController({} as never)
+    const request = vi.spyOn(controller.client, 'request').mockResolvedValue({})
+
+    await controller.send('next task')
+
+    expect(request).toHaveBeenCalledWith('prompt.submit', {
+      queued: true,
+      session_id: 'runtime-1',
+      text: 'next task'
+    }, 1_800_000)
+    controller.dispose()
+  })
+
   it('confirms a durable first-turn rewind by both ordinal and row id', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
     const controller = new GatewayController({} as never)
@@ -124,6 +140,25 @@ describe('prompt submission safety', () => {
 
     await expect(controller.retryFrom(1, undefined as never, 'unsafe')).rejects.toThrow(/durable message row/i)
     expect(request).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+})
+
+describe('profile switching', () => {
+  it('clears foreground state before reconnecting the selected profile', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'old-runtime', storedSessionId: 'old-stored' })
+    $sessions.set([{ id: 'old-stored', message_count: 1, preview: '', source: 'ios', started_at: 1, title: 'Old' }])
+    const controller = new GatewayController({} as never)
+    const close = vi.spyOn(controller.gateway, 'close')
+    const connect = vi.spyOn(controller, 'connect').mockResolvedValue()
+
+    await controller.switchProfile('work')
+
+    expect(close).toHaveBeenCalledOnce()
+    expect($preferences.get().profile).toBe('work')
+    expect($chat.get().runtimeSessionId).toBeNull()
+    expect($sessions.get()).toEqual([])
+    expect(connect).toHaveBeenCalledOnce()
     controller.dispose()
   })
 })

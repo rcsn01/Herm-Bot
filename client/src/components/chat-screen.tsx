@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { IconMicrophone, IconPaperclip, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { HermesConnection } from '~/native/hermes-connection'
@@ -118,7 +120,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
               {message.streaming && <Badge variant="muted">Streaming</Badge>}
             </div>
             {message.reasoning && <details><summary>Reasoning</summary><pre>{message.reasoning}</pre></details>}
-            <div className="message-content">{message.content || (message.streaming ? '…' : '')}</div>
+            <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{message.content || (message.streaming ? '…' : '')}</ReactMarkdown></div>
             {message.role === 'user' && (
               <Button
                 disabled={chat.running || message.rowId === undefined}
@@ -274,6 +276,7 @@ async function speak(text: string) {
 async function transcribe(file: File | undefined, setDraft: (value: string) => void, setError: (value: string) => void) {
   if (!file) return
   try {
+    if (file.size > 25 * 1_024 * 1_024) throw new Error('Audio attachments are limited to 25 MB on mobile.')
     const data = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '')

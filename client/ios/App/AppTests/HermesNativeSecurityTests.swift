@@ -59,6 +59,15 @@ final class HermesNativeSecurityTests: XCTestCase {
         XCTAssertThrowsError(try HermesRemoteURLValidator.validate("ftp://agent.example", allowLocalHTTP: true))
     }
 
+    func testExternalURLsAndTemporaryFilenamesAreRestricted() throws {
+        XCTAssertEqual(try HermesExternalURLValidator.validate("https://example.com/report").host, "example.com")
+        XCTAssertThrowsError(try HermesExternalURLValidator.validate("javascript:alert(1)"))
+        XCTAssertThrowsError(try HermesExternalURLValidator.validate("https://user:secret@example.com"))
+        XCTAssertEqual(HermesTemporaryFilePolicy.sanitizedFilename("../bad\r\nname.pdf"), ".._bad__name.pdf")
+        XCTAssertEqual(HermesTemporaryFilePolicy.sanitizedFilename(".."), "download")
+        XCTAssertLessThanOrEqual(HermesTemporaryFilePolicy.sanitizedFilename(String(repeating: "a", count: 300)).count, 180)
+    }
+
     func testKeychainRoundTripAndDelete() throws {
         let vault = HermesKeychain(service: "com.nousresearch.hermes.mobile.tests.\(UUID().uuidString)")
         defer { vault.deleteToken() }
