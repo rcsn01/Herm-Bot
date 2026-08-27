@@ -14,8 +14,10 @@ import { MoreScreen, type MorePageId } from '~/features/more/more-screen'
 import { OperationsScreen } from '~/features/operations/operations-screen'
 import { RemoteResourceScreen, type RemoteResourceDefinition } from '~/features/shared/remote-resource'
 import { GatewayProvider } from '~/gateway/gateway-context'
+import { consumePendingDeepLink, $pendingDeepLink, queueDeepLink } from '~/navigation/deep-links'
 import { $activeRoute, $navigation, popRoute, pushRoute, setTab } from '~/navigation/navigation-store'
 import type { MobileTab } from '~/navigation/routes'
+import { observeHermesDeepLinks } from '~/native/deep-links'
 import { GatewayController } from '~/state/gateway-controller'
 import { $chat, $connection, $preferences } from '~/state/store'
 
@@ -44,6 +46,7 @@ export function App() {
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
   const chat = useStore($chat)
+  const pendingLink = useStore($pendingDeepLink)
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
@@ -51,6 +54,13 @@ export function App() {
     void controller.initialize()
     return () => controller.dispose()
   }, [])
+
+  // Deep links (e.g. hermes://session/<id> from a Bark push) queue on arrival;
+  // once the gateway is connected, open the referenced conversation.
+  useEffect(() => observeHermesDeepLinks(queueDeepLink), [])
+  useEffect(() => {
+    if (connection.phase === 'connected' && pendingLink) void consumePendingDeepLink(controller)
+  }, [connection.phase, pendingLink])
 
   if (connection.phase === 'unsupported') {
     return <main className="blocking-screen"><div className="brand-mark">!</div><h1>Update remote Hermes</h1><p>{connection.error}</p><Button onClick={() => void controller.connect()}>Check again</Button></main>
