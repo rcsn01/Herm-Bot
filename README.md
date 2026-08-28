@@ -46,6 +46,14 @@ cd apps/mobile/client
 HERMES_MOBILE_DEV_GATEWAY=http://h-lap02.tail3ce9b9.ts.net:9119 npm run ios:live
 ```
 
+To skip the simulator prompt and launch the current development simulator directly:
+
+```bash
+HERMES_MOBILE_DEV_GATEWAY=http://h-lap02.tail3ce9b9.ts.net:9119 \
+  npm run ios:live -- \
+    --target 9B70A2A6-4F10-4C22-93BB-6641613043FE
+```
+
 Choose an iOS simulator when prompted and leave the command running. TypeScript, TSX, and CSS edits then update through Vite HMR without another Capacitor sync, Xcode open, or app reinstall. If Vite is already running on `127.0.0.1:5175`, the command reuses it instead of starting another server. If the simulator app is closed, launch it again while the command is still running.
 
 Live reload is deliberately localhost-only and therefore targets the iOS simulator. Native Swift changes, plugin or Capacitor dependency changes, `Info.plist` changes, and native assets still require `npm run cap:sync` followed by a native rebuild. Production builds never use the live-reload URL.

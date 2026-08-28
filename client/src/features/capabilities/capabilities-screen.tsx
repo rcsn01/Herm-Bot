@@ -2,6 +2,7 @@ import { IconBrain, IconChevronRight, IconKey, IconPlug, IconRobot, IconServer, 
 
 import { Badge } from '~/compat/primitives'
 import { CAPABILITY_RESOURCES, capabilityById, type CapabilityId } from '~/features/capabilities/api'
+import { ModelsScreen } from '~/features/models/models-screen'
 import { RemoteResourceScreen } from '~/features/shared/remote-resource'
 
 const ICONS: Record<CapabilityId, typeof IconRobot> = {
@@ -17,6 +18,9 @@ const ICONS: Record<CapabilityId, typeof IconRobot> = {
 }
 
 export function CapabilitiesScreen({ selected, onBack, onSelect }: { selected?: string; onBack(): void; onSelect(id: string): void }) {
+  // Models gets a dedicated editor screen (assignments, MoA, context/fallbacks)
+  // instead of the read-only resource projection.
+  if (selected === 'models') return <ModelsScreen onBack={onBack} />
   const definition = selected ? capabilityById(selected) : undefined
   if (definition) return <RemoteResourceScreen definition={definition} onBack={onBack} />
 

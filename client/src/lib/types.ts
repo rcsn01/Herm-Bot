@@ -1,12 +1,42 @@
 import type {
+  AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
+  HermesConfigRecord,
+  ModelAssignmentRequest,
+  ModelAssignmentResponse,
+  ModelCapabilities,
+  ModelInfoResponse,
+  ModelOptionProvider,
+  ModelOptionsResponse,
+  MoaConfigResponse,
+  MoaModelSlot,
   ProfilesResponse,
   SessionInfo,
   SessionMessage,
   SessionRuntimeInfo,
+  StaleAuxAssignment,
   StatusResponse
 } from '../../../../desktop/src/types/hermes'
 
-export type { ProfilesResponse, SessionInfo, SessionMessage, SessionRuntimeInfo, StatusResponse }
+export type {
+  AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
+  HermesConfigRecord,
+  ModelAssignmentRequest,
+  ModelAssignmentResponse,
+  ModelCapabilities,
+  ModelInfoResponse,
+  ModelOptionProvider,
+  ModelOptionsResponse,
+  MoaConfigResponse,
+  MoaModelSlot,
+  ProfilesResponse,
+  SessionInfo,
+  SessionMessage,
+  SessionRuntimeInfo,
+  StaleAuxAssignment,
+  StatusResponse
+}
 
 export type AuthMode = 'interactive' | 'token'
 export type ThemeMode = 'dark' | 'light' | 'system'

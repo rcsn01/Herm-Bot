@@ -80,7 +80,7 @@ export function App() {
         drawer={<SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={setTab} open={drawerOpen} />}
         drawerOpen={drawerOpen}
         header={<header className="app-header">
-          <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 size={21} /></Button>
+          <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
           <div className="header-title"><span className={`connection-dot ${chat.running ? 'busy' : ''}`} /><div><strong>{headerTitle}</strong><small>{preferences.profile || 'default'} profile</small></div></div>
           <Button className="model-badge-button" onClick={() => { setTab('more'); if (activeRoute.type !== 'more-detail' || activeRoute.page !== 'settings') pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' }) }} size="sm" variant="ghost" aria-label="Open settings"><Badge variant="muted">{chat.info?.model?.split('/').at(-1) || 'Hermes'}</Badge></Button>
         </header>}
