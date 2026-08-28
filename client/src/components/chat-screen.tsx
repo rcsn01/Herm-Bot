@@ -7,146 +7,56 @@ import remarkGfm from 'remark-gfm'
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
-import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
+import { ChatInteraction, type ChatMediaConnection } from '~/features/chat/chat-interaction'
+import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
-
-interface SlashItem {
-  display?: string
-  insertText: string
-  kind?: string
-  meta?: string
-  text: string
-}
-
-interface EditTarget {
-  rowId: number
-  userOrdinal: number
-}
-
-type ChatMediaConnection = Pick<HermesConnectionPlugin, 'request' | 'upload'>
 
 interface ChatScreenProps {
   controller: GatewayController
   mediaConnection?: ChatMediaConnection
 }
 
-function completionInsertion(draft: string, text: string, replaceFrom: number | undefined) {
-  if (typeof replaceFrom === 'number' && replaceFrom > 1 && replaceFrom <= draft.length) {
-    return `${draft.slice(0, replaceFrom)}${text}`
-  }
-  return text.startsWith('/') ? text : `/${text}`
-}
-
 export function ChatScreen({ controller, mediaConnection = HermesConnection }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
   const queued = useStore($queuedPrompts)
-  const [draft, setDraft] = useState('')
-  const [attachmentRefs, setAttachmentRefs] = useState<string[]>([])
-  const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
-  const [slashItems, setSlashItems] = useState<SlashItem[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const interaction = useMemo(() => new ChatInteraction(controller, mediaConnection), [controller, mediaConnection])
+  const interactionState = useStore(interaction.$state)
+  const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
+  const [sessionActionError, setSessionActionError] = useState<string | null>(null)
   const [showSessionActions, setShowSessionActions] = useState(false)
   const [renameSession, setRenameSession] = useState(false)
   const [archiveSession, setArchiveSession] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const mediaGeneration = useRef(0)
-  const slashCompletionGeneration = useRef(0)
+  const pendingDisposals = useRef(new Map<ChatInteraction, symbol>())
 
+  useEffect(() => {
+    // StrictMode rehearses effect cleanup without replacing the memoized instance.
+    pendingDisposals.current.delete(interaction)
+    return () => {
+      const disposal = Symbol('chat-interaction-disposal')
+      pendingDisposals.current.set(interaction, disposal)
+      queueMicrotask(() => {
+        if (pendingDisposals.current.get(interaction) !== disposal) return
+        pendingDisposals.current.delete(interaction)
+        interaction.dispose()
+      })
+    }
+  }, [interaction])
   useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [chat.messages, chat.tools])
   useEffect(() => {
-    mediaGeneration.current += 1
-    slashCompletionGeneration.current += 1
-    setEditTarget(null)
-    setSlashItems([])
+    interaction.setSession(chat.runtimeSessionId)
+    setSessionActionError(null)
     setShowSessionActions(false)
     setRenameSession(false)
     setArchiveSession(false)
-  }, [chat.runtimeSessionId])
+  }, [chat.runtimeSessionId, interaction])
 
   const userOrdinals = useMemo(() => {
     let ordinal = -1
     return chat.messages.map(message => message.role === 'user' ? ++ordinal : ordinal)
   }, [chat.messages])
-
-  const replaceDraft = (value: string) => {
-    mediaGeneration.current += 1
-    setDraft(value)
-  }
-
-  const updateDraft = (value: string) => {
-    const generation = ++slashCompletionGeneration.current
-    replaceDraft(value)
-    if (!value.startsWith('/')) return setSlashItems([])
-    void controller.request<{
-      items?: Array<Omit<SlashItem, 'insertText'>>
-      replace_from?: number
-    }>('complete.slash', { text: value }).then(result => {
-      if (generation !== slashCompletionGeneration.current) return
-      setSlashItems((result.items ?? []).map(item => ({
-        ...item,
-        insertText: completionInsertion(value, item.text, result.replace_from)
-      })))
-    }).catch(() => {
-      if (generation === slashCompletionGeneration.current) setSlashItems([])
-    })
-  }
-
-  const submit = async () => {
-    const combined = [draft.trim(), ...attachmentRefs].filter(Boolean).join('\n')
-    if (!combined) return
-    const target = editTarget
-    slashCompletionGeneration.current += 1
-    replaceDraft('')
-    setAttachmentRefs([])
-    setSlashItems([])
-    setError(null)
-    try {
-      if (target) await controller.retryFrom(target.userOrdinal, target.rowId, combined)
-      else await controller.send(combined)
-      setEditTarget(null)
-    } catch (caught) {
-      replaceDraft(combined)
-      setError(errorMessage(caught))
-    }
-  }
-
-  const speakText = async (text: string) => {
-    const generation = ++mediaGeneration.current
-    setError(null)
-    try {
-      const audioURL = await speechURL(text, mediaConnection)
-      if (generation === mediaGeneration.current) await new Audio(audioURL).play()
-    } catch (caught) {
-      if (generation === mediaGeneration.current) setError(errorMessage(caught))
-    }
-  }
-
-  const transcribeAudio = async (file: File | undefined) => {
-    if (!file) return
-    const generation = ++mediaGeneration.current
-    setError(null)
-    try {
-      const transcript = await transcribe(file, mediaConnection)
-      if (generation === mediaGeneration.current) setDraft(transcript)
-    } catch (caught) {
-      if (generation === mediaGeneration.current) setError(errorMessage(caught))
-    }
-  }
-
-  const attach = async (files: FileList | null) => {
-    if (!files) return
-    setError(null)
-    for (const file of Array.from(files)) {
-      try {
-        const result = await controller.attach(file) as { ref_text?: string; text?: string }
-        setAttachmentRefs(current => [...current, result.ref_text ?? result.text ?? `@file:${file.name}`])
-      } catch (caught) {
-        setError(errorMessage(caught))
-      }
-    }
-  }
 
   return (
     <section className="chat-screen">
@@ -157,7 +67,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
             {showSessionActions && <div className="session-management-actions">
               <Button onClick={() => setRenameSession(true)} size="sm" variant="ghost"><IconPencil size={16} /> Edit name</Button>
               <Button onClick={() => setArchiveSession(true)} size="sm" variant="ghost"><IconArchive size={16} /> Archive</Button>
-              <Button onClick={() => { setShowSessionActions(false); void controller.branchSession().catch(caught => setError(errorMessage(caught))) }} size="sm" variant="ghost"><IconGitBranch size={16} /> Branch</Button>
+              <Button onClick={() => { setShowSessionActions(false); void controller.branchSession().catch(caught => setSessionActionError(errorMessage(caught))) }} size="sm" variant="ghost"><IconGitBranch size={16} /> Branch</Button>
             </div>}
           </div>
         )}
@@ -181,12 +91,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
                 disabled={chat.running || message.rowId === undefined}
                 onClick={() => {
                   if (message.rowId === undefined || chat.running) return
-                  slashCompletionGeneration.current += 1
-                  replaceDraft(message.content)
-                  setAttachmentRefs([])
-                  setEditTarget({ rowId: message.rowId, userOrdinal: userOrdinals[index] })
-                  setSlashItems([])
-                  setError(null)
+                  interaction.beginEdit({ content: message.content, rowId: message.rowId, userOrdinal: userOrdinals[index] })
                 }}
                 size="micro"
                 variant="text"
@@ -195,7 +100,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
               </Button>
             )}
             {message.role === 'assistant' && message.content && (
-              <Button onClick={() => void speakText(message.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
+              <Button onClick={() => void interaction.speak(message.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
                 <IconVolume size={16} />
               </Button>
             )}
@@ -216,21 +121,17 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
         <div ref={bottomRef} />
       </div>
 
-      {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); void controller.renameSession(id, title).catch(caught => setError(errorMessage(caught))) }} title="Edit session name" />}
-      {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); void controller.archiveSession(id).catch(caught => setError(errorMessage(caught))) }} title="Archive session" />}
+      {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); void controller.renameSession(id, title).catch(caught => setSessionActionError(errorMessage(caught))) }} title="Edit session name" />}
+      {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); void controller.archiveSession(id).catch(caught => setSessionActionError(errorMessage(caught))) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard controller={controller} />}
-      {(error || chat.error) && <div className="error-banner" role="alert">{error || chat.error}</div>}
+      {(sessionActionError || interactionError || chat.error) && <div className="error-banner" role="alert">{sessionActionError || interactionError || chat.error}</div>}
       {queued.length > 0 && <div className="queue-banner">{queued.length} prompt{queued.length === 1 ? '' : 's'} queued</div>}
       {editTarget && (
         <div className="queue-banner">
           Editing an earlier message
           <Button
             aria-label="Cancel edit"
-            onClick={() => {
-              replaceDraft('')
-              setEditTarget(null)
-              setError(null)
-            }}
+            onClick={() => interaction.cancelEdit()}
             size="micro"
             variant="text"
           >
@@ -240,7 +141,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
       )}
       {attachmentRefs.length > 0 && (
         <div className="attachment-chips">
-          {attachmentRefs.map((ref, index) => <button key={`${ref}-${index}`} onClick={() => setAttachmentRefs(items => items.filter((_, itemIndex) => index !== itemIndex))}>{ref}</button>)}
+          {attachmentRefs.map((ref, index) => <button key={`${ref}-${index}`} onClick={() => interaction.removeAttachment(index)}>{ref}</button>)}
         </div>
       )}
       <div className="composer-wrap">
@@ -249,11 +150,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
             {slashItems.slice(0, 8).map((item, index) => (
               <button
                 key={`${item.text}-${index}`}
-                onClick={() => {
-                  slashCompletionGeneration.current += 1
-                  replaceDraft(`${item.insertText} `)
-                  setSlashItems([])
-                }}
+                onClick={() => interaction.chooseCompletion(index)}
               >
                 <strong>{item.display ?? item.text}</strong><span>{item.meta}</span>
               </button>
@@ -263,19 +160,19 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
         <div className="composer">
           <label className="icon-input" aria-label="Attach photo, PDF, or file">
             <IconPaperclip size={21} />
-            <input accept="image/*,application/pdf,audio/*,*/*" multiple onChange={event => void attach(event.target.files)} type="file" />
+            <input accept="image/*,application/pdf,audio/*,*/*" multiple onChange={event => void interaction.attach(event.target.files)} type="file" />
           </label>
           <label className="icon-input" aria-label="Record audio">
             <IconMicrophone size={21} />
-            <input accept="audio/*" capture="user" onChange={event => void transcribeAudio(event.target.files?.[0])} type="file" />
+            <input accept="audio/*" capture="user" onChange={event => void interaction.transcribe(event.target.files?.[0])} type="file" />
           </label>
           <Textarea
             aria-label="Message Hermes"
-            onChange={event => updateDraft(event.target.value)}
+            onChange={event => interaction.updateDraft(event.target.value)}
             onKeyDown={event => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
-                void submit()
+                void interaction.submit()
               }
             }}
             placeholder={chat.running ? 'Queue another prompt…' : 'Message Hermes…'}
@@ -285,7 +182,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
           {chat.running ? (
             <Button aria-label="Interrupt" onClick={() => void controller.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
           ) : (
-            <Button aria-label="Send" disabled={!draft.trim() && attachmentRefs.length === 0} onClick={() => void submit()} size="icon"><IconSend size={19} /></Button>
+            <Button aria-label="Send" disabled={submitting || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
           )}
         </div>
       </div>
@@ -323,27 +220,4 @@ function PromptCard({ controller }: { controller: GatewayController }) {
       {(pending.kind === 'secret' || pending.kind === 'sudo') && <small>This value is sent directly and is never saved by Hermes Mobile.</small>}
     </form>
   )
-}
-
-async function speechURL(text: string, connection: ChatMediaConnection): Promise<string> {
-  const response = await connection.request<{ data_url: string }>({ body: { text }, method: 'POST', path: '/api/audio/speak' })
-  return response.body.data_url
-}
-
-async function transcribe(file: File, connection: ChatMediaConnection): Promise<string> {
-  if (file.size > 25 * 1_024 * 1_024) throw new Error('Audio attachments are limited to 25 MB on mobile.')
-  const data = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '')
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-  const response = await connection.upload<{ transcript: string }>({
-    contentType: file.type,
-    dataBase64: data,
-    field: 'file',
-    filename: file.name,
-    path: '/api/audio/transcribe'
-  })
-  return response.body.transcript
 }
