@@ -73,27 +73,6 @@ export function resetTabRoutes(tab: MobileTab): void {
   })
 }
 
-export function showSessionsList(): void {
-  const state = $navigation.get()
-  $navigation.set({
-    activeTab: 'sessions',
-    stacks: { ...state.stacks, sessions: [ROOT_ROUTES.sessions] }
-  })
-}
-
-export function showSessionsChat(): void {
-  const state = $navigation.get()
-  const current = state.stacks.sessions.at(-1)
-  if (state.activeTab === 'sessions' && current?.type === 'sessions-chat') return
-  $navigation.set({
-    activeTab: 'sessions',
-    stacks: {
-      ...state.stacks,
-      sessions: [ROOT_ROUTES.sessions, { type: 'sessions-chat', tab: 'sessions' }]
-    }
-  })
-}
-
 export function resetNavigation(activeTab: MobileTab = 'sessions'): void {
   $navigation.set(initialNavigationState(activeTab))
 }

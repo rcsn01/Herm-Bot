@@ -1,11 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const capacitorApp = vi.hoisted(() => ({ addListener: vi.fn() }))
+
+vi.mock('@capacitor/app', () => ({ App: { addListener: capacitorApp.addListener } }))
+
+import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT, toTranscript } from '~/state/gateway-controller'
 import { $chat, $connection, $preferences, $sessions } from '~/state/store'
 import { emptyChatState } from '~/state/event-reducer'
 import { MemoryGateway } from '~/test/memory-gateway'
 
+class ConnectionAwareGateway extends MemoryGateway {
+  connected = false
+
+  override async connect(profile?: null | string, options: { signal?: AbortSignal } = {}): Promise<void> {
+    await super.connect(profile, options)
+    this.connected = true
+  }
+
+  override close(): void {
+    this.connected = false
+    super.close()
+  }
+
+  override async rpc<T>(method: string, params: Record<string, unknown> = {}, options: { signal?: AbortSignal } = {}): Promise<T> {
+    if (!this.connected) throw new Error('gateway not connected')
+    return super.rpc<T>(method, params, options)
+  }
+
+  override async request<T>(options: GatewayRequestOptions) {
+    if (!this.connected) throw new Error('gateway not connected')
+    return super.request<T>(options)
+  }
+}
+
 beforeEach(() => {
+  capacitorApp.addListener.mockReset().mockResolvedValue({ remove: vi.fn() })
   $chat.set(emptyChatState())
   $sessions.set([])
   $connection.set({ authMode: 'token', error: null, phase: 'disconnected', status: null })
@@ -186,6 +216,30 @@ describe('profile switching', () => {
 })
 
 describe('connection restoration', () => {
+  it('restores transport-state observation when StrictMode reinitializes the controller', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-new' }))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('session.resume', () => ({ info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' }, session_id: 'runtime-1' }))
+      .handle('session.history', () => ({ messages: [] })) as ConnectionAwareGateway
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+    controller.dispose()
+    await controller.initialize()
+    expect($connection.get().phase).toBe('connected')
+
+    gateway.close()
+
+    expect($connection.get().phase).toBe('disconnected')
+    await expect(controller.resumeSession('stored-1')).rejects.toThrow('gateway not connected')
+    controller.dispose()
+  })
+
   it('opens a fresh session when a saved session no longer exists', async () => {
     $chat.set({ ...emptyChatState(), storedSessionId: 'deleted-session' })
     const connection = {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
-import { $activeRoute, $navigation, resetNavigation, showSessionsChat } from '~/navigation/navigation-store'
+import { $activeRoute, $navigation, pushRoute, resetNavigation, setTab } from '~/navigation/navigation-store'
 
 beforeEach(() => resetNavigation())
 
@@ -41,7 +41,7 @@ describe('deep link coordinator', () => {
 
     expect(resumeSession).toHaveBeenCalledExactlyOnceWith('second')
     expect($navigation.get().activeTab).toBe('sessions')
-    expect($activeRoute.get().type).toBe('sessions-chat')
+    expect($activeRoute.get().type).toBe('sessions-root')
   })
 
   it('switches profile before resuming a profile-aware intent', async () => {
@@ -57,7 +57,7 @@ describe('deep link coordinator', () => {
 
     expect(order).toEqual(['profile:client work', 'resume:s-1'])
     expect($navigation.get().activeTab).toBe('sessions')
-    expect($activeRoute.get().type).toBe('sessions-chat')
+    expect($activeRoute.get().type).toBe('sessions-root')
   })
 
   it('does not lose the latest intent when a profile switch drops readiness', async () => {
@@ -96,11 +96,12 @@ describe('deep link coordinator', () => {
 
     expect(resumeSession.mock.calls).toEqual([['first'], ['second']])
     expect($navigation.get().activeTab).toBe('sessions')
-    expect($activeRoute.get().type).toBe('sessions-chat')
+    expect($activeRoute.get().type).toBe('sessions-root')
   })
 
-  it('falls back to the Sessions list when the current intent cannot resume', async () => {
-    showSessionsChat()
+  it('keeps the loaded chat and selects Sessions when the current intent cannot resume', async () => {
+    pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' })
+    setTab('more')
     const coordinator = new DeepLinkCoordinator({
       resumeSession: vi.fn().mockRejectedValue(new Error('gone')),
       switchProfile: vi.fn()

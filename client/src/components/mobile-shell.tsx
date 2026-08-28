@@ -2,36 +2,65 @@ import { useRef, type ReactNode, type TouchEvent } from 'react'
 
 interface MobileShellProps {
   children: ReactNode
+  drawer: ReactNode
+  drawerOpen: boolean
   header: ReactNode
-  navigation: ReactNode
+  onOpenDrawer(): void
   onRefresh(): unknown
   refreshing?: boolean
 }
 
-export function MobileShell({ children, header, navigation, onRefresh, refreshing = false }: MobileShellProps) {
-  const scroller = useRef<HTMLElement>(null)
-  const pullStart = useRef<number | null>(null)
+interface GestureStart {
+  atTop: boolean
+  x: number
+  y: number
+}
 
-  const startPull = (event: TouchEvent<HTMLElement>) => {
-    pullStart.current = (scroller.current?.scrollTop ?? 0) <= 0 ? event.touches[0]?.clientY ?? null : null
+export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer, onRefresh, refreshing = false }: MobileShellProps) {
+  const scroller = useRef<HTMLElement>(null)
+  const gestureStart = useRef<GestureStart | null>(null)
+
+  const startGesture = (event: TouchEvent<HTMLElement>) => {
+    gestureStart.current = null
+    if (drawerOpen || event.touches.length !== 1) return
+    const touch = event.touches[0]
+    if (!touch) return
+    gestureStart.current = {
+      atTop: (scroller.current?.scrollTop ?? 0) <= 0,
+      x: touch.clientX,
+      y: touch.clientY
+    }
   }
 
-  const finishPull = (event: TouchEvent<HTMLElement>) => {
-    const start = pullStart.current
-    pullStart.current = null
-    if (start === null || (scroller.current?.scrollTop ?? 0) > 0) return
-    const end = event.changedTouches[0]?.clientY
-    if (end !== undefined && end - start > 90) void onRefresh()
+  const trackGesture = (event: TouchEvent<HTMLElement>) => {
+    if (event.touches.length !== 1) gestureStart.current = null
+  }
+
+  const finishGesture = (event: TouchEvent<HTMLElement>) => {
+    const start = gestureStart.current
+    gestureStart.current = null
+    if (!start || drawerOpen || event.changedTouches.length !== 1) return
+    const touch = event.changedTouches[0]
+    if (!touch) return
+    const dx = touch.clientX - start.x
+    const dy = touch.clientY - start.y
+    const absX = Math.abs(dx)
+    const absY = Math.abs(dy)
+    if (dx >= 72 && absX > 1.2 * absY) {
+      onOpenDrawer()
+    } else if (start.atTop && dy >= 90 && absY > 1.2 * absX) {
+      void onRefresh()
+    }
   }
 
   return (
     <div className="mobile-shell">
       {header}
+      {drawer}
       {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
-      <main className="view-container" onTouchEnd={finishPull} onTouchStart={startPull} ref={scroller}>
+      <main className="view-container" onTouchEnd={finishGesture} onTouchMove={trackGesture} onTouchStart={startGesture} ref={scroller}>
         {children}
       </main>
-      {navigation}
     </div>
   )
 }

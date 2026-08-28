@@ -25,8 +25,8 @@ export class GatewayController {
   private sessionSelectionGeneration = 0
   private disposed = false
   private activeListener?: Awaited<ReturnType<typeof App.addListener>>
-  private readonly unsubscribeEvents: () => void
-  private readonly unsubscribeState: () => void
+  private unsubscribeEvents?: () => void
+  private unsubscribeState?: () => void
 
   constructor(
     private readonly connection: HermesConnectionPlugin = HermesConnection,
@@ -35,17 +35,14 @@ export class GatewayController {
     const transport = gateway ?? new RemoteGateway(connection)
     this.runtime = new SessionRuntime(transport, { minimumContract: MINIMUM_CONTRACT, retryDelays: RETRY_DELAYS })
     this.gateway = this.runtime
-    this.unsubscribeEvents = this.runtime.subscribe(event => this.onEvent(event))
-    this.unsubscribeState = this.runtime.subscribeState(state => {
-      if (state === 'closed' && !this.disposed && $connection.get().phase === 'connected') {
-        $connection.set({ ...$connection.get(), phase: 'disconnected' })
-      }
-    })
+    this.subscribeRuntime()
   }
 
   async initialize() {
     const lifecycle = ++this.lifecycleGeneration
+    const wasDisposed = this.disposed
     this.disposed = false
+    if (wasDisposed) this.subscribeRuntime()
     await this.activeListener?.remove()
     const listener = await App.addListener('appStateChange', ({ isActive }) => {
       if (isActive) void this.reconnect(true)
@@ -301,8 +298,10 @@ export class GatewayController {
     this.disposed = true
     ++this.lifecycleGeneration
     ++this.sessionSelectionGeneration
-    this.unsubscribeEvents()
-    this.unsubscribeState()
+    this.unsubscribeEvents?.()
+    this.unsubscribeEvents = undefined
+    this.unsubscribeState?.()
+    this.unsubscribeState = undefined
     this.runtime.dispose()
     void this.activeListener?.remove()
   }
@@ -322,6 +321,15 @@ export class GatewayController {
       ...(body === undefined ? {} : { body: profile ? { ...body, profile } : body }),
       method,
       path
+    })
+  }
+
+  private subscribeRuntime() {
+    this.unsubscribeEvents = this.runtime.subscribe(event => this.onEvent(event))
+    this.unsubscribeState = this.runtime.subscribeState(state => {
+      if (state === 'closed' && !this.disposed && $connection.get().phase === 'connected') {
+        $connection.set({ ...$connection.get(), phase: 'disconnected' })
+      }
     })
   }
 

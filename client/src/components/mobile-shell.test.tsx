@@ -1,34 +1,88 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MobileShell } from '~/components/mobile-shell'
 
-describe('mobile shell scrolling', () => {
-  it('keeps chrome outside the content scroller and refreshes only from its top', () => {
-    const onRefresh = vi.fn()
-    render(
-      <MobileShell
-        header={<header>Header</header>}
-        navigation={<nav aria-label="Main navigation">Navigation</nav>}
-        onRefresh={onRefresh}
-      >
-        <div>Scrollable content</div>
-      </MobileShell>
-    )
+afterEach(cleanup)
 
-    const scroller = screen.getByRole('main')
+function renderShell(drawerOpen = false) {
+  const onOpenDrawer = vi.fn()
+  const onRefresh = vi.fn()
+  render(
+    <MobileShell
+      drawer={<aside>Drawer</aside>}
+      drawerOpen={drawerOpen}
+      header={<header>Header</header>}
+      onOpenDrawer={onOpenDrawer}
+      onRefresh={onRefresh}
+    >
+      <div>Scrollable content</div>
+    </MobileShell>
+  )
+  return { onOpenDrawer, onRefresh, scroller: screen.getByRole('main') }
+}
+
+function gesture(scroller: HTMLElement, start: readonly [number, number], end: readonly [number, number], touches = 1) {
+  const startTouches = Array.from({ length: touches }, (_, index) => ({ clientX: start[0] + index, clientY: start[1] }))
+  fireEvent.touchStart(scroller, { touches: startTouches })
+  fireEvent.touchEnd(scroller, { changedTouches: [{ clientX: end[0], clientY: end[1] }] })
+}
+
+describe('MobileShell', () => {
+  it('keeps the header and drawer outside the content scroller without bottom navigation', () => {
+    const { scroller } = renderShell()
+
     expect(scroller.contains(screen.getByText('Scrollable content'))).toBe(true)
     expect(scroller.contains(screen.getByText('Header'))).toBe(false)
-    expect(scroller.contains(screen.getByRole('navigation'))).toBe(false)
+    expect(scroller.contains(screen.getByText('Drawer'))).toBe(false)
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
+  })
 
-    Object.defineProperty(scroller, 'scrollTop', { configurable: true, value: 20 })
-    fireEvent.touchStart(scroller, { touches: [{ clientY: 10 }] })
-    fireEvent.touchEnd(scroller, { changedTouches: [{ clientY: 120 }] })
+  it('opens the drawer for a qualifying right swipe without refreshing', () => {
+    const { onOpenDrawer, onRefresh, scroller } = renderShell()
+    gesture(scroller, [20, 100], [100, 110])
+
+    expect(onOpenDrawer).toHaveBeenCalledOnce()
     expect(onRefresh).not.toHaveBeenCalled()
+  })
 
+  it('refreshes for a vertical pull from the top without opening the drawer', () => {
+    const { onOpenDrawer, onRefresh, scroller } = renderShell()
     Object.defineProperty(scroller, 'scrollTop', { configurable: true, value: 0 })
-    fireEvent.touchStart(scroller, { touches: [{ clientY: 10 }] })
-    fireEvent.touchEnd(scroller, { changedTouches: [{ clientY: 120 }] })
+    gesture(scroller, [40, 10], [45, 105])
+
     expect(onRefresh).toHaveBeenCalledOnce()
+    expect(onOpenDrawer).not.toHaveBeenCalled()
+  })
+
+  it('ignores vertical pulls that start away from the scroll top', () => {
+    const { onOpenDrawer, onRefresh, scroller } = renderShell()
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, value: 20 })
+    gesture(scroller, [40, 10], [45, 120])
+
+    expect(onRefresh).not.toHaveBeenCalled()
+    expect(onOpenDrawer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['leftward', [100, 50], [10, 52], 1],
+    ['short', [10, 50], [70, 52], 1],
+    ['diagonal', [10, 10], [100, 100], 1],
+    ['multi-touch', [10, 50], [100, 52], 2]
+  ] as const)('ignores %s gestures', (_label, start, end, touches) => {
+    const { onOpenDrawer, onRefresh, scroller } = renderShell()
+    gesture(scroller, start, end, touches)
+
+    expect(onOpenDrawer).not.toHaveBeenCalled()
+    expect(onRefresh).not.toHaveBeenCalled()
+  })
+
+  it('does not process gestures while the drawer is open', () => {
+    const { onOpenDrawer, onRefresh, scroller } = renderShell(true)
+    gesture(scroller, [10, 50], [100, 52])
+    gesture(scroller, [40, 10], [42, 120])
+
+    expect(onOpenDrawer).not.toHaveBeenCalled()
+    expect(onRefresh).not.toHaveBeenCalled()
   })
 })

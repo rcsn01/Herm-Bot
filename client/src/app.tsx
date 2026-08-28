@@ -1,12 +1,13 @@
 import { useStore } from '@nanostores/react'
-import { IconAdjustments, IconBolt, IconServerCog, IconStack2 } from '@tabler/icons-react'
+import { IconMenu2 } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Badge, Button } from '~/compat/primitives'
+import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { FilesScreen } from '~/components/files-screen'
 import { MobileShell } from '~/components/mobile-shell'
-import { SessionsScreen } from '~/components/sessions-screen'
+import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
 import { applyTheme, SettingsScreen } from '~/components/settings-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { MoreScreen, type MorePageId } from '~/features/more/more-screen'
@@ -14,8 +15,7 @@ import { OperationsScreen } from '~/features/operations/operations-screen'
 import { RemoteResourceScreen, type RemoteResourceDefinition } from '~/features/shared/remote-resource'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator } from '~/navigation/deep-links'
-import { $activeRoute, $navigation, popRoute, pushRoute, setTab, showSessionsChat, showSessionsList } from '~/navigation/navigation-store'
-import type { MobileTab } from '~/navigation/routes'
+import { $activeRoute, $navigation, popRoute, pushRoute, setTab } from '~/navigation/navigation-store'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { GatewayController } from '~/state/gateway-controller'
 import { $chat, $connection, $preferences } from '~/state/store'
@@ -23,12 +23,12 @@ import { $chat, $connection, $preferences } from '~/state/store'
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
 
-const NAV: Array<{ icon: typeof IconStack2; label: string; tab: MobileTab }> = [
-  { icon: IconStack2, label: 'Sessions', tab: 'sessions' },
-  { icon: IconBolt, label: 'Capabilities', tab: 'capabilities' },
-  { icon: IconServerCog, label: 'Operations', tab: 'operations' },
-  { icon: IconAdjustments, label: 'More', tab: 'more' }
-]
+const DESTINATION_TITLES = {
+  sessions: 'Sessions',
+  capabilities: 'Capabilities',
+  operations: 'Operations',
+  more: 'More'
+} as const
 
 const MORE_RESOURCES: Record<Exclude<MorePageId, 'projects' | 'settings'>, RemoteResourceDefinition> = {
   billing: { id: 'billing', title: 'Billing', path: '/api/billing', description: 'Subscription, balance, and billing state when this gateway supports it.', profileScoped: false },
@@ -45,6 +45,7 @@ export function App() {
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
   const chat = useStore($chat)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
@@ -69,27 +70,26 @@ export function App() {
     await Promise.allSettled([controller.reconcileHistory(), controller.refreshSessions()])
     setRefreshing(false)
   }
-  const sessionsRoute = navigation.stacks.sessions.at(-1)
-  const sessionsView = sessionsRoute?.type === 'sessions-chat' ? 'chat' : 'list'
-  const headerTitle = navigation.activeTab === 'sessions' && sessionsView === 'chat'
+  const headerTitle = navigation.activeTab === 'sessions'
     ? ((chat.info as { title?: string } | null)?.title || 'New conversation')
-    : NAV.find(item => item.tab === navigation.activeTab)?.label
+    : DESTINATION_TITLES[navigation.activeTab]
 
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
+        drawer={<SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={setTab} open={drawerOpen} />}
+        drawerOpen={drawerOpen}
         header={<header className="app-header">
+          <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 size={21} /></Button>
           <div className="header-title"><span className={`connection-dot ${chat.running ? 'busy' : ''}`} /><div><strong>{headerTitle}</strong><small>{preferences.profile || 'default'} profile</small></div></div>
           <Button className="model-badge-button" onClick={() => { setTab('more'); if (activeRoute.type !== 'more-detail' || activeRoute.page !== 'settings') pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' }) }} size="sm" variant="ghost" aria-label="Open settings"><Badge variant="muted">{chat.info?.model?.split('/').at(-1) || 'Hermes'}</Badge></Button>
         </header>}
-        navigation={<nav className="bottom-nav" aria-label="Main navigation">
-          {NAV.map(item => <button aria-current={navigation.activeTab === item.tab ? 'page' : undefined} key={item.tab} onClick={() => setTab(item.tab)}><item.icon size={21} /><span>{item.label}</span></button>)}
-        </nav>}
+        onOpenDrawer={() => setDrawerOpen(true)}
         onRefresh={refresh}
         refreshing={refreshing}
       >
         <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
-          <SessionsScreen controller={controller} onShowChat={showSessionsChat} onShowList={showSessionsList} view={sessionsView} />
+          <ChatScreen controller={controller} />
         </div>
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen selected={activeRoute.type === 'capability-detail' ? activeRoute.capabilityId : undefined} onBack={() => popRoute('capabilities')} onSelect={capabilityId => pushRoute('capabilities', { type: 'capability-detail', tab: 'capabilities', capabilityId, capabilityType: capabilityType(capabilityId) })} />}
         {navigation.activeTab === 'operations' && <OperationsScreen selected={activeRoute.type === 'operation-detail' ? activeRoute.operationId : undefined} onBack={() => popRoute('operations')} onSelect={operationId => pushRoute('operations', { type: 'operation-detail', tab: 'operations', operationId, operationType: operationType(operationId) })} />}

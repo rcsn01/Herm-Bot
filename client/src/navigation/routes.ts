@@ -7,11 +7,6 @@ export interface SessionsRootRoute {
   tab: 'sessions'
 }
 
-export interface SessionsChatRoute {
-  type: 'sessions-chat'
-  tab: 'sessions'
-}
-
 export interface CapabilitiesRootRoute {
   type: 'capabilities-root'
   tab: 'capabilities'
@@ -47,7 +42,7 @@ export interface MoreDetailRoute {
   page: 'billing' | 'learning' | 'logs' | 'profiles' | 'projects' | 'settings' | 'system' | 'usage'
 }
 
-export type SessionsRoute = SessionsRootRoute | SessionsChatRoute
+export type SessionsRoute = SessionsRootRoute
 export type CapabilitiesRoute = CapabilitiesRootRoute | CapabilityDetailRoute
 export type OperationsRoute = OperationsRootRoute | OperationDetailRoute
 export type MoreRoute = MoreRootRoute | MoreDetailRoute
