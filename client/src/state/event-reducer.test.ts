@@ -20,6 +20,14 @@ describe('reduceGatewayEvent', () => {
     expect(state.running).toBe(false)
   })
 
+  it('preserves legacy and validated contract state when session events omit or corrupt the marker', () => {
+    const legacy = { ...emptyChatState(), contractVersion: null, runtimeSessionId: 'legacy' }
+    expect(reduceGatewayEvent(legacy, { type: 'session.info', session_id: 'legacy', payload: { running: true } }).contractVersion).toBeNull()
+
+    const current = { ...emptyChatState(), contractVersion: 6, runtimeSessionId: 'current' }
+    expect(reduceGatewayEvent(current, { type: 'session.info', session_id: 'current', payload: { desktop_contract: null } }).contractVersion).toBe(6)
+  })
+
   it.each(['clarify', 'approval', 'sudo', 'secret'] as const)('maps %s requests without persisting answers', kind => {
     const state = reduceGatewayEvent(emptyChatState(), { type: `${kind}.request`, payload: { request_id: 'request-1', question: 'value?' } })
     expect(state.pendingPrompt).toMatchObject({ kind, requestId: 'request-1' })

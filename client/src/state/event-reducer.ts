@@ -58,10 +58,13 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
 
   switch (event.type) {
     case 'session.info': {
-      const contractVersion = Number(payload.desktop_contract ?? state.contractVersion)
+      const marker = payload.desktop_contract
+      const contractVersion = marker === undefined
+        ? state.contractVersion
+        : typeof marker === 'number' && Number.isFinite(marker) ? marker : state.contractVersion
       return {
         ...state,
-        contractVersion: Number.isFinite(contractVersion) ? contractVersion : null,
+        contractVersion,
         info: payload as unknown as ChatState['info'],
         running: Boolean(payload.running),
         storedSessionId: text(payload.stored_session_id) || state.storedSessionId

@@ -2,7 +2,7 @@
 
 This is the authoritative scope and delivery checklist for Hermes Mobile. “Parity” means that an iPhone or iPad connected to one **remote, unmodified official Hermes gateway** can complete the gateway-owned workflows below through backend contract 6 or newer. It does not mean pixel parity with Desktop, reuse of Desktop navigation, or access to capabilities that exist only in Electron or on the client machine.
 
-The gateway remains the source of truth. Mobile must use official authenticated HTTP routes and JSON-RPC methods, preserve profile boundaries, and degrade explicitly when a contract-6 gateway does not advertise an optional capability. A raw JSON response or generic API request form is useful diagnostic scaffolding, but it is **not a completed workflow**.
+The gateway remains the source of truth. Mobile must use official authenticated HTTP routes and JSON-RPC methods, preserve profile boundaries, and degrade explicitly when a contract-6 gateway does not advertise an optional capability. Contract 6 defines the full-parity target, not the connection floor: Mobile accepts the baseline contract 3 and unversioned legacy gateways, then reports unsupported operations at the feature that needs them. A raw JSON response or generic API request form is useful diagnostic scaffolding, but it is **not a completed workflow**.
 
 ## Status and milestones
 

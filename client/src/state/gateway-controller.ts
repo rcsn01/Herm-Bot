@@ -14,7 +14,7 @@ import { resetRoutes } from '~/navigation/navigation-store'
 import { emptyChatState, reduceGatewayEvent } from '~/state/event-reducer'
 import { $chat, $connection, $preferences, $sessions, savePreferences } from '~/state/store'
 
-export const MINIMUM_CONTRACT = 6
+export const MINIMUM_CONTRACT = 3
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
 export { toTranscript }
 

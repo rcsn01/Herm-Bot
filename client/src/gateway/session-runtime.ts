@@ -16,7 +16,7 @@ interface SessionHistoryResponse {
 }
 
 export interface RuntimeSession {
-  contractVersion: number
+  contractVersion: number | null
   info: ChatState['info']
   messages: TranscriptMessage[]
   runtimeSessionId: string
@@ -242,9 +242,16 @@ export class SessionRuntime implements GatewayPort {
   }
 
   private sessionFromResponse(response: SessionRPCResponse): RuntimeSession {
+    if (typeof response.session_id !== 'string' || !response.session_id.trim()) {
+      this.transport.close()
+      throw new GatewayError('Remote Hermes returned an invalid session identity.', {
+        kind: 'validation', retryable: false
+      })
+    }
     const info = response.info ?? {}
-    const version = Number(info.desktop_contract ?? 0)
-    if (!Number.isFinite(version) || version < this.options.minimumContract) {
+    const hasVersion = Object.prototype.hasOwnProperty.call(info, 'desktop_contract')
+    const rawVersion = info.desktop_contract
+    if (hasVersion && (typeof rawVersion !== 'number' || !Number.isFinite(rawVersion) || rawVersion < this.options.minimumContract)) {
       this.transport.close()
       throw new GatewayError(
         `This remote Hermes is too old for Hermes Mobile. Update the remote gateway (contract ${this.options.minimumContract} or newer).`,
@@ -253,7 +260,7 @@ export class SessionRuntime implements GatewayPort {
     }
     const storedSessionId = (response.stored_session_id ?? String(info.stored_session_id ?? '')) || null
     return {
-      contractVersion: version,
+      contractVersion: hasVersion ? rawVersion as number : null,
       info: info as ChatState['info'],
       messages: toTranscript(response.messages),
       runtimeSessionId: response.session_id,

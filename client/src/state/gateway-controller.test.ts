@@ -237,6 +237,21 @@ describe('session selection lifecycle', () => {
 })
 
 describe('backend compatibility', () => {
+  it('accepts baseline and unversioned legacy gateways', async () => {
+    let calls = 0
+    const gateway = new MemoryGateway().handle('session.create', () => ++calls === 1
+      ? { info: { desktop_contract: 3 }, session_id: 'runtime-baseline' }
+      : { info: {}, session_id: 'runtime-unversioned' })
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.newSession()
+    expect($chat.get()).toMatchObject({ contractVersion: 3, runtimeSessionId: 'runtime-baseline' })
+
+    await controller.newSession()
+    expect($chat.get()).toMatchObject({ contractVersion: null, runtimeSessionId: 'runtime-unversioned' })
+    controller.dispose()
+  })
+
   it('rejects an older contract and accepts the minimum supported contract', async () => {
     let calls = 0
     const gateway = new MemoryGateway().handle('session.create', () => ++calls === 1
@@ -252,9 +267,18 @@ describe('backend compatibility', () => {
     controller.dispose()
   })
 
-  it('fails closed when the gateway contract is malformed', async () => {
+  it('requires a runtime session identity from unversioned gateways', async () => {
+    const gateway = new MemoryGateway().handle('session.create', () => ({ info: {} }))
+    const controller = new GatewayController({} as never, gateway)
+
+    await expect(controller.newSession()).rejects.toMatchObject({ kind: 'validation' })
+    expect($chat.get().runtimeSessionId).toBeNull()
+    controller.dispose()
+  })
+
+  it.each(['unknown', null, [6], true])('fails closed when the gateway contract marker is malformed: %j', async marker => {
     const gateway = new MemoryGateway().handle('session.create', () => ({
-      info: { desktop_contract: 'unknown' },
+      info: { desktop_contract: marker },
       session_id: 'runtime-unknown'
     }))
     const controller = new GatewayController({} as never, gateway)
