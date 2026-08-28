@@ -1,27 +1,15 @@
-export const MOBILE_TABS = ['chat', 'sessions', 'capabilities', 'operations', 'more'] as const
+export const MOBILE_TABS = ['sessions', 'capabilities', 'operations', 'more'] as const
 
 export type MobileTab = (typeof MOBILE_TABS)[number]
-
-export interface ChatRootRoute {
-  type: 'chat-root'
-  tab: 'chat'
-}
-
-export interface ChatThreadRoute {
-  type: 'chat-thread'
-  tab: 'chat'
-  sessionId: string
-}
 
 export interface SessionsRootRoute {
   type: 'sessions-root'
   tab: 'sessions'
 }
 
-export interface SessionDetailRoute {
-  type: 'session-detail'
+export interface SessionsChatRoute {
+  type: 'sessions-chat'
   tab: 'sessions'
-  sessionId: string
 }
 
 export interface CapabilitiesRootRoute {
@@ -59,14 +47,12 @@ export interface MoreDetailRoute {
   page: 'billing' | 'learning' | 'logs' | 'profiles' | 'projects' | 'settings' | 'system' | 'usage'
 }
 
-export type ChatRoute = ChatRootRoute | ChatThreadRoute
-export type SessionsRoute = SessionsRootRoute | SessionDetailRoute
+export type SessionsRoute = SessionsRootRoute | SessionsChatRoute
 export type CapabilitiesRoute = CapabilitiesRootRoute | CapabilityDetailRoute
 export type OperationsRoute = OperationsRootRoute | OperationDetailRoute
 export type MoreRoute = MoreRootRoute | MoreDetailRoute
 
 export interface RoutesByTab {
-  chat: ChatRoute
   sessions: SessionsRoute
   capabilities: CapabilitiesRoute
   operations: OperationsRoute
@@ -77,7 +63,6 @@ export type MobileRoute = RoutesByTab[MobileTab]
 export type RouteForTab<Tab extends MobileTab> = RoutesByTab[Tab]
 
 export const ROOT_ROUTES = {
-  chat: { type: 'chat-root', tab: 'chat' },
   sessions: { type: 'sessions-root', tab: 'sessions' },
   capabilities: { type: 'capabilities-root', tab: 'capabilities' },
   operations: { type: 'operations-root', tab: 'operations' },

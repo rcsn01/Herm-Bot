@@ -1,4 +1,4 @@
-import { setTab } from '~/navigation/navigation-store'
+import { showSessionsChat, showSessionsList } from '~/navigation/navigation-store'
 
 export interface HermesDeepLink {
   kind: 'session'
@@ -92,9 +92,9 @@ export class DeepLinkCoordinator {
       }
       await this.controller.resumeSession(intent.sessionId)
       if (!this.isCurrent(generation)) return
-      setTab('chat')
+      showSessionsChat()
     } catch {
-      if (this.isCurrent(generation)) setTab('sessions')
+      if (this.isCurrent(generation)) showSessionsList()
     } finally {
       this.running = false
       this.activeIntent = null

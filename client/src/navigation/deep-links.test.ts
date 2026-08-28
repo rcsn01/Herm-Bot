@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
-import { $navigation, resetNavigation } from '~/navigation/navigation-store'
+import { $activeRoute, $navigation, resetNavigation, showSessionsChat } from '~/navigation/navigation-store'
 
 beforeEach(() => resetNavigation())
 
@@ -40,7 +40,8 @@ describe('deep link coordinator', () => {
     await coordinator.settled()
 
     expect(resumeSession).toHaveBeenCalledExactlyOnceWith('second')
-    expect($navigation.get().activeTab).toBe('chat')
+    expect($navigation.get().activeTab).toBe('sessions')
+    expect($activeRoute.get().type).toBe('sessions-chat')
   })
 
   it('switches profile before resuming a profile-aware intent', async () => {
@@ -55,7 +56,8 @@ describe('deep link coordinator', () => {
     await coordinator.settled()
 
     expect(order).toEqual(['profile:client work', 'resume:s-1'])
-    expect($navigation.get().activeTab).toBe('chat')
+    expect($navigation.get().activeTab).toBe('sessions')
+    expect($activeRoute.get().type).toBe('sessions-chat')
   })
 
   it('does not lose the latest intent when a profile switch drops readiness', async () => {
@@ -93,10 +95,12 @@ describe('deep link coordinator', () => {
     await coordinator.settled()
 
     expect(resumeSession.mock.calls).toEqual([['first'], ['second']])
-    expect($navigation.get().activeTab).toBe('chat')
+    expect($navigation.get().activeTab).toBe('sessions')
+    expect($activeRoute.get().type).toBe('sessions-chat')
   })
 
-  it('falls back to sessions when the current intent cannot resume', async () => {
+  it('falls back to the Sessions list when the current intent cannot resume', async () => {
+    showSessionsChat()
     const coordinator = new DeepLinkCoordinator({
       resumeSession: vi.fn().mockRejectedValue(new Error('gone')),
       switchProfile: vi.fn()
@@ -107,5 +111,6 @@ describe('deep link coordinator', () => {
     await coordinator.settled()
 
     expect($navigation.get().activeTab).toBe('sessions')
+    expect($activeRoute.get().type).toBe('sessions-root')
   })
 })

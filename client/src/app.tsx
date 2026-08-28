@@ -1,9 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { IconAdjustments, IconBolt, IconMessageCircle, IconServerCog, IconStack2 } from '@tabler/icons-react'
+import { IconAdjustments, IconBolt, IconServerCog, IconStack2 } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Badge, Button } from '~/compat/primitives'
-import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { FilesScreen } from '~/components/files-screen'
 import { MobileShell } from '~/components/mobile-shell'
@@ -15,7 +14,7 @@ import { OperationsScreen } from '~/features/operations/operations-screen'
 import { RemoteResourceScreen, type RemoteResourceDefinition } from '~/features/shared/remote-resource'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator } from '~/navigation/deep-links'
-import { $activeRoute, $navigation, popRoute, pushRoute, setTab } from '~/navigation/navigation-store'
+import { $activeRoute, $navigation, popRoute, pushRoute, setTab, showSessionsChat, showSessionsList } from '~/navigation/navigation-store'
 import type { MobileTab } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { GatewayController } from '~/state/gateway-controller'
@@ -24,8 +23,7 @@ import { $chat, $connection, $preferences } from '~/state/store'
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
 
-const NAV: Array<{ icon: typeof IconMessageCircle; label: string; tab: MobileTab }> = [
-  { icon: IconMessageCircle, label: 'Chat', tab: 'chat' },
+const NAV: Array<{ icon: typeof IconStack2; label: string; tab: MobileTab }> = [
   { icon: IconStack2, label: 'Sessions', tab: 'sessions' },
   { icon: IconBolt, label: 'Capabilities', tab: 'capabilities' },
   { icon: IconServerCog, label: 'Operations', tab: 'operations' },
@@ -71,13 +69,17 @@ export function App() {
     await Promise.allSettled([controller.reconcileHistory(), controller.refreshSessions()])
     setRefreshing(false)
   }
-  const openChat = () => setTab('chat')
+  const sessionsRoute = navigation.stacks.sessions.at(-1)
+  const sessionsView = sessionsRoute?.type === 'sessions-chat' ? 'chat' : 'list'
+  const headerTitle = navigation.activeTab === 'sessions' && sessionsView === 'chat'
+    ? ((chat.info as { title?: string } | null)?.title || 'New conversation')
+    : NAV.find(item => item.tab === navigation.activeTab)?.label
 
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
         header={<header className="app-header">
-          <div className="header-title"><span className={`connection-dot ${chat.running ? 'busy' : ''}`} /><div><strong>{navigation.activeTab === 'chat' ? ((chat.info as { title?: string } | null)?.title || 'New conversation') : NAV.find(item => item.tab === navigation.activeTab)?.label}</strong><small>{preferences.profile || 'default'} profile</small></div></div>
+          <div className="header-title"><span className={`connection-dot ${chat.running ? 'busy' : ''}`} /><div><strong>{headerTitle}</strong><small>{preferences.profile || 'default'} profile</small></div></div>
           <Button className="model-badge-button" onClick={() => { setTab('more'); if (activeRoute.type !== 'more-detail' || activeRoute.page !== 'settings') pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' }) }} size="sm" variant="ghost" aria-label="Open settings"><Badge variant="muted">{chat.info?.model?.split('/').at(-1) || 'Hermes'}</Badge></Button>
         </header>}
         navigation={<nav className="bottom-nav" aria-label="Main navigation">
@@ -86,8 +88,9 @@ export function App() {
         onRefresh={refresh}
         refreshing={refreshing}
       >
-        <div aria-hidden={navigation.activeTab !== 'chat'} className={navigation.activeTab === 'chat' ? '' : 'mounted-view-hidden'}><ChatScreen controller={controller} /></div>
-        {navigation.activeTab === 'sessions' && <SessionsScreen controller={controller} onOpenChat={openChat} />}
+        <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
+          <SessionsScreen controller={controller} onShowChat={showSessionsChat} onShowList={showSessionsList} view={sessionsView} />
+        </div>
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen selected={activeRoute.type === 'capability-detail' ? activeRoute.capabilityId : undefined} onBack={() => popRoute('capabilities')} onSelect={capabilityId => pushRoute('capabilities', { type: 'capability-detail', tab: 'capabilities', capabilityId, capabilityType: capabilityType(capabilityId) })} />}
         {navigation.activeTab === 'operations' && <OperationsScreen selected={activeRoute.type === 'operation-detail' ? activeRoute.operationId : undefined} onBack={() => popRoute('operations')} onSelect={operationId => pushRoute('operations', { type: 'operation-detail', tab: 'operations', operationId, operationType: operationType(operationId) })} />}
         {navigation.activeTab === 'more' && <MoreRoute route={activeRoute} />}

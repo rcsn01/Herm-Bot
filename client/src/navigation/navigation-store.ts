@@ -12,7 +12,6 @@ export interface NavigationState {
 
 function initialStacks(): NavigationStacks {
   return {
-    chat: [ROOT_ROUTES.chat],
     sessions: [ROOT_ROUTES.sessions],
     capabilities: [ROOT_ROUTES.capabilities],
     operations: [ROOT_ROUTES.operations],
@@ -20,7 +19,7 @@ function initialStacks(): NavigationStacks {
   }
 }
 
-export function initialNavigationState(activeTab: MobileTab = 'chat'): NavigationState {
+export function initialNavigationState(activeTab: MobileTab = 'sessions'): NavigationState {
   return { activeTab, stacks: initialStacks() }
 }
 
@@ -74,7 +73,28 @@ export function resetTabRoutes(tab: MobileTab): void {
   })
 }
 
-export function resetNavigation(activeTab: MobileTab = 'chat'): void {
+export function showSessionsList(): void {
+  const state = $navigation.get()
+  $navigation.set({
+    activeTab: 'sessions',
+    stacks: { ...state.stacks, sessions: [ROOT_ROUTES.sessions] }
+  })
+}
+
+export function showSessionsChat(): void {
+  const state = $navigation.get()
+  const current = state.stacks.sessions.at(-1)
+  if (state.activeTab === 'sessions' && current?.type === 'sessions-chat') return
+  $navigation.set({
+    activeTab: 'sessions',
+    stacks: {
+      ...state.stacks,
+      sessions: [ROOT_ROUTES.sessions, { type: 'sessions-chat', tab: 'sessions' }]
+    }
+  })
+}
+
+export function resetNavigation(activeTab: MobileTab = 'sessions'): void {
   $navigation.set(initialNavigationState(activeTab))
 }
 

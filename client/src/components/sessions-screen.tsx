@@ -1,8 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { IconSearch, IconTrash } from '@tabler/icons-react'
+import { IconMessageCircle, IconSearch, IconStack2, IconTrash } from '@tabler/icons-react'
 import { useMemo, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
+import { ChatScreen } from '~/components/chat-screen'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
 import { $sessions } from '~/state/store'
@@ -13,7 +14,33 @@ interface SwipeStart {
   y: number
 }
 
-export function SessionsScreen({ controller, onOpenChat }: { controller: GatewayController; onOpenChat(): void }) {
+export type SessionsView = 'chat' | 'list'
+
+interface SessionsScreenProps {
+  controller: GatewayController
+  onShowChat(): void
+  onShowList(): void
+  view: SessionsView
+}
+
+export function SessionsScreen({ controller, onShowChat, onShowList, view }: SessionsScreenProps) {
+  return (
+    <section className="sessions-workspace">
+      <div aria-label="Sessions view" className="sessions-view-switcher" role="tablist">
+        <button aria-controls="sessions-list-panel" aria-selected={view === 'list'} id="sessions-list-tab" onClick={onShowList} role="tab" type="button"><IconStack2 size={17} /> List</button>
+        <button aria-controls="sessions-chat-panel" aria-selected={view === 'chat'} id="sessions-chat-tab" onClick={onShowChat} role="tab" type="button"><IconMessageCircle size={17} /> Chat</button>
+      </div>
+      <div aria-hidden={view !== 'list'} aria-labelledby="sessions-list-tab" className={view === 'list' ? 'sessions-view' : 'sessions-view mounted-view-hidden'} id="sessions-list-panel" role="tabpanel">
+        <SessionsList controller={controller} onOpenChat={onShowChat} />
+      </div>
+      <div aria-hidden={view !== 'chat'} aria-labelledby="sessions-chat-tab" className={view === 'chat' ? 'sessions-view sessions-chat-view' : 'sessions-view sessions-chat-view mounted-view-hidden'} id="sessions-chat-panel" role="tabpanel">
+        <ChatScreen controller={controller} />
+      </div>
+    </section>
+  )
+}
+
+function SessionsList({ controller, onOpenChat }: { controller: GatewayController; onOpenChat(): void }) {
   const sessions = useStore($sessions)
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -25,9 +52,19 @@ export function SessionsScreen({ controller, onOpenChat }: { controller: Gateway
     return needle ? sessions.filter(session => session.title.toLowerCase().includes(needle)) : sessions
   }, [query, sessions])
 
-  const action = async (callback: () => Promise<unknown>) => {
+  const action = async (callback: () => Promise<unknown>): Promise<boolean> => {
     setError(null)
-    await callback().catch(caught => setError(errorMessage(caught)))
+    try {
+      await callback()
+      return true
+    } catch (caught) {
+      setError(errorMessage(caught))
+      return false
+    }
+  }
+
+  const openAfter = async (callback: () => Promise<unknown>) => {
+    if (await action(callback)) onOpenChat()
   }
 
   return (
@@ -36,10 +73,10 @@ export function SessionsScreen({ controller, onOpenChat }: { controller: Gateway
     }}>
       <header className="page-heading">
         <div><p className="eyebrow">Gateway history</p><h2>Sessions</h2></div>
-        <Button onClick={() => void action(() => controller.newSession()).then(onOpenChat)}>New</Button>
+        <Button onClick={() => void openAfter(() => controller.newSession())}>New</Button>
       </header>
-      <label className="search-box"><IconSearch size={18} /><Input onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
-      {error && <div className="error-banner">{error}</div>}
+      <label className="search-box"><IconSearch size={18} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
+      {error && <div className="error-banner" role="alert">{error}</div>}
       <div className="session-list">
         {filtered.map(session => {
           const date = new Date(session.started_at * 1_000)
@@ -83,7 +120,7 @@ export function SessionsScreen({ controller, onOpenChat }: { controller: Gateway
                 className="session-main"
                 onClick={() => {
                   if (revealed) return setSwipedId(null)
-                  void action(() => controller.resumeSession(session.id)).then(onOpenChat)
+                  void openAfter(() => controller.resumeSession(session.id))
                 }}
               >
                 <strong>{session.title || 'Untitled session'}</strong>

@@ -84,11 +84,15 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .connection-dot, .status-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--success); }
 .connection-dot.busy, .status-dot.running, .status-dot.progress, .status-dot.generating { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 .view-container { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
-.bottom-nav { position: relative; z-index: 30; height: 100%; padding: 3px 6px var(--safe-bottom); display: grid; grid-template-columns: repeat(5, 1fr); background: color-mix(in srgb, var(--panel) 92%, transparent); border-top: 1px solid var(--line); backdrop-filter: blur(18px); }
+.bottom-nav { position: relative; z-index: 30; height: 100%; padding: 3px 6px var(--safe-bottom); display: grid; grid-template-columns: repeat(4, 1fr); background: color-mix(in srgb, var(--panel) 92%, transparent); border-top: 1px solid var(--line); backdrop-filter: blur(18px); }
 .bottom-nav button { min-height: 56px; border: 0; background: transparent; color: var(--muted); display: grid; place-content: center; justify-items: center; gap: 2px; font-size: .62rem; }
 .bottom-nav button[aria-current="page"] { color: var(--accent); font-weight: 700; }
 .refresh-indicator { position: fixed; z-index: 40; top: calc(var(--safe-top) + 64px); left: 50%; transform: translateX(-50%); margin: 0; color: var(--accent); white-space: nowrap; }
 
+.sessions-workspace, .sessions-view, .sessions-chat-view { min-height: inherit; }
+.sessions-view-switcher { position: sticky; z-index: 27; top: 0; width: min(calc(100% - 28px), 832px); margin: 10px auto 0; padding: 3px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(18px); }
+.sessions-view-switcher button { min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-weight: 700; }
+.sessions-view-switcher button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
 .chat-screen { min-height: inherit; display: flex; flex-direction: column; }
 .transcript { flex: 1; padding: 18px 14px 140px; display: grid; align-content: start; gap: 14px; }
 .session-management { justify-self: end; display: grid; justify-items: end; gap: 6px; }
