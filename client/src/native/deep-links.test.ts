@@ -60,6 +60,34 @@ describe('observeHermesDeepLinks', () => {
     await vi.waitFor(() => expect(remove).toHaveBeenCalled())
   })
 
+  it('does not let a delayed cold-start URL replace a warm event', async () => {
+    let finishLaunch: ((value: { url: string }) => void) | undefined
+    mocks.getLaunchUrl.mockReturnValue(new Promise(resolve => { finishLaunch = resolve }))
+    const handler = vi.fn()
+    observeHermesDeepLinks(handler)
+    await vi.waitFor(() => expect(mocks.addListener).toHaveBeenCalled())
+    const warmOpen = mocks.addListener.mock.calls[0][1] as (event: { url: string }) => void
+
+    warmOpen({ url: 'hermes://session/warm' })
+    finishLaunch?.({ url: 'hermes://session/cold' })
+    await Promise.resolve()
+
+    expect(handler).toHaveBeenCalledExactlyOnceWith('hermes://session/warm')
+  })
+
+  it('suppresses a pending launch URL after unsubscribe', async () => {
+    let finishLaunch: ((value: { url: string }) => void) | undefined
+    mocks.getLaunchUrl.mockReturnValue(new Promise(resolve => { finishLaunch = resolve }))
+    const handler = vi.fn()
+    const unsubscribe = observeHermesDeepLinks(handler)
+
+    unsubscribe()
+    finishLaunch?.({ url: 'hermes://session/cold' })
+    await Promise.resolve()
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+
   it('swallows launch-url resolution failures', async () => {
     mocks.getLaunchUrl.mockRejectedValue(new Error('unavailable'))
     const handler = vi.fn()

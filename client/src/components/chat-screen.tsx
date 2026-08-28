@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
-import { HermesConnection } from '~/native/hermes-connection'
+import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
 
@@ -24,6 +24,13 @@ interface EditTarget {
   userOrdinal: number
 }
 
+type ChatMediaConnection = Pick<HermesConnectionPlugin, 'request' | 'upload'>
+
+interface ChatScreenProps {
+  controller: GatewayController
+  mediaConnection?: ChatMediaConnection
+}
+
 function completionInsertion(draft: string, text: string, replaceFrom: number | undefined) {
   if (typeof replaceFrom === 'number' && replaceFrom > 1 && replaceFrom <= draft.length) {
     return `${draft.slice(0, replaceFrom)}${text}`
@@ -31,7 +38,7 @@ function completionInsertion(draft: string, text: string, replaceFrom: number | 
   return text.startsWith('/') ? text : `/${text}`
 }
 
-export function ChatScreen({ controller }: { controller: GatewayController }) {
+export function ChatScreen({ controller, mediaConnection = HermesConnection }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
   const queued = useStore($queuedPrompts)
@@ -44,10 +51,12 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
   const [renameSession, setRenameSession] = useState(false)
   const [archiveSession, setArchiveSession] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const mediaGeneration = useRef(0)
   const slashCompletionGeneration = useRef(0)
 
   useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [chat.messages, chat.tools])
   useEffect(() => {
+    mediaGeneration.current += 1
     slashCompletionGeneration.current += 1
     setEditTarget(null)
     setSlashItems([])
@@ -61,9 +70,14 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
     return chat.messages.map(message => message.role === 'user' ? ++ordinal : ordinal)
   }, [chat.messages])
 
+  const replaceDraft = (value: string) => {
+    mediaGeneration.current += 1
+    setDraft(value)
+  }
+
   const updateDraft = (value: string) => {
     const generation = ++slashCompletionGeneration.current
-    setDraft(value)
+    replaceDraft(value)
     if (!value.startsWith('/')) return setSlashItems([])
     void controller.request<{
       items?: Array<Omit<SlashItem, 'insertText'>>
@@ -84,7 +98,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
     if (!combined) return
     const target = editTarget
     slashCompletionGeneration.current += 1
-    setDraft('')
+    replaceDraft('')
     setAttachmentRefs([])
     setSlashItems([])
     setError(null)
@@ -93,8 +107,31 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
       else await controller.send(combined)
       setEditTarget(null)
     } catch (caught) {
-      setDraft(combined)
+      replaceDraft(combined)
       setError(errorMessage(caught))
+    }
+  }
+
+  const speakText = async (text: string) => {
+    const generation = ++mediaGeneration.current
+    setError(null)
+    try {
+      const audioURL = await speechURL(text, mediaConnection)
+      if (generation === mediaGeneration.current) await new Audio(audioURL).play()
+    } catch (caught) {
+      if (generation === mediaGeneration.current) setError(errorMessage(caught))
+    }
+  }
+
+  const transcribeAudio = async (file: File | undefined) => {
+    if (!file) return
+    const generation = ++mediaGeneration.current
+    setError(null)
+    try {
+      const transcript = await transcribe(file, mediaConnection)
+      if (generation === mediaGeneration.current) setDraft(transcript)
+    } catch (caught) {
+      if (generation === mediaGeneration.current) setError(errorMessage(caught))
     }
   }
 
@@ -145,7 +182,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
                 onClick={() => {
                   if (message.rowId === undefined || chat.running) return
                   slashCompletionGeneration.current += 1
-                  setDraft(message.content)
+                  replaceDraft(message.content)
                   setAttachmentRefs([])
                   setEditTarget({ rowId: message.rowId, userOrdinal: userOrdinals[index] })
                   setSlashItems([])
@@ -158,7 +195,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
               </Button>
             )}
             {message.role === 'assistant' && message.content && (
-              <Button onClick={() => void speak(message.content).catch(caught => setError(errorMessage(caught)))} size="icon-xs" variant="ghost" aria-label="Read aloud">
+              <Button onClick={() => void speakText(message.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
                 <IconVolume size={16} />
               </Button>
             )}
@@ -190,7 +227,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
           <Button
             aria-label="Cancel edit"
             onClick={() => {
-              setDraft('')
+              replaceDraft('')
               setEditTarget(null)
               setError(null)
             }}
@@ -214,7 +251,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
                 key={`${item.text}-${index}`}
                 onClick={() => {
                   slashCompletionGeneration.current += 1
-                  setDraft(`${item.insertText} `)
+                  replaceDraft(`${item.insertText} `)
                   setSlashItems([])
                 }}
               >
@@ -230,7 +267,7 @@ export function ChatScreen({ controller }: { controller: GatewayController }) {
           </label>
           <label className="icon-input" aria-label="Record audio">
             <IconMicrophone size={21} />
-            <input accept="audio/*" capture="user" onChange={event => void transcribe(event.target.files?.[0], setDraft, setError)} type="file" />
+            <input accept="audio/*" capture="user" onChange={event => void transcribeAudio(event.target.files?.[0])} type="file" />
           </label>
           <Textarea
             aria-label="Message Hermes"
@@ -288,30 +325,25 @@ function PromptCard({ controller }: { controller: GatewayController }) {
   )
 }
 
-async function speak(text: string) {
-  const response = await HermesConnection.request<{ data_url: string }>({ body: { text }, method: 'POST', path: '/api/audio/speak' })
-  await new Audio(response.body.data_url).play()
+async function speechURL(text: string, connection: ChatMediaConnection): Promise<string> {
+  const response = await connection.request<{ data_url: string }>({ body: { text }, method: 'POST', path: '/api/audio/speak' })
+  return response.body.data_url
 }
 
-async function transcribe(file: File | undefined, setDraft: (value: string) => void, setError: (value: string) => void) {
-  if (!file) return
-  try {
-    if (file.size > 25 * 1_024 * 1_024) throw new Error('Audio attachments are limited to 25 MB on mobile.')
-    const data = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '')
-      reader.onerror = () => reject(reader.error)
-      reader.readAsDataURL(file)
-    })
-    const response = await HermesConnection.upload<{ transcript: string }>({
-      contentType: file.type,
-      dataBase64: data,
-      field: 'file',
-      filename: file.name,
-      path: '/api/audio/transcribe'
-    })
-    setDraft(response.body.transcript)
-  } catch (caught) {
-    setError(errorMessage(caught))
-  }
+async function transcribe(file: File, connection: ChatMediaConnection): Promise<string> {
+  if (file.size > 25 * 1_024 * 1_024) throw new Error('Audio attachments are limited to 25 MB on mobile.')
+  const data = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '')
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
+  const response = await connection.upload<{ transcript: string }>({
+    contentType: file.type,
+    dataBase64: data,
+    field: 'file',
+    filename: file.name,
+    path: '/api/audio/transcribe'
+  })
+  return response.body.transcript
 }

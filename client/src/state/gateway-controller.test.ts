@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT, toTranscript } from '~/state/gateway-controller'
-import { $chat, $preferences, $sessions } from '~/state/store'
+import { $chat, $connection, $preferences, $sessions } from '~/state/store'
 import { emptyChatState } from '~/state/event-reducer'
+import { MemoryGateway } from '~/test/memory-gateway'
 
 beforeEach(() => {
   $chat.set(emptyChatState())
   $sessions.set([])
+  $connection.set({ authMode: 'token', error: null, phase: 'disconnected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
 })
 
@@ -44,41 +46,38 @@ describe('session identity and history mapping', () => {
 describe('profile-scoped session mutations', () => {
   it('targets a selected profile for rename, archive, and delete', async () => {
     $preferences.set({ ...$preferences.get(), profile: 'client work/ios' })
-    const request = vi.fn().mockResolvedValue({})
-    const controller = new GatewayController({ request } as never)
-    vi.spyOn(controller.client, 'request').mockResolvedValue({ sessions: [] })
+    const requests: unknown[] = []
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/session%2F1', value => { requests.push(value); return {} })
+      .handle('/api/sessions/session%2F1?profile=client%20work%2Fios', value => { requests.push(value); return {} })
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({} as never, gateway)
 
     await controller.renameSession('session/1', 'Renamed')
     await controller.archiveSession('session/1')
     await controller.deleteSession('session/1')
 
-    expect(request.mock.calls).toEqual([
-      [{
-        body: { profile: 'client work/ios', title: 'Renamed' },
-        method: 'PATCH',
-        path: '/api/sessions/session%2F1'
-      }],
-      [{
-        body: { archived: true, profile: 'client work/ios' },
-        method: 'PATCH',
-        path: '/api/sessions/session%2F1'
-      }],
-      [{ method: 'DELETE', path: '/api/sessions/session%2F1?profile=client%20work%2Fios' }]
+    expect(requests).toEqual([
+      expect.objectContaining({ body: { profile: 'client work/ios', title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session%2F1' }),
+      expect.objectContaining({ body: { archived: true, profile: 'client work/ios' }, method: 'PATCH', path: '/api/sessions/session%2F1' }),
+      expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session%2F1?profile=client%20work%2Fios' })
     ])
     controller.dispose()
   })
 
   it('omits profile addressing for the default profile', async () => {
-    const request = vi.fn().mockResolvedValue({})
-    const controller = new GatewayController({ request } as never)
-    vi.spyOn(controller.client, 'request').mockResolvedValue({ sessions: [] })
+    const requests: unknown[] = []
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/session-1', value => { requests.push(value); return {} })
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({} as never, gateway)
 
     await controller.renameSession('session-1', 'Renamed')
     await controller.deleteSession('session-1')
 
-    expect(request.mock.calls).toEqual([
-      [{ body: { title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session-1' }],
-      [{ method: 'DELETE', path: '/api/sessions/session-1' }]
+    expect(requests).toEqual([
+      expect.objectContaining({ body: { title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session-1' }),
+      expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session-1' })
     ])
     controller.dispose()
   })
@@ -87,59 +86,82 @@ describe('profile-scoped session mutations', () => {
 describe('prompt submission safety', () => {
   it('submits ordinary prompts without truncation parameters', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const controller = new GatewayController({} as never)
-    const request = vi.spyOn(controller.client, 'request').mockResolvedValue({})
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
 
     await controller.send('  hello  ')
 
-    expect(request).toHaveBeenCalledWith(
-      'prompt.submit',
-      { session_id: 'runtime-1', text: 'hello' },
-      1_800_000
-    )
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: { session_id: 'runtime-1', text: 'hello' } })
     controller.dispose()
   })
 
   it('queues active-turn prompts at the gateway instead of client memory', async () => {
     $chat.set({ ...emptyChatState(), running: true, runtimeSessionId: 'runtime-1' })
-    const controller = new GatewayController({} as never)
-    const request = vi.spyOn(controller.client, 'request').mockResolvedValue({})
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
 
     await controller.send('next task')
 
-    expect(request).toHaveBeenCalledWith('prompt.submit', {
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: {
       queued: true,
       session_id: 'runtime-1',
       text: 'next task'
-    }, 1_800_000)
+    } })
     controller.dispose()
   })
 
   it('confirms a durable first-turn rewind by both ordinal and row id', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const controller = new GatewayController({} as never)
-    const request = vi.spyOn(controller.client, 'request').mockResolvedValue({})
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
 
     await controller.retryFrom(0, 41, 'edited hello')
 
-    expect(request).toHaveBeenCalledWith('prompt.submit', {
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: {
       confirm_empty_truncate: true,
       confirm_truncate: true,
       session_id: 'runtime-1',
       text: 'edited hello',
       truncate_before_row_id: 41,
       truncate_before_user_ordinal: 0
-    }, 1_800_000)
+    } })
+    controller.dispose()
+  })
+
+  it('leaves chat retryable when prompt submission fails', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    const gateway = new MemoryGateway().handle('prompt.submit', () => {
+      throw Object.assign(new Error('Unauthorized'), { status: 401 })
+    })
+    const controller = new GatewayController({} as never, gateway)
+
+    await expect(controller.send('hello')).rejects.toMatchObject({ kind: 'auth' })
+
+    expect($chat.get()).toMatchObject({ error: 'Unauthorized', running: false, runtimeSessionId: 'runtime-1' })
+    controller.dispose()
+  })
+
+  it('keeps a pending response when delivery fails', async () => {
+    const pendingPrompt = { kind: 'approval' as const, payload: {}, requestId: 'request-1' }
+    $chat.set({ ...emptyChatState(), pendingPrompt, runtimeSessionId: 'runtime-1' })
+    const gateway = new MemoryGateway().handle('approval.respond', () => {
+      throw new Error('Network disconnected')
+    })
+    const controller = new GatewayController({} as never, gateway)
+
+    await expect(controller.respond('yes')).rejects.toMatchObject({ kind: 'network' })
+
+    expect($chat.get().pendingPrompt).toEqual(pendingPrompt)
     controller.dispose()
   })
 
   it('refuses to rewind without a durable row id', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const controller = new GatewayController({} as never)
-    const request = vi.spyOn(controller.client, 'request').mockResolvedValue({})
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
 
     await expect(controller.retryFrom(1, undefined as never, 'unsafe')).rejects.toThrow(/durable message row/i)
-    expect(request).not.toHaveBeenCalled()
+    expect(gateway.calls).not.toContainEqual(expect.objectContaining({ method: 'prompt.submit' }))
     controller.dispose()
   })
 })
@@ -163,12 +185,64 @@ describe('profile switching', () => {
   })
 })
 
+describe('connection restoration', () => {
+  it('opens a fresh session when a saved session no longer exists', async () => {
+    $chat.set({ ...emptyChatState(), storedSessionId: 'deleted-session' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => { throw new Error('session not found') })
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-new' }))
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.connect()
+
+    expect($connection.get()).toMatchObject({ error: null, phase: 'connected' })
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new', storedSessionId: null })
+    controller.dispose()
+  })
+})
+
+describe('session selection lifecycle', () => {
+  it('does not let a slower session selection replace a newer one', async () => {
+    let finishFirst: ((value: unknown) => void) | undefined
+    const first = new Promise(resolve => { finishFirst = resolve })
+    const gateway = new MemoryGateway().handle('session.resume', params => {
+      const sessionId = (params as { session_id: string }).session_id
+      if (sessionId === 'first') return first
+      return { info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: sessionId }, session_id: `runtime-${sessionId}` }
+    }).handle('session.history', () => ({ messages: [] }))
+    const controller = new GatewayController({} as never, gateway)
+
+    const stale = controller.resumeSession('first')
+    await controller.resumeSession('second')
+    finishFirst?.({ info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'first' }, session_id: 'runtime-first' })
+    await stale
+
+    expect($chat.get().storedSessionId).toBe('second')
+    controller.dispose()
+  })
+
+  it('unsubscribes from gateway events when disposed', () => {
+    const gateway = new MemoryGateway()
+    const controller = new GatewayController({} as never, gateway)
+    controller.dispose()
+
+    gateway.emit({ type: 'message.start' })
+
+    expect($chat.get().running).toBe(false)
+  })
+})
+
 describe('backend compatibility', () => {
   it('rejects an older contract and accepts the minimum supported contract', async () => {
-    const controller = new GatewayController({} as never)
-    vi.spyOn(controller.client, 'request')
-      .mockResolvedValueOnce({ info: { desktop_contract: MINIMUM_CONTRACT - 1 }, session_id: 'runtime-old' })
-      .mockResolvedValueOnce({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-current' })
+    let calls = 0
+    const gateway = new MemoryGateway().handle('session.create', () => ++calls === 1
+      ? { info: { desktop_contract: MINIMUM_CONTRACT - 1 }, session_id: 'runtime-old' }
+      : { info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-current' })
+    const controller = new GatewayController({} as never, gateway)
 
     await expect(controller.newSession()).rejects.toThrow(/too old/i)
     expect($chat.get().runtimeSessionId).toBeNull()
@@ -179,11 +253,11 @@ describe('backend compatibility', () => {
   })
 
   it('fails closed when the gateway contract is malformed', async () => {
-    const controller = new GatewayController({} as never)
-    vi.spyOn(controller.client, 'request').mockResolvedValue({
+    const gateway = new MemoryGateway().handle('session.create', () => ({
       info: { desktop_contract: 'unknown' },
       session_id: 'runtime-unknown'
-    })
+    }))
+    const controller = new GatewayController({} as never, gateway)
 
     await expect(controller.newSession()).rejects.toThrow(/too old/i)
     expect($chat.get().runtimeSessionId).toBeNull()

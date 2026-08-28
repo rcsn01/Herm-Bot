@@ -2,74 +2,41 @@ import { App } from '@capacitor/app'
 import { Haptics, ImpactStyle } from '@capacitor/haptics'
 import type { GatewayEvent } from '@hermes/shared'
 
+import { classifyGatewayError } from '~/gateway/gateway-error'
+import type { GatewayPort } from '~/gateway/gateway-port'
 import { clearGatewayQueries, queryClient } from '~/gateway/query-client'
 import { RemoteGateway } from '~/gateway/remote-gateway'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import type { ChatState, SessionMessage, StoredSession, TranscriptMessage } from '~/lib/types'
+import { SessionRuntime, toTranscript, type RuntimeSession } from '~/gateway/session-runtime'
+import type { StoredSession } from '~/lib/types'
 import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetRoutes } from '~/navigation/navigation-store'
 import { emptyChatState, reduceGatewayEvent } from '~/state/event-reducer'
 import { $chat, $connection, $preferences, $sessions, savePreferences } from '~/state/store'
 
-interface SessionRPCResponse {
-  info?: Record<string, unknown>
-  messages?: SessionMessage[]
-  session_id: string
-  stored_session_id?: string
-}
-
-interface SessionHistoryResponse {
-  messages: SessionMessage[]
-}
-
 export const MINIMUM_CONTRACT = 6
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
-
-export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage[] {
-  return messages.map((message, index) => {
-    const projected = message as SessionMessage & {
-      context?: unknown
-      display_content?: unknown
-      id?: unknown
-      name?: unknown
-      reasoning?: unknown
-      reasoning_content?: unknown
-      row_id?: unknown
-      text?: unknown
-    }
-    const role = (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role']
-    const contentValue = projected.display_content !== undefined
-      ? projected.display_content
-      : projected.content ?? projected.text ?? (role === 'tool' ? projected.context ?? projected.name : undefined)
-    const rowIdValue = projected.row_id ?? projected.id
-    const rowId = typeof rowIdValue === 'number' && Number.isInteger(rowIdValue) ? rowIdValue : undefined
-    const reasoningValue = projected.reasoning ?? projected.reasoning_content
-
-    return {
-      content: typeof contentValue === 'string' ? contentValue : '',
-      id: rowId === undefined ? `history-${index}` : `history-row-${rowId}`,
-      reasoning: typeof reasoningValue === 'string' ? reasoningValue : undefined,
-      role,
-      ...(rowId === undefined ? {} : { rowId }),
-      streaming: false
-    }
-  })
-}
+export { toTranscript }
 
 export class GatewayController {
-  readonly gateway: RemoteGateway
-  readonly client: RemoteGateway['client']
-  private reconnectGeneration = 0
-  private scopeEpoch = 0
+  readonly gateway: GatewayPort
+  private readonly runtime: SessionRuntime
   private lifecycleGeneration = 0
+  private sessionSelectionGeneration = 0
   private disposed = false
   private activeListener?: Awaited<ReturnType<typeof App.addListener>>
+  private readonly unsubscribeEvents: () => void
+  private readonly unsubscribeState: () => void
 
-  constructor(private readonly connection: HermesConnectionPlugin = HermesConnection) {
-    this.gateway = new RemoteGateway(connection)
-    this.client = this.gateway.client
-    this.gateway.subscribe(event => this.onEvent(event))
-    this.client.onState(state => {
+  constructor(
+    private readonly connection: HermesConnectionPlugin = HermesConnection,
+    gateway?: GatewayPort
+  ) {
+    const transport = gateway ?? new RemoteGateway(connection)
+    this.runtime = new SessionRuntime(transport, { minimumContract: MINIMUM_CONTRACT, retryDelays: RETRY_DELAYS })
+    this.gateway = this.runtime
+    this.unsubscribeEvents = this.runtime.subscribe(event => this.onEvent(event))
+    this.unsubscribeState = this.runtime.subscribeState(state => {
       if (state === 'closed' && !this.disposed && $connection.get().phase === 'connected') {
         $connection.set({ ...$connection.get(), phase: 'disconnected' })
       }
@@ -82,7 +49,7 @@ export class GatewayController {
     await this.activeListener?.remove()
     const listener = await App.addListener('appStateChange', ({ isActive }) => {
       if (isActive) void this.reconnect(true)
-      else this.client.close()
+      else this.runtime.close()
     })
     if (lifecycle !== this.lifecycleGeneration || this.disposed) {
       await listener.remove()
@@ -96,7 +63,7 @@ export class GatewayController {
     const previousURL = $preferences.get().remoteURL
     const configured = await this.connection.configure({ remoteURL, token })
     if (previousURL && previousURL !== configured.remoteURL) {
-      this.scopeEpoch += 1
+      this.runtime.close()
       clearGatewayQueries()
       this.clearForegroundScope()
       resetRoutes()
@@ -116,15 +83,23 @@ export class GatewayController {
   }
 
   async connect() {
-    const generation = ++this.reconnectGeneration
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
-    const { authMode, status } = await this.connection.probe()
-    if (generation !== this.reconnectGeneration) throw new DOMException('Connection was superseded.', 'AbortError')
+    const storedSessionId = $chat.get().storedSessionId ?? this.readSessionBookmark()
+    let opened
+    try {
+      opened = await this.runtime.open(
+        { profile: $preferences.get().profile, storedSessionId },
+        () => this.connection.probe()
+      )
+    } catch (error) {
+      this.applyConnectionError(error)
+      throw error
+    }
+    const { authMode, status } = opened.preparation
     savePreferences({ authMode })
     $connection.set({ authMode, error: null, phase: 'connecting', status })
-    await this.openSocket(generation)
-    await this.restoreOrCreateSession()
-    if (generation !== this.reconnectGeneration) throw new DOMException('Connection was superseded.', 'AbortError')
+    if (storedSessionId && !opened.resumed) this.clearSessionBookmark()
+    this.adoptSession(opened.session)
     $connection.set({ authMode, error: null, phase: 'connected', status })
     await this.refreshSessions()
   }
@@ -140,9 +115,7 @@ export class GatewayController {
   }
 
   async logout() {
-    ++this.reconnectGeneration
-    ++this.scopeEpoch
-    this.gateway.close()
+    this.runtime.close()
     await this.connection.logout()
     clearGatewayQueries()
     this.clearForegroundScope()
@@ -152,9 +125,7 @@ export class GatewayController {
 
   async switchProfile(profile: null | string) {
     if (profile === $preferences.get().profile) return
-    ++this.reconnectGeneration
-    ++this.scopeEpoch
-    this.gateway.close()
+    this.runtime.close()
     await queryClient.cancelQueries({ queryKey: ['gateway'] })
     this.clearForegroundScope()
     resetRoutes()
@@ -163,28 +134,17 @@ export class GatewayController {
   }
 
   async newSession() {
-    const epoch = this.scopeEpoch
-    const connectionGeneration = this.reconnectGeneration
-    const response = await this.client.request<SessionRPCResponse>('session.create', {
-      profile: $preferences.get().profile,
-      source: 'ios'
-    })
-    this.assertCurrent(epoch, connectionGeneration)
-    await this.enforceContract(response)
-    this.adoptSession(response)
+    const selection = ++this.sessionSelectionGeneration
+    const session = await this.runtime.createSession($preferences.get().profile)
+    if (selection !== this.sessionSelectionGeneration) return
+    this.adoptSession(session)
   }
 
   async resumeSession(storedSessionId: string) {
-    const epoch = this.scopeEpoch
-    const connectionGeneration = this.reconnectGeneration
-    const response = await this.client.request<SessionRPCResponse>('session.resume', {
-      profile: $preferences.get().profile,
-      session_id: storedSessionId,
-      source: 'ios'
-    })
-    this.assertCurrent(epoch, connectionGeneration)
-    await this.enforceContract(response)
-    this.adoptSession(response)
+    const selection = ++this.sessionSelectionGeneration
+    const session = await this.runtime.resumeSession($preferences.get().profile, storedSessionId)
+    if (selection !== this.sessionSelectionGeneration) return
+    this.adoptSession(session)
     await this.reconcileHistory()
   }
 
@@ -224,10 +184,10 @@ export class GatewayController {
   async branchSession() {
     const current = $chat.get()
     if (!current.runtimeSessionId || !current.storedSessionId) return
-    const response = await this.client.request<SessionRPCResponse>('session.branch', {
-      session_id: current.runtimeSessionId
-    })
-    this.adoptSession(response)
+    const selection = ++this.sessionSelectionGeneration
+    const session = await this.runtime.branchSession(current.runtimeSessionId)
+    if (selection !== this.sessionSelectionGeneration) return
+    this.adoptSession(session)
     await this.refreshSessions()
   }
 
@@ -237,11 +197,11 @@ export class GatewayController {
     const current = $chat.get()
     if (!current.runtimeSessionId) throw new Error('No active session.')
     if (current.running) {
-      await this.client.request('prompt.submit', {
+      await this.runtime.rpc('prompt.submit', {
         queued: true,
         session_id: current.runtimeSessionId,
         text: content
-      }, 1_800_000)
+      }, { timeoutMs: 1_800_000 })
       return
     }
     $chat.set({
@@ -251,24 +211,32 @@ export class GatewayController {
       running: true
     })
     await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
-    await this.client.request('prompt.submit', { session_id: current.runtimeSessionId, text: content }, 1_800_000)
+    try {
+      await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
+    } catch (error) {
+      const latest = $chat.get()
+      if (latest.runtimeSessionId === current.runtimeSessionId) {
+        $chat.set({ ...latest, error: errorMessage(error), running: false })
+      }
+      throw error
+    }
   }
 
   async interrupt() {
     const sessionId = $chat.get().runtimeSessionId
-    if (sessionId) await this.client.request('session.interrupt', { session_id: sessionId })
+    if (sessionId) await this.runtime.rpc('session.interrupt', { session_id: sessionId })
   }
 
   async steer(text: string) {
     const sessionId = $chat.get().runtimeSessionId
     const content = text.trim()
-    if (sessionId && content) await this.client.request('session.steer', { session_id: sessionId, text: content })
+    if (sessionId && content) await this.runtime.rpc('session.steer', { session_id: sessionId, text: content })
   }
 
   async redirect(text: string) {
     const sessionId = $chat.get().runtimeSessionId
     const content = text.trim()
-    if (sessionId && content) await this.client.request('session.redirect', { session_id: sessionId, text: content })
+    if (sessionId && content) await this.runtime.rpc('session.redirect', { session_id: sessionId, text: content })
   }
 
   async retryFrom(userOrdinal: number, rowId: number, text: string) {
@@ -278,14 +246,14 @@ export class GatewayController {
     if (!Number.isInteger(userOrdinal) || userOrdinal < 0) throw new Error('A valid user-message position is required to edit history safely.')
     const content = text.trim()
     if (!content) return
-    await this.client.request('prompt.submit', {
+    await this.runtime.rpc('prompt.submit', {
       ...(userOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
       confirm_truncate: true,
       session_id: sessionId,
       text: content,
       truncate_before_row_id: rowId,
       truncate_before_user_ordinal: userOrdinal
-    }, 1_800_000)
+    }, { timeoutMs: 1_800_000 })
   }
 
   async attach(file: File) {
@@ -295,9 +263,9 @@ export class GatewayController {
     if (!sessionId) throw new Error('No active session.')
     const dataUrl = await fileToDataURL(file)
     if (file.type.startsWith('image/')) {
-      return this.client.request('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
+      return this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
     }
-    return this.client.request('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
+    return this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
   }
 
   async respond(value: string, choice?: string) {
@@ -310,28 +278,32 @@ export class GatewayController {
     else if (pending.kind === 'approval') fields.choice = choice ?? value
     else if (pending.kind === 'sudo') fields.password = value
     else fields.value = value
-    $chat.set({ ...$chat.get(), pendingPrompt: null })
-    await this.client.request(method, fields)
+    await this.runtime.rpc(method, fields)
+    const current = $chat.get()
+    if (current.pendingPrompt?.requestId === pending.requestId) {
+      $chat.set({ ...current, pendingPrompt: null })
+    }
   }
 
   async reconcileHistory() {
-    const epoch = this.scopeEpoch
     const sessionId = $chat.get().runtimeSessionId
     if (!sessionId) return
-    const response = await this.client.request<SessionHistoryResponse>('session.history', { session_id: sessionId })
-    this.assertScopeEpoch(epoch)
+    const messages = await this.runtime.history(sessionId)
     if ($chat.get().runtimeSessionId !== sessionId) return
-    $chat.set({ ...$chat.get(), messages: toTranscript(response.messages), running: Boolean($chat.get().info?.running) })
+    $chat.set({ ...$chat.get(), messages, running: Boolean($chat.get().info?.running) })
   }
 
   async request<T>(method: string, params: Record<string, unknown> = {}) {
-    return this.client.request<T>(method, params)
+    return this.runtime.rpc<T>(method, params)
   }
 
   dispose() {
     this.disposed = true
     ++this.lifecycleGeneration
-    this.client.close()
+    ++this.sessionSelectionGeneration
+    this.unsubscribeEvents()
+    this.unsubscribeState()
+    this.runtime.dispose()
     void this.activeListener?.remove()
   }
 
@@ -346,7 +318,7 @@ export class GatewayController {
       ? `${basePath}?profile=${encodeURIComponent(profile)}`
       : basePath
 
-    await this.connection.request({
+    await this.runtime.request({
       ...(body === undefined ? {} : { body: profile ? { ...body, profile } : body }),
       method,
       path
@@ -354,72 +326,41 @@ export class GatewayController {
   }
 
   private async reconnect(reconcile: boolean) {
-    const generation = ++this.reconnectGeneration
-    this.client.close()
-    for (const delay of RETRY_DELAYS) {
-      if (generation !== this.reconnectGeneration || this.disposed) return
-      if (delay) await new Promise(resolve => setTimeout(resolve, delay))
-      try {
-        $connection.set({ ...$connection.get(), phase: 'connecting' })
-        await this.openSocket(generation)
-        await this.restoreOrCreateSession()
-        if (reconcile) await this.reconcileHistory()
-        $connection.set({ ...$connection.get(), error: null, phase: 'connected' })
-        return
-      } catch (error) {
-        if (isReauthenticationError(error)) {
-          $connection.set({ ...$connection.get(), error: 'Your Hermes session expired. Sign in again.', phase: 'error' })
-          return
-        }
-        if (delay === RETRY_DELAYS.at(-1)) {
-          $connection.set({ ...$connection.get(), error: errorMessage(error), phase: 'error' })
-        }
-      }
+    if (this.disposed) return
+    $connection.set({ ...$connection.get(), phase: 'connecting' })
+    const storedSessionId = $chat.get().storedSessionId ?? this.readSessionBookmark()
+    try {
+      const opened = await this.runtime.reopen({ profile: $preferences.get().profile, storedSessionId })
+      if (storedSessionId && !opened.resumed) this.clearSessionBookmark()
+      this.adoptSession(opened.session)
+      if (reconcile) await this.reconcileHistory()
+      $connection.set({ ...$connection.get(), error: null, phase: 'connected' })
+    } catch (error) {
+      if (classifyGatewayError(error).kind === 'aborted') return
+      this.applyConnectionError(error)
     }
   }
 
-  private async openSocket(generation: number) {
-    await this.gateway.connect($preferences.get().profile)
-    if (generation !== this.reconnectGeneration) {
-      this.gateway.close()
-      throw new DOMException('Gateway scope changed.', 'AbortError')
-    }
-  }
-
-  private async restoreOrCreateSession() {
-    const stored = $chat.get().storedSessionId ?? this.readSessionBookmark()
-    if (stored) {
-      try {
-        await this.resumeSession(stored)
-        return
-      } catch {
-        this.clearSessionBookmark()
-      }
-    }
-    await this.newSession()
-  }
-
-  private adoptSession(response: SessionRPCResponse) {
-    const info = response.info ?? {}
-    const storedSessionId = (response.stored_session_id ?? String(info.stored_session_id ?? '')) || null
+  private adoptSession(session: RuntimeSession) {
     $chat.set({
       ...emptyChatState(),
-      contractVersion: Number(info.desktop_contract ?? 0) || null,
-      info: info as unknown as ChatState['info'],
-      messages: toTranscript(response.messages),
-      runtimeSessionId: response.session_id,
-      storedSessionId
+      contractVersion: session.contractVersion,
+      info: session.info,
+      messages: session.messages,
+      runtimeSessionId: session.runtimeSessionId,
+      storedSessionId: session.storedSessionId
     })
-    if (storedSessionId) localStorage.setItem(this.sessionBookmarkKey(), storedSessionId)
+    if (session.storedSessionId) localStorage.setItem(this.sessionBookmarkKey(), session.storedSessionId)
   }
 
-  private async enforceContract(response: SessionRPCResponse) {
-    const version = Number(response.info?.desktop_contract ?? 0)
-    if (!Number.isFinite(version) || version < MINIMUM_CONTRACT) {
-      this.client.close()
-      const error = `This remote Hermes is too old for Hermes Mobile. Update the remote gateway (contract ${MINIMUM_CONTRACT} or newer).`
-      $connection.set({ ...$connection.get(), error, phase: 'unsupported' })
-      throw new Error(error)
+  private applyConnectionError(error: unknown) {
+    const classified = classifyGatewayError(error)
+    if (classified.kind === 'unsupported') {
+      $connection.set({ ...$connection.get(), error: classified.message, phase: 'unsupported' })
+    } else if (isReauthenticationError(classified)) {
+      $connection.set({ ...$connection.get(), error: 'Your Hermes session expired. Sign in again.', phase: 'error' })
+    } else {
+      $connection.set({ ...$connection.get(), error: classified.message, phase: 'error' })
     }
   }
 
@@ -428,15 +369,6 @@ export class GatewayController {
     const next = reduceGatewayEvent(previous, event)
     $chat.set(next)
     if (event.type === 'message.complete') void this.reconcileHistory()
-  }
-
-  private assertScopeEpoch(epoch: number) {
-    if (epoch !== this.scopeEpoch) throw new DOMException('Gateway scope changed.', 'AbortError')
-  }
-
-  private assertCurrent(epoch: number, connectionGeneration: number) {
-    this.assertScopeEpoch(epoch)
-    if (connectionGeneration !== this.reconnectGeneration) throw new DOMException('Connection was superseded.', 'AbortError')
   }
 
   private clearForegroundScope() {
@@ -480,8 +412,8 @@ function fileToDataURL(file: File): Promise<string> {
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 export function isReauthenticationError(error: unknown): boolean {
-  const candidate = error as { code?: unknown; message?: unknown } | null
-  if (candidate?.code === 'AUTH_REQUIRED') return true
+  const candidate = error as { code?: unknown; kind?: unknown; message?: unknown; status?: unknown } | null
+  if (candidate?.kind === 'auth' || candidate?.code === 'AUTH_REQUIRED' || candidate?.status === 401 || candidate?.status === 403) return true
   const message = String(candidate?.message ?? error).toLowerCase()
   return message.includes('http 401') || message.includes('unauthorized') || message.includes('no_cookie')
 }

@@ -319,8 +319,9 @@ docker compose -f "$COMPOSE" exec -T "$HERMES_SERVICE" \
 ```
 
 Expected: one automatic "Hermes — task finished (~35s)" push carrying a
-`hermes://session/<live-id>` link; tapping it opens that conversation in
-Hermes Mobile. If you scripted this as a cron job, remove or pause it after
+`hermes://session/<live-id>` link. When the turn reports a profile, the link
+also carries `?profile=<name>` so Hermes Mobile switches profiles before it
+opens the conversation. If you scripted this as a cron job, remove or pause it after
 the test (`hermes cron remove` / `hermes cron pause`).
 
 ---

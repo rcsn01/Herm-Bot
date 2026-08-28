@@ -1,21 +1,16 @@
-import { atom } from 'nanostores'
-
 import { setTab } from '~/navigation/navigation-store'
 
-/**
- * Deep links into the app, e.g. `hermes://session/<id>` from a Bark push
- * notification. The iOS side registers the `hermes` URL scheme in
- * ios/App/App/Info.plist; the `@capacitor/app` plugin forwards opens here.
- */
 export interface HermesDeepLink {
   kind: 'session'
+  profile?: null | string
   sessionId: string
 }
 
-/** Link observed but not yet applied (the gateway may still be connecting). */
-export const $pendingDeepLink = atom<HermesDeepLink | null>(null)
+export interface DeepLinkController {
+  resumeSession(sessionId: string): Promise<unknown>
+  switchProfile(profile: null | string): Promise<unknown>
+}
 
-/** Parse a raw hermes:// URL. Returns null for anything the app can't act on. */
 export function parseHermesDeepLink(raw: string): HermesDeepLink | null {
   let url: URL
   try {
@@ -25,41 +20,100 @@ export function parseHermesDeepLink(raw: string): HermesDeepLink | null {
   }
   if (url.protocol !== 'hermes:') return null
 
-  // `hermes://session/<id>` parses with host 'session'; tolerate the
-  // single-slash `hermes:/session/<id>` spelling too.
   const segments = (url.host ? `${url.host}${url.pathname}` : url.pathname).split('/').filter(Boolean)
   if (segments.length !== 2 || segments[0] !== 'session') return null
-  const [, sessionId] = segments
-  return sessionId ? { kind: 'session', sessionId } : null
-}
-
-/** Queue a raw URL for handling once the gateway is connected. True if accepted. */
-export function queueDeepLink(raw: string): boolean {
-  const link = parseHermesDeepLink(raw)
-  if (!link) return false
-  $pendingDeepLink.set(link)
-  return true
-}
-
-export interface DeepLinkController {
-  resumeSession(sessionId: string): Promise<unknown>
-}
-
-/**
- * Apply the pending link: open the referenced conversation, exactly like the
- * sessions list does (resume into the chat tab). If the session is gone,
- * fall back to the sessions list. Returns true when the link was applied.
- */
-export async function consumePendingDeepLink(controller: DeepLinkController): Promise<boolean> {
-  const link = $pendingDeepLink.get()
-  if (!link) return false
-  $pendingDeepLink.set(null)
   try {
-    await controller.resumeSession(link.sessionId)
-    setTab('chat')
-    return true
+    const sessionId = decodeURIComponent(segments[1])
+    if (!sessionId) return null
+    const profile = url.searchParams.has('profile')
+      ? url.searchParams.get('profile') || null
+      : undefined
+    return {
+      kind: 'session',
+      ...(profile === undefined ? {} : { profile }),
+      sessionId
+    }
   } catch {
-    setTab('sessions')
-    return false
+    return null
+  }
+}
+
+export class DeepLinkCoordinator {
+  private activeIntent: HermesDeepLink | null = null
+  private generation = 0
+  private idlePromise: Promise<void> = Promise.resolve()
+  private markIdle?: () => void
+  private pendingIntent: HermesDeepLink | null = null
+  private ready = false
+  private running = false
+
+  constructor(private readonly controller: DeepLinkController) {}
+
+  accept(raw: string): boolean {
+    const intent = parseHermesDeepLink(raw)
+    if (!intent) return false
+    this.generation += 1
+    this.pendingIntent = intent
+    this.ensureBusy()
+    if (this.ready) this.startPending()
+    return true
+  }
+
+  setReady(ready: boolean): void {
+    if (ready === this.ready) return
+    this.ready = ready
+    if (!ready) {
+      this.generation += 1
+      if (this.activeIntent && !this.pendingIntent) this.pendingIntent = this.activeIntent
+      return
+    }
+    this.startPending()
+  }
+
+  settled(): Promise<void> {
+    return this.idlePromise
+  }
+
+  private startPending(): void {
+    const intent = this.pendingIntent
+    if (!intent || !this.ready || this.running) return
+    this.pendingIntent = null
+    this.activeIntent = intent
+    this.running = true
+    const generation = this.generation
+    void this.apply(intent, generation)
+  }
+
+  private async apply(intent: HermesDeepLink, generation: number): Promise<void> {
+    try {
+      if (intent.profile !== undefined) {
+        await this.controller.switchProfile(intent.profile)
+        if (!this.isCurrent(generation)) return
+      }
+      await this.controller.resumeSession(intent.sessionId)
+      if (!this.isCurrent(generation)) return
+      setTab('chat')
+    } catch {
+      if (this.isCurrent(generation)) setTab('sessions')
+    } finally {
+      this.running = false
+      this.activeIntent = null
+      if (this.ready && this.pendingIntent) this.startPending()
+      else if (!this.pendingIntent) this.finishBusy()
+    }
+  }
+
+  private ensureBusy(): void {
+    if (this.markIdle) return
+    this.idlePromise = new Promise(resolve => { this.markIdle = resolve })
+  }
+
+  private finishBusy(): void {
+    this.markIdle?.()
+    this.markIdle = undefined
+  }
+
+  private isCurrent(generation: number): boolean {
+    return this.ready && generation === this.generation
   }
 }

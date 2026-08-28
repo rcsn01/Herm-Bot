@@ -9,9 +9,17 @@ vi.mock('~/compat/primitives', () => ({
 }))
 
 import { ChatScreen } from '~/components/chat-screen'
+import type { HermesConnectionPlugin } from '~/native/hermes-connection'
 import type { GatewayController } from '~/state/gateway-controller'
 import { emptyChatState } from '~/state/event-reducer'
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
+
+type MediaConnection = Pick<HermesConnectionPlugin, 'request' | 'upload'>
+
+const mediaConnectionStub = () => ({
+  request: vi.fn(),
+  upload: vi.fn()
+}) as unknown as MediaConnection
 
 const controllerStub = () => ({
   archiveSession: vi.fn().mockResolvedValue(undefined),
@@ -27,6 +35,16 @@ const controllerStub = () => ({
 
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+  vi.stubGlobal('FileReader', class {
+    error = null
+    onerror: (() => void) | null = null
+    onload: (() => void) | null = null
+    result: string | null = null
+    readAsDataURL() {
+      this.result = 'data:audio/mp4;base64,dm9pY2U='
+      queueMicrotask(() => this.onload?.())
+    }
+  })
   $chat.set(emptyChatState())
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
   $queuedPrompts.set([])
@@ -35,6 +53,102 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+describe('chat media', () => {
+  it('routes speech through the supplied connection adapter', async () => {
+    $chat.set({
+      ...emptyChatState(),
+      messages: [{ content: 'Read this', id: 'assistant-1', role: 'assistant' }]
+    })
+    const connection = mediaConnectionStub()
+    vi.mocked(connection.request).mockResolvedValue({ body: { data_url: 'data:audio/wav;base64,AA==' }, headers: {}, status: 200 })
+    const play = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('Audio', class { play = play })
+
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }))
+
+    await waitFor(() => expect(connection.request).toHaveBeenCalledWith({
+      body: { text: 'Read this' }, method: 'POST', path: '/api/audio/speak'
+    }))
+    await waitFor(() => expect(play).toHaveBeenCalled())
+  })
+
+  it('routes transcription through the supplied adapter and updates the draft', async () => {
+    const connection = mediaConnectionStub()
+    vi.mocked(connection.upload).mockResolvedValue({ body: { transcript: 'Recorded thought' }, headers: {}, status: 200 })
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    const file = new File(['voice'], 'note.m4a', { type: 'audio/mp4' })
+
+    const input = document.querySelector<HTMLInputElement>('input[accept="audio/*"]')!
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => expect(connection.upload).toHaveBeenCalledWith(expect.objectContaining({
+      contentType: 'audio/mp4', dataBase64: 'dm9pY2U=', field: 'file', filename: 'note.m4a', path: '/api/audio/transcribe'
+    })))
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Message Hermes' }) as HTMLTextAreaElement).value).toBe('Recorded thought'))
+  })
+
+  it('rejects oversized audio before crossing the connection seam', async () => {
+    const connection = mediaConnectionStub()
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    const input = document.querySelector<HTMLInputElement>('input[accept="audio/*"]')!
+    const file = new File(['voice'], 'huge.m4a', { type: 'audio/mp4' })
+    Object.defineProperty(file, 'size', { value: 25 * 1_024 * 1_024 + 1 })
+
+    fireEvent.change(input, { target: { files: [file] } })
+
+    expect((await screen.findByRole('alert')).textContent).toContain('limited to 25 MB')
+    expect(connection.upload).not.toHaveBeenCalled()
+  })
+
+  it('surfaces adapter transcription failures without changing the draft', async () => {
+    const connection = mediaConnectionStub()
+    vi.mocked(connection.upload).mockRejectedValue(new Error('Transcription unavailable'))
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    const input = document.querySelector<HTMLInputElement>('input[accept="audio/*"]')!
+
+    fireEvent.change(input, { target: { files: [new File(['voice'], 'note.m4a', { type: 'audio/mp4' })] } })
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Transcription unavailable')
+    expect((screen.getByRole('textbox', { name: 'Message Hermes' }) as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('does not let a pending transcription overwrite newer typed text', async () => {
+    const connection = mediaConnectionStub()
+    let resolveUpload!: (value: unknown) => void
+    vi.mocked(connection.upload).mockImplementationOnce(() => new Promise(resolve => { resolveUpload = resolve }) as never)
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    const input = document.querySelector<HTMLInputElement>('input[accept="audio/*"]')!
+    const composer = screen.getByRole('textbox', { name: 'Message Hermes' }) as HTMLTextAreaElement
+
+    fireEvent.change(input, { target: { files: [new File(['voice'], 'note.m4a', { type: 'audio/mp4' })] } })
+    await waitFor(() => expect(connection.upload).toHaveBeenCalledTimes(1))
+    fireEvent.change(composer, { target: { value: 'Keep my typed text' } })
+    await act(async () => resolveUpload({ body: { transcript: 'Stale recording' }, headers: {}, status: 200 }))
+
+    expect(composer.value).toBe('Keep my typed text')
+  })
+
+  it('does not let an older transcription replace a newer result', async () => {
+    const connection = mediaConnectionStub()
+    let resolveOld!: (value: unknown) => void
+    vi.mocked(connection.upload)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }) as never)
+      .mockResolvedValueOnce({ body: { transcript: 'Newest' }, headers: {}, status: 200 })
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    const input = document.querySelector<HTMLInputElement>('input[accept="audio/*"]')!
+
+    fireEvent.change(input, { target: { files: [new File(['one'], 'one.m4a', { type: 'audio/mp4' })] } })
+    await waitFor(() => expect(connection.upload).toHaveBeenCalledTimes(1))
+    fireEvent.change(input, { target: { files: [new File(['two'], 'two.m4a', { type: 'audio/mp4' })] } })
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'Message Hermes' }) as HTMLTextAreaElement).value).toBe('Newest'))
+
+    await act(async () => resolveOld({ body: { transcript: 'Stale' }, headers: {}, status: 200 }))
+    expect((screen.getByRole('textbox', { name: 'Message Hermes' }) as HTMLTextAreaElement).value).toBe('Newest')
+  })
 })
 
 describe('edit and retry', () => {

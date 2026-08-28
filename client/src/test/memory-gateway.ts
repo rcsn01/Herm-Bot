@@ -3,16 +3,21 @@ import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from '~
 import type { NativeResponse } from '~/lib/types'
 
 export interface MemoryGatewayCall {
-  kind: 'request' | 'rpc' | 'upload'
+  kind: 'close' | 'connect' | 'request' | 'rpc' | 'upload'
   method?: string
   value: unknown
 }
 
-type Handler = (value: unknown) => unknown | Promise<unknown>
+interface HandlerOptions {
+  signal?: AbortSignal
+}
+
+type Handler = (value: unknown, options?: HandlerOptions) => unknown | Promise<unknown>
 
 export class MemoryGateway implements GatewayPort {
   readonly calls: MemoryGatewayCall[] = []
   private readonly handlers = new Map<string, Handler>()
+  private readonly stateSubscribers = new Set<(state: string) => void>()
   private readonly subscribers = new Set<(event: GatewayEvent) => void>()
 
   handle(key: string, handler: Handler): this {
@@ -20,23 +25,38 @@ export class MemoryGateway implements GatewayPort {
     return this
   }
 
+  async connect(profile?: null | string, options: { signal?: AbortSignal } = {}): Promise<void> {
+    options.signal?.throwIfAborted()
+    this.calls.push({ kind: 'connect', value: { profile: profile ?? null } })
+    this.emitState('open')
+  }
+
+  close(): void {
+    this.calls.push({ kind: 'close', value: null })
+    this.emitState('closed')
+  }
+
   async request<T>(options: GatewayRequestOptions): Promise<NativeResponse<T>> {
     options.signal?.throwIfAborted()
     this.calls.push({ kind: 'request', method: options.method, value: options })
-    const body = await this.invoke(options.path, options)
+    const body = await this.invoke(options.path, options, { signal: options.signal })
+    options.signal?.throwIfAborted()
     return { body: body as T, headers: {}, status: 200 }
   }
 
   async rpc<T>(method: string, params: Record<string, unknown> = {}, options: { signal?: AbortSignal } = {}): Promise<T> {
     options.signal?.throwIfAborted()
     this.calls.push({ kind: 'rpc', method, value: params })
-    return await this.invoke(method, params) as T
+    const result = await this.invoke(method, params, options)
+    options.signal?.throwIfAborted()
+    return result as T
   }
 
   async upload<T>(options: GatewayUploadOptions): Promise<NativeResponse<T>> {
     options.signal?.throwIfAborted()
     this.calls.push({ kind: 'upload', value: options })
-    const body = await this.invoke(options.path, options)
+    const body = await this.invoke(options.path, options, { signal: options.signal })
+    options.signal?.throwIfAborted()
     return { body: body as T, headers: {}, status: 200 }
   }
 
@@ -45,13 +65,22 @@ export class MemoryGateway implements GatewayPort {
     return () => this.subscribers.delete(handler)
   }
 
+  subscribeState(handler: (state: string) => void): () => void {
+    this.stateSubscribers.add(handler)
+    return () => this.stateSubscribers.delete(handler)
+  }
+
   emit(event: GatewayEvent): void {
     for (const handler of this.subscribers) handler(event)
   }
 
-  private async invoke(key: string, value: unknown): Promise<unknown> {
+  emitState(state: string): void {
+    for (const handler of this.stateSubscribers) handler(state)
+  }
+
+  private async invoke(key: string, value: unknown, options?: HandlerOptions): Promise<unknown> {
     const handler = this.handlers.get(key)
     if (!handler) throw new Error(`No MemoryGateway handler for ${key}`)
-    return handler(value)
+    return handler(value, options)
   }
 }

@@ -105,17 +105,18 @@ class BarkNotifyTest(unittest.TestCase):
             time.sleep(0.02)
         return False
 
-    def _run_turn(self, turn_id, session_id, duration, final="Task done.", finished=True):
+    def _run_turn(self, turn_id, session_id, duration, final="Task done.", finished=True, profile=...):
+        profile_payload = {} if profile is ... else {"profile": profile}
         self.mod._on_stream_start(
             turn_id=turn_id, iteration=1, session_id=session_id,
-            model="m", provider="p", surface="cli",
+            model="m", provider="p", surface="cli", **profile_payload,
         )
         key = self.mod._activity_key(turn_id, session_id)
         self.mod._turns[key]["start"] -= duration  # age the turn deterministically
         self.mod._on_stream_end(
             turn_id=turn_id, iteration=2, session_id=session_id,
             final_text=final, finished=finished, error=None,
-            surface="cli", model="m", provider="p",
+            surface="cli", model="m", provider="p", **profile_payload,
         )
 
     @staticmethod
@@ -139,6 +140,17 @@ class BarkNotifyTest(unittest.TestCase):
         self.assertIn("built the widget", payload["body"])
         self.assertEqual(payload["group"], "hermes")
         self.assertEqual(payload["level"], "timeSensitive")
+
+    def test_deep_link_preserves_profile_identity(self):
+        urlopen = mock.MagicMock(return_value=_FakeResponse())
+        self._with_urlopen(urlopen)
+        self._run_turn("profiled", "s/1", duration=5, profile="client work/ios")
+        self.assertTrue(self._wait_for(lambda: urlopen.call_count == 1))
+        payload, _ = self._captured_request(urlopen)
+        self.assertEqual(
+            payload["url"],
+            "hermes://session/s%2F1?profile=client+work%2Fios",
+        )
 
     def test_short_turn_is_silent(self):
         urlopen = mock.MagicMock(return_value=_FakeResponse())

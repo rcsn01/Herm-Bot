@@ -7,7 +7,8 @@ background-task completion turns all flow through the same conversation loop,
 so they are all covered by the same hook.
 
 Tapping a notification deep-links into Hermes Mobile via
-``hermes://session/<id>`` (the app registers the scheme in its Info.plist).
+``hermes://session/<id>``. When hook payloads identify a profile, the link
+also carries that profile so Mobile switches scope before opening the session.
 
 Configuration — all optional, in ~/.hermes/config.yaml:
 
@@ -43,6 +44,7 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,7 @@ _DEFAULTS = {
 }
 _BODY_LIMIT = 240
 _HTTP_TIMEOUT = 5.0
+_PROFILE_UNSET = object()
 
 _lock = threading.Lock()
 _turns: dict = {}  # activity key -> {"start", "last", "session_id", "final_text"}
@@ -91,6 +94,7 @@ def _on_stream_start(**payload) -> None:
                 "start": now,
                 "last": now,
                 "session_id": payload.get("session_id", ""),
+                "profile": payload.get("profile", _PROFILE_UNSET),
                 "final_text": "",
             }
         else:
@@ -98,6 +102,8 @@ def _on_stream_start(**payload) -> None:
             sid = payload.get("session_id", "")
             if sid:
                 turn["session_id"] = sid
+            if "profile" in payload:
+                turn["profile"] = payload["profile"]
         timer = _timers.pop(key, None)
     if timer is not None:
         timer.cancel()
@@ -123,6 +129,7 @@ def _on_stream_end(**payload) -> None:
                 "start": now,
                 "last": now,
                 "session_id": payload.get("session_id", ""),
+                "profile": payload.get("profile", _PROFILE_UNSET),
                 "final_text": "",
             }
         else:
@@ -130,6 +137,8 @@ def _on_stream_end(**payload) -> None:
             sid = payload.get("session_id", "")
             if sid:
                 turn["session_id"] = sid
+            if "profile" in payload:
+                turn["profile"] = payload["profile"]
         turn["final_text"] = str(payload.get("final_text") or "")
         previous = _timers.pop(key, None)
         timer = threading.Timer(
@@ -166,13 +175,31 @@ def _push_when_quiet(key: str) -> None:
         body=body,
         session_id=turn.get("session_id", ""),
         settings=settings,
+        profile=turn.get("profile", _PROFILE_UNSET),
     )
     if sent:
         _last_push_at = time.monotonic()
         logger.debug("bark-notify: pushed turn notification (session=%s)", turn.get("session_id", ""))
 
 
-def _send(title: str, body: str, session_id: str, settings: dict, url_override: str | None = None) -> bool:
+def _session_deep_link(session_id: str, profile=_PROFILE_UNSET) -> str | None:
+    if not session_id:
+        return None
+    link = f"hermes://session/{urllib.parse.quote(str(session_id), safe='')}"
+    if profile is _PROFILE_UNSET:
+        return link
+    query = urllib.parse.urlencode({"profile": "" if profile is None else str(profile)})
+    return f"{link}?{query}"
+
+
+def _send(
+    title: str,
+    body: str,
+    session_id: str,
+    settings: dict,
+    url_override: str | None = None,
+    profile=_PROFILE_UNSET,
+) -> bool:
     base = (os.environ.get(BARK_URL_ENV) or "").strip().rstrip("/")
     key = (os.environ.get(BARK_KEY_ENV) or "").strip()
     if not base or not key:
@@ -184,9 +211,7 @@ def _send(title: str, body: str, session_id: str, settings: dict, url_override: 
         "group": settings.get("group") or "hermes",
         "level": settings.get("level") or "timeSensitive",
     }
-    deep_link = url_override or (
-        f"hermes://session/{session_id}" if session_id else None
-    )
+    deep_link = url_override or _session_deep_link(session_id, profile)
     if deep_link:
         payload["url"] = deep_link
     request = urllib.request.Request(

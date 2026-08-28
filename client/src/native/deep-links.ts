@@ -10,14 +10,21 @@ import { Capacitor } from '@capacitor/core'
 export function observeHermesDeepLinks(handler: (rawURL: string) => void): () => void {
   if (!Capacitor.isNativePlatform()) return () => {}
 
+  let active = true
+  let receivedWarmURL = false
   void App.getLaunchUrl()
     .then(launch => {
-      if (launch?.url) handler(launch.url)
+      if (active && !receivedWarmURL && launch?.url) handler(launch.url)
     })
     .catch(() => undefined)
 
-  const subscription = App.addListener('appUrlOpen', event => handler(event.url))
+  const subscription = App.addListener('appUrlOpen', event => {
+    if (!active) return
+    receivedWarmURL = true
+    handler(event.url)
+  })
   return () => {
+    active = false
     void subscription
       .then(subscriptionHandle => subscriptionHandle.remove())
       .catch(() => undefined)
