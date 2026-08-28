@@ -33,7 +33,7 @@ export interface CapabilityDetailRoute {
   type: 'capability-detail'
   tab: 'capabilities'
   capabilityId: string
-  capabilityType: 'computer-use' | 'mcp' | 'memory' | 'model' | 'plugin' | 'provider' | 'skill' | 'tool'
+  capabilityType: 'computer-use' | 'credential' | 'mcp' | 'memory' | 'model' | 'plugin' | 'provider' | 'skill' | 'tool'
 }
 
 export interface OperationsRootRoute {

@@ -7,10 +7,13 @@ import { useGateway } from '~/gateway/gateway-context'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { $preferences } from '~/state/store'
 
+export type RemoteResourcePresentation = 'credentials' | 'models' | 'providers' | 'summary'
+
 export interface RemoteResourceDefinition {
   description: string
   id: string
   path: string
+  presentation?: RemoteResourcePresentation
   profileScoped?: boolean
   title: string
 }
@@ -38,7 +41,7 @@ export function RemoteResourceScreen({ definition, onBack }: { definition: Remot
       <p className="muted">{definition.description}</p>
       {query.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /></div>}
       {error && <ResourceError error={error} title={definition.title} />}
-      {query.data !== undefined && <ResourceOverview value={query.data} />}
+      {query.data !== undefined && <ResourceOverview presentation={definition.presentation ?? 'summary'} value={query.data} />}
     </section>
   )
 }
@@ -48,30 +51,56 @@ function ResourceError({ error, title }: { error: GatewayError; title: string })
   return <div className={unsupported ? 'unsupported-card' : 'error-banner'} role="alert"><strong>{unsupported ? 'Unavailable' : `Could not load ${title}`}</strong><p>{unsupported ? 'This gateway does not provide this optional capability.' : error.message}</p></div>
 }
 
-function ResourceOverview({ value }: { value: unknown }) {
-  if (Array.isArray(value)) return <div className="data-card"><strong>{value.length} items</strong><p className="muted">Open an item to inspect or manage it when this gateway supports mutations.</p></div>
-  if (!value || typeof value !== 'object') return <div className="data-card"><strong>{String(value || 'Ready')}</strong></div>
-
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => isSummaryValue(item))
-    .slice(0, 12)
-  return (
-    <div className="settings-list static resource-summary">
-      {entries.map(([key, item]) => <div key={key}><span><strong>{friendlyLabel(key)}</strong></span><SummaryValue value={item} /></div>)}
-      {entries.length === 0 && <div><span><strong>Connected</strong><small>The gateway returned this capability without a summary.</small></span><Badge>Ready</Badge></div>}
-    </div>
-  )
+function ResourceOverview({ presentation, value }: { presentation: RemoteResourcePresentation; value: unknown }) {
+  const projected = projectResourceValue(value, presentation)
+  if (isEmptyResource(projected)) {
+    return <div className="settings-list static resource-summary"><div><span><strong>No details</strong><small>{emptyMessage(presentation)}</small></span><Badge variant="muted">Empty</Badge></div></div>
+  }
+  return <ResourceValue expandPrimitiveArray={presentation === 'providers'} value={projected} />
 }
 
-function SummaryValue({ value }: { value: unknown }) {
+function ResourceValue({ expandPrimitiveArray = false, value }: { expandPrimitiveArray?: boolean; value: unknown }) {
   if (typeof value === 'boolean') return <Badge variant={value ? 'default' : 'muted'}>{value ? 'On' : 'Off'}</Badge>
-  if (Array.isArray(value)) return <Badge variant="muted">{value.length}</Badge>
-  if (value && typeof value === 'object') return <Badge variant="muted">{Object.keys(value).length}</Badge>
-  return <small>{String(value ?? 'Not set')}</small>
+  if (value === null || value === undefined) return <small>Not set</small>
+  if (value === '') return <small>Empty value</small>
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <small>Empty list</small>
+    if (expandPrimitiveArray && value.every(isPrimitive)) return <small>{value.map(String).join(', ')}</small>
+    return <div className="settings-list static resource-summary">{value.map((item, index) => <div key={index}><span><strong>Item {index + 1}</strong></span><ResourceValue value={item} /></div>)}</div>
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined)
+    if (entries.length === 0) return <small>Empty record</small>
+    return <div className="settings-list static resource-summary">{entries.map(([key, item]) => <div key={key}><span><strong>{friendlyLabel(key)}</strong></span><ResourceValue expandPrimitiveArray={expandPrimitiveArray} value={item} /></div>)}</div>
+  }
+  return <small>{String(value)}</small>
 }
 
-function isSummaryValue(value: unknown): boolean {
-  return value === null || ['boolean', 'number', 'string'].includes(typeof value) || Array.isArray(value) || (typeof value === 'object' && value !== null)
+function projectResourceValue(value: unknown, presentation: RemoteResourcePresentation): unknown {
+  if (presentation === 'summary' || presentation === 'credentials' || !value || Array.isArray(value) || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => belongsToPresentation(key, presentation)))
+}
+
+function isEmptyResource(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return true
+  if (Array.isArray(value)) return value.length === 0
+  return typeof value === 'object' && Object.keys(value).length === 0
+}
+
+const isPrimitive = (value: unknown) => value === null || ['boolean', 'number', 'string'].includes(typeof value)
+
+function belongsToPresentation(key: string, presentation: RemoteResourcePresentation): boolean {
+  if (presentation === 'summary' || presentation === 'credentials') return true
+  const normalized = key.toLowerCase()
+  if (presentation === 'providers') return normalized.includes('provider')
+  return normalized.includes('model') || normalized.includes('context') || normalized.includes('reasoning') || normalized.includes('vision')
+}
+
+function emptyMessage(presentation: RemoteResourcePresentation): string {
+  if (presentation === 'providers') return 'The gateway returned no provider information.'
+  if (presentation === 'models') return 'The gateway returned no model information.'
+  if (presentation === 'credentials') return 'The gateway returned no credential information.'
+  return 'The gateway returned this capability without a summary.'
 }
 
 const friendlyLabel = (key: string) => key.replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase())

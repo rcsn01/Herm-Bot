@@ -1,8 +1,9 @@
 import type { RemoteResourceDefinition } from '~/features/shared/remote-resource'
 
 export const CAPABILITY_RESOURCES = [
-  { id: 'models', title: 'Models', path: '/api/model/info', description: 'Current model, available providers, assignments, and model capabilities.' },
-  { id: 'providers', title: 'Providers and credentials', path: '/api/env', description: 'Redacted provider setup and credential status. Hermes Mobile never stores revealed values.' },
+  { id: 'models', title: 'Models', path: '/api/model/info', presentation: 'models', description: 'Current model, assignments, and model capabilities.' },
+  { id: 'providers', title: 'Providers', path: '/api/model/info', presentation: 'providers', description: 'Available inference providers and their current model assignments.' },
+  { id: 'credentials', title: 'Credentials', path: '/api/env', presentation: 'credentials', description: 'Redacted credential status. Hermes Mobile never stores revealed values.' },
   { id: 'skills', title: 'Skills', path: '/api/skills', description: 'Installed skills, activation state, and update availability.' },
   { id: 'toolsets', title: 'Toolsets', path: '/api/tools/toolsets', description: 'Tools available to new sessions and their setup requirements.' },
   { id: 'mcp', title: 'MCP servers', path: '/api/mcp/servers', description: 'Configured MCP servers, health, and catalog availability.' },

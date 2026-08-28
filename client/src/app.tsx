@@ -107,8 +107,9 @@ function BackButton() {
   return <div className="nested-back"><Button onClick={() => popRoute('more')} variant="text">‹ Back</Button></div>
 }
 
-function capabilityType(id: string): 'computer-use' | 'mcp' | 'memory' | 'model' | 'plugin' | 'provider' | 'skill' | 'tool' {
+function capabilityType(id: string): 'computer-use' | 'credential' | 'mcp' | 'memory' | 'model' | 'plugin' | 'provider' | 'skill' | 'tool' {
   if (id === 'computer-use' || id === 'mcp' || id === 'memory') return id
+  if (id === 'credentials') return 'credential'
   if (id === 'models') return 'model'
   if (id === 'plugins') return 'plugin'
   if (id === 'providers') return 'provider'

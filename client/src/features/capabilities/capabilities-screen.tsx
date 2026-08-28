@@ -1,10 +1,20 @@
 import { IconBrain, IconChevronRight, IconKey, IconPlug, IconRobot, IconServer, IconSparkles, IconTools } from '@tabler/icons-react'
 
 import { Badge } from '~/compat/primitives'
-import { CAPABILITY_RESOURCES, capabilityById } from '~/features/capabilities/api'
+import { CAPABILITY_RESOURCES, capabilityById, type CapabilityId } from '~/features/capabilities/api'
 import { RemoteResourceScreen } from '~/features/shared/remote-resource'
 
-const ICONS = [IconRobot, IconKey, IconSparkles, IconTools, IconServer, IconBrain, IconPlug, IconTools]
+const ICONS: Record<CapabilityId, typeof IconRobot> = {
+  'computer-use': IconTools,
+  credentials: IconKey,
+  mcp: IconServer,
+  memory: IconBrain,
+  models: IconRobot,
+  plugins: IconPlug,
+  providers: IconServer,
+  skills: IconSparkles,
+  toolsets: IconTools
+}
 
 export function CapabilitiesScreen({ selected, onBack, onSelect }: { selected?: string; onBack(): void; onSelect(id: string): void }) {
   const definition = selected ? capabilityById(selected) : undefined
@@ -15,8 +25,8 @@ export function CapabilitiesScreen({ selected, onBack, onSelect }: { selected?: 
       <header className="page-heading"><div><p className="eyebrow">New sessions</p><h2>Capabilities</h2></div><Badge variant="muted">Profile scoped</Badge></header>
       <p className="muted">Configure what Hermes can use. Changes to skills, tools, MCP, or memory apply to new sessions and do not rewrite the active conversation.</p>
       <div className="settings-list capability-list">
-        {CAPABILITY_RESOURCES.map((item, index) => {
-          const Icon = ICONS[index]
+        {CAPABILITY_RESOURCES.map(item => {
+          const Icon = ICONS[item.id]
           return <button key={item.id} onClick={() => onSelect(item.id)}><Icon size={20} /><span><strong>{item.title}</strong><small>{item.description}</small></span><IconChevronRight size={18} /></button>
         })}
       </div>
