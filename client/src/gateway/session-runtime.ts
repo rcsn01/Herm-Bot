@@ -1,6 +1,8 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
+import { abortError, combineSignals, throwIfAborted } from './abort'
+import { profileKey } from './profile-path'
 import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from '~/gateway/gateway-port'
 import type { ChatState, SessionMessage, TranscriptMessage } from '~/lib/types'
 
@@ -38,8 +40,6 @@ export interface SessionRuntimeOptions {
   minimumContract: number
   retryDelays: readonly number[]
 }
-
-const abortError = (message = 'Gateway scope changed.') => new DOMException(message, 'AbortError')
 
 export class SessionRuntime implements GatewayPort {
   private scopeController = new AbortController()
@@ -103,26 +103,28 @@ export class SessionRuntime implements GatewayPort {
 
   async upload<T>(options: GatewayUploadOptions) {
     const operation = this.currentOperation()
-    const signal = anySignal(operation.signal, options.signal)
+    const combined = combineSignals(operation.signal, options.signal)
     try {
-      const result = await this.transport.upload<T>({ ...options, signal })
+      const result = await this.transport.upload<T>({ ...options, signal: combined.signal })
       this.assertCurrent(operation)
       return result
     } catch (error) {
       throw classifyGatewayError(error)
+    } finally {
+      combined.cleanup()
     }
   }
 
   async createSession(profile: null | string): Promise<RuntimeSession> {
     return this.sessionFromResponse(await this.rpc<SessionRPCResponse>('session.create', {
-      profile,
+      profile: profileKey(profile),
       source: 'ios'
     }))
   }
 
   async resumeSession(profile: null | string, storedSessionId: string): Promise<RuntimeSession> {
     return this.sessionFromResponse(await this.rpc<SessionRPCResponse>('session.resume', {
-      profile,
+      profile: profileKey(profile),
       session_id: storedSessionId,
       source: 'ios'
     }))
@@ -143,25 +145,29 @@ export class SessionRuntime implements GatewayPort {
     options: { signal?: AbortSignal; timeoutMs?: number } = {}
   ): Promise<T> {
     const operation = this.currentOperation()
-    const signal = anySignal(operation.signal, options.signal)
+    const combined = combineSignals(operation.signal, options.signal)
     try {
-      const result = await this.transport.rpc<T>(method, params, { signal, timeoutMs: options.timeoutMs })
+      const result = await this.transport.rpc<T>(method, params, { signal: combined.signal, timeoutMs: options.timeoutMs })
       this.assertCurrent(operation)
       return result
     } catch (error) {
       throw classifyGatewayError(error)
+    } finally {
+      combined.cleanup()
     }
   }
 
   async request<T>(options: GatewayRequestOptions) {
     const operation = this.currentOperation()
-    const signal = anySignal(operation.signal, options.signal)
+    const combined = combineSignals(operation.signal, options.signal)
     try {
-      const result = await this.transport.request<T>({ ...options, signal })
+      const result = await this.transport.request<T>({ ...options, signal: combined.signal })
       this.assertCurrent(operation)
       return result
     } catch (error) {
       throw classifyGatewayError(error)
+    } finally {
+      combined.cleanup()
     }
   }
 
@@ -191,7 +197,7 @@ export class SessionRuntime implements GatewayPort {
   }
 
   private assertCurrent(operation: { generation: number; signal: AbortSignal }): void {
-    operation.signal.throwIfAborted()
+    throwIfAborted(operation.signal)
     if (operation.generation !== this.generation || this.disposed) throw abortError()
   }
 
@@ -219,7 +225,7 @@ export class SessionRuntime implements GatewayPort {
 
   private async createCurrent(profile: null | string, operation: { generation: number; signal: AbortSignal }): Promise<RuntimeSession> {
     try {
-      const response = await this.transport.rpc<SessionRPCResponse>('session.create', { profile, source: 'ios' }, { signal: operation.signal })
+      const response = await this.transport.rpc<SessionRPCResponse>('session.create', { profile: profileKey(profile), source: 'ios' }, { signal: operation.signal })
       this.assertCurrent(operation)
       return this.sessionFromResponse(response)
     } catch (error) {
@@ -230,7 +236,7 @@ export class SessionRuntime implements GatewayPort {
   private async resumeCurrent(profile: null | string, storedSessionId: string, operation: { generation: number; signal: AbortSignal }): Promise<RuntimeSession> {
     try {
       const response = await this.transport.rpc<SessionRPCResponse>('session.resume', {
-        profile,
+        profile: profileKey(profile),
         session_id: storedSessionId,
         source: 'ios'
       }, { signal: operation.signal })
@@ -308,17 +314,20 @@ function isConfirmedMissingSession(error: GatewayError): boolean {
   return /^(?:stored )?session not found[.!]?$/i.test(message) || /^no session found with id\b/i.test(message)
 }
 
-function anySignal(primary: AbortSignal, secondary?: AbortSignal): AbortSignal {
-  if (!secondary) return primary
-  return AbortSignal.any([primary, secondary])
-}
-
 function wait(delay: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, delay)
-    signal.addEventListener('abort', () => {
+    if (signal.aborted) {
+      reject(signal.reason ?? abortError())
+      return
+    }
+    const onAbort = () => {
       window.clearTimeout(timer)
       reject(signal.reason ?? abortError())
-    }, { once: true })
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delay)
+    signal.addEventListener('abort', onAbort, { once: true })
   })
 }

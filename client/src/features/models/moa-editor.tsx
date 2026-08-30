@@ -1,15 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { Button, Input, Switch } from '~/compat/primitives'
 import { modelsApi } from '~/features/models/api'
 import { moaConfigComplete, withActive } from '~/features/models/helpers'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
 import type { GatewayPort } from '~/gateway/gateway-port'
+import { profileKey } from '~/gateway/profile-path'
+import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import type { ModelOptionProvider, MoaConfigResponse, MoaModelSlot } from '~/lib/types'
+
+type SavedMoaConfig = MoaConfigResponse & { ok: boolean }
+
+// A PUT that has reached fetch may still be processed by the gateway after
+// AbortController.abort(). Keep writes for the same gateway/profile ordered
+// across component remounts so a later preset operation cannot be overwritten
+// by an earlier debounced save.
+const moaWriteTails = new Map<string, Promise<unknown>>()
+
+function enqueueMoaWrite<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = moaWriteTails.get(key) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(operation)
+  moaWriteTails.set(key, current)
+  void current.then(
+    () => { if (moaWriteTails.get(key) === current) moaWriteTails.delete(key) },
+    () => { if (moaWriteTails.get(key) === current) moaWriteTails.delete(key) }
+  )
+  return current
+}
 
 const MOA_SAVE_DEBOUNCE_MS = 600
 
 export interface MoaEditorProps {
+  connectionKey: string
   gateway: GatewayPort
   moa: MoaConfigResponse
   /** Persisted-config callback so the parent cache stays the single source of truth. */
@@ -37,9 +60,10 @@ export interface MoaEditorProps {
  *
  *  Fields mobile does not edit (temperatures, timeouts, fanout, token limits,
  *  per-slot reasoning effort) ride along untouched in the PUT body. */
-export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile, providers }: MoaEditorProps) {
+export function MoaEditor({ connectionKey, gateway, moa, onMoaChange, onError, onSaved, profile, providers }: MoaEditorProps) {
   const [selectedPreset, setSelectedPreset] = useState(() => moa.default_preset)
   const [newPresetName, setNewPresetName] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<null | string>(null)
   const [applying, setApplying] = useState(false)
 
   // Mirror of `moa` so inline edits compute the next state purely (outside the
@@ -56,13 +80,33 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
   }, [moa, selectedPreset])
 
   const saveTimer = useRef<number | null>(null)
-  useEffect(
-    () => () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    },
-    []
-  )
   const saveGeneration = useRef(0)
+  const activeSave = useRef(0)
+  const activeRequest = useRef<AbortController | null>(null)
+  const writeKey = `${connectionKey}\u0000${profileKey(profile)}`
+  useEffect(() => {
+    // A profile or connection switch can leave this component mounted while a
+    // request is in flight. Invalidate both timers and completions; the
+    // generation in currentGatewayScope also catches switching away and back
+    // to the same profile.
+    saveGeneration.current += 1
+    activeSave.current += 1
+    if (saveTimer.current !== null) {
+      window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    activeRequest.current?.abort()
+    activeRequest.current = null
+    setApplying(false)
+    setPendingDelete(null)
+    return () => {
+      saveGeneration.current += 1
+      activeSave.current += 1
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+      activeRequest.current?.abort()
+      activeRequest.current = null
+    }
+  }, [connectionKey, gateway, profile])
 
   const currentPreset = useMemo(
     () => moa.presets[selectedPreset] || moa.presets[moa.default_preset] || Object.values(moa.presets)[0] || null,
@@ -74,14 +118,21 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
   )
 
   const persist = useCallback(
-    async (next: MoaConfigResponse) => {
-      // The request path pins the profile this edit targeted. The parent
-      // compares it against the profile it is currently showing and ignores a
-      // response that raced a profile switch.
-      const saved = await modelsApi.saveMoa(gateway, profile, next)
-      onSaved(saved, profile)
-    },
-    [gateway, onSaved, profile]
+    (next: MoaConfigResponse, signal?: AbortSignal) => modelsApi.saveMoa(gateway, profile, next, signal),
+    [gateway, profile]
+  )
+  const enqueuePersist = useCallback(
+    (next: MoaConfigResponse, generation: number, scope: ReturnType<typeof currentGatewayScope>) => enqueueMoaWrite<SavedMoaConfig | null>(writeKey, async () => {
+      if (saveGeneration.current !== generation || !isCurrentGatewayScope(scope)) return null
+      const controller = new AbortController()
+      activeRequest.current = controller
+      try {
+        return await persist(next, controller.signal)
+      } finally {
+        if (activeRequest.current === controller) activeRequest.current = null
+      }
+    }),
+    [persist, writeKey]
   )
 
   // Quiet debounced persist for inline slot/aggregator edits. No applying
@@ -90,24 +141,27 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
   // save can never repaint over the user's newer edits.
   const scheduleMoaSave = useCallback(
     (next: MoaConfigResponse) => {
-      if (saveTimer.current) {
+      if (saveTimer.current !== null) {
         window.clearTimeout(saveTimer.current)
         saveTimer.current = null
       }
       const generation = saveGeneration.current + 1
       saveGeneration.current = generation
+      const scope = currentGatewayScope()
       if (!moaConfigComplete(next)) return // hold the write; disk keeps the last complete config
       saveTimer.current = window.setTimeout(() => {
-        void modelsApi.saveMoa(gateway, profile, next)
+        saveTimer.current = null
+        if (saveGeneration.current !== generation || !isCurrentGatewayScope(scope)) return
+        void enqueuePersist(next, generation, scope)
           .then(saved => {
-            if (saveGeneration.current === generation) onSaved(saved, profile)
+            if (saved && saveGeneration.current === generation && isCurrentGatewayScope(scope)) onSaved(saved, profile)
           })
           .catch(error => {
-            if (saveGeneration.current === generation) onError(error)
+            if (saveGeneration.current === generation && isCurrentGatewayScope(scope)) onError(error)
           })
       }, MOA_SAVE_DEBOUNCE_MS)
     },
-    [gateway, onError, onSaved, profile]
+    [enqueuePersist, onError, onSaved, profile]
   )
 
   const updatePreset = useCallback(
@@ -122,25 +176,36 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
     [activePresetName, onMoaChange, scheduleMoaSave]
   )
 
-  // Explicit preset ops supersede any pending debounced autosave — cancel it
-  // and invalidate in-flight responses so the two writers can't race.
+  // Explicit preset ops supersede any pending debounced autosave. Started
+  // writes stay ordered in enqueuePersist; generation checks discard their
+  // stale callbacks before the newer operation is allowed to run.
   const saveNow = useCallback(
     async (next: MoaConfigResponse) => {
-      if (saveTimer.current) {
+      if (saveTimer.current !== null) {
         window.clearTimeout(saveTimer.current)
         saveTimer.current = null
       }
-      saveGeneration.current += 1
+      const generation = ++saveGeneration.current
+      const scope = currentGatewayScope()
+      const saveId = ++activeSave.current
+      const previous = moaRef.current
+      moaRef.current = next
+      if (isCurrentGatewayScope(scope)) onMoaChange(next)
       setApplying(true)
       try {
-        await persist(next)
+        const saved = await enqueuePersist(next, generation, scope)
+        if (saved && saveGeneration.current === generation && isCurrentGatewayScope(scope)) onSaved(saved, profile)
       } catch (error) {
-        onError(error)
+        if (saveGeneration.current === generation && isCurrentGatewayScope(scope)) {
+          moaRef.current = previous
+          onMoaChange(previous)
+          onError(error)
+        }
       } finally {
-        setApplying(false)
+        if (activeSave.current === saveId) setApplying(false)
       }
     },
-    [onError, persist]
+    [enqueuePersist, onError, onMoaChange, onSaved, profile]
   )
 
   const updateSlot = useCallback((slot: MoaModelSlot, patch: Partial<MoaModelSlot>): MoaModelSlot => {
@@ -173,7 +238,8 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
   }
 
   return (
-    <section className="models-section" aria-label="Mixture of Agents">
+    <>
+      <section className="models-section" aria-label="Mixture of Agents">
       <h3>Mixture of Agents</h3>
       <p className="muted">Presets appear as models under the Mixture of Agents provider. The aggregator is the acting model.</p>
 
@@ -198,7 +264,11 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
         <div className="models-controls">
           <Button
             disabled={applying || moa.default_preset === activePresetName}
-            onClick={() => void saveNow({ ...moa, default_preset: activePresetName })}
+            onClick={() => {
+              const current = moaRef.current
+              if (!activePresetName || !current.presets[activePresetName]) return
+              void saveNow({ ...current, default_preset: activePresetName })
+            }}
             size="sm"
             variant="secondary"
           >
@@ -207,18 +277,8 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
           <Button
             disabled={Object.keys(moa.presets).length <= 1 || applying}
             onClick={() => {
-              if (Object.keys(moa.presets).length <= 1) return
-              const presets = { ...moa.presets }
-              delete presets[activePresetName]
-              const fallback = Object.keys(presets)[0]
-              const next: MoaConfigResponse = {
-                ...moa,
-                presets,
-                default_preset: moa.default_preset === activePresetName ? fallback : moa.default_preset,
-                active_preset: moa.active_preset === activePresetName ? '' : moa.active_preset
-              }
-              setSelectedPreset(fallback)
-              void saveNow(next)
+              if (Object.keys(moaRef.current.presets).length <= 1 || !activePresetName) return
+              setPendingDelete(activePresetName)
             }}
             size="sm"
             variant="secondary"
@@ -238,11 +298,14 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
             disabled={!newPresetName.trim() || !!moa.presets[newPresetName.trim()] || applying}
             onClick={() => {
               const name = newPresetName.trim()
+              const current = moaRef.current
+              const source = current.presets[activePresetName] || current.presets[current.default_preset] || Object.values(current.presets)[0]
+              if (!name || !source || current.presets[name]) return
               const next: MoaConfigResponse = {
-                ...moa,
+                ...current,
                 presets: {
-                  ...moa.presets,
-                  [name]: { ...currentPreset, reference_models: [...currentPreset.reference_models] }
+                  ...current.presets,
+                  [name]: { ...source, reference_models: [...source.reference_models] }
                 }
               }
               setSelectedPreset(name)
@@ -354,7 +417,33 @@ export function MoaEditor({ gateway, moa, onMoaChange, onError, onSaved, profile
         </div>
         <p className="models-meta">{currentPreset.aggregator.provider || 'No provider'} · {currentPreset.aggregator.model || 'No model'}</p>
       </div>
-    </section>
+      </section>
+      {pendingDelete && (
+        <ConfirmDialog
+          confirmLabel="Delete preset"
+          description={`Delete the MoA preset “${pendingDelete}”? This cannot be undone.`}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => {
+            const name = pendingDelete
+            setPendingDelete(null)
+            const current = moaRef.current
+            if (Object.keys(current.presets).length <= 1 || !current.presets[name]) return
+            const presets = { ...current.presets }
+            delete presets[name]
+            const fallback = Object.keys(presets)[0]
+            const next: MoaConfigResponse = {
+              ...current,
+              presets,
+              default_preset: current.default_preset === name ? fallback : current.default_preset,
+              active_preset: current.active_preset === name ? '' : current.active_preset
+            }
+            setSelectedPreset(fallback)
+            void saveNow(next)
+          }}
+          title="Delete MoA preset?"
+        />
+      )}
+    </>
   )
 }
 

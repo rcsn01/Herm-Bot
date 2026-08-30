@@ -5,9 +5,10 @@ import { MobileShell } from '~/components/mobile-shell'
 
 afterEach(cleanup)
 
-function renderShell(drawerOpen = false) {
+function renderShell(drawerOpen = false, reconnecting = false) {
   const onOpenDrawer = vi.fn()
   const onRefresh = vi.fn()
+  const onAction = vi.fn()
   render(
     <MobileShell
       drawer={<aside>Drawer</aside>}
@@ -15,11 +16,12 @@ function renderShell(drawerOpen = false) {
       header={<header>Header</header>}
       onOpenDrawer={onOpenDrawer}
       onRefresh={onRefresh}
+      reconnecting={reconnecting}
     >
-      <div>Scrollable content</div>
+      <div><button onClick={onAction}>Action</button>Scrollable content</div>
     </MobileShell>
   )
-  return { onOpenDrawer, onRefresh, scroller: screen.getByRole('main') }
+  return { onAction, onOpenDrawer, onRefresh, scroller: screen.getByRole('main') }
 }
 
 function gesture(scroller: HTMLElement, start: readonly [number, number], end: readonly [number, number], touches = 1) {
@@ -82,6 +84,23 @@ describe('MobileShell', () => {
     gesture(scroller, [10, 50], [100, 52])
     gesture(scroller, [40, 10], [42, 120])
 
+    expect(onOpenDrawer).not.toHaveBeenCalled()
+    expect(onRefresh).not.toHaveBeenCalled()
+  })
+
+  it('announces reconnecting state, makes the shell inert, and ignores interactions', () => {
+    const { onAction, onOpenDrawer, onRefresh, scroller } = renderShell(false, true)
+    const shell = screen.getByText('Header').closest('.mobile-shell')
+
+    expect(shell?.getAttribute('aria-busy')).toBe('true')
+    expect(shell?.hasAttribute('inert')).toBe(true)
+    expect(screen.getByRole('status').textContent).toContain('Reconnecting')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Action' }))
+    gesture(scroller, [10, 50], [100, 52])
+    gesture(scroller, [40, 10], [42, 120])
+
+    expect(onAction).not.toHaveBeenCalled()
     expect(onOpenDrawer).not.toHaveBeenCalled()
     expect(onRefresh).not.toHaveBeenCalled()
   })

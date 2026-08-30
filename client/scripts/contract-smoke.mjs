@@ -3,6 +3,7 @@
 const minimumContract = 6
 const rawGateway = process.env.HERMES_MOBILE_SMOKE_GATEWAY
 const token = process.env.HERMES_MOBILE_SMOKE_TOKEN
+const profile = process.env.HERMES_MOBILE_SMOKE_PROFILE || 'default'
 if (!rawGateway || !token) {
   console.error('Set HERMES_MOBILE_SMOKE_GATEWAY and HERMES_MOBILE_SMOKE_TOKEN for a dedicated test gateway.')
   process.exit(2)
@@ -45,14 +46,14 @@ const rpc = (method, params = {}) => new Promise((resolve, reject) => {
 })
 
 const profiles = await rpc('profiles.list')
-const sessions = await rpc('session.list', { limit: 1 })
+const sessions = await rpc('session.list', { limit: 1, profile })
 const storedSessionId = sessions?.sessions?.[0]?.id
 if (!storedSessionId) throw new Error('The dedicated smoke profile needs one existing session for read-only contract negotiation.')
-const resumed = await rpc('session.resume', { session_id: storedSessionId, source: 'ios-smoke' })
+const resumed = await rpc('session.resume', { profile, session_id: storedSessionId, source: 'ios-smoke' })
 const contract = Number(resumed?.info?.desktop_contract)
 if (!Number.isFinite(contract) || contract < minimumContract) throw new Error(`Gateway contract ${contract || 'unknown'} is below required contract ${minimumContract}.`)
 const commands = await rpc('commands.catalog', { query: '' })
-console.log(`contract ${contract} read-only RPC ok`, {
+console.log(`contract ${contract} read-only RPC ok for profile ${profile}`, {
   commands: Array.isArray(commands?.items) ? commands.items.length : 'available',
   profiles: Array.isArray(profiles?.profiles) ? profiles.profiles.length : 'available',
   sessions: Array.isArray(sessions?.sessions) ? sessions.sessions.length : 'available'

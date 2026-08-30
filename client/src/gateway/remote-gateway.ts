@@ -1,12 +1,13 @@
 import { JsonRpcGatewayClient, type GatewayEvent } from '@hermes/shared'
 
 import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from './gateway-port'
+import { throwIfAborted } from './abort'
 import { classifyGatewayError } from './gateway-error'
 import type { HermesConnectionPlugin } from '~/native/hermes-connection'
 import { HermesConnection } from '~/native/hermes-connection'
 
 function rejectIfAborted(signal?: AbortSignal): void {
-  signal?.throwIfAborted()
+  throwIfAborted(signal)
 }
 
 export class RemoteGateway implements GatewayPort {

@@ -5,8 +5,21 @@ export interface GatewayScope {
   profile?: null | string
 }
 
+export interface GatewayScopeSnapshot {
+  connectionKey: string
+  profile: null | string
+}
+
+export function gatewayScopeSnapshot(connectionKey: string, profile?: null | string): GatewayScopeSnapshot {
+  return { connectionKey, profile: profile ?? null }
+}
+
+export function sameGatewayScope(left: GatewayScopeSnapshot, right: GatewayScopeSnapshot): boolean {
+  return left.connectionKey === right.connectionKey && left.profile === right.profile
+}
+
 export function gatewayScopeKey(scope: GatewayScope, domain: string, ...parts: unknown[]): GatewayScopeKey {
-  return ['gateway', scope.connectionKey, scope.profile ?? '', domain, ...parts]
+  return ['gateway', scope.connectionKey, scope.profile ?? 'default', domain, ...parts]
 }
 
 /** Captures the current epoch. The returned predicate fails after a scope change. */

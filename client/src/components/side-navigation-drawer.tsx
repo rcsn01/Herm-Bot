@@ -2,9 +2,9 @@ import { useStore } from '@nanostores/react'
 import {
   IconAdjustments,
   IconBolt,
+  IconCalendarClock,
   IconPlus,
   IconSearch,
-  IconServerCog,
   IconTrash,
   IconX
 } from '@tabler/icons-react'
@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
+import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
 import { $chat, $sessions } from '~/state/store'
 
@@ -30,10 +31,11 @@ interface SwipeStart {
   y: number
 }
 
-const PRIMARY_NAVIGATION = [
+export const PRIMARY_NAVIGATION = [
   { icon: IconBolt, label: 'Capabilities', tab: 'capabilities' },
-  { icon: IconServerCog, label: 'Operations', tab: 'operations' },
-  { icon: IconAdjustments, label: 'More', tab: 'more' }
+  { icon: IconCalendarClock, label: 'Cron Jobs', tab: 'cron' },
+  { icon: IconAdjustments, label: 'Settings', tab: 'settings' },
+  { icon: IconAdjustments, label: 'Sessions', tab: 'sessions' }
 ] as const
 
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
@@ -63,8 +65,9 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     searchRef.current?.focus()
     setError(null)
     const generation = ++refreshGeneration.current
+    const scope = currentGatewayScope()
     void controller.refreshSessions().catch(caught => {
-      if (refreshGeneration.current === generation) setError(errorMessage(caught))
+      if (refreshGeneration.current === generation && isCurrentGatewayScope(scope)) setError(errorMessage(caught))
     })
     return () => {
       ++refreshGeneration.current
@@ -75,15 +78,17 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
 
   const runSessionAction = async (callback: () => Promise<unknown>) => {
     if (actionPendingRef.current) return
+    const scope = currentGatewayScope()
     actionPendingRef.current = true
     setPendingSessionAction(true)
     setError(null)
     try {
       await callback()
+      if (!isCurrentGatewayScope(scope)) return
       onNavigate('sessions')
       onClose()
     } catch (caught) {
-      setError(errorMessage(caught))
+      if (isCurrentGatewayScope(scope)) setError(errorMessage(caught))
     } finally {
       actionPendingRef.current = false
       setPendingSessionAction(false)
@@ -91,11 +96,12 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   }
 
   const deleteSession = async (id: string) => {
+    const scope = currentGatewayScope()
     setError(null)
     try {
       await controller.deleteSession(id)
     } catch (caught) {
-      setError(errorMessage(caught))
+      if (isCurrentGatewayScope(scope)) setError(errorMessage(caught))
     }
   }
 
@@ -171,7 +177,7 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
           if (swipedId && !(event.target as HTMLElement).closest('.session-row')) setSwipedId(null)
         }}>
           <header className="drawer-sessions-header">
-            <button aria-current={activeTab === 'sessions' ? 'page' : undefined} disabled={pendingSessionAction} onClick={() => navigate('sessions')}>Sessions</button>
+            <button aria-current={activeTab === 'sessions' ? 'page' : undefined} disabled={pendingSessionAction} onClick={() => navigate('sessions')}>Recent sessions</button>
             <Button aria-label="New session" className="drawer-icon-button" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} variant="ghost"><IconPlus size={20} /></Button>
           </header>
           <div className="session-list drawer-session-list">

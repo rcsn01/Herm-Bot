@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
+import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { ChatInteraction, type ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
@@ -53,6 +54,13 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
     setArchiveSession(false)
   }, [chat.runtimeSessionId, interaction])
 
+  const reportSessionAction = (action: () => Promise<unknown>) => {
+    const scope = currentGatewayScope()
+    void action().catch(caught => {
+      if (isCurrentGatewayScope(scope)) setSessionActionError(errorMessage(caught))
+    })
+  }
+
   const userOrdinals = useMemo(() => {
     let ordinal = -1
     return chat.messages.map(message => message.role === 'user' ? ++ordinal : ordinal)
@@ -67,7 +75,7 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
             {showSessionActions && <div className="session-management-actions">
               <Button onClick={() => setRenameSession(true)} size="sm" variant="ghost"><IconPencil size={16} /> Edit name</Button>
               <Button onClick={() => setArchiveSession(true)} size="sm" variant="ghost"><IconArchive size={16} /> Archive</Button>
-              <Button onClick={() => { setShowSessionActions(false); void controller.branchSession().catch(caught => setSessionActionError(errorMessage(caught))) }} size="sm" variant="ghost"><IconGitBranch size={16} /> Branch</Button>
+              <Button onClick={() => { setShowSessionActions(false); reportSessionAction(() => controller.branchSession()) }} size="sm" variant="ghost"><IconGitBranch size={16} /> Branch</Button>
             </div>}
           </div>
         )}
@@ -121,8 +129,8 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
         <div ref={bottomRef} />
       </div>
 
-      {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); void controller.renameSession(id, title).catch(caught => setSessionActionError(errorMessage(caught))) }} title="Edit session name" />}
-      {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); void controller.archiveSession(id).catch(caught => setSessionActionError(errorMessage(caught))) }} title="Archive session" />}
+      {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
+      {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard controller={controller} />}
       {(sessionActionError || interactionError || chat.error) && <div className="error-banner" role="alert">{sessionActionError || interactionError || chat.error}</div>}
       {queued.length > 0 && <div className="queue-banner">{queued.length} prompt{queued.length === 1 ? '' : 's'} queued</div>}
@@ -200,10 +208,26 @@ function ContextUsage({ usage }: { usage: Record<string, unknown> }) {
 function PromptCard({ controller }: { controller: GatewayController }) {
   const pending = useStore($chat).pendingPrompt!
   const [value, setValue] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const sensitive = pending.kind === 'secret' || pending.kind === 'sudo'
+  useEffect(() => {
+    setValue('')
+    setError(null)
+  }, [pending.requestId])
+  const respond = async (next: string) => {
+    if (sensitive) setValue('')
+    try {
+      await controller.respond(next)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      if (sensitive) setValue('')
+    }
+  }
   const title = { approval: 'Approval required', clarify: 'Hermes has a question', secret: 'Secret requested', sudo: 'Administrator password' }[pending.kind]
   const question = String(pending.payload.question ?? pending.payload.message ?? pending.payload.command ?? '')
   return (
-    <form className="prompt-card" onSubmit={event => { event.preventDefault(); void controller.respond(value) }}>
+    <form className="prompt-card" onSubmit={event => { event.preventDefault(); void respond(value) }}>
       <strong>{title}</strong>
       {question && <p>{question}</p>}
       {pending.kind === 'approval' ? (
@@ -217,7 +241,8 @@ function PromptCard({ controller }: { controller: GatewayController }) {
           <Button type="submit">Respond</Button>
         </>
       )}
-      {(pending.kind === 'secret' || pending.kind === 'sudo') && <small>This value is sent directly and is never saved by Hermes Mobile.</small>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {sensitive && <small>This value is sent directly and is never saved by Hermes Mobile.</small>}
     </form>
   )
 }

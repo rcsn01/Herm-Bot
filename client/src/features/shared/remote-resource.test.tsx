@@ -3,7 +3,6 @@ import { cleanup, render, screen } from '@testing-library/react'
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { capabilityById } from '~/features/capabilities/api'
 import { RemoteResourceScreen, type RemoteResourceDefinition } from '~/features/shared/remote-resource'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { $preferences } from '~/state/store'
@@ -24,7 +23,8 @@ afterEach(() => {
 
 function renderDefinition(definition: RemoteResourceDefinition, body: unknown) {
   $preferences.set({ ...originalPreferences, profile: 'work', remoteURL: 'https://gateway.example' })
-  const gateway = new MemoryGateway().handle(`${definition.path}?profile=work`, () => body)
+  const requestPath = definition.profileScoped === false ? definition.path : `${definition.path}?profile=work`
+  const gateway = new MemoryGateway().handle(requestPath, () => body)
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
@@ -37,9 +37,12 @@ function renderDefinition(definition: RemoteResourceDefinition, body: unknown) {
 }
 
 function renderResource(id: 'credentials' | 'models' | 'providers', body: unknown) {
-  const definition = capabilityById(id)
-  if (!definition) throw new Error(`Missing ${id} definition.`)
-  return renderDefinition(definition, body)
+  const definitions: Record<typeof id, RemoteResourceDefinition> = {
+    credentials: { description: 'Redacted credentials.', id: 'credentials', path: '/api/env', presentation: 'credentials', title: 'Credentials' },
+    models: { description: 'Model information.', id: 'models', path: '/api/model/info', presentation: 'models', title: 'Models' },
+    providers: { description: 'Provider information.', id: 'providers', path: '/api/model/info', presentation: 'providers', title: 'Providers' }
+  }
+  return renderDefinition(definitions[id], body)
 }
 
 describe('RemoteResourceScreen', () => {
@@ -113,5 +116,33 @@ describe('RemoteResourceScreen', () => {
     expect(await screen.findByText('Empty list')).toBeTruthy()
     expect(screen.getByText('Empty record')).toBeTruthy()
     expect(screen.getByText('Empty value')).toBeTruthy()
+  })
+
+  it('does not request default-profile-only resources for named profiles', async () => {
+    const gateway = renderDefinition({
+      defaultProfileOnly: true,
+      description: 'Gateway logs.',
+      id: 'logs',
+      path: '/api/logs',
+      profileScoped: false,
+      title: 'Logs'
+    }, { lines: ['secret process output'] })
+
+    expect(await screen.findByText('Unavailable for this profile')).toBeTruthy()
+    expect(screen.getByText(/only available from the default profile/i)).toBeTruthy()
+    expect(gateway.calls).toHaveLength(0)
+  })
+
+  it('leaves installation-wide resources unscoped', async () => {
+    const gateway = renderDefinition({
+      description: 'Gateway health.',
+      id: 'system',
+      path: '/api/status',
+      profileScoped: false,
+      title: 'System'
+    }, { gateway_running: true, version: '6' })
+
+    expect(await screen.findByText('Gateway Running')).toBeTruthy()
+    expect(gateway.calls.at(-1)?.value).toMatchObject({ path: '/api/status' })
   })
 })

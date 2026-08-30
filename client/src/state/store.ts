@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import type { AuthMode, ChatState, ConnectionPreferences, GatewayStatus, StoredSession } from '~/lib/types'
 import { emptyChatState } from '~/state/event-reducer'
 
-export type ConnectionPhase = 'connected' | 'connecting' | 'disconnected' | 'error' | 'unsupported'
+export type ConnectionPhase = 'connected' | 'connecting' | 'disconnected' | 'error' | 'reconnecting' | 'unsupported'
 export type MobileView = 'chat' | 'files' | 'remote' | 'sessions' | 'settings'
 
 export const $connection = atom<{

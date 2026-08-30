@@ -173,8 +173,8 @@ export class ChatInteraction {
     for (const file of Array.from(files)) {
       if (!this.isCurrent(epoch)) return
       try {
-        const result = await this.commands.attach(file) as { ref_text?: string; text?: string }
-        if (!this.isCurrent(epoch)) return
+        const result = await this.commands.attach(file) as { ref_text?: string; text?: string } | undefined
+        if (!this.isCurrent(epoch) || !result) return
         const reference = result.ref_text ?? result.text ?? `@file:${file.name}`
         this.patch({ attachmentRefs: [...this.$state.get().attachmentRefs, reference] })
       } catch (caught) {

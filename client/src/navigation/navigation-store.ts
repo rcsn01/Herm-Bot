@@ -12,10 +12,10 @@ export interface NavigationState {
 
 function initialStacks(): NavigationStacks {
   return {
-    sessions: [ROOT_ROUTES.sessions],
     capabilities: [ROOT_ROUTES.capabilities],
-    operations: [ROOT_ROUTES.operations],
-    more: [ROOT_ROUTES.more]
+    cron: [ROOT_ROUTES.cron],
+    settings: [ROOT_ROUTES.settings],
+    sessions: [ROOT_ROUTES.sessions]
   }
 }
 

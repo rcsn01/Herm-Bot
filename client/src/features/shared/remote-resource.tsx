@@ -5,7 +5,9 @@ import { Badge, Button, Skeleton } from '~/compat/primitives'
 import { GatewayError, classifyGatewayError } from '~/gateway/gateway-error'
 import { useGateway } from '~/gateway/gateway-context'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { profileKey, profilePath } from '~/gateway/profile-path'
 import { $preferences } from '~/state/store'
+import { useStore } from '@nanostores/react'
 
 export type RemoteResourcePresentation = 'credentials' | 'models' | 'providers' | 'summary'
 
@@ -15,18 +17,23 @@ export interface RemoteResourceDefinition {
   path: string
   presentation?: RemoteResourcePresentation
   profileScoped?: boolean
+  defaultProfileOnly?: boolean
+  unavailableMessage?: string
   title: string
 }
 
 export function RemoteResourceScreen({ definition, onBack }: { definition: RemoteResourceDefinition; onBack(): void }) {
   const gateway = useGateway()
-  const preferences = $preferences.get()
-  const profile = definition.profileScoped === false ? null : preferences.profile
-  const separator = definition.path.includes('?') ? '&' : '?'
-  const path = profile ? `${definition.path}${separator}profile=${encodeURIComponent(profile)}` : definition.path
+  const preferences = useStore($preferences)
+  const profile = preferences.profile
+  const isProfileScoped = definition.profileScoped !== false
+  const isDefaultProfileOnly = definition.defaultProfileOnly === true
+  const isUnavailableForProfile = isDefaultProfileOnly && profileKey(profile) !== 'default'
+  const path = isProfileScoped ? profilePath(definition.path, profile) : definition.path
   const query = useQuery({
-    queryFn: async () => (await gateway.request({ path })).body,
-    queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, definition.id)
+    enabled: !isUnavailableForProfile,
+    queryFn: async ({ signal }) => (await gateway.request({ path, signal })).body,
+    queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: isProfileScoped ? profile : null }, definition.id)
   })
   const error = query.error ? classifyGatewayError(query.error) : null
 
@@ -34,14 +41,15 @@ export function RemoteResourceScreen({ definition, onBack }: { definition: Remot
     <section className="screen page-screen">
       <header className="page-heading">
         <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
-        <Button aria-label={`Refresh ${definition.title}`} onClick={() => void query.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>
+        <Button aria-label={`Refresh ${definition.title}`} disabled={isUnavailableForProfile} onClick={() => void query.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>
       </header>
       <p className="eyebrow">Remote gateway</p>
       <h2>{definition.title}</h2>
       <p className="muted">{definition.description}</p>
-      {query.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /></div>}
-      {error && <ResourceError error={error} title={definition.title} />}
-      {query.data !== undefined && <ResourceOverview presentation={definition.presentation ?? 'summary'} value={query.data} />}
+      {isUnavailableForProfile && <div className="unsupported-card" role="alert"><strong>Unavailable for this profile</strong><p>{definition.unavailableMessage ?? 'This gateway resource is process-scoped and is only available from the default profile.'}</p></div>}
+      {!isUnavailableForProfile && query.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /></div>}
+      {!isUnavailableForProfile && error && <ResourceError error={error} title={definition.title} />}
+      {!isUnavailableForProfile && query.data !== undefined && <ResourceOverview presentation={definition.presentation ?? 'summary'} value={query.data} />}
     </section>
   )
 }

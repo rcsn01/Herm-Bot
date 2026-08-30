@@ -1,4 +1,4 @@
-import { useRef, type ReactNode, type TouchEvent } from 'react'
+import { useRef, type ReactNode, type SyntheticEvent, type TouchEvent } from 'react'
 
 interface MobileShellProps {
   children: ReactNode
@@ -7,6 +7,7 @@ interface MobileShellProps {
   header: ReactNode
   onOpenDrawer(): void
   onRefresh(): unknown
+  reconnecting?: boolean
   refreshing?: boolean
 }
 
@@ -16,13 +17,13 @@ interface GestureStart {
   y: number
 }
 
-export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer, onRefresh, refreshing = false }: MobileShellProps) {
+export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer, onRefresh, reconnecting = false, refreshing = false }: MobileShellProps) {
   const scroller = useRef<HTMLElement>(null)
   const gestureStart = useRef<GestureStart | null>(null)
 
   const startGesture = (event: TouchEvent<HTMLElement>) => {
     gestureStart.current = null
-    if (drawerOpen || event.touches.length !== 1) return
+    if (drawerOpen || reconnecting || event.touches.length !== 1) return
     const touch = event.touches[0]
     if (!touch) return
     gestureStart.current = {
@@ -36,10 +37,16 @@ export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer
     if (event.touches.length !== 1) gestureStart.current = null
   }
 
+  const blockInteraction = (event: SyntheticEvent) => {
+    if (!reconnecting) return
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   const finishGesture = (event: TouchEvent<HTMLElement>) => {
     const start = gestureStart.current
     gestureStart.current = null
-    if (!start || drawerOpen || event.changedTouches.length !== 1) return
+    if (!start || drawerOpen || reconnecting || event.changedTouches.length !== 1) return
     const touch = event.changedTouches[0]
     if (!touch) return
     const dx = touch.clientX - start.x
@@ -54,13 +61,23 @@ export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer
   }
 
   return (
-    <div className="mobile-shell">
-      {header}
-      {drawer}
-      {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
-      <main className="view-container" onTouchEnd={finishGesture} onTouchMove={trackGesture} onTouchStart={startGesture} ref={scroller}>
-        {children}
-      </main>
-    </div>
+    <>
+      <div
+        aria-busy={reconnecting}
+        className={`mobile-shell${reconnecting ? ' reconnecting' : ''}`}
+        inert={reconnecting ? true : undefined}
+        onClickCapture={blockInteraction}
+        onKeyDownCapture={blockInteraction}
+        onSubmitCapture={blockInteraction}
+      >
+        {header}
+        {drawer}
+        {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
+        <main className="view-container" onTouchEnd={finishGesture} onTouchMove={trackGesture} onTouchStart={startGesture} ref={scroller}>
+          {children}
+        </main>
+      </div>
+      {reconnecting && <div aria-live="polite" className="connection-status" role="status">Reconnecting to Hermes…</div>}
+    </>
   )
 }

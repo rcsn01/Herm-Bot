@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin, WebPlugin } from '@capacitor/core'
 
 import type { AuthMode, GatewayStatus, NativeIdentity, NativeResponse } from '~/lib/types'
+import { throwIfAborted } from '~/gateway/abort'
 import { absoluteGatewayURL, authModeForCredentials, normalizeRemoteURL } from '~/lib/url'
 
 export interface ConfigureOptions {
@@ -25,6 +26,7 @@ export interface NativeRequestOptions {
   method?: string
   path: string
   profile?: null | string
+  signal?: AbortSignal
   timeoutMs?: number
 }
 
@@ -44,7 +46,9 @@ export interface NativeUploadOptions {
   field?: string
   filename: string
   path: string
+  profile?: null | string
   contentType?: string
+  signal?: AbortSignal
 }
 
 export interface PasswordLoginOptions {
@@ -95,19 +99,21 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
   }
 
   async request<T = unknown>(options: NativeRequestOptions) {
-    return this.fetch<T>(withProfile(options.path, options.profile), options.method, options.body, options.timeoutMs)
+    return this.fetch<T>(withProfile(options.path, options.profile), options.method, options.body, options.timeoutMs, options.signal)
   }
 
   async upload<T = unknown>(options: NativeUploadOptions) {
+    throwIfAborted(options.signal)
     if (!this.remoteURL) throw new Error('Configure a gateway first.')
     const bytes = Uint8Array.from(atob(options.dataBase64), character => character.charCodeAt(0))
     const form = new FormData()
     form.append(options.field ?? 'file', new Blob([bytes], { type: options.contentType }), options.filename)
-    const response = await fetch(this.httpURL(options.path), {
+    const response = await fetch(this.httpURL(withProfile(options.path, options.profile)), {
       body: form,
       credentials: 'include',
       headers: this.token ? { 'X-Hermes-Session-Token': this.token } : {},
-      method: 'POST'
+      method: 'POST',
+      signal: options.signal
     })
     const body = await response.json() as T
     if (!response.ok) throw new HermesHTTPError((body as { detail?: string }).detail || `Hermes returned HTTP ${response.status}`, response.status, body)
@@ -147,7 +153,7 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
   }
 
   async getWebSocketURL(options: { profile?: null | string } = {}) {
-    const profile: Record<string, string> = options.profile ? { profile: options.profile } : {}
+    const profile: Record<string, string> = { profile: options.profile ?? 'default' }
     if (this.authMode === 'interactive') {
       const response = await this.fetch<{ ticket: string }>('/api/auth/ws-ticket', 'POST')
       return { url: this.wsURL('/api/ws', { ...profile, ticket: response.body.ticket }) }
@@ -176,10 +182,13 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
     sessionStorage.removeItem('hermes.token')
   }
 
-  private async fetch<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 30_000): Promise<NativeResponse<T>> {
+  private async fetch<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 30_000, signal?: AbortSignal): Promise<NativeResponse<T>> {
     if (!this.remoteURL) throw new Error('Configure a gateway first.')
     const controller = new AbortController()
+    const abort = () => controller.abort(signal?.reason)
+    signal?.addEventListener('abort', abort, { once: true })
     const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+    if (signal?.aborted) abort()
     try {
       const response = await fetch(this.httpURL(path), {
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -200,6 +209,7 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
       return { body: parsed, headers: Object.fromEntries(response.headers), status: response.status }
     } finally {
       window.clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
     }
   }
 
@@ -219,11 +229,14 @@ export const HermesConnection = registerPlugin<HermesConnectionPlugin>('HermesCo
   web: () => new HermesConnectionWeb()
 })
 
-function withProfile(path: string, profile?: null | string): string {
-  if (!profile) return path
+export function withProfile(path: string, profile?: null | string): string {
+  // Preserve a profile already translated into the path by profilePath(). The
+  // native bridge receives that path but does not receive a second profile
+  // argument. An omitted profile means this is an installation-wide route, so
+  // do not add a misleading default-profile query parameter.
   const url = new URL(path, 'http://gateway.invalid')
-  url.searchParams.set('profile', profile)
-  return `${url.pathname}${url.search}`
+  if (profile !== undefined) url.searchParams.set('profile', profile ?? 'default')
+  return `${url.pathname}${url.search}${url.hash}`
 }
 
 export function validatedExternalURL(raw: string): URL {

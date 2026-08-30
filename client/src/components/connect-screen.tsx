@@ -35,6 +35,7 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
+      setToken('')
       setBusy(false)
     }
   }
@@ -113,17 +114,26 @@ function PasswordForm({ controller, provider }: { controller: GatewayController;
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!password || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await controller.passwordLogin(provider.name, username, password)
+    } catch (caught) {
+      setError(errorMessage(caught))
+    } finally {
+      setPassword('')
+      setBusy(false)
+    }
+  }
   return (
-    <form
-      className="password-form"
-      onSubmit={event => {
-        event.preventDefault()
-        void controller.passwordLogin(provider.name, username, password).catch(caught => setError(errorMessage(caught)))
-      }}
-    >
+    <form className="password-form" onSubmit={submit}>
       <Input autoComplete="username" onChange={event => setUsername(event.target.value)} placeholder="Username" value={username} />
-      <Input autoComplete="current-password" onChange={event => setPassword(event.target.value)} placeholder="Password" type="password" value={password} />
-      <Button className="touch-button" type="submit">Sign in</Button>
+      <Input autoComplete="current-password" disabled={busy} onChange={event => setPassword(event.target.value)} placeholder="Password" type="password" value={password} />
+      <Button className="touch-button" disabled={busy || !password} type="submit">{busy ? 'Signing in…' : 'Sign in'}</Button>
       {error && <div className="error-banner">{error}</div>}
     </form>
   )

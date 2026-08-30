@@ -493,6 +493,61 @@ describe('ModelsScreen', () => {
     }
   })
 
+  it('serializes MoA writes when switching away and back to a profile', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const pending: Array<(value: unknown) => void> = []
+    try {
+      const gateway = baseGateway({ onMoaPut: () => new Promise(resolve => { pending.push(resolve) }) })
+        .handle('/api/model/info?profile=default', () => modelInfo)
+        .handle('/api/model/options?explicit_only=1&profile=default', () => ({ model: modelInfo.model, provider: modelInfo.provider, providers: PROVIDERS }))
+        .handle('/api/model/auxiliary?profile=default', () => auxiliaryResponse())
+        .handle('/api/config?profile=default', () => baseConfig())
+        .handle('/api/model/moa?profile=default', value => {
+          if ((value as { method?: string }).method === 'PUT') return { ok: true, ...((value as { body: Record<string, unknown> }).body) }
+          return moaConfig()
+        })
+      await loadedScreen(gateway)
+
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle reference 1' }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(700) })
+      expect(pending).toHaveLength(1)
+
+      act(() => { $preferences.set({ ...$preferences.get(), profile: null }) })
+      await screen.findByRole('button', { name: 'Add preset' })
+      act(() => { $preferences.set({ ...$preferences.get(), profile: 'work' }) })
+      await screen.findByRole('button', { name: 'Add preset' })
+
+      fireEvent.change(screen.getByRole('textbox', { name: 'New preset name' }), { target: { value: 'follow-up' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Add preset' }))
+      await act(async () => { await Promise.resolve() })
+
+      // The old request may still be processed by the gateway after its
+      // client-side abort, so the new same-profile write waits for it.
+      expect(moaPutBodies(gateway)).toHaveLength(1)
+      pending.shift()?.({ ok: true, ...moaConfig() })
+      await waitFor(() => expect(moaPutBodies(gateway)).toHaveLength(2))
+      expect(moaPutBodies(gateway).at(-1)?.presets).toHaveProperty('follow-up')
+      pending.shift()?.({ ok: true, ...moaPutBodies(gateway).at(-1) })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refetches MoA after a rejected write instead of keeping the optimistic draft', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const gateway = baseGateway({ onMoaPut: async () => { throw new Error('MoA save rejected') } })
+      await loadedScreen(gateway)
+
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle reference 1' }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(700) })
+
+      expect(await screen.findByText('MoA save rejected')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the rest of Models usable when the MoA endpoint is unavailable', async () => {
     const gateway = new MemoryGateway()
       .handle('/api/model/info?profile=work', () => modelInfo)

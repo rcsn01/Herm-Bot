@@ -1,4 +1,5 @@
 import type { GatewayPort } from './gateway-port'
+import { abortError, throwIfAborted } from './abort'
 import { classifyGatewayError } from './gateway-error'
 
 export interface RemoteActionState<T = unknown> {
@@ -20,6 +21,29 @@ export interface RemoteActionOptions<T> {
   start: (gateway: GatewayPort, signal: AbortSignal) => Promise<RemoteActionState<T>>
 }
 
+export interface RemoteActionStartResponse {
+  action?: string
+  background?: boolean
+  error?: string
+  message?: string
+  name?: string
+  ok?: boolean
+}
+
+/** Reject an explicit gateway refusal before a caller starts polling. */
+export function assertRemoteActionStart<T extends RemoteActionStartResponse>(response: T): T {
+  if (!response || typeof response !== 'object') throw new Error('The gateway returned an invalid remote-action response.')
+  if (response.ok === false) throw new Error(response.error || response.message || 'The gateway could not start the remote action.')
+  return response
+}
+
+/** Resolve the poll handle; synchronous actions are allowed not to return one. */
+export function remoteActionName(response: RemoteActionStartResponse): string {
+  const name = [response.action, response.name].find(value => typeof value === 'string' && value.trim())?.trim() ?? ''
+  if (response.background !== false && !name) throw new Error('The gateway started a remote action without a poll handle.')
+  return name
+}
+
 const DEFAULT_TERMINAL = new Set(['complete', 'completed', 'failed', 'cancelled', 'canceled'])
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -27,7 +51,7 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(resolve, ms)
     const aborted = () => {
       clearTimeout(timer)
-      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+      reject(signal.reason ?? abortError())
     }
     signal.addEventListener('abort', aborted, { once: true })
     if (signal.aborted) aborted()
@@ -42,8 +66,8 @@ export async function runRemoteAction<T>(options: RemoteActionOptions<T>): Promi
   if (options.signal?.aborted) abort()
   const epoch = options.getScopeEpoch?.()
   const assertScope = () => {
-    controller.signal.throwIfAborted()
-    if (epoch !== undefined && options.getScopeEpoch?.() !== epoch) throw new DOMException('Gateway scope changed.', 'AbortError')
+    throwIfAborted(controller.signal)
+    if (epoch !== undefined && options.getScopeEpoch?.() !== epoch) throw abortError('Gateway scope changed.')
   }
 
   try {

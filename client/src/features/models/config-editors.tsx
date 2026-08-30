@@ -16,18 +16,22 @@ import type { ModelOptionProvider } from '~/lib/types'
 export function useDebouncedSave<Args extends unknown[]>(
   save: (...args: Args) => Promise<void>,
   delayMs: number,
-  onError: (error: unknown) => void
+  onError: (error: unknown) => void,
+  getScopeToken?: () => unknown
 ): (...args: Args) => void {
   const timer = useRef<number | null>(null)
   const generation = useRef(0)
   const saveRef = useRef(save)
   const errorRef = useRef(onError)
+  const scopeRef = useRef(getScopeToken)
   useEffect(() => {
     saveRef.current = save
     errorRef.current = onError
+    scopeRef.current = getScopeToken
   })
   useEffect(
     () => () => {
+      generation.current += 1
       if (timer.current) window.clearTimeout(timer.current)
     },
     []
@@ -36,9 +40,12 @@ export function useDebouncedSave<Args extends unknown[]>(
     (...args: Args) => {
       if (timer.current) window.clearTimeout(timer.current)
       const scheduled = ++generation.current
+      const scheduledScope = scopeRef.current?.()
       timer.current = window.setTimeout(() => {
+        timer.current = null
+        if (generation.current !== scheduled || (scopeRef.current && scopeRef.current() !== scheduledScope)) return
         void saveRef.current(...args).catch(error => {
-          if (generation.current === scheduled) errorRef.current(error)
+          if (generation.current === scheduled && (!scopeRef.current || scopeRef.current() === scheduledScope)) errorRef.current(error)
         })
       }, delayMs)
     },

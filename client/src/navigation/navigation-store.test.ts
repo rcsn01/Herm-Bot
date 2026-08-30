@@ -11,79 +11,69 @@ import {
   resetTabRoutes,
   setTab
 } from '~/navigation/navigation-store'
-import { ROOT_ROUTES } from '~/navigation/routes'
+import { MOBILE_TABS, ROOT_ROUTES } from '~/navigation/routes'
 
 beforeEach(() => resetNavigation())
 
 describe('mobile navigation store', () => {
-  it('starts on the Sessions root, which represents the active chat', () => {
+  it('keeps the exact drawer order while launching on Sessions', () => {
+    expect(MOBILE_TABS).toEqual(['capabilities', 'cron', 'settings', 'sessions'])
     expect($navigation.get()).toMatchObject({ activeTab: 'sessions' })
     expect($activeRoute.get()).toEqual(ROOT_ROUTES.sessions)
-    expect($navigation.get().stacks.sessions).toEqual([ROOT_ROUTES.sessions])
     expect(isMobileTab('sessions')).toBe(true)
-    expect(isMobileTab('chat')).toBe(false)
+    expect(isMobileTab('operations')).toBe(false)
   })
 
   it('keeps an independent stack for every destination', () => {
-    pushRoute('capabilities', {
-      type: 'capability-detail',
-      tab: 'capabilities',
-      capabilityId: 'terminal',
-      capabilityType: 'tool'
-    })
-    pushRoute('operations', {
-      type: 'operation-detail',
-      tab: 'operations',
-      operationId: 'cron',
-      operationType: 'cron'
-    })
-    pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' })
+    pushRoute('capabilities', { section: 'skills', tab: 'capabilities', type: 'capabilities-section' })
+    pushRoute('cron', { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' })
+    pushRoute('settings', { category: 'model', tab: 'settings', type: 'settings-category' })
 
     setTab('capabilities')
-    expect($activeRoute.get()).toMatchObject({ type: 'capability-detail', capabilityId: 'terminal' })
+    expect($activeRoute.get()).toMatchObject({ type: 'capabilities-section', section: 'skills' })
     setTab('sessions')
     expect($activeRoute.get()).toEqual(ROOT_ROUTES.sessions)
-    setTab('operations')
-    expect($activeRoute.get()).toMatchObject({ type: 'operation-detail', operationId: 'cron' })
-    setTab('more')
-    expect($activeRoute.get()).toMatchObject({ type: 'more-detail', page: 'settings' })
+    setTab('cron')
+    expect($activeRoute.get()).toMatchObject({ type: 'cron-job-detail', jobId: 'job-1' })
+    setTab('settings')
+    expect($activeRoute.get()).toMatchObject({ type: 'settings-category', category: 'model' })
   })
 
-  it('returning to Sessions does not reset other destination stacks', () => {
-    pushRoute('more', { type: 'more-detail', tab: 'more', page: 'projects' })
-    setTab('more')
+  it('retains each stack when switching tabs', () => {
+    pushRoute('settings', { page: 'gateway', tab: 'settings', type: 'settings-administration' })
+    setTab('settings')
     setTab('sessions')
 
-    expect($navigation.get().stacks.more).toHaveLength(2)
+    expect($navigation.get().stacks.settings).toHaveLength(2)
     expect($navigation.get().stacks.sessions).toEqual([ROOT_ROUTES.sessions])
   })
 
   it('pops details but never pops a destination root', () => {
-    pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' })
-    expect(popRoute('more')).toMatchObject({ type: 'more-detail' })
-    expect(popRoute('more')).toBeUndefined()
-    expect($navigation.get().stacks.more).toEqual([ROOT_ROUTES.more])
+    pushRoute('cron', { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' })
+    expect(popRoute('cron')).toMatchObject({ type: 'cron-job-detail' })
+    expect(popRoute('cron')).toBeUndefined()
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron])
   })
 
   it('resets scoped routes while retaining the active destination and roots', () => {
-    pushRoute('more', { type: 'more-detail', tab: 'more', page: 'projects' })
-    setTab('more')
+    pushRoute('settings', { page: 'projects', tab: 'settings', type: 'settings-administration' })
+    setTab('settings')
 
     resetTabRoutes('sessions')
     expect($navigation.get().stacks.sessions).toEqual([ROOT_ROUTES.sessions])
-    expect($navigation.get().stacks.more).toHaveLength(2)
+    expect($navigation.get().stacks.settings).toHaveLength(2)
 
     resetRoutes()
-    expect($navigation.get().activeTab).toBe('more')
+    expect($navigation.get().activeTab).toBe('settings')
     expect($navigation.get().stacks).toEqual({
-      sessions: [ROOT_ROUTES.sessions],
       capabilities: [ROOT_ROUTES.capabilities],
-      operations: [ROOT_ROUTES.operations],
-      more: [ROOT_ROUTES.more]
+      cron: [ROOT_ROUTES.cron],
+      settings: [ROOT_ROUTES.settings],
+      sessions: [ROOT_ROUTES.sessions]
     })
   })
 
   it('rejects routes pushed onto the wrong stack at runtime', () => {
-    expect(() => pushRoute('sessions', ROOT_ROUTES.more as never)).toThrow(/more route.*sessions stack/)
+    expect(() => pushRoute('sessions', ROOT_ROUTES.cron as never)).toThrow(/cron route.*sessions stack/)
   })
 })

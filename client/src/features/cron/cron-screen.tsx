@@ -1,103 +1,55 @@
-import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query'
-import { IconChevronLeft, IconPlayerPlay, IconRefresh, IconTrash } from '@tabler/icons-react'
-import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { IconCalendarClock, IconChevronRight, IconPlus, IconRefresh } from '@tabler/icons-react'
+import { useEffect, useMemo, useState } from 'react'
 
-import { Badge, Button, Skeleton } from '~/compat/primitives'
-import { ConfirmDialog } from '~/components/ui/confirm-dialog'
-import { cronApi, type CronJob, type CronRun } from '~/features/cron/api'
+import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import type { GatewayPort } from '~/gateway/gateway-port'
 import { useGateway } from '~/gateway/gateway-context'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import type { CronRoute } from '~/navigation/routes'
+import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
+import { CronBlueprintsScreen } from './cron-blueprints-screen'
+import { CronJobDetail } from './cron-job-detail'
+import { CronJobEditor } from './cron-job-editor'
+import { cronApi, type CronJob } from './api'
 
-export function CronScreen({ onBack }: { onBack(): void }) {
+export function CronScreen({ onBack, onNavigate, route }: { onBack?: () => void; onNavigate?: (route: CronRoute) => void; route?: CronRoute }) {
   const gateway = useGateway()
-  const preferences = $preferences.get()
+  const preferences = useStore($preferences)
   const profile = preferences.profile
-  const queryClient = useQueryClient()
-  const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron', 'jobs')
-  const [remove, setRemove] = useState<CronJob | null>(null)
-  const jobs = useQuery({ queryFn: () => cronApi.list(gateway, profile), queryKey })
-  const mutation = useMutation({
-    mutationFn: async (action: { job: CronJob; type: 'pause' | 'remove' | 'resume' | 'trigger' }) => {
-      if (action.type === 'remove') return cronApi.remove(gateway, profile, action.job.id)
-      return cronApi[action.type](gateway, profile, action.job.id)
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey })
-  })
-  const error = jobs.error ?? mutation.error
+  const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron', 'jobs')
+  const jobs = useQuery({ queryFn: ({ signal }) => cronApi.list(gateway, profile, signal), queryKey: scopeKey })
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState<'all' | 'active' | 'paused' | 'error'>('all')
+  const activeRoute = route ?? { tab: 'cron', type: 'cron-root' as const }
+  const navigate = onNavigate ?? (() => undefined)
+  useEffect(() => {
+    setSearch('')
+    setStatus('all')
+  }, [preferences.remoteURL, profile])
 
-  return (
-    <section className="screen page-screen">
-      <header className="page-heading">
-        <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
-        <Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>
-      </header>
-      <p className="eyebrow">Remote automation</p>
-      <h2>Cron jobs</h2>
-      <p className="muted">Jobs for the {profile || 'default'} profile. Running a job continues on the gateway if you leave this screen.</p>
-      {jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /></div>}
-      {error && <div className="error-banner" role="alert">{classifyGatewayError(error).message}</div>}
-      {jobs.data?.length === 0 && <div className="empty-panel">No cron jobs exist for this profile.</div>}
-      <div className="cron-job-list">
-        {jobs.data?.map(job => (
-          <article className="cron-job-card" key={job.id}>
-            <header><div><strong>{job.name || job.prompt || 'Untitled cron job'}</strong><small>{scheduleText(job)}</small></div><Badge variant={job.enabled ? 'default' : 'muted'}>{job.enabled ? job.state || 'Active' : 'Paused'}</Badge></header>
-            <dl>
-              <div><dt>Next run</dt><dd>{formatTime(job.next_run_at)}</dd></div>
-              <div><dt>Last run</dt><dd>{formatTime(job.last_run_at)}</dd></div>
-              {job.deliver && <div><dt>Delivery</dt><dd>{job.deliver}</dd></div>}
-            </dl>
-            {job.last_error && <div className="error-banner" role="status">{job.last_error}</div>}
-            <CronRunHistory gateway={gateway} job={job} profile={profile} scopeKey={queryKey} />
-            <footer>
-              <Button disabled={mutation.isPending} onClick={() => mutation.mutate({ job, type: 'trigger' })} size="sm" variant="secondary"><IconPlayerPlay size={16} /> Run now</Button>
-              <Button disabled={mutation.isPending} onClick={() => mutation.mutate({ job, type: job.enabled ? 'pause' : 'resume' })} size="sm" variant="secondary">{job.enabled ? 'Pause' : 'Resume'}</Button>
-              <Button aria-label={`Delete ${job.name || 'cron job'}`} disabled={mutation.isPending} onClick={() => setRemove(job)} size="sm" variant="destructive"><IconTrash size={16} /> Delete</Button>
-            </footer>
-          </article>
-        ))}
-      </div>
-      {remove && <ConfirmDialog confirmLabel="Delete" description={`Delete ${remove.name || 'this cron job'}? Its run history will no longer be available from this job.`} onCancel={() => setRemove(null)} onConfirm={() => { const job = remove; setRemove(null); mutation.mutate({ job, type: 'remove' }) }} title="Delete cron job" />}
-    </section>
-  )
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    return (jobs.data ?? []).filter(job => {
+      const matchesText = !term || `${job.name ?? ''} ${job.prompt ?? ''} ${job.schedule_display ?? ''}`.toLowerCase().includes(term)
+      const matchesStatus = status === 'all' || (status === 'active' && job.enabled && !job.last_error) || (status === 'paused' && !job.enabled) || (status === 'error' && Boolean(job.last_error))
+      return matchesText && matchesStatus
+    })
+  }, [jobs.data, search, status])
+
+  if (activeRoute.type === 'cron-job-detail') return <CronJobDetail jobId={activeRoute.jobId} onBack={() => onBack ? onBack() : navigate({ tab: 'cron', type: 'cron-root' })} onDeleted={() => navigate({ tab: 'cron', type: 'cron-root' })} onEdit={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-editor' })} />
+  if (activeRoute.type === 'cron-job-editor') {
+    const job = activeRoute.jobId ? jobs.data?.find(item => item.id === activeRoute.jobId) : undefined
+    return <CronJobEditor job={job} onCancel={() => navigate({ tab: 'cron', type: 'cron-root' })} onSaved={saved => navigate({ jobId: saved.id, tab: 'cron', type: 'cron-job-detail' })} />
+  }
+  if (activeRoute.type === 'cron-blueprints') return <CronBlueprintsScreen onBack={() => navigate({ tab: 'cron', type: 'cron-root' })} onCreated={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />
+
+  return <section className="screen page-screen"><header className="page-heading"><div><p className="eyebrow">Remote automation</p><h2>Cron Jobs</h2></div><div className="button-row"><Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-blueprints' })} size="sm" variant="secondary">Blueprints</Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-job-editor' })} size="sm"><IconPlus size={16} /> New</Button></div></header><p className="muted">Gateway-owned schedules for the {profile || 'default'} profile. Running jobs continue when you leave this screen.</p><div className="search-box"><IconCalendarClock size={17} aria-hidden="true" /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div><div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label><Badge variant="muted">{filtered.length} jobs</Badge></div>{jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}{jobs.isStale && jobs.data && !jobs.isFetching && <p className="muted" role="status">Showing cached jobs. Pull to refresh.</p>}{jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}{jobs.error && <div className={classifyGatewayError(jobs.error).kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="alert">{classifyGatewayError(jobs.error).kind === 'unsupported' ? 'Cron Jobs are unavailable on this gateway.' : classifyGatewayError(jobs.error).message}</div>}{jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}<div className="cron-job-list">{filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}</div></section>
 }
 
-function CronRunHistory({ gateway, job, profile, scopeKey }: { gateway: GatewayPort; job: CronJob; profile: null | string; scopeKey: QueryKey }) {
-  const [showFull, setShowFull] = useState(false)
-  const history = useQuery({
-    queryFn: () => cronApi.runs(gateway, profile, job.id),
-    queryKey: [...scopeKey, job.id, 'runs']
-  })
-  const visibleRuns = showFull ? history.data : history.data?.slice(0, 3)
-
-  return (
-    <section className="cron-run-history" aria-label={`Run history for ${job.name || 'cron job'}`}>
-      <div className="cron-history-heading"><strong>Recent runs</strong><Badge variant="muted">{showFull ? `Latest ${history.data?.length ?? 0}` : 'Top 3'}</Badge></div>
-      {history.isPending && <Skeleton className="h-16 w-full" />}
-      {history.error && <div className="error-banner" role="alert">{classifyGatewayError(history.error).message}</div>}
-      {history.data?.length === 0 && <p className="muted">This job has not run yet.</p>}
-      {visibleRuns?.map(run => <CronRunRow key={run.id} run={run} />)}
-      {(history.data?.length ?? 0) > 3 && <Button className="cron-history-toggle" onClick={() => setShowFull(value => !value)} size="sm" variant="secondary">{showFull ? 'Show latest 3' : `Show full history (${history.data?.length})`}</Button>}
-    </section>
-  )
-}
-
-function CronRunRow({ run }: { run: CronRun }) {
-  const status = run.is_active ? 'Running' : run.ended_at ? 'Complete' : 'Stopped'
-  const milliseconds = run.started_at < 10_000_000_000 ? run.started_at * 1_000 : run.started_at
-  const date = new Date(milliseconds)
-  return (
-    <article className="cron-run-row">
-      <Badge variant={run.is_active ? 'default' : 'muted'}>{status}</Badge>
-      <time dateTime={date.toISOString()}>{date.toLocaleString()}</time>
-    </article>
-  )
-}
-
-function scheduleText(job: CronJob): string {
-  return job.schedule_display || job.schedule?.display || job.schedule?.expr || 'Schedule unavailable'
+function CronJobCard({ job, onOpen }: { job: CronJob; onOpen(): void }) {
+  return <button className="cron-job-card cron-job-card-button" onClick={onOpen}><header><div><strong>{job.name || job.prompt || 'Untitled cron job'}</strong><small>{job.schedule_display || job.schedule?.display || job.schedule?.expr || 'Schedule unavailable'}</small></div><Badge variant={job.enabled ? 'default' : 'muted'}>{job.enabled ? job.state || 'Active' : 'Paused'}</Badge></header><dl><div><dt>Next run</dt><dd>{formatTime(job.next_run_at)}</dd></div><div><dt>Last run</dt><dd>{formatTime(job.last_run_at)}</dd></div></dl>{job.last_error && <p className="muted">{job.last_error}</p>}<span className="card-chevron"><IconChevronRight size={18} /></span></button>
 }
 
 function formatTime(value?: null | string): string {

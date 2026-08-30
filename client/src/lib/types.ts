@@ -1,7 +1,19 @@
 import type {
+  AutomationBlueprint,
+  AutomationBlueprintField,
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
+  ConfigFieldSchema,
+  ConfigSchemaResponse,
+  CustomEndpoint,
+  CustomEndpointUpdate,
+  CustomEndpointsResponse,
+  EnvVarInfo,
   HermesConfigRecord,
+  MemoryProviderConfig as DesktopMemoryProviderConfig,
+  MemoryProviderField as DesktopMemoryProviderField,
+  MemoryProviderOAuthStatus,
+  MemoryStatusResponse as DesktopMemoryStatusResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelCapabilities,
@@ -10,18 +22,35 @@ import type {
   ModelOptionsResponse,
   MoaConfigResponse,
   MoaModelSlot,
+  OAuthPollResponse,
+  OAuthProvider,
+  OAuthProvidersResponse,
+  OAuthStartResponse,
   ProfilesResponse,
   SessionInfo,
   SessionMessage,
   SessionRuntimeInfo,
+  SkillInfo,
   StaleAuxAssignment,
-  StatusResponse
+  StatusResponse,
+  ToolEnvVar,
+  ToolProvider,
+  ToolsetInfo
 } from '../../../../desktop/src/types/hermes'
 
 export type {
+  AutomationBlueprint,
+  AutomationBlueprintField,
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
+  ConfigFieldSchema,
+  ConfigSchemaResponse,
+  CustomEndpoint,
+  CustomEndpointUpdate,
+  CustomEndpointsResponse,
+  EnvVarInfo,
   HermesConfigRecord,
+  MemoryProviderOAuthStatus,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelCapabilities,
@@ -30,12 +59,54 @@ export type {
   ModelOptionsResponse,
   MoaConfigResponse,
   MoaModelSlot,
+  OAuthPollResponse,
+  OAuthProvider,
+  OAuthProvidersResponse,
+  OAuthStartResponse,
   ProfilesResponse,
   SessionInfo,
   SessionMessage,
   SessionRuntimeInfo,
+  SkillInfo,
   StaleAuxAssignment,
-  StatusResponse
+  StatusResponse,
+  ToolEnvVar,
+  ToolProvider,
+  ToolsetInfo
+}
+
+// Mobile owns the view-model additions used by the profile settings screens.
+// The gateway has added optional provider diagnostics over time; keeping those
+// fields here avoids coupling the mobile client to the desktop/shared package.
+export type MemoryProviderFieldKind = DesktopMemoryProviderField['kind'] | 'boolean' | 'integer'
+
+export interface MemoryProviderField extends Omit<DesktopMemoryProviderField, 'kind' | 'value'> {
+  kind: MemoryProviderFieldKind
+  maximum?: number
+  minimum?: number
+  value: unknown
+  when?: Record<string, unknown>
+}
+
+export interface MemoryProviderConfig extends Omit<DesktopMemoryProviderConfig, 'fields'> {
+  fields: MemoryProviderField[]
+}
+
+export interface MemoryStatusProvider {
+  available?: boolean
+  configured: boolean
+  description: string
+  name: string
+  setup?: {
+    dependencies_installed?: boolean
+    external_dependencies?: Array<{ name?: string }>
+    pip_dependencies?: string[]
+  }
+  status?: string
+}
+
+export type MemoryStatusResponse = Omit<DesktopMemoryStatusResponse, 'providers'> & {
+  providers: MemoryStatusProvider[]
 }
 
 export type AuthMode = 'interactive' | 'token'

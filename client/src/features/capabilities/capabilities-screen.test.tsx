@@ -1,47 +1,33 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { capabilityById } from '~/features/capabilities/api'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 
 vi.mock('~/compat/primitives', () => ({
   Badge: ({ children }: { children: ReactNode }) => <span>{children}</span>
 }))
-vi.mock('~/features/shared/remote-resource', () => ({
-  RemoteResourceScreen: () => <div>Remote resource</div>
-}))
-vi.mock('~/features/models/models-screen', () => ({
-  ModelsScreen: () => <div>Dedicated models screen</div>
-}))
+
+afterEach(() => cleanup())
 
 describe('CapabilitiesScreen', () => {
-  it('presents providers and credentials as separate destinations', () => {
-    const onSelect = vi.fn()
-    render(<CapabilitiesScreen onBack={vi.fn()} onSelect={onSelect} />)
+  it('contains only Skills, Tools, and MCP at the capabilities root', () => {
+    render(<CapabilitiesScreen onBack={vi.fn()} onNavigate={vi.fn()} route={{ tab: 'capabilities', type: 'capabilities-root' }} />)
 
-    const providers = screen.getByRole('button', { name: /^Providers/ })
-    const credentials = screen.getByRole('button', { name: /^Credentials/ })
-
-    fireEvent.click(providers)
-    expect(onSelect).toHaveBeenLastCalledWith('providers')
-
-    fireEvent.click(credentials)
-    expect(onSelect).toHaveBeenLastCalledWith('credentials')
-
-    expect(capabilityById('providers')?.path).toBe('/api/model/info')
-    expect(capabilityById('credentials')?.path).toBe('/api/env')
+    expect(screen.getByRole('heading', { name: 'Capabilities' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Skills/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Tools/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^MCP/ })).toBeTruthy()
+    expect(screen.queryByText('Models')).toBeNull()
+    expect(screen.queryByText('Providers')).toBeNull()
+    expect(screen.queryByText('Credentials')).toBeNull()
   })
 
-  it('routes Models to the dedicated screen while Providers stays a generic resource', () => {
-    const { rerender } = render(<CapabilitiesScreen selected="models" onBack={vi.fn()} onSelect={vi.fn()} />)
+  it('navigates to a selected capabilities section', () => {
+    const onNavigate = vi.fn()
+    render(<CapabilitiesScreen onBack={vi.fn()} onNavigate={onNavigate} route={{ tab: 'capabilities', type: 'capabilities-root' }} />)
 
-    expect(screen.getByText('Dedicated models screen')).not.toBeNull()
-    expect(screen.queryByText('Remote resource')).toBeNull()
-
-    rerender(<CapabilitiesScreen selected="providers" onBack={vi.fn()} onSelect={vi.fn()} />)
-
-    expect(screen.getByText('Remote resource')).not.toBeNull()
-    expect(screen.queryByText('Dedicated models screen')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^MCP/ }))
+    expect(onNavigate).toHaveBeenLastCalledWith({ section: 'mcp', tab: 'capabilities', type: 'capabilities-section' })
   })
 })

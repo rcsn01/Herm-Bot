@@ -100,8 +100,8 @@ describe('deep link coordinator', () => {
   })
 
   it('keeps the loaded chat and selects Sessions when the current intent cannot resume', async () => {
-    pushRoute('more', { type: 'more-detail', tab: 'more', page: 'settings' })
-    setTab('more')
+    pushRoute('settings', { category: 'about', tab: 'settings', type: 'settings-category' })
+    setTab('settings')
     const coordinator = new DeepLinkCoordinator({
       resumeSession: vi.fn().mockRejectedValue(new Error('gone')),
       switchProfile: vi.fn()

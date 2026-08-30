@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useStore } from '@nanostores/react'
 
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { Badge, Button, Skeleton, Switch } from '~/compat/primitives'
@@ -8,8 +9,10 @@ import { CONFIG_SAVE_DEBOUNCE_MS, ContextWindowField, FallbackField, useDebounce
 import { modelsApi } from '~/features/models/api'
 import {
   REASONING_EFFORT_VALUES,
+  fallbackEntriesEqual,
   getConfigValue,
   isFastTier,
+  normalizeFallbackEntries,
   normalizeEffort,
   setConfigValue,
   type FallbackEntry
@@ -19,6 +22,7 @@ import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/feat
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useGateway } from '~/gateway/gateway-context'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { $preferences } from '~/state/store'
 import type { ModelOptionProvider, StaleAuxAssignment } from '~/lib/types'
 
@@ -58,20 +62,27 @@ interface ModelsScreenProps {
   onBack(): void
 }
 
+interface MainAssignmentDraft {
+  base_url?: string
+  model: string
+  provider: string
+}
+
 export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const gateway = useGateway()
   const queryClient = useQueryClient()
-  const preferences = $preferences.get()
+  const preferences = useStore($preferences)
   const profile = preferences.profile
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'models')
   const keyFor = (domain: string) => [...scopeKey, domain]
   const invalidateAll = () => queryClient.invalidateQueries({ queryKey: scopeKey })
+  const screenScope = currentGatewayScope()
 
-  const info = useQuery({ queryFn: () => modelsApi.getInfo(gateway, profile), queryKey: keyFor('info') })
-  const options = useQuery({ queryFn: () => modelsApi.getOptions(gateway, profile), queryKey: keyFor('options') })
-  const auxiliary = useQuery({ queryFn: () => modelsApi.getAuxiliary(gateway, profile), queryKey: keyFor('auxiliary') })
-  const config = useQuery({ queryFn: () => modelsApi.getConfig(gateway, profile), queryKey: keyFor('config') })
-  const moa = useQuery({ queryFn: () => modelsApi.getMoa(gateway, profile), queryKey: keyFor('moa') })
+  const info = useQuery({ queryFn: ({ signal }) => modelsApi.getInfo(gateway, profile, signal), queryKey: keyFor('info') })
+  const options = useQuery({ queryFn: ({ signal }) => modelsApi.getOptions(gateway, profile, signal), queryKey: keyFor('options') })
+  const auxiliary = useQuery({ queryFn: ({ signal }) => modelsApi.getAuxiliary(gateway, profile, signal), queryKey: keyFor('auxiliary') })
+  const config = useQuery({ queryFn: ({ signal }) => modelsApi.getConfig(gateway, profile, signal), queryKey: keyFor('config') })
+  const moa = useQuery({ queryFn: ({ signal }) => modelsApi.getMoa(gateway, profile, signal), queryKey: keyFor('moa') })
 
   const providers = useMemo<ModelOptionProvider[]>(() => options.data?.providers ?? [], [options.data])
   const mainModel = useMemo(
@@ -89,6 +100,21 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
     setSelectedModel(prev => prev || info.data.model)
   }, [info.data])
 
+  useEffect(() => {
+    setSelectedProvider('')
+    setSelectedModel('')
+    setApplying(false)
+    setApplyError(null)
+    setPendingConfirm(null)
+    setDeclined(false)
+    setStaleAux([])
+    setConfigError(null)
+    setEditingTask(null)
+    setAuxDraft({ model: '', provider: '' })
+    setAuxError(null)
+    setAuxApplying(false)
+  }, [preferences.remoteURL, profile])
+
   const selectedProviderRow = useMemo(() => providers.find(provider => provider.slug === selectedProvider), [providers, selectedProvider])
   const selectedProviderModels = selectedProviderRow?.models ?? []
   const providerSelectOptions = useMemo(() => ensureOption(providerOptions(providers), selectedProvider), [providers, selectedProvider])
@@ -98,30 +124,38 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   // acks and the retry carries confirm_expensive_model.
   const [applying, setApplying] = useState(false)
   const [applyError, setApplyError] = useState<string | null>(null)
-  const [pendingConfirm, setPendingConfirm] = useState<null | string>(null)
+  const [pendingConfirm, setPendingConfirm] = useState<null | { assignment: MainAssignmentDraft; message: string }>(null)
   const [declined, setDeclined] = useState(false)
   const [staleAux, setStaleAux] = useState<StaleAuxAssignment[]>([])
 
-  async function applyMain(confirm = false) {
-    if (!selectedProvider || !selectedModel) return
+  async function applyMain(confirm = false, requested?: MainAssignmentDraft) {
+    const assignment = requested ?? {
+      model: selectedModel,
+      provider: selectedProvider,
+      // Carry a custom provider's endpoint so switching does not discard it.
+      ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
+    }
+    if (!assignment.provider || !assignment.model) return
+    const scope = currentGatewayScope()
     setApplying(true)
     setApplyError(null)
     try {
       const result = await modelsApi.setAssignment(gateway, profile, {
-        model: selectedModel,
-        provider: selectedProvider,
+        ...assignment,
         scope: 'main',
-        // Carry a custom provider's endpoint so switching does not discard it.
-        ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {}),
         ...(confirm ? { confirm_expensive_model: true } : {})
       })
+      if (!isCurrentGatewayScope(scope)) return
       if (result.confirm_required) {
         if (confirm) {
           // Already acked — fail closed instead of recursing.
           setApplyError(result.confirm_message?.trim() || 'The gateway still refuses this model.')
           return
         }
-        setPendingConfirm(result.confirm_message?.trim() || 'This model may be expensive to run. Apply anyway?')
+        setPendingConfirm({
+          assignment,
+          message: result.confirm_message?.trim() || 'This model may be expensive to run. Apply anyway?'
+        })
         return
       }
       if (result.ok !== true) {
@@ -133,9 +167,9 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       setStaleAux(result.stale_aux ?? [])
       await invalidateAll()
     } catch (error) {
-      setApplyError(classifyGatewayError(error).message)
+      if (isCurrentGatewayScope(scope)) setApplyError(classifyGatewayError(error).message)
     } finally {
-      setApplying(false)
+      if (isCurrentGatewayScope(scope)) setApplying(false)
     }
   }
 
@@ -166,29 +200,57 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   )
   const writeAgentDefault = (key: string, value: string) => {
     if (!configData) return
-    const previous = configData
-    queryClient.setQueryData(keyFor('config'), setConfigValue(previous, key, value))
+    const scope = currentGatewayScope()
+    const configKey = keyFor('config')
+    const previous = queryClient.getQueryData(configKey) ?? configData
+    queryClient.setQueryData(configKey, setConfigValue(previous, key, value))
     void writePartialConfig(setConfigValue({}, key, value)).catch(error => {
-      queryClient.setQueryData(keyFor('config'), previous)
+      if (!isCurrentGatewayScope(scope)) return
+      const current = queryClient.getQueryData(configKey)
+      // Do not roll back a newer edit that landed while this request was in
+      // flight. TanStack may reuse structurally shared objects, so compare the
+      // value rather than object identity.
+      if (getConfigValue(current, key) === value) queryClient.setQueryData(configKey, previous)
       setConfigError(classifyGatewayError(error).message)
     })
   }
 
   const saveContext = useDebouncedSave(
     async (contextLength: number) => {
-      if (configData) queryClient.setQueryData(keyFor('config'), setConfigValue(configData, 'model_context_length', contextLength))
-      await writePartialConfig(setConfigValue({}, 'model_context_length', contextLength))
+      const scope = currentGatewayScope()
+      const configKey = keyFor('config')
+      const previous = queryClient.getQueryData(configKey) ?? configData
+      if (previous) queryClient.setQueryData(configKey, setConfigValue(previous, 'model_context_length', contextLength))
+      try {
+        await writePartialConfig(setConfigValue({}, 'model_context_length', contextLength))
+      } catch (error) {
+        const current = queryClient.getQueryData(configKey)
+        if (isCurrentGatewayScope(scope) && getConfigValue(current, 'model_context_length') === contextLength && previous) queryClient.setQueryData(configKey, previous)
+        throw error
+      }
     },
     CONFIG_SAVE_DEBOUNCE_MS,
-    error => setConfigError(classifyGatewayError(error).message)
+    error => { if (isCurrentGatewayScope(screenScope)) setConfigError(classifyGatewayError(error).message) },
+    () => currentGatewayScope().generation
   )
   const saveFallbacks = useDebouncedSave(
     async (entries: FallbackEntry[]) => {
-      if (configData) queryClient.setQueryData(keyFor('config'), setConfigValue(configData, 'fallback_providers', entries))
-      await writePartialConfig(setConfigValue({}, 'fallback_providers', entries))
+      const scope = currentGatewayScope()
+      const configKey = keyFor('config')
+      const previous = queryClient.getQueryData(configKey) ?? configData
+      if (previous) queryClient.setQueryData(configKey, setConfigValue(previous, 'fallback_providers', entries))
+      try {
+        await writePartialConfig(setConfigValue({}, 'fallback_providers', entries))
+      } catch (error) {
+        const current = queryClient.getQueryData(configKey)
+        const currentEntries = getConfigValue(current, 'fallback_providers')
+        if (isCurrentGatewayScope(scope) && fallbackEntriesEqual(normalizeFallbackEntries(currentEntries), entries) && previous) queryClient.setQueryData(configKey, previous)
+        throw error
+      }
     },
     CONFIG_SAVE_DEBOUNCE_MS,
-    error => setConfigError(classifyGatewayError(error).message)
+    error => { if (isCurrentGatewayScope(screenScope)) setConfigError(classifyGatewayError(error).message) },
+    () => currentGatewayScope().generation
   )
 
   // Auxiliary: draft edit state + actions.
@@ -224,23 +286,26 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   }
 
   async function submitAuxiliary(body: { model: string; provider: string; task: string }) {
+    const scope = currentGatewayScope()
     setAuxApplying(true)
     setAuxError(null)
     try {
       await modelsApi.setAssignment(gateway, profile, { scope: 'auxiliary', ...body, ...endpointForProvider(body.provider) })
+      if (!isCurrentGatewayScope(scope)) return
       setEditingTask(null)
       await invalidateAll()
     } catch (error) {
-      setAuxError(classifyGatewayError(error).message)
+      if (isCurrentGatewayScope(scope)) setAuxError(classifyGatewayError(error).message)
     } finally {
-      setAuxApplying(false)
+      if (isCurrentGatewayScope(scope)) setAuxApplying(false)
     }
   }
 
   async function resetAuxiliary() {
     if (!mainModel) return
+    const scope = currentGatewayScope()
     await submitAuxiliary({ model: mainModel.model, provider: mainModel.provider, task: '__reset__' })
-    setStaleAux([])
+    if (isCurrentGatewayScope(scope)) setStaleAux([])
   }
 
   function beginAuxiliaryEdit(task: string) {
@@ -286,6 +351,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
           <div className="models-controls">
             <ModelSelect
               ariaLabel="Provider"
+              disabled={applying}
               onChange={value => { setSelectedProvider(value); setSelectedModel('') }}
               options={providerSelectOptions}
               placeholder="Provider"
@@ -293,7 +359,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
             />
             <ModelSelect
               ariaLabel="Model"
-              disabled={!selectedProvider}
+              disabled={applying || !selectedProvider}
               onChange={setSelectedModel}
               options={ensureOption(modelOptions(selectedProviderModels), selectedModel)}
               placeholder="Model"
@@ -397,12 +463,20 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
 
       {moa.data && moa.data.presets && (
         <MoaEditor
+          connectionKey={preferences.remoteURL}
           gateway={gateway}
           moa={moa.data}
-          onMoaChange={next => queryClient.setQueryData(keyFor('moa'), next)}
-          onError={error => setAuxError(classifyGatewayError(error).message)}
+          onMoaChange={next => { if (isCurrentGatewayScope(screenScope)) queryClient.setQueryData(keyFor('moa'), next) }}
+          onError={error => {
+            if (!isCurrentGatewayScope(screenScope)) return
+            setAuxError(classifyGatewayError(error).message)
+            // Autosaves and preset writes are optimistic. Refetch the
+            // authoritative document after a failure instead of leaving a
+            // draft that never reached the gateway in the query cache.
+            void moa.refetch()
+          }}
           onSaved={(saved, savedProfile) => {
-            if (savedProfile === profile) queryClient.setQueryData(keyFor('moa'), saved)
+            if (savedProfile === profile && isCurrentGatewayScope(screenScope)) queryClient.setQueryData(keyFor('moa'), saved)
           }}
           profile={profile}
           providers={providers}
@@ -437,9 +511,13 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       {pendingConfirm !== null && (
         <ConfirmDialog
           confirmLabel="Apply anyway"
-          description={pendingConfirm}
+          description={pendingConfirm.message}
           onCancel={() => { setPendingConfirm(null); setDeclined(true) }}
-          onConfirm={() => { setPendingConfirm(null); void applyMain(true) }}
+          onConfirm={() => {
+            const request = pendingConfirm
+            setPendingConfirm(null)
+            void applyMain(true, request.assignment)
+          }}
           title="Confirm model change"
         />
       )}

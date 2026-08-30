@@ -11,15 +11,18 @@ import { emptyChatState } from '~/state/event-reducer'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 class ConnectionAwareGateway extends MemoryGateway {
+  activeProfile: null | string = null
   connected = false
 
   override async connect(profile?: null | string, options: { signal?: AbortSignal } = {}): Promise<void> {
     await super.connect(profile, options)
     this.connected = true
+    this.activeProfile = profile ?? null
   }
 
   override close(): void {
     this.connected = false
+    this.activeProfile = null
     super.close()
   }
 
@@ -40,6 +43,7 @@ beforeEach(() => {
   $sessions.set([])
   $connection.set({ authMode: 'token', error: null, phase: 'disconnected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
+  localStorage.clear()
 })
 
 afterEach(() => vi.restoreAllMocks())
@@ -79,7 +83,7 @@ describe('profile-scoped session mutations', () => {
     const requests: unknown[] = []
     const gateway = new MemoryGateway()
       .handle('/api/sessions/session%2F1', value => { requests.push(value); return {} })
-      .handle('/api/sessions/session%2F1?profile=client%20work%2Fios', value => { requests.push(value); return {} })
+      .handle('/api/sessions/session%2F1?profile=client+work%2Fios', value => { requests.push(value); return {} })
       .handle('session.list', () => ({ sessions: [] }))
     const controller = new GatewayController({} as never, gateway)
 
@@ -88,17 +92,17 @@ describe('profile-scoped session mutations', () => {
     await controller.deleteSession('session/1')
 
     expect(requests).toEqual([
-      expect.objectContaining({ body: { profile: 'client work/ios', title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session%2F1' }),
-      expect.objectContaining({ body: { archived: true, profile: 'client work/ios' }, method: 'PATCH', path: '/api/sessions/session%2F1' }),
-      expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session%2F1?profile=client%20work%2Fios' })
+      expect.objectContaining({ body: { profile: 'client work/ios', title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session%2F1?profile=client+work%2Fios' }),
+      expect.objectContaining({ body: { archived: true, profile: 'client work/ios' }, method: 'PATCH', path: '/api/sessions/session%2F1?profile=client+work%2Fios' }),
+      expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session%2F1?profile=client+work%2Fios' })
     ])
     controller.dispose()
   })
 
-  it('omits profile addressing for the default profile', async () => {
+  it('addresses the default profile explicitly', async () => {
     const requests: unknown[] = []
     const gateway = new MemoryGateway()
-      .handle('/api/sessions/session-1', value => { requests.push(value); return {} })
+      .handle('/api/sessions/session-1?profile=default', value => { requests.push(value); return {} })
       .handle('session.list', () => ({ sessions: [] }))
     const controller = new GatewayController({} as never, gateway)
 
@@ -106,8 +110,12 @@ describe('profile-scoped session mutations', () => {
     await controller.deleteSession('session-1')
 
     expect(requests).toEqual([
-      expect.objectContaining({ body: { title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session-1' }),
-      expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session-1' })
+      expect.objectContaining({ body: { profile: 'default', title: 'Renamed' }, method: 'PATCH', path: '/api/sessions/session-1?profile=default' }),
+      expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session-1?profile=default' })
+    ])
+    expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => call.value)).toEqual([
+      { limit: 200, profile: 'default' },
+      { limit: 200, profile: 'default' }
     ])
     controller.dispose()
   })
@@ -240,6 +248,154 @@ describe('connection restoration', () => {
     controller.dispose()
   })
 
+  it('retains the cached session while an intentional background close reconnects', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    $chat.set({ ...emptyChatState(), storedSessionId: 'stored-1' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.resume', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' },
+        messages: [{ content: 'restored', role: 'assistant' }],
+        session_id: 'runtime-restored'
+      }))
+      .handle('session.history', () => ({ messages: [{ content: 'reconciled', role: 'assistant' }] }))
+      .handle('session.list', () => ({ sessions: [] })) as ConnectionAwareGateway
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+    expect($connection.get().phase).toBe('connected')
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-restored', storedSessionId: 'stored-1' })
+
+    let releaseReconnect!: () => void
+    const reconnectGate = new Promise<void>(resolve => { releaseReconnect = resolve })
+    const originalConnect = gateway.connect.bind(gateway)
+    vi.spyOn(gateway, 'connect').mockImplementationOnce(async (profile, options) => {
+      await reconnectGate
+      return originalConnect(profile, options)
+    })
+    const lifecycleHandler = capacitorApp.addListener.mock.calls[0]?.[1] as ((state: { isActive: boolean }) => void)
+
+    lifecycleHandler({ isActive: false })
+    expect($connection.get().phase).toBe('reconnecting')
+    expect($chat.get().runtimeSessionId).toBe('runtime-restored')
+    expect($chat.get().messages).toEqual([{ content: 'restored', id: 'history-0', role: 'assistant', streaming: false }])
+
+    lifecycleHandler({ isActive: true })
+    await vi.waitFor(() => expect(gateway.connect).toHaveBeenCalledOnce())
+    expect($connection.get().phase).toBe('reconnecting')
+    expect($chat.get().runtimeSessionId).toBe('runtime-restored')
+
+    releaseReconnect()
+    await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
+    expect($chat.get().messages).toEqual([{ content: 'reconciled', id: 'history-0', role: 'assistant', streaming: false }])
+    controller.dispose()
+  })
+
+  it('lets the latest foreground reconnect win when resume fires twice', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    let createCount = 0
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT },
+        session_id: `runtime-${++createCount}`
+      }))
+      .handle('session.history', () => ({ messages: [] }))
+      .handle('session.list', () => ({ sessions: [] })) as ConnectionAwareGateway
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+    let releaseFirst!: () => void
+    let firstSettled = false
+    const firstReconnect = new Promise<void>(resolve => { releaseFirst = resolve })
+    const originalConnect = gateway.connect.bind(gateway)
+    const connect = vi.spyOn(gateway, 'connect').mockImplementationOnce(async (profile, options) => {
+      try {
+        await firstReconnect
+        return await originalConnect(profile, options)
+      } finally {
+        firstSettled = true
+      }
+    })
+    const lifecycleHandler = capacitorApp.addListener.mock.calls[0]?.[1] as ((state: { isActive: boolean }) => void)
+
+    lifecycleHandler({ isActive: false })
+    lifecycleHandler({ isActive: true })
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce())
+    lifecycleHandler({ isActive: true })
+
+    await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
+    expect($chat.get().runtimeSessionId).toBe('runtime-2')
+
+    releaseFirst()
+    await vi.waitFor(() => expect(firstSettled).toBe(true))
+    expect($connection.get().phase).toBe('connected')
+    controller.dispose()
+  })
+
+  it('surfaces authentication failure after a foreground reconnect', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    let createCount = 0
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => {
+        if (++createCount === 1) return { info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-initial' }
+        throw Object.assign(new Error('Unauthorized'), { status: 401 })
+      })
+      .handle('session.list', () => ({ sessions: [] })) as ConnectionAwareGateway
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+    const lifecycleHandler = capacitorApp.addListener.mock.calls[0]?.[1] as ((state: { isActive: boolean }) => void)
+    lifecycleHandler({ isActive: false })
+    lifecycleHandler({ isActive: true })
+
+    await vi.waitFor(() => expect($connection.get().phase).toBe('error'))
+    expect($connection.get().error).toBe('Your Hermes session expired. Sign in again.')
+
+    lifecycleHandler({ isActive: false })
+    lifecycleHandler({ isActive: true })
+    expect($connection.get().phase).toBe('connecting')
+    await vi.waitFor(() => expect($connection.get().phase).toBe('error'))
+    controller.dispose()
+  })
+
+  it('does not let a foreground event undo an in-progress logout', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    let releaseLogout!: () => void
+    const logoutGate = new Promise<void>(resolve => { releaseLogout = resolve })
+    const connection = {
+      logout: vi.fn(() => logoutGate),
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-initial' }))
+      .handle('session.list', () => ({ sessions: [] })) as ConnectionAwareGateway
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+    const lifecycleHandler = capacitorApp.addListener.mock.calls[0]?.[1] as ((state: { isActive: boolean }) => void)
+    const signingOut = controller.logout()
+    await vi.waitFor(() => expect(connection.logout).toHaveBeenCalledOnce())
+
+    lifecycleHandler({ isActive: true })
+    expect($connection.get().phase).toBe('disconnected')
+
+    releaseLogout()
+    await signingOut
+    expect($connection.get().phase).toBe('disconnected')
+    expect($chat.get().runtimeSessionId).toBeNull()
+    expect($sessions.get()).toEqual([])
+    expect(gateway.calls.filter(call => call.kind === 'connect')).toHaveLength(1)
+    controller.dispose()
+  })
+
   it('opens a fresh session when a saved session no longer exists', async () => {
     $chat.set({ ...emptyChatState(), storedSessionId: 'deleted-session' })
     const connection = {
@@ -255,6 +411,94 @@ describe('connection restoration', () => {
 
     expect($connection.get()).toMatchObject({ error: null, phase: 'connected' })
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new', storedSessionId: null })
+    controller.dispose()
+  })
+
+  it('does not report connected when the profile session refresh fails', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-new' }))
+      .handle('session.list', () => { throw new Error('session list unavailable') })
+    const controller = new GatewayController(connection as never, gateway)
+
+    await expect(controller.connect()).rejects.toThrow('session list unavailable')
+
+    expect($connection.get()).toMatchObject({ phase: 'error' })
+    expect($connection.get().error).toContain('session list unavailable')
+    controller.dispose()
+  })
+
+  it('does not publish a session list after the captured profile changes mid-connect', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    let releaseList!: () => void
+    const listGate = new Promise<void>(resolve => { releaseList = resolve })
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-default' }))
+      .handle('session.list', params => {
+        expect(params).toMatchObject({ limit: 200, profile: 'default' })
+        return listGate.then(() => ({ sessions: [{ id: 'default-session' }] }))
+      })
+    const controller = new GatewayController(connection as never, gateway)
+
+    const connecting = controller.connect()
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'rpc' && call.method === 'session.list')).toBe(true))
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    releaseList()
+    await connecting
+
+    expect($sessions.get()).toEqual([])
+    expect($connection.get().phase).toBe('connecting')
+    controller.dispose()
+  })
+
+  it('opens the selected profile after a delayed connection is superseded', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    let releaseInitial!: () => void
+    const initialGate = new Promise<void>(resolve => { releaseInitial = resolve })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+    const originalConnect = gateway.connect.bind(gateway)
+    let delayInitial = true
+    const connect = vi.spyOn(gateway, 'connect').mockImplementation(async (profile, options = {}) => {
+      if (delayInitial) {
+        delayInitial = false
+        await initialGate
+      }
+      return originalConnect(profile, options)
+    })
+    gateway
+      .handle('session.create', params => {
+        const profile = (params as { profile: string }).profile
+        return { info: { desktop_contract: MINIMUM_CONTRACT }, session_id: `runtime-${profile}` }
+      })
+      .handle('session.list', params => ({ sessions: [{ id: `${(params as { profile: string }).profile}-session` }] }))
+    const controller = new GatewayController(connection as never, gateway)
+
+    const initialConnect = controller.connect()
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce())
+
+    const switching = controller.switchProfile('work')
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2))
+    await switching
+
+    expect(connect.mock.calls.map(([profile]) => profile ?? null)).toEqual([null, 'work'])
+    expect(gateway.activeProfile).toBe('work')
+    expect($preferences.get().profile).toBe('work')
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-work', storedSessionId: null })
+    expect($sessions.get()).toEqual([{ id: 'work-session' }])
+
+    releaseInitial()
+    await initialConnect
+    expect(gateway.activeProfile).toBe('work')
+    expect($chat.get().runtimeSessionId).toBe('runtime-work')
     controller.dispose()
   })
 })
@@ -294,22 +538,22 @@ describe('backend compatibility', () => {
   it('accepts baseline and unversioned legacy gateways', async () => {
     let calls = 0
     const gateway = new MemoryGateway().handle('session.create', () => ++calls === 1
-      ? { info: { desktop_contract: 3 }, session_id: 'runtime-baseline' }
+      ? { info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-baseline' }
       : { info: {}, session_id: 'runtime-unversioned' })
     const controller = new GatewayController({} as never, gateway)
 
     await controller.newSession()
-    expect($chat.get()).toMatchObject({ contractVersion: 3, runtimeSessionId: 'runtime-baseline' })
+    expect($chat.get()).toMatchObject({ contractVersion: MINIMUM_CONTRACT, runtimeSessionId: 'runtime-baseline' })
 
     await controller.newSession()
     expect($chat.get()).toMatchObject({ contractVersion: null, runtimeSessionId: 'runtime-unversioned' })
     controller.dispose()
   })
 
-  it('rejects an older contract and accepts the minimum supported contract', async () => {
+  it('rejects a pre-contract-6 gateway and accepts the minimum supported contract', async () => {
     let calls = 0
     const gateway = new MemoryGateway().handle('session.create', () => ++calls === 1
-      ? { info: { desktop_contract: MINIMUM_CONTRACT - 1 }, session_id: 'runtime-old' }
+      ? { info: { desktop_contract: 5 }, session_id: 'runtime-old' }
       : { info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-current' })
     const controller = new GatewayController({} as never, gateway)
 

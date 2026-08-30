@@ -56,6 +56,10 @@ describe('session runtime', () => {
     const result = await runtime.open({ profile: null, storedSessionId: 'missing' })
 
     expect(result).toMatchObject({ resumed: false, session: { runtimeSessionId: 'runtime-new' } })
+    expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => call.value)).toEqual([
+      { profile: 'default', session_id: 'missing', source: 'ios' },
+      { profile: 'default', source: 'ios' }
+    ])
   })
 
   it('does not treat a generic 404 or server message as a missing bookmark', async () => {

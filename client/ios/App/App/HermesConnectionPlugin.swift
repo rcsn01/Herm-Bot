@@ -110,8 +110,9 @@ public final class HermesConnectionPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc public func upload(_ call: CAPPluginCall) {
-        let path = call.getString("path") ?? ""
-        guard isAllowedPath(path) else { return call.reject("Only Hermes API paths are allowed.") }
+        let rawPath = call.getString("path") ?? ""
+        guard isAllowedPath(rawPath) else { return call.reject("Only Hermes API paths are allowed.") }
+        let path = path(rawPath, withProfile: call.getString("profile"))
         guard let base64 = call.getString("dataBase64") else { return call.reject("Invalid upload data.") }
         guard base64.utf8.count <= 67 * 1_024 * 1_024 else { return call.reject("The upload exceeds the 50 MB mobile bridge limit.", "FILE_TOO_LARGE") }
         guard let data = Data(base64Encoded: base64) else { return call.reject("Invalid upload data.") }
@@ -394,17 +395,17 @@ public final class HermesConnectionPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         components.queryItems = [URLQueryItem(name: authName, value: authValue)]
-        if let profile, !profile.isEmpty { components.queryItems?.append(URLQueryItem(name: "profile", value: profile)) }
+        components.queryItems?.append(URLQueryItem(name: "profile", value: profile ?? "default"))
         guard let url = components.url else { return call.reject("Could not construct the gateway WebSocket URL.") }
         call.resolve(["url": url.absoluteString])
     }
 
     private func path(_ path: String, withProfile profile: String?) -> String {
-        guard let profile, !profile.isEmpty,
-              var components = URLComponents(string: path) else { return path }
+        guard var components = URLComponents(string: path) else { return path }
+        guard let profile else { return path }
         var items = components.queryItems ?? []
         items.removeAll { $0.name == "profile" }
-        items.append(URLQueryItem(name: "profile", value: profile))
+        items.append(URLQueryItem(name: "profile", value: profile.isEmpty ? "default" : profile))
         components.queryItems = items
         return components.string ?? path
     }

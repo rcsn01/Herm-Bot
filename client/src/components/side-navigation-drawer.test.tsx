@@ -46,20 +46,19 @@ beforeEach(() => {
 })
 
 describe('SideNavigationDrawer', () => {
-  it('shows primary navigation and session controls, with Settings left inside More', () => {
+  it('shows the exact primary order and keeps recent sessions below it', () => {
     const { onClose, onNavigate } = renderDrawer()
 
     expect(screen.getByText('Hermes')).not.toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Operations' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'More' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Sessions' })).not.toBeNull()
+    const primary = screen.getByRole('navigation', { name: 'Primary navigation' })
+    expect([...primary.querySelectorAll('button')].map(button => button.textContent?.trim())).toEqual(['Capabilities', 'Cron Jobs', 'Settings', 'Sessions'])
+    expect(screen.getByRole('button', { name: 'Recent sessions' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'New session' })).not.toBeNull()
-    expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'More' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'More' }))
-    expect(onNavigate).toHaveBeenCalledWith('more')
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(onNavigate).toHaveBeenCalledWith('settings')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
