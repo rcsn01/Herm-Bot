@@ -30,7 +30,7 @@ vi.mock('~/components/chat-screen', async () => {
 })
 vi.mock('~/features/settings/settings-screen', () => ({ applyTheme: vi.fn(), SettingsScreen: () => <div>Settings screen</div> }))
 vi.mock('~/features/capabilities/capabilities-screen', () => ({ CapabilitiesScreen: () => <div>Capabilities screen</div> }))
-vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: () => <div>Cron screen</div> }))
+vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: { onOpenSession?(sessionId: string): Promise<void> }) => <div>Cron screen{onOpenSession && <button onClick={() => void onOpenSession('cron-session-1')}>Open run session</button>}</div> }))
 
 import { App } from '~/app'
 import { emptyChatState } from '~/state/event-reducer'
@@ -84,6 +84,19 @@ describe('App navigation', () => {
     expect(screen.getByText('Settings screen')).not.toBeNull()
   })
 
+  it('resumes a cron run session and returns to chat', async () => {
+    render(<App />)
+    openDrawer()
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
+
+    await act(async () => undefined)
+    expect(controller.resumeSession).toHaveBeenCalledWith('cron-session-1')
+    expect(screen.queryByText('Cron screen')).toBeNull()
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+  })
+
   it('keeps the active ChatScreen instance through drawer toggles and destination round trips', () => {
     render(<App />)
     const chat = screen.getByTestId('chat-instance')
@@ -96,7 +109,7 @@ describe('App navigation', () => {
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
     openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Recent sessions' }))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
   })
 

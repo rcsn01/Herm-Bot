@@ -151,6 +151,7 @@ export interface StoredSession {
 
 export interface TranscriptMessage {
   content: string
+  displayKind?: string
   id: string
   reasoning?: string
   role: 'assistant' | 'system' | 'tool' | 'user'

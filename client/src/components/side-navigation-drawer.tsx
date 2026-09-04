@@ -34,8 +34,7 @@ interface SwipeStart {
 export const PRIMARY_NAVIGATION = [
   { icon: IconBolt, label: 'Capabilities', tab: 'capabilities' },
   { icon: IconCalendarClock, label: 'Cron Jobs', tab: 'cron' },
-  { icon: IconAdjustments, label: 'Settings', tab: 'settings' },
-  { icon: IconAdjustments, label: 'Sessions', tab: 'sessions' }
+  { icon: IconAdjustments, label: 'Settings', tab: 'settings' }
 ] as const
 
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'

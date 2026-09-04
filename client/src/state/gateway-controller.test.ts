@@ -60,6 +60,21 @@ describe('session identity and history mapping', () => {
     ])
   })
 
+  it('projects internal timeline rows as compact activity instead of user messages', () => {
+    const messages = toTranscript([
+      { role: 'user', content: '[ASYNC DELEGATION COMPLETE — deleg_typed]\nagent result', display_kind: 'async_delegation_complete', display_metadata: { task_count: 1 }, row_id: 39 },
+      { role: 'user', content: '[ASYNC DELEGATION BATCH COMPLETE — deleg_legacy]\nA background fan-out of 3 subagent(s) you dispatched earlier has finished. All ran in parallel and waited on each other; their consolidated results are below.', row_id: 40 },
+      { role: 'user', content: 'internal handoff', display_kind: 'hidden', row_id: 41 },
+      { role: 'user', content: 'switch payload', display_kind: 'model_switch', row_id: 42 }
+    ] as never)
+
+    expect(messages).toEqual([
+      { content: '1 background agent finished', displayKind: 'async_delegation_complete', id: 'history-row-39', reasoning: undefined, role: 'system', rowId: 39, streaming: false },
+      { content: '3 background agents finished', displayKind: 'async_delegation_complete', id: 'history-row-40', reasoning: undefined, role: 'system', rowId: 40, streaming: false },
+      { content: 'model changed', displayKind: 'model_switch', id: 'history-row-42', reasoning: undefined, role: 'system', rowId: 42, streaming: false }
+    ])
+  })
+
   it('hydrates the current gateway projection and keeps durable row identity separate', () => {
     const messages = toTranscript([
       { role: 'user', content: 'model-only', display_content: 'visible', row_id: 41, text: 'fallback' },

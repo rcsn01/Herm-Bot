@@ -87,9 +87,9 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
           </div>
         )}
         {chat.messages.map((message, index) => (
-          <article className={`message ${message.role}`} key={message.id}>
+          <article className={`message ${message.role}${message.displayKind ? ' timeline-event' : ''}`} key={message.id}>
             <div className="message-meta">
-              <span>{message.role === 'assistant' ? 'Hermes' : message.role}</span>
+              <span>{message.displayKind ? 'Activity' : message.role === 'assistant' ? 'Hermes' : message.role}</span>
               {message.streaming && <Badge variant="muted">Streaming</Badge>}
             </div>
             {message.reasoning && <details><summary>Reasoning</summary><pre>{message.reasoning}</pre></details>}

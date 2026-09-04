@@ -134,6 +134,20 @@ describe('transcript rendering and durable edits', () => {
     expect(screen.getByText('25 / 100')).not.toBeNull()
   })
 
+  it('labels internal timeline events as activity rather than user messages', () => {
+    $chat.set({
+      ...emptyChatState(),
+      messages: [{ content: '3 background agents finished', displayKind: 'async_delegation_complete', id: 'event-1', role: 'system' }]
+    })
+
+    render(<ChatScreen controller={controllerStub()} />)
+
+    const event = screen.getByText('3 background agents finished').closest('article')!
+    expect(event.classList.contains('timeline-event')).toBe(true)
+    expect(event.textContent).toContain('Activity')
+    expect(event.textContent).not.toContain('User')
+  })
+
   it('disables destructive edits for optimistic messages and while running', () => {
     $chat.set({
       ...emptyChatState(),

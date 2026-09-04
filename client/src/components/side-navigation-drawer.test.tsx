@@ -52,7 +52,7 @@ describe('SideNavigationDrawer', () => {
     expect(screen.getByText('Hermes')).not.toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
     const primary = screen.getByRole('navigation', { name: 'Primary navigation' })
-    expect([...primary.querySelectorAll('button')].map(button => button.textContent?.trim())).toEqual(['Capabilities', 'Cron Jobs', 'Settings', 'Sessions'])
+    expect([...primary.querySelectorAll('button')].map(button => button.textContent?.trim())).toEqual(['Capabilities', 'Cron Jobs', 'Settings'])
     expect(screen.getByRole('button', { name: 'Recent sessions' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'New session' })).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'More' })).toBeNull()
@@ -77,9 +77,9 @@ describe('SideNavigationDrawer', () => {
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
   })
 
-  it('returns to the current chat without a session RPC', () => {
+  it('returns to the current chat from Recent sessions without a session RPC', () => {
     const { controller, onClose, onNavigate } = renderDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Recent sessions' }))
 
     expect(onNavigate).toHaveBeenCalledWith('sessions')
     expect(onClose).toHaveBeenCalledOnce()

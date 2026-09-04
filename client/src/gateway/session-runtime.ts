@@ -276,7 +276,7 @@ export class SessionRuntime implements GatewayPort {
 }
 
 export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage[] {
-  return messages.map((message, index) => {
+  return messages.flatMap((message, index) => {
     const projected = message as SessionMessage & {
       context?: unknown
       display_content?: unknown
@@ -287,23 +287,64 @@ export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage
       row_id?: unknown
       text?: unknown
     }
-    const role = (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role']
+    const storedRole = (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role']
     const contentValue = projected.display_content !== undefined
       ? projected.display_content
-      : projected.content ?? projected.text ?? (role === 'tool' ? projected.context ?? projected.name : undefined)
+      : projected.content ?? projected.text ?? (storedRole === 'tool' ? projected.context ?? projected.name : undefined)
+    const rawContent = typeof contentValue === 'string' ? contentValue : ''
+    const displayKind = typeof projected.display_kind === 'string'
+      ? projected.display_kind
+      : inferLegacyDisplayKind(storedRole, rawContent)
+    if (displayKind === 'hidden') return []
+
     const rowIdValue = projected.row_id ?? projected.id
     const rowId = typeof rowIdValue === 'number' && Number.isInteger(rowIdValue) ? rowIdValue : undefined
     const reasoningValue = projected.reasoning ?? projected.reasoning_content
+    const timelineContent = timelineDisplayContent(displayKind, projected.display_metadata, rawContent)
 
-    return {
-      content: typeof contentValue === 'string' ? contentValue : '',
+    return [{
+      content: timelineContent ?? rawContent,
+      ...(timelineContent === null ? {} : { displayKind }),
       id: rowId === undefined ? `history-${index}` : `history-row-${rowId}`,
       reasoning: typeof reasoningValue === 'string' ? reasoningValue : undefined,
-      role,
+      role: timelineContent === null ? storedRole : 'system',
       ...(rowId === undefined ? {} : { rowId }),
       streaming: false
-    }
+    }]
   })
+}
+
+function inferLegacyDisplayKind(role: TranscriptMessage['role'], content: string): string | undefined {
+  if (role !== 'user') return undefined
+  if (/^\[ASYNC DELEGATION (?:BATCH )?COMPLETE\s+[—-]\s+deleg_[^\]\n]+\]\s*\nA background (?:fan-out|subagent)\b/.test(content)) {
+    return 'async_delegation_complete'
+  }
+  return undefined
+}
+
+function timelineDisplayContent(displayKind: string | undefined, metadata: SessionMessage['display_metadata'], content = ''): string | null {
+  if (displayKind === 'model_switch') return 'model changed'
+  if (displayKind === 'auto_continue') return 'resumed interrupted turn'
+  if (displayKind === 'personality_switch') return 'personality changed'
+  if (displayKind !== 'async_delegation_complete') return null
+
+  const parsed = parseDisplayMetadata(metadata)
+  const countFromMetadata = parsed && typeof parsed.task_count === 'number' ? parsed.task_count : undefined
+  const countFromLegacyText = content.match(/A background fan-out of (\d+) subagent\(s\)/)?.[1]
+  const count = countFromMetadata ?? (countFromLegacyText ? Number(countFromLegacyText) : content.startsWith('[ASYNC DELEGATION COMPLETE ') ? 1 : undefined)
+  return count === undefined ? 'background agent work finished' : `${count} background agent${count === 1 ? '' : 's'} finished`
+}
+
+function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): Record<string, unknown> | null {
+  let parsed: unknown = metadata
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return null
+    }
+  }
+  return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
 }
 
 function isConfirmedMissingSession(error: GatewayError): boolean {

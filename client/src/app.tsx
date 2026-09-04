@@ -89,7 +89,7 @@ export function App() {
           <ChatScreen controller={controller} />
         </div>
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-        {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onNavigate={route => pushRoute('cron', route)} route={routeForCron(activeRoute)} />}
+        {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
         {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => popRoute('settings')} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
       </MobileShell>
     </GatewayProvider>
