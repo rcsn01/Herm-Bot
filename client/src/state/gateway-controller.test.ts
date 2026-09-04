@@ -6,7 +6,7 @@ vi.mock('@capacitor/app', () => ({ App: { addListener: capacitorApp.addListener 
 
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT, toTranscript } from '~/state/gateway-controller'
-import { $chat, $connection, $preferences, $sessions } from '~/state/store'
+import { $chat, $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { emptyChatState } from '~/state/event-reducer'
 import { MemoryGateway } from '~/test/memory-gateway'
 
@@ -41,6 +41,8 @@ beforeEach(() => {
   capacitorApp.addListener.mockReset().mockResolvedValue({ remove: vi.fn() })
   $chat.set(emptyChatState())
   $sessions.set([])
+  $sessionsHasMore.set(false)
+  $sessionsLoadingMore.set(false)
   $connection.set({ authMode: 'token', error: null, phase: 'disconnected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
   localStorage.clear()
@@ -129,8 +131,88 @@ describe('profile-scoped session mutations', () => {
       expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session-1?profile=default' })
     ])
     expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => call.value)).toEqual([
-      { limit: 200, profile: 'default' },
-      { limit: 200, profile: 'default' }
+      { limit: 30, profile: 'default' },
+      { limit: 30, profile: 'default' }
+    ])
+    controller.dispose()
+  })
+})
+
+describe('incremental session loading', () => {
+  it('loads a bounded latest transcript page and prepends older pages', async () => {
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' },
+        session_id: 'runtime-1'
+      }))
+      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [
+          { content: 'recent question', role: 'user', row_id: 81 },
+          { content: 'recent answer', role: 'assistant', row_id: 82 }
+        ],
+        pagination: { limit: 2, offset: 0, returned: 2 }
+      }))
+      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=2&order=latest&profile=default', () => ({
+        messages: [{ content: 'older answer', role: 'assistant', row_id: 80 }],
+        pagination: { limit: 2, offset: 2, returned: 1 }
+      }))
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.resumeSession('stored-1')
+
+    expect($chat.get()).toMatchObject({ historyHasMore: true, historyNextOffset: 2 })
+    expect($chat.get().messages.map(message => message.content)).toEqual(['recent question', 'recent answer'])
+
+    await controller.loadOlderMessages()
+
+    expect($chat.get()).toMatchObject({ historyHasMore: false, historyLoadingOlder: false, historyNextOffset: 3 })
+    expect($chat.get().messages.map(message => message.content)).toEqual(['older answer', 'recent question', 'recent answer'])
+    controller.dispose()
+  })
+
+  it('falls back to live history when a resumed session is not yet available through REST', async () => {
+    $chat.set({ ...emptyChatState(), storedSessionId: 'stored-1' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' },
+        session_id: 'runtime-1'
+      }))
+      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => {
+        throw Object.assign(new Error('Session not found'), { status: 404 })
+      })
+      .handle('session.history', () => ({ messages: [{ content: 'live answer', role: 'assistant' }] }))
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.connect()
+
+    expect($connection.get()).toMatchObject({ error: null, phase: 'connected' })
+    expect($chat.get().messages.map(message => message.content)).toEqual(['live answer'])
+    controller.dispose()
+  })
+
+  it('starts with a bounded session list and expands it on demand', async () => {
+    const gateway = new MemoryGateway().handle('session.list', params => {
+      const limit = (params as { limit: number }).limit
+      return {
+        sessions: Array.from({ length: limit === 30 ? 30 : 31 }, (_, index) => ({ id: `session-${index}` }))
+      }
+    })
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.refreshSessions()
+    expect($sessions.get()).toHaveLength(30)
+    expect($sessionsHasMore.get()).toBe(true)
+
+    await controller.loadMoreSessions()
+    expect($sessions.get()).toHaveLength(31)
+    expect($sessionsHasMore.get()).toBe(false)
+    expect(gateway.calls.filter(call => call.method === 'session.list').map(call => call.value)).toEqual([
+      { limit: 30, profile: 'default' },
+      { limit: 60, profile: 'default' }
     ])
     controller.dispose()
   })
@@ -258,8 +340,31 @@ describe('connection restoration', () => {
 
     gateway.close()
 
-    expect($connection.get().phase).toBe('disconnected')
-    await expect(controller.resumeSession('stored-1')).rejects.toThrow('gateway not connected')
+    await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
+    expect(gateway.calls.filter(call => call.kind === 'connect')).toHaveLength(3)
+    expect(gateway.connected).toBe(true)
+    controller.dispose()
+  })
+
+  it('reconnects when the foreground transport drops after being connected', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-new' }))
+      .handle('session.history', () => ({ messages: [] }))
+      .handle('session.list', () => ({ sessions: [] })) as ConnectionAwareGateway
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+    expect($connection.get().phase).toBe('connected')
+
+    gateway.close()
+
+    await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
+    expect(gateway.calls.filter(call => call.kind === 'connect')).toHaveLength(2)
+    await expect(controller.newSession()).resolves.toBeUndefined()
     controller.dispose()
   })
 
@@ -271,11 +376,15 @@ describe('connection restoration', () => {
     }
     const gateway = new ConnectionAwareGateway()
       .handle('session.resume', () => ({
-        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' },
+        info: { desktop_contract: MINIMUM_CONTRACT },
         messages: [{ content: 'restored', role: 'assistant' }],
-        session_id: 'runtime-restored'
+        session_id: 'runtime-restored',
+        session_key: 'stored-1'
       }))
-      .handle('session.history', () => ({ messages: [{ content: 'reconciled', role: 'assistant' }] }))
+      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ content: 'reconciled', role: 'assistant' }],
+        pagination: { limit: 80, offset: 0, returned: 1 }
+      }))
       .handle('session.list', () => ({ sessions: [] })) as ConnectionAwareGateway
     const controller = new GatewayController(connection as never, gateway)
 
@@ -295,7 +404,7 @@ describe('connection restoration', () => {
     lifecycleHandler({ isActive: false })
     expect($connection.get().phase).toBe('reconnecting')
     expect($chat.get().runtimeSessionId).toBe('runtime-restored')
-    expect($chat.get().messages).toEqual([{ content: 'restored', id: 'history-0', role: 'assistant', streaming: false }])
+    expect($chat.get().messages).toEqual([{ content: 'reconciled', id: 'history-0', role: 'assistant', streaming: false }])
 
     lifecycleHandler({ isActive: true })
     await vi.waitFor(() => expect(gateway.connect).toHaveBeenCalledOnce())
@@ -456,7 +565,7 @@ describe('connection restoration', () => {
     const gateway = new ConnectionAwareGateway()
       .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-default' }))
       .handle('session.list', params => {
-        expect(params).toMatchObject({ limit: 200, profile: 'default' })
+        expect(params).toMatchObject({ limit: 30, profile: 'default' })
         return listGate.then(() => ({ sessions: [{ id: 'default-session' }] }))
       })
     const controller = new GatewayController(connection as never, gateway)
@@ -526,7 +635,7 @@ describe('session selection lifecycle', () => {
       const sessionId = (params as { session_id: string }).session_id
       if (sessionId === 'first') return first
       return { info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: sessionId }, session_id: `runtime-${sessionId}` }
-    }).handle('session.history', () => ({ messages: [] }))
+    }).handle('/api/sessions/second/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({ messages: [] }))
     const controller = new GatewayController({} as never, gateway)
 
     const stale = controller.resumeSession('first')

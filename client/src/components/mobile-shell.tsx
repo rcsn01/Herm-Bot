@@ -64,7 +64,7 @@ export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer
     <>
       <div
         aria-busy={reconnecting}
-        className={`mobile-shell${reconnecting ? ' reconnecting' : ''}`}
+        className={`mobile-shell${drawerOpen ? ' drawer-open' : ''}${reconnecting ? ' reconnecting' : ''}`}
         inert={reconnecting ? true : undefined}
         onClickCapture={blockInteraction}
         onKeyDownCapture={blockInteraction}
@@ -73,7 +73,7 @@ export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer
         {header}
         {drawer}
         {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
-        <main className="view-container" onTouchEnd={finishGesture} onTouchMove={trackGesture} onTouchStart={startGesture} ref={scroller}>
+        <main className="view-container" inert={drawerOpen ? true : undefined} onTouchEnd={finishGesture} onTouchMove={trackGesture} onTouchStart={startGesture} ref={scroller}>
           {children}
         </main>
       </div>

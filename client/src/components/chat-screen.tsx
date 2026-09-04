@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -14,11 +14,12 @@ import { errorMessage, type GatewayController } from '~/state/gateway-controller
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
 
 interface ChatScreenProps {
+  active?: boolean
   controller: GatewayController
   mediaConnection?: ChatMediaConnection
 }
 
-export function ChatScreen({ controller, mediaConnection = HermesConnection }: ChatScreenProps) {
+export function ChatScreen({ active = true, controller, mediaConnection = HermesConnection }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
   const queued = useStore($queuedPrompts)
@@ -30,6 +31,11 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
   const [renameSession, setRenameSession] = useState(false)
   const [archiveSession, setArchiveSession] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const olderMessagesRef = useRef<HTMLButtonElement>(null)
+  const transcriptRef = useRef<HTMLDivElement>(null)
+  const previousSessionRef = useRef<null | string>(null)
+  const previousHistoryOffsetRef = useRef(0)
+  const awaitingInitialHistoryRef = useRef(false)
   const pendingDisposals = useRef(new Map<ChatInteraction, symbol>())
 
   useEffect(() => {
@@ -45,7 +51,23 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
       })
     }
   }, [interaction])
-  useEffect(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), [chat.messages, chat.tools])
+  useLayoutEffect(() => {
+    if (!active) return
+    const sessionChanged = previousSessionRef.current !== chat.runtimeSessionId
+    const loadedOlder = !sessionChanged && previousHistoryOffsetRef.current > 0 && chat.historyNextOffset > previousHistoryOffsetRef.current
+    previousHistoryOffsetRef.current = chat.historyNextOffset
+    if (sessionChanged) {
+      previousSessionRef.current = chat.runtimeSessionId
+      awaitingInitialHistoryRef.current = Boolean(chat.runtimeSessionId && chat.storedSessionId && chat.messages.length === 0)
+    }
+    const initialHistoryArrived = awaitingInitialHistoryRef.current && chat.messages.length > 0
+    if (!chat.runtimeSessionId || loadedOlder || (!sessionChanged && !initialHistoryArrived && chat.historyLoadingOlder)) return
+    bottomRef.current?.scrollIntoView({
+      behavior: sessionChanged || initialHistoryArrived ? 'auto' : 'smooth',
+      block: 'end'
+    })
+    if (initialHistoryArrived) awaitingInitialHistoryRef.current = false
+  }, [active, chat.historyLoadingOlder, chat.historyNextOffset, chat.messages, chat.runtimeSessionId, chat.storedSessionId, chat.tools])
   useEffect(() => {
     interaction.setSession(chat.runtimeSessionId)
     setSessionActionError(null)
@@ -66,9 +88,42 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
     return chat.messages.map(message => message.role === 'user' ? ++ordinal : ordinal)
   }, [chat.messages])
 
+  const loadOlderMessages = useCallback(async () => {
+    const sessionId = $chat.get().runtimeSessionId
+    const scroller = transcriptRef.current?.closest<HTMLElement>('.view-container')
+    const previousHeight = scroller?.scrollHeight ?? 0
+    const previousTop = scroller?.scrollTop ?? 0
+    try {
+      await controller.loadOlderMessages()
+      if (scroller && $chat.get().runtimeSessionId === sessionId) {
+        requestAnimationFrame(() => {
+          if ($chat.get().runtimeSessionId !== sessionId) return
+          scroller.scrollTop = previousTop + scroller.scrollHeight - previousHeight
+        })
+      }
+    } catch (caught) {
+      setSessionActionError(errorMessage(caught))
+    }
+  }, [controller])
+
+  useEffect(() => {
+    const target = olderMessagesRef.current
+    if (!active || !target || !chat.historyHasMore || chat.historyLoadingOlder || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadOlderMessages()
+    }, { root: transcriptRef.current?.closest('.view-container') })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [active, chat.historyHasMore, chat.historyLoadingOlder, chat.runtimeSessionId, loadOlderMessages])
+
   return (
     <section className="chat-screen">
-      <div className="transcript" aria-live="polite">
+      <div className="transcript" aria-live="polite" ref={transcriptRef}>
+        {chat.historyHasMore && (
+          <Button className="load-earlier" disabled={chat.historyLoadingOlder} onClick={() => void loadOlderMessages()} ref={olderMessagesRef} size="sm" variant="secondary">
+            {chat.historyLoadingOlder ? 'Loading earlier messages…' : 'Load earlier messages'}
+          </Button>
+        )}
         {chat.storedSessionId && (
           <div className="session-management">
             <Button aria-expanded={showSessionActions} onClick={() => setShowSessionActions(value => !value)} size="sm" variant="secondary"><IconDots size={17} /> Session options</Button>
@@ -125,7 +180,6 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
             ))}
           </section>
         )}
-        {chat.info?.usage && <ContextUsage usage={chat.info.usage as Record<string, unknown>} />}
         <div ref={bottomRef} />
       </div>
 
@@ -192,6 +246,13 @@ export function ChatScreen({ controller, mediaConnection = HermesConnection }: C
           ) : (
             <Button aria-label="Send" disabled={submitting || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
           )}
+        </div>
+        <div className="composer-meta">
+          {chat.info?.usage && <ContextUsage usage={chat.info.usage as Record<string, unknown>} />}
+          <div className={`session-activity ${chat.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
+            <span aria-hidden className="status-dot" />
+            <span>{chat.running ? 'Hermes is working' : 'Ready'}</span>
+          </div>
         </div>
       </div>
     </section>

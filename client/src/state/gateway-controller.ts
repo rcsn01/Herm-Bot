@@ -9,15 +9,16 @@ import { RemoteGateway } from '~/gateway/remote-gateway'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { profileKey, profilePath } from '~/gateway/profile-path'
-import { SessionRuntime, toTranscript, type RuntimeSession } from '~/gateway/session-runtime'
+import { isConfirmedMissingSession, SessionRuntime, toTranscript, type RuntimeSession, type TranscriptPage } from '~/gateway/session-runtime'
 import type { StoredSession } from '~/lib/types'
 import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetRoutes } from '~/navigation/navigation-store'
 import { emptyChatState, reduceGatewayEvent } from '~/state/event-reducer'
-import { $chat, $connection, $preferences, $sessions, savePreferences } from '~/state/store'
+import { $chat, $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
 
 export const MINIMUM_CONTRACT = 6
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
+const SESSION_LIST_PAGE_SIZE = 30
 export { toTranscript }
 
 export class GatewayController {
@@ -28,6 +29,7 @@ export class GatewayController {
   private appBackgrounded = false
   private logoutInProgress = false
   private sessionSelectionGeneration = 0
+  private sessionListLimit = SESSION_LIST_PAGE_SIZE
   private disposed = false
   private activeListener?: Awaited<ReturnType<typeof App.addListener>>
   private unsubscribeEvents?: () => void
@@ -77,6 +79,7 @@ export class GatewayController {
     const configured = await this.connection.configure({ remoteURL, token })
     if (previousURL && previousURL !== configured.remoteURL) {
       this.invalidateReconnect()
+      $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
       this.runtime.close()
       clearGatewayQueries()
       this.clearForegroundScope()
@@ -120,6 +123,7 @@ export class GatewayController {
     if (storedSessionId && !opened.resumed) this.clearSessionBookmark(scope)
     this.adoptSession(opened.session)
     try {
+      if (opened.resumed) await this.reconcileHistory(scope)
       // Keep the connection in `connecting` until the captured profile's
       // session list has been refreshed. A profile can change while the
       // transport is opening; using current preferences here would fetch and
@@ -147,6 +151,7 @@ export class GatewayController {
   async logout() {
     this.logoutInProgress = true
     this.invalidateReconnect()
+    $connection.set({ ...$connection.get(), error: null, phase: 'disconnected' })
     this.runtime.close()
     try {
       await this.connection.logout()
@@ -164,6 +169,7 @@ export class GatewayController {
   async switchProfile(profile: null | string) {
     if (profile === $preferences.get().profile) return
     this.invalidateReconnect()
+    $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
     this.runtime.close()
     await queryClient.cancelQueries({ queryKey: ['gateway'] })
     this.clearForegroundScope()
@@ -190,15 +196,35 @@ export class GatewayController {
   }
 
   async refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()) {
+    const limit = this.sessionListLimit
     const response = await queryClient.fetchQuery({
       queryFn: ({ signal }) => this.gateway.rpc<{ sessions: StoredSession[] }>('session.list', {
         profile: profileKey(scope.profile),
-        limit: 200
+        limit
       }, { signal }),
-      queryKey: gatewayScopeKey(scope, 'sessions', 'list'),
+      queryKey: gatewayScopeKey(scope, 'sessions', 'list', limit),
       staleTime: 0
     })
-    if (isCurrentGatewayScope(scope)) $sessions.set(response.sessions ?? [])
+    if (!isCurrentGatewayScope(scope)) return
+    const sessions = response.sessions ?? []
+    $sessions.set(sessions)
+    $sessionsHasMore.set(sessions.length >= limit)
+  }
+
+  async loadMoreSessions() {
+    if ($sessionsLoadingMore.get() || !$sessionsHasMore.get()) return
+    const scope = currentGatewayScope()
+    const previousLimit = this.sessionListLimit
+    this.sessionListLimit += SESSION_LIST_PAGE_SIZE
+    $sessionsLoadingMore.set(true)
+    try {
+      await this.refreshSessions(scope)
+    } catch (error) {
+      if (isCurrentGatewayScope(scope)) this.sessionListLimit = previousLimit
+      throw error
+    } finally {
+      if (isCurrentGatewayScope(scope)) $sessionsLoadingMore.set(false)
+    }
   }
 
   async renameSession(storedSessionId: string, title: string) {
@@ -349,11 +375,66 @@ export class GatewayController {
   }
 
   async reconcileHistory(scope: CurrentGatewayScope = currentGatewayScope()) {
-    const sessionId = $chat.get().runtimeSessionId
+    const snapshot = $chat.get()
+    const sessionId = snapshot.runtimeSessionId
     if (!sessionId) return
-    const messages = await this.runtime.history(sessionId)
+    let page: TranscriptPage
+    if (snapshot.storedSessionId) {
+      try {
+        page = await this.runtime.historyPage(snapshot.storedSessionId, scope.profile)
+      } catch (error) {
+        const classified = classifyGatewayError(error)
+        if (!isConfirmedMissingSession(classified)) throw classified
+        // A resumed live/lazy session can be attached before it has a durable
+        // state.db row, and older gateways may not expose its durable identity
+        // consistently. Keep the resumed runtime and hydrate over JSON-RPC
+        // rather than misreporting this transcript 404 as an old gateway.
+        page = transcriptPage(await this.runtime.history(sessionId))
+      }
+    } else {
+      page = transcriptPage(await this.runtime.history(sessionId))
+    }
     if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return
-    $chat.set({ ...$chat.get(), messages, running: Boolean($chat.get().info?.running) })
+    const current = $chat.get()
+    const messages = current.historyBackfilled
+      ? graftLatestTranscript(page.messages, current.messages)
+      : page.messages
+    $chat.set({
+      ...current,
+      historyHasMore: page.hasMore,
+      historyNextOffset: page.nextOffset,
+      messages,
+      running: Boolean(current.info?.running)
+    })
+  }
+
+  async loadOlderMessages() {
+    const snapshot = $chat.get()
+    const sessionId = snapshot.runtimeSessionId
+    const storedSessionId = snapshot.storedSessionId
+    if (!sessionId || !storedSessionId || !snapshot.historyHasMore || snapshot.historyLoadingOlder) return
+    const scope = currentGatewayScope()
+    $chat.set({ ...snapshot, historyLoadingOlder: true })
+    try {
+      const page = await this.runtime.historyPage(storedSessionId, scope.profile, snapshot.historyNextOffset)
+      if (!isCurrentGatewayScope(scope)) return
+      const current = $chat.get()
+      if (current.runtimeSessionId !== sessionId || current.storedSessionId !== storedSessionId) return
+      $chat.set({
+        ...current,
+        historyBackfilled: true,
+        historyHasMore: page.hasMore,
+        historyLoadingOlder: false,
+        historyNextOffset: page.nextOffset,
+        messages: prependOlderTranscript(page.messages, current.messages)
+      })
+    } catch (error) {
+      const current = $chat.get()
+      if (isCurrentGatewayScope(scope) && current.runtimeSessionId === sessionId) {
+        $chat.set({ ...current, historyLoadingOlder: false })
+      }
+      throw error
+    }
   }
 
   async request<T>(method: string, params: Record<string, unknown> = {}) {
@@ -398,8 +479,9 @@ export class GatewayController {
   private subscribeRuntime() {
     this.unsubscribeEvents = this.runtime.subscribe(event => this.onEvent(event))
     this.unsubscribeState = this.runtime.subscribeState(state => {
-      if (state === 'closed' && !this.disposed && !this.appBackgrounded && $connection.get().phase === 'connected') {
-        $connection.set({ ...$connection.get(), phase: 'disconnected' })
+      if (state === 'closed' && !this.disposed && !this.appBackgrounded && !this.logoutInProgress && $connection.get().phase === 'connected') {
+        $connection.set({ ...$connection.get(), error: null, phase: 'reconnecting' })
+        void this.reconnect(true)
       }
     })
   }
@@ -458,12 +540,22 @@ export class GatewayController {
     const previous = $chat.get()
     const next = reduceGatewayEvent(previous, event)
     $chat.set(next)
-    if (event.type === 'message.complete') void this.reconcileHistory()
+    if (event.type === 'message.complete') {
+      void this.reconcileHistory().catch(error => {
+        const current = $chat.get()
+        if (current.runtimeSessionId === event.session_id) {
+          $chat.set({ ...current, error: errorMessage(error) })
+        }
+      })
+    }
   }
 
   private clearForegroundScope() {
+    this.sessionListLimit = SESSION_LIST_PAGE_SIZE
     $chat.set(emptyChatState())
     $sessions.set([])
+    $sessionsHasMore.set(false)
+    $sessionsLoadingMore.set(false)
   }
 
   private invalidateReconnect() {
@@ -499,6 +591,28 @@ function fileToDataURL(file: File): Promise<string> {
     reader.onload = () => resolve(String(reader.result))
     reader.readAsDataURL(file)
   })
+}
+
+function transcriptPage(messages: ReturnType<typeof toTranscript>): TranscriptPage {
+  return { hasMore: false, messages, nextOffset: messages.length }
+}
+
+function messageIdentity(message: ReturnType<typeof toTranscript>[number]): string {
+  return message.rowId === undefined ? message.id : `row:${message.rowId}`
+}
+
+function prependOlderTranscript(older: ReturnType<typeof toTranscript>, current: ReturnType<typeof toTranscript>) {
+  const existing = new Set(current.map(messageIdentity))
+  const fresh = older.filter(message => !existing.has(messageIdentity(message)))
+  return fresh.length ? [...fresh, ...current] : current
+}
+
+function graftLatestTranscript(latest: ReturnType<typeof toTranscript>, current: ReturnType<typeof toTranscript>) {
+  const first = latest[0]
+  if (!first) return latest
+  const identity = messageIdentity(first)
+  const anchor = current.findIndex(message => messageIdentity(message) === identity)
+  return anchor > 0 ? [...current.slice(0, anchor), ...latest] : latest
 }
 
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)

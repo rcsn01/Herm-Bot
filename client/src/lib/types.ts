@@ -175,6 +175,10 @@ export interface PendingPrompt {
 export interface ChatState {
   contractVersion: number | null
   error: null | string
+  historyBackfilled: boolean
+  historyHasMore: boolean
+  historyLoadingOlder: boolean
+  historyNextOffset: number
   info: null | SessionRuntimeInfo
   messages: TranscriptMessage[]
   pendingPrompt: null | PendingPrompt

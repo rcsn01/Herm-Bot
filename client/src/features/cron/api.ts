@@ -52,11 +52,11 @@ export interface CronJobCreate {
   context_from?: string
   deliver?: string
   enabled_toolsets?: string[]
-  model?: string
+  model?: null | string
   name?: string
   no_agent?: boolean
   prompt: string
-  provider?: string
+  provider?: null | string
   schedule: string
   script?: string
   skills?: string[]

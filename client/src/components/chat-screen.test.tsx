@@ -23,6 +23,7 @@ const mediaConnectionStub = () => ({
 const controllerStub = () => ({
   archiveSession: vi.fn().mockResolvedValue(undefined),
   attach: vi.fn(),
+  loadOlderMessages: vi.fn().mockResolvedValue(undefined),
   branchSession: vi.fn().mockResolvedValue(undefined),
   interrupt: vi.fn(),
   renameSession: vi.fn().mockResolvedValue(undefined),
@@ -119,7 +120,55 @@ describe('chat interaction wiring', () => {
 })
 
 describe('transcript rendering and durable edits', () => {
-  it('keeps external Markdown links secure and renders context usage', () => {
+  it('opens a resumed session at its latest message without scrolling down from the top', () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    $chat.set({
+      ...emptyChatState(),
+      messages: [{ content: 'latest answer', id: 'history-row-42', role: 'assistant', rowId: 42 }],
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+
+    render(<ChatScreen controller={controllerStub()} />)
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
+  })
+
+  it('waits to position a hidden resumed chat until the chat becomes visible', () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    $chat.set({
+      ...emptyChatState(),
+      messages: [{ content: 'latest answer', id: 'history-row-42', role: 'assistant', rowId: 42 }],
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    const controller = controllerStub()
+    const { rerender } = render(<ChatScreen active={false} controller={controller} />)
+
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    rerender(<ChatScreen active controller={controller} />)
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
+  })
+
+  it('loads earlier messages on demand when the current page is truncated', () => {
+    $chat.set({
+      ...emptyChatState(),
+      historyHasMore: true,
+      historyNextOffset: 80,
+      messages: [{ content: 'latest answer', id: 'history-row-82', role: 'assistant', rowId: 82 }],
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    const controller = controllerStub()
+
+    render(<ChatScreen controller={controller} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+
+    expect(controller.loadOlderMessages).toHaveBeenCalledOnce()
+  })
+
+  it('keeps external Markdown links secure and renders context usage below the composer', () => {
     $chat.set({
       ...emptyChatState(),
       info: { usage: { context_limit: 100, total: 25 } } as never,
@@ -131,7 +180,22 @@ describe('transcript rendering and durable edits', () => {
     const link = screen.getByRole<HTMLAnchorElement>('link', { name: 'Hermes' })
     expect(link.target).toBe('_blank')
     expect(link.rel).toContain('noopener')
-    expect(screen.getByText('25 / 100')).not.toBeNull()
+    const contextUsage = screen.getByText('25 / 100').closest('.context-usage')
+    expect(contextUsage).not.toBeNull()
+    expect(contextUsage?.closest('.composer-meta')?.previousElementSibling?.classList.contains('composer')).toBe(true)
+  })
+
+  it('shows whether the current session is working', () => {
+    const controller = controllerStub()
+    const { rerender } = render(<ChatScreen controller={controller} />)
+
+    expect(screen.getByRole('status').textContent).toBe('Ready')
+
+    $chat.set({ ...$chat.get(), running: true })
+    rerender(<ChatScreen controller={controller} />)
+
+    expect(screen.getByRole('status').textContent).toBe('Hermes is working')
+    expect(screen.getByRole('button', { name: 'Interrupt' })).not.toBeNull()
   })
 
   it('labels internal timeline events as activity rather than user messages', () => {

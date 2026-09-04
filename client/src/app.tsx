@@ -86,7 +86,7 @@ export function App() {
         refreshing={refreshing}
       >
         <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
-          <ChatScreen controller={controller} />
+          <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} />
         </div>
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
         {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}

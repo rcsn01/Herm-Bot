@@ -2,7 +2,7 @@ import type { GatewayEvent } from '@hermes/shared'
 
 import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
 import { abortError, combineSignals, throwIfAborted } from './abort'
-import { profileKey } from './profile-path'
+import { profileKey, profilePath } from './profile-path'
 import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from '~/gateway/gateway-port'
 import type { ChatState, SessionMessage, TranscriptMessage } from '~/lib/types'
 
@@ -10,12 +10,31 @@ interface SessionRPCResponse {
   info?: Record<string, unknown>
   messages?: SessionMessage[]
   session_id: string
+  session_key?: string
   stored_session_id?: string
 }
 
 interface SessionHistoryResponse {
   messages: SessionMessage[]
 }
+
+interface SessionHistoryPageResponse {
+  data?: SessionMessage[]
+  messages?: SessionMessage[]
+  pagination?: {
+    limit?: number
+    offset?: number
+    returned?: number
+  }
+}
+
+export interface TranscriptPage {
+  hasMore: boolean
+  messages: TranscriptMessage[]
+  nextOffset: number
+}
+
+export const TRANSCRIPT_PAGE_SIZE = 80
 
 export interface RuntimeSession {
   contractVersion: number | null
@@ -124,6 +143,8 @@ export class SessionRuntime implements GatewayPort {
 
   async resumeSession(profile: null | string, storedSessionId: string): Promise<RuntimeSession> {
     return this.sessionFromResponse(await this.rpc<SessionRPCResponse>('session.resume', {
+      defer_history: true,
+      omit_messages: true,
       profile: profileKey(profile),
       session_id: storedSessionId,
       source: 'ios'
@@ -137,6 +158,27 @@ export class SessionRuntime implements GatewayPort {
   async history(runtimeSessionId: string): Promise<TranscriptMessage[]> {
     const response = await this.rpc<SessionHistoryResponse>('session.history', { session_id: runtimeSessionId })
     return toTranscript(response.messages)
+  }
+
+  async historyPage(storedSessionId: string, profile: null | string, offset = 0): Promise<TranscriptPage> {
+    const query = new URLSearchParams({
+      include_compacted: 'true',
+      limit: String(TRANSCRIPT_PAGE_SIZE),
+      offset: String(offset),
+      order: 'latest'
+    })
+    const path = profilePath(`/api/sessions/${encodeURIComponent(storedSessionId)}/messages?${query}`, profile)
+    const response = await this.request<SessionHistoryPageResponse>({ path })
+    const rawMessages = response.body.messages ?? response.body.data ?? []
+    const pagination = response.body.pagination
+    const returned = pagination?.returned ?? rawMessages.length
+    const limit = pagination?.limit ?? TRANSCRIPT_PAGE_SIZE
+    const pageOffset = pagination?.offset ?? offset
+    return {
+      hasMore: Boolean(pagination) && returned >= limit,
+      messages: toTranscript(pagination ? rawMessages : rawMessages.slice(-TRANSCRIPT_PAGE_SIZE)),
+      nextOffset: pageOffset + returned
+    }
   }
 
   async rpc<T>(
@@ -236,6 +278,8 @@ export class SessionRuntime implements GatewayPort {
   private async resumeCurrent(profile: null | string, storedSessionId: string, operation: { generation: number; signal: AbortSignal }): Promise<RuntimeSession> {
     try {
       const response = await this.transport.rpc<SessionRPCResponse>('session.resume', {
+        defer_history: true,
+        omit_messages: true,
         profile: profileKey(profile),
         session_id: storedSessionId,
         source: 'ios'
@@ -264,11 +308,11 @@ export class SessionRuntime implements GatewayPort {
         { code: 'MOBILE_CONTRACT_UNSUPPORTED', kind: 'unsupported', retryable: false }
       )
     }
-    const storedSessionId = (response.stored_session_id ?? String(info.stored_session_id ?? '')) || null
+    const storedSessionId = (response.stored_session_id ?? response.session_key ?? String(info.stored_session_id ?? '')) || null
     return {
       contractVersion: hasVersion ? rawVersion as number : null,
       info: info as ChatState['info'],
-      messages: toTranscript(response.messages),
+      messages: toTranscript(response.messages?.slice(-TRANSCRIPT_PAGE_SIZE)),
       runtimeSessionId: response.session_id,
       storedSessionId
     }
@@ -347,7 +391,7 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): Rec
   return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
 }
 
-function isConfirmedMissingSession(error: GatewayError): boolean {
+export function isConfirmedMissingSession(error: GatewayError): boolean {
   const code = String(error.code ?? '').toUpperCase()
   if (code === 'SESSION_NOT_FOUND') return true
   if (error.kind !== 'server' && error.kind !== 'unsupported') return false

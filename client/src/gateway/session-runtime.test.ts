@@ -8,9 +8,10 @@ describe('session runtime', () => {
   it('restores a bookmarked session through the gateway interface', async () => {
     const gateway = new MemoryGateway()
       .handle('session.resume', params => ({
-        info: { desktop_contract: 6, stored_session_id: (params as { session_id: string }).session_id },
+        info: { desktop_contract: 6 },
         messages: [{ content: 'welcome back', role: 'assistant' }],
-        session_id: 'runtime-1'
+        session_id: 'runtime-1',
+        session_key: (params as { session_id: string }).session_id
       }))
     const runtime = new SessionRuntime(gateway, { minimumContract: 6, retryDelays: [] })
 
@@ -20,7 +21,7 @@ describe('session runtime', () => {
     expect(gateway.calls).toEqual([
       { kind: 'close', value: null },
       { kind: 'connect', value: { profile: 'work' } },
-      { kind: 'rpc', method: 'session.resume', value: { profile: 'work', session_id: 'stored-1', source: 'ios' } }
+      { kind: 'rpc', method: 'session.resume', value: { defer_history: true, omit_messages: true, profile: 'work', session_id: 'stored-1', source: 'ios' } }
     ])
   })
 
@@ -57,7 +58,7 @@ describe('session runtime', () => {
 
     expect(result).toMatchObject({ resumed: false, session: { runtimeSessionId: 'runtime-new' } })
     expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => call.value)).toEqual([
-      { profile: 'default', session_id: 'missing', source: 'ios' },
+      { defer_history: true, omit_messages: true, profile: 'default', session_id: 'missing', source: 'ios' },
       { profile: 'default', source: 'ios' }
     ])
   })
@@ -107,6 +108,23 @@ describe('session runtime', () => {
 
     await expect(runtime.reopen({ profile: null, storedSessionId: null })).rejects.toMatchObject({ kind: 'validation' })
     expect(gateway.calls.filter(call => call.kind === 'connect')).toHaveLength(1)
+  })
+
+  it('loads bounded transcript pages from the durable session endpoint', async () => {
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/stored%2F1/messages?include_compacted=true&limit=80&offset=80&order=latest&profile=work', () => ({
+        messages: [{ content: 'older', role: 'assistant', row_id: 9 }],
+        pagination: { limit: 80, offset: 80, returned: 1 }
+      }))
+    const runtime = new SessionRuntime(gateway, { minimumContract: 6, retryDelays: [] })
+
+    const page = await runtime.historyPage('stored/1', 'work', 80)
+
+    expect(page).toEqual({
+      hasMore: false,
+      messages: [{ content: 'older', id: 'history-row-9', reasoning: undefined, role: 'assistant', rowId: 9, streaming: false }],
+      nextOffset: 81
+    })
   })
 
   it('normalizes RPC failures at the adapter seam', async () => {

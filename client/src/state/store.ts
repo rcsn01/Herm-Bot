@@ -22,6 +22,8 @@ export const $preferences = atom<ConnectionPreferences>({
 
 export const $chat = atom<ChatState>(emptyChatState())
 export const $sessions = atom<StoredSession[]>([])
+export const $sessionsHasMore = atom(false)
+export const $sessionsLoadingMore = atom(false)
 export const $view = atom<MobileView>('chat')
 export const $queuedPrompts = atom<string[]>([])
 export const $isReady = computed($connection, connection => connection.phase === 'connected')

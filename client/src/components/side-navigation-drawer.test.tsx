@@ -9,11 +9,12 @@ vi.mock('~/compat/primitives', () => ({
 import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
 import { emptyChatState } from '~/state/event-reducer'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $chat, $sessions } from '~/state/store'
+import { $chat, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 function controllerStub() {
   return {
     deleteSession: vi.fn().mockResolvedValue(undefined),
+    loadMoreSessions: vi.fn().mockResolvedValue(undefined),
     newSession: vi.fn().mockResolvedValue(undefined),
     refreshSessions: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(undefined)
@@ -39,6 +40,8 @@ afterEach(cleanup)
 beforeEach(() => {
   vi.clearAllMocks()
   $chat.set({ ...emptyChatState(), storedSessionId: 'session-1' })
+  $sessionsHasMore.set(false)
+  $sessionsLoadingMore.set(false)
   $sessions.set([
     { id: 'session-1', message_count: 4, preview: 'Hidden body', source: 'ios', started_at: 1_777_374_000, title: 'Planning session' },
     { id: 'session-2', message_count: 2, preview: 'Other hidden body', source: 'web', started_at: 1_777_460_400, title: 'Release notes' }
@@ -62,6 +65,18 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('keeps only session rows and pagination inside the session-list scroll region', () => {
+    $sessionsHasMore.set(true)
+    renderDrawer()
+
+    const sessionList = screen.getByRole('region', { name: 'Sessions' })
+    expect(sessionList.contains(screen.getByRole('button', { name: /Planning session/ }))).toBe(true)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Load more sessions' }))).toBe(true)
+    expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search sessions' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('navigation', { name: 'Primary navigation' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Recent sessions' }))).toBe(false)
+  })
+
   it('filters session titles only and keeps the query while closed', () => {
     const controller = controllerStub()
     const { rerender } = renderDrawer(controller)
@@ -75,6 +90,19 @@ describe('SideNavigationDrawer', () => {
     rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open={false} />)
     rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open />)
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
+  })
+
+  it('loads more sessions only when the bounded page reports more', () => {
+    const controller = controllerStub()
+    $sessionsHasMore.set(true)
+    const { rerender } = renderDrawer(controller)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more sessions' }))
+    expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
+
+    $sessionsLoadingMore.set(true)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open />)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
   })
 
   it('returns to the current chat from Recent sessions without a session RPC', () => {

@@ -48,6 +48,55 @@ describe('cron jobs', () => {
     expect(screen.getByText(instruction)).not.toBeNull()
   })
 
+  it('shows a cron job model override instead of implying the header model is used', async () => {
+    const gateway = new MemoryGateway()
+      .handle('/api/cron/jobs/job-1?profile=work', () => ({
+        enabled: true,
+        id: 'job-1',
+        model: 'gpt-old',
+        name: 'Morning briefing',
+        prompt: 'Compile the briefing.',
+        provider: 'openai-api',
+        schedule_display: 'Every day at 9:00 AM',
+        state: 'Active'
+      }))
+      .handle('/api/cron/jobs/job-1/runs?limit=50&profile=work', () => ({ runs: [] }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+
+    expect(await screen.findByText(/Model override: openai-api · gpt-old/)).not.toBeNull()
+  })
+
+  it('clears stored model overrides when blank fields are saved', async () => {
+    let updateBody: unknown
+    const job = {
+      enabled: true,
+      id: 'job-1',
+      model: 'gpt-old',
+      name: 'Morning briefing',
+      prompt: 'Compile the briefing.',
+      provider: 'openai-api',
+      schedule: { expr: 'every day 9am', kind: 'natural' }
+    }
+    const gateway = new MemoryGateway()
+      .handle('/api/cron/jobs?profile=work', () => [job])
+      .handle('/api/cron/jobs/job-1?profile=work', value => { updateBody = value; return { ...job, model: null, provider: null } })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-editor' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+
+    const model = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Model' })
+    const provider = screen.getByRole<HTMLInputElement>('textbox', { name: 'Provider' })
+    await waitFor(() => expect(model.value).toBe('gpt-old'))
+    expect(provider.value).toBe('openai-api')
+    fireEvent.change(model, { target: { value: '' } })
+    fireEvent.change(provider, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(updateBody).toMatchObject({ body: { updates: { model: null, provider: null } } }))
+  })
+
   it('opens a cron run as its stored session when tapped', async () => {
     const onOpenSession = vi.fn().mockResolvedValue(undefined)
     const gateway = new MemoryGateway()

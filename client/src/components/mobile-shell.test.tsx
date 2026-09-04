@@ -79,8 +79,11 @@ describe('MobileShell', () => {
     expect(onRefresh).not.toHaveBeenCalled()
   })
 
-  it('does not process gestures while the drawer is open', () => {
+  it('locks the main screen and does not process gestures while the drawer is open', () => {
     const { onOpenDrawer, onRefresh, scroller } = renderShell(true)
+    expect(scroller.hasAttribute('inert')).toBe(true)
+    expect(scroller.closest('.mobile-shell')?.classList.contains('drawer-open')).toBe(true)
+
     gesture(scroller, [10, 50], [100, 52])
     gesture(scroller, [40, 10], [42, 120])
 

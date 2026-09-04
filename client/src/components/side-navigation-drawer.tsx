@@ -8,14 +8,14 @@ import {
   IconTrash,
   IconX
 } from '@tabler/icons-react'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { errorMessage, type GatewayController } from '~/state/gateway-controller'
-import { $chat, $sessions } from '~/state/store'
+import { $chat, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 interface SideNavigationDrawerProps {
   activeTab: MobileTab
@@ -42,11 +42,14 @@ const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden=
 export function SideNavigationDrawer({ activeTab, controller, open, onClose, onNavigate }: SideNavigationDrawerProps) {
   const chat = useStore($chat)
   const sessions = useStore($sessions)
+  const sessionsHaveMore = useStore($sessionsHasMore)
+  const sessionsLoadingMore = useStore($sessionsLoadingMore)
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [pendingSessionAction, setPendingSessionAction] = useState(false)
   const [remove, setRemove] = useState<{ id: string; title: string } | null>(null)
   const [swipedId, setSwipedId] = useState<string | null>(null)
+  const loadMoreRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
@@ -57,6 +60,14 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     const needle = query.trim().toLowerCase()
     return needle ? sessions.filter(session => session.title.toLowerCase().includes(needle)) : sessions
   }, [query, sessions])
+  const loadMoreSessions = useCallback(async () => {
+    const scope = currentGatewayScope()
+    try {
+      await controller.loadMoreSessions()
+    } catch (caught) {
+      if (isCurrentGatewayScope(scope)) setError(errorMessage(caught))
+    }
+  }, [controller])
 
   useEffect(() => {
     if (!open) return
@@ -74,6 +85,16 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
       if (opener?.isConnected) opener.focus()
     }
   }, [controller, open])
+
+  useEffect(() => {
+    const target = loadMoreRef.current
+    if (!open || !target || !sessionsHaveMore || sessionsLoadingMore || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadMoreSessions()
+    }, { root: target.closest('.drawer-session-list') })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [loadMoreSessions, open, sessionsHaveMore, sessionsLoadingMore])
 
   const runSessionAction = async (callback: () => Promise<unknown>) => {
     if (actionPendingRef.current) return
@@ -179,7 +200,7 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
             <button aria-current={activeTab === 'sessions' ? 'page' : undefined} disabled={pendingSessionAction} onClick={() => navigate('sessions')}>Recent sessions</button>
             <Button aria-label="New session" className="drawer-icon-button" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} variant="ghost"><IconPlus size={20} /></Button>
           </header>
-          <div className="session-list drawer-session-list">
+          <div aria-label="Sessions" className="session-list drawer-session-list" role="region">
             {filtered.map(session => {
               const date = new Date(session.started_at * 1_000)
               const revealed = swipedId === session.id
@@ -239,6 +260,18 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
               )
             })}
             {filtered.length === 0 && <div className="empty-panel">No sessions match your search.</div>}
+            {sessionsHaveMore && (
+              <Button
+                className="load-more-sessions"
+                disabled={pendingSessionAction || sessionsLoadingMore}
+                onClick={() => void loadMoreSessions()}
+                ref={loadMoreRef}
+                size="sm"
+                variant="secondary"
+              >
+                {sessionsLoadingMore ? 'Loading more…' : 'Load more sessions'}
+              </Button>
+            )}
           </div>
         </section>
         {remove && <ConfirmDialog confirmLabel="Delete" description={`Delete ${remove.title}? This cannot be undone.`} onCancel={() => setRemove(null)} onConfirm={() => { const id = remove.id; setRemove(null); void deleteSession(id) }} title="Delete session" />}

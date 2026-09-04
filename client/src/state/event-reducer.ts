@@ -9,6 +9,10 @@ const record = (value: unknown): Record<string, unknown> =>
 export const emptyChatState = (): ChatState => ({
   contractVersion: null,
   error: null,
+  historyBackfilled: false,
+  historyHasMore: false,
+  historyLoadingOlder: false,
+  historyNextOffset: 0,
   info: null,
   messages: [],
   pendingPrompt: null,
