@@ -11,9 +11,9 @@ vi.mock('~/compat/primitives', () => ({
 
 import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
+import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { emptyChatState } from '~/state/event-reducer'
-import { $chat, $connection, $queuedPrompts } from '~/state/store'
+import { $connection } from '~/state/store'
 
 const mediaConnectionStub = () => ({
   request: vi.fn(),
@@ -22,16 +22,20 @@ const mediaConnectionStub = () => ({
 
 const controllerStub = () => ({
   archiveSession: vi.fn().mockResolvedValue(undefined),
-  attach: vi.fn(),
-  loadOlderMessages: vi.fn().mockResolvedValue(undefined),
   branchSession: vi.fn().mockResolvedValue(undefined),
-  interrupt: vi.fn(),
   renameSession: vi.fn().mockResolvedValue(undefined),
-  request: vi.fn(),
+  request: vi.fn()
+}) as unknown as GatewayController
+
+const conversationStub = () => ({
+  attach: vi.fn(),
+  interrupt: vi.fn(),
+  loadOlderMessages: vi.fn().mockResolvedValue(undefined),
+  reconcileHistory: vi.fn().mockResolvedValue(undefined),
   respond: vi.fn(),
   retryFrom: vi.fn(),
   send: vi.fn()
-}) as unknown as GatewayController
+}) as unknown as Conversation
 
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
@@ -48,7 +52,6 @@ beforeEach(() => {
   })
   $chat.set(emptyChatState())
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
-  $queuedPrompts.set([])
 })
 
 afterEach(() => {
@@ -68,7 +71,7 @@ describe('chat interaction wiring', () => {
     const play = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('Audio', class { play = play })
 
-    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} conversation={conversationStub()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }))
 
     await waitFor(() => expect(connection.request).toHaveBeenCalledWith({
@@ -80,7 +83,7 @@ describe('chat interaction wiring', () => {
   it('routes transcription through the supplied adapter and renders its draft', async () => {
     const connection = mediaConnectionStub()
     vi.mocked(connection.upload).mockResolvedValue({ body: { transcript: 'Recorded thought' }, headers: {}, status: 200 })
-    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} />)
+    render(<ChatScreen mediaConnection={connection} controller={controllerStub()} conversation={conversationStub()} />)
 
     const input = document.querySelector<HTMLInputElement>('input[accept="audio/*"]')!
     fireEvent.change(input, { target: { files: [new File(['voice'], 'note.m4a', { type: 'audio/mp4' })] } })
@@ -93,26 +96,28 @@ describe('chat interaction wiring', () => {
 
   it('keeps the interaction live through StrictMode effect cleanup rehearsal', () => {
     const controller = controllerStub()
-    render(<StrictMode><ChatScreen controller={controller} /></StrictMode>)
+    const conversation = conversationStub()
+    render(<StrictMode><ChatScreen controller={controller} conversation={conversation} /></StrictMode>)
     const composer = screen.getByRole('textbox', { name: 'Message Hermes' })
 
     fireEvent.change(composer, { target: { value: 'strict mode' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    expect(controller.send).toHaveBeenCalledWith('strict mode')
+    expect(conversation.send).toHaveBeenCalledWith('strict mode')
   })
 
   it('forwards composer intent and disables duplicate submission while pending', async () => {
     const controller = controllerStub()
+    const conversation = conversationStub()
     let resolveSend!: () => void
-    vi.mocked(controller.send).mockReturnValue(new Promise(resolve => { resolveSend = resolve }))
-    render(<ChatScreen controller={controller} />)
+    vi.mocked(conversation.send).mockReturnValue(new Promise(resolve => { resolveSend = resolve }))
+    render(<ChatScreen controller={controller} conversation={conversation} />)
     const composer = screen.getByRole('textbox', { name: 'Message Hermes' })
 
     fireEvent.change(composer, { target: { value: 'hello' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    expect(controller.send).toHaveBeenCalledWith('hello')
+    expect(conversation.send).toHaveBeenCalledWith('hello')
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true)
     resolveSend()
     await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true))
@@ -129,7 +134,7 @@ describe('transcript rendering and durable edits', () => {
       storedSessionId: 'stored-1'
     })
 
-    render(<ChatScreen controller={controllerStub()} />)
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
   })
@@ -143,10 +148,11 @@ describe('transcript rendering and durable edits', () => {
       storedSessionId: 'stored-1'
     })
     const controller = controllerStub()
-    const { rerender } = render(<ChatScreen active={false} controller={controller} />)
+    const conversation = conversationStub()
+    const { rerender } = render(<ChatScreen active={false} controller={controller} conversation={conversation} />)
 
     expect(scrollIntoView).not.toHaveBeenCalled()
-    rerender(<ChatScreen active controller={controller} />)
+    rerender(<ChatScreen active controller={controller} conversation={conversation} />)
 
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
   })
@@ -160,12 +166,12 @@ describe('transcript rendering and durable edits', () => {
       runtimeSessionId: 'runtime-1',
       storedSessionId: 'stored-1'
     })
-    const controller = controllerStub()
+    const conversation = conversationStub()
 
-    render(<ChatScreen controller={controller} />)
+    render(<ChatScreen controller={controllerStub()} conversation={conversation} />)
     fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
 
-    expect(controller.loadOlderMessages).toHaveBeenCalledOnce()
+    expect(conversation.loadOlderMessages).toHaveBeenCalledOnce()
   })
 
   it('keeps external Markdown links secure and renders context usage below the composer', () => {
@@ -175,7 +181,7 @@ describe('transcript rendering and durable edits', () => {
       messages: [{ content: '[Hermes](https://example.com)', id: 'assistant-1', role: 'assistant' }]
     })
 
-    render(<ChatScreen controller={controllerStub()} />)
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     const link = screen.getByRole<HTMLAnchorElement>('link', { name: 'Hermes' })
     expect(link.target).toBe('_blank')
@@ -187,12 +193,13 @@ describe('transcript rendering and durable edits', () => {
 
   it('shows whether the current session is working', () => {
     const controller = controllerStub()
-    const { rerender } = render(<ChatScreen controller={controller} />)
+    const conversation = conversationStub()
+    const { rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
 
     expect(screen.getByRole('status').textContent).toBe('Ready')
 
     $chat.set({ ...$chat.get(), running: true })
-    rerender(<ChatScreen controller={controller} />)
+    rerender(<ChatScreen controller={controller} conversation={conversation} />)
 
     expect(screen.getByRole('status').textContent).toBe('Hermes is working')
     expect(screen.getByRole('button', { name: 'Interrupt' })).not.toBeNull()
@@ -204,7 +211,7 @@ describe('transcript rendering and durable edits', () => {
       messages: [{ content: '3 background agents finished', displayKind: 'async_delegation_complete', id: 'event-1', role: 'system' }]
     })
 
-    render(<ChatScreen controller={controllerStub()} />)
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     const event = screen.getByText('3 background agents finished').closest('article')!
     expect(event.classList.contains('timeline-event')).toBe(true)
@@ -219,7 +226,8 @@ describe('transcript rendering and durable edits', () => {
       runtimeSessionId: 'runtime-1'
     })
     const controller = controllerStub()
-    const { rerender } = render(<ChatScreen controller={controller} />)
+    const conversation = conversationStub()
+    const { rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
 
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Edit & retry' }).disabled).toBe(true)
 
@@ -228,7 +236,7 @@ describe('transcript rendering and durable edits', () => {
       messages: [{ content: 'durable', id: 'history-row-41', role: 'user', rowId: 41 }],
       running: true
     })
-    rerender(<ChatScreen controller={controller} />)
+    rerender(<ChatScreen controller={controller} conversation={conversation} />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Edit & retry' }).disabled).toBe(true)
   })
 
@@ -238,7 +246,7 @@ describe('transcript rendering and durable edits', () => {
       messages: [{ content: 'original', id: 'history-row-41', role: 'user', rowId: 41 }],
       runtimeSessionId: 'runtime-1'
     })
-    render(<ChatScreen controller={controllerStub()} />)
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit & retry' }))
     expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message Hermes' }).value).toBe('original')
@@ -256,7 +264,7 @@ describe('session management and prompts', () => {
       storedSessionId: 'session-1'
     })
     const controller = controllerStub()
-    render(<ChatScreen controller={controller} />)
+    render(<ChatScreen controller={controller} conversation={conversationStub()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Session options' }))
     expect(screen.getByRole('button', { name: 'Archive' })).not.toBeNull()
@@ -271,27 +279,28 @@ describe('session management and prompts', () => {
   it('clears session dialogs and their errors when the runtime session changes', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'session-1' })
     const controller = controllerStub()
+    const conversation = conversationStub()
     vi.mocked(controller.branchSession).mockRejectedValue(new Error('branch failed'))
-    const { rerender } = render(<ChatScreen controller={controller} />)
+    const { rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
     fireEvent.click(screen.getByRole('button', { name: 'Session options' }))
     fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
     expect((await screen.findByRole('alert')).textContent).toContain('branch failed')
 
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-2', storedSessionId: 'session-2' })
-    rerender(<ChatScreen controller={controller} />)
+    rerender(<ChatScreen controller={controller} conversation={conversation} />)
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
     expect(screen.queryByRole('button', { name: 'Branch' })).toBeNull()
   })
 
-  it('keeps approval prompts wired to the controller', () => {
+  it('keeps approval prompts wired to the conversation', () => {
     $chat.set({
       ...emptyChatState(),
       pendingPrompt: { kind: 'approval', payload: { command: 'rm file' }, requestId: 'approval-1' }
     })
-    const controller = controllerStub()
-    render(<ChatScreen controller={controller} />)
+    const conversation = conversationStub()
+    render(<ChatScreen controller={controllerStub()} conversation={conversation} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
-    expect(controller.respond).toHaveBeenCalledWith('allow', 'allow')
+    expect(conversation.respond).toHaveBeenCalledWith('allow', 'allow')
   })
 })

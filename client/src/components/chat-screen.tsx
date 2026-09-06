@@ -8,23 +8,32 @@ import { Badge, Button, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
-import { ChatInteraction, type ChatMediaConnection } from '~/features/chat/chat-interaction'
+import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage } from '~/gateway/gateway-error'
+import { Conversation, $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $chat, $connection, $queuedPrompts } from '~/state/store'
+import { $connection } from '~/state/store'
 
 interface ChatScreenProps {
   active?: boolean
   controller: GatewayController
+  conversation: Conversation
   mediaConnection?: ChatMediaConnection
 }
 
-export function ChatScreen({ active = true, controller, mediaConnection = HermesConnection }: ChatScreenProps) {
+export function ChatScreen({ active = true, controller, conversation, mediaConnection = HermesConnection }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
-  const queued = useStore($queuedPrompts)
-  const interaction = useMemo(() => new ChatInteraction(controller, mediaConnection), [controller, mediaConnection])
+  // A fresh literal, not the live instances: every method must be bound so
+  // `this` resolves to its owner (Conversation / GatewayController).
+  const commands = useMemo<ChatInteractionCommands>(() => ({
+    attach: conversation.attach.bind(conversation),
+    request: controller.request.bind(controller),
+    retryFrom: conversation.retryFrom.bind(conversation),
+    send: conversation.send.bind(conversation)
+  }), [conversation, controller])
+  const interaction = useMemo(() => new ChatInteraction(commands, mediaConnection), [commands, mediaConnection])
   const interactionState = useStore(interaction.$state)
   const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
   const [sessionActionError, setSessionActionError] = useState<string | null>(null)
@@ -95,7 +104,7 @@ export function ChatScreen({ active = true, controller, mediaConnection = Hermes
     const previousHeight = scroller?.scrollHeight ?? 0
     const previousTop = scroller?.scrollTop ?? 0
     try {
-      await controller.loadOlderMessages()
+      await conversation.loadOlderMessages()
       if (scroller && $chat.get().runtimeSessionId === sessionId) {
         requestAnimationFrame(() => {
           if ($chat.get().runtimeSessionId !== sessionId) return
@@ -105,7 +114,7 @@ export function ChatScreen({ active = true, controller, mediaConnection = Hermes
     } catch (caught) {
       setSessionActionError(errorMessage(caught))
     }
-  }, [controller])
+  }, [conversation])
 
   useEffect(() => {
     const target = olderMessagesRef.current
@@ -186,9 +195,8 @@ export function ChatScreen({ active = true, controller, mediaConnection = Hermes
 
       {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
       {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
-      {chat.pendingPrompt && <PromptCard controller={controller} />}
+      {chat.pendingPrompt && <PromptCard conversation={conversation} />}
       {(sessionActionError || interactionError || chat.error) && <div className="error-banner" role="alert">{sessionActionError || interactionError || chat.error}</div>}
-      {queued.length > 0 && <div className="queue-banner">{queued.length} prompt{queued.length === 1 ? '' : 's'} queued</div>}
       {editTarget && (
         <div className="queue-banner">
           Editing an earlier message
@@ -243,7 +251,7 @@ export function ChatScreen({ active = true, controller, mediaConnection = Hermes
             value={draft}
           />
           {chat.running ? (
-            <Button aria-label="Interrupt" onClick={() => void controller.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
+            <Button aria-label="Interrupt" onClick={() => void conversation.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
           ) : (
             <Button aria-label="Send" disabled={submitting || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
           )}
@@ -267,7 +275,7 @@ function ContextUsage({ usage }: { usage: Record<string, unknown> }) {
   return <div className="context-usage"><span>Context</span><progress max={limit || used || 1} value={used} /><span>{used.toLocaleString()}{limit ? ` / ${limit.toLocaleString()}` : ''}</span></div>
 }
 
-function PromptCard({ controller }: { controller: GatewayController }) {
+function PromptCard({ conversation }: { conversation: Conversation }) {
   const pending = useStore($chat).pendingPrompt!
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -279,7 +287,7 @@ function PromptCard({ controller }: { controller: GatewayController }) {
   const respond = async (next: string) => {
     if (sensitive) setValue('')
     try {
-      await controller.respond(next)
+      await conversation.respond(next)
     } catch (caught) {
       setError(errorMessage(caught))
     } finally {
@@ -294,8 +302,8 @@ function PromptCard({ controller }: { controller: GatewayController }) {
       {question && <p>{question}</p>}
       {pending.kind === 'approval' ? (
         <div className="prompt-actions">
-          <Button onClick={() => void controller.respond('deny', 'deny')} type="button" variant="secondary">Deny</Button>
-          <Button onClick={() => void controller.respond('allow', 'allow')} type="button">Allow once</Button>
+          <Button onClick={() => void conversation.respond('deny', 'deny')} type="button" variant="secondary">Deny</Button>
+          <Button onClick={() => void conversation.respond('allow', 'allow')} type="button">Allow once</Button>
         </div>
       ) : (
         <>

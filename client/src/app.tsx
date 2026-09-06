@@ -17,8 +17,9 @@ import { DeepLinkCoordinator } from '~/navigation/deep-links'
 import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
 import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
+import { $chat } from '~/state/conversation'
 import { GatewayController } from '~/state/gateway-controller'
-import { $chat, $connection, $preferences } from '~/state/store'
+import { $connection, $preferences } from '~/state/store'
 
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
@@ -63,7 +64,7 @@ export function App() {
 
   const refresh = async () => {
     setRefreshing(true)
-    await Promise.allSettled([controller.reconcileHistory(), controller.refreshSessions()])
+    await Promise.allSettled([controller.conversation.reconcileHistory(), controller.refreshSessions()])
     setRefreshing(false)
   }
   const headerTitle = navigation.activeTab === 'sessions'
@@ -86,7 +87,7 @@ export function App() {
         refreshing={refreshing}
       >
         <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
-          <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} />
+          <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
         </div>
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
         {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}

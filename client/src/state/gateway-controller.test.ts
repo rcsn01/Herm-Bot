@@ -5,9 +5,9 @@ const capacitorApp = vi.hoisted(() => ({ addListener: vi.fn() }))
 vi.mock('@capacitor/app', () => ({ App: { addListener: capacitorApp.addListener } }))
 
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
-import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT, toTranscript } from '~/state/gateway-controller'
-import { $chat, $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
-import { emptyChatState } from '~/state/event-reducer'
+import { $chat, emptyChatState } from '~/state/conversation'
+import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT } from '~/state/gateway-controller'
+import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 class ConnectionAwareGateway extends MemoryGateway {
@@ -49,50 +49,6 @@ beforeEach(() => {
 })
 
 afterEach(() => vi.restoreAllMocks())
-
-describe('session identity and history mapping', () => {
-  it('maps backend history without conflating message, runtime, and durable identities', () => {
-    const messages = toTranscript([
-      { role: 'user', content: 'hello' },
-      { role: 'assistant', content: 'hi', reasoning: 'briefly' }
-    ] as never)
-    expect(messages).toEqual([
-      { content: 'hello', id: 'history-0', reasoning: undefined, role: 'user', streaming: false },
-      { content: 'hi', id: 'history-1', reasoning: 'briefly', role: 'assistant', streaming: false }
-    ])
-  })
-
-  it('projects internal timeline rows as compact activity instead of user messages', () => {
-    const messages = toTranscript([
-      { role: 'user', content: '[ASYNC DELEGATION COMPLETE — deleg_typed]\nagent result', display_kind: 'async_delegation_complete', display_metadata: { task_count: 1 }, row_id: 39 },
-      { role: 'user', content: '[ASYNC DELEGATION BATCH COMPLETE — deleg_legacy]\nA background fan-out of 3 subagent(s) you dispatched earlier has finished. All ran in parallel and waited on each other; their consolidated results are below.', row_id: 40 },
-      { role: 'user', content: 'internal handoff', display_kind: 'hidden', row_id: 41 },
-      { role: 'user', content: 'switch payload', display_kind: 'model_switch', row_id: 42 }
-    ] as never)
-
-    expect(messages).toEqual([
-      { content: '1 background agent finished', displayKind: 'async_delegation_complete', id: 'history-row-39', reasoning: undefined, role: 'system', rowId: 39, streaming: false },
-      { content: '3 background agents finished', displayKind: 'async_delegation_complete', id: 'history-row-40', reasoning: undefined, role: 'system', rowId: 40, streaming: false },
-      { content: 'model changed', displayKind: 'model_switch', id: 'history-row-42', reasoning: undefined, role: 'system', rowId: 42, streaming: false }
-    ])
-  })
-
-  it('hydrates the current gateway projection and keeps durable row identity separate', () => {
-    const messages = toTranscript([
-      { role: 'user', content: 'model-only', display_content: 'visible', row_id: 41, text: 'fallback' },
-      { role: 'assistant', content: null, reasoning_content: 'carefully', text: 'answer' },
-      { role: 'tool', content: null, context: 'terminal output', id: 43 },
-      { role: 'assistant', content: { type: 'image' }, text: 'must not stringify malformed content' }
-    ] as never)
-
-    expect(messages).toEqual([
-      { content: 'visible', id: 'history-row-41', reasoning: undefined, role: 'user', rowId: 41, streaming: false },
-      { content: 'answer', id: 'history-1', reasoning: 'carefully', role: 'assistant', streaming: false },
-      { content: 'terminal output', id: 'history-row-43', reasoning: undefined, role: 'tool', rowId: 43, streaming: false },
-      { content: '', id: 'history-3', reasoning: undefined, role: 'assistant', streaming: false }
-    ])
-  })
-})
 
 describe('profile-scoped session mutations', () => {
   it('targets a selected profile for rename, archive, and delete', async () => {
@@ -139,61 +95,6 @@ describe('profile-scoped session mutations', () => {
 })
 
 describe('incremental session loading', () => {
-  it('loads a bounded latest transcript page and prepends older pages', async () => {
-    const gateway = new MemoryGateway()
-      .handle('session.resume', () => ({
-        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' },
-        session_id: 'runtime-1'
-      }))
-      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
-        messages: [
-          { content: 'recent question', role: 'user', row_id: 81 },
-          { content: 'recent answer', role: 'assistant', row_id: 82 }
-        ],
-        pagination: { limit: 2, offset: 0, returned: 2 }
-      }))
-      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=2&order=latest&profile=default', () => ({
-        messages: [{ content: 'older answer', role: 'assistant', row_id: 80 }],
-        pagination: { limit: 2, offset: 2, returned: 1 }
-      }))
-    const controller = new GatewayController({} as never, gateway)
-
-    await controller.resumeSession('stored-1')
-
-    expect($chat.get()).toMatchObject({ historyHasMore: true, historyNextOffset: 2 })
-    expect($chat.get().messages.map(message => message.content)).toEqual(['recent question', 'recent answer'])
-
-    await controller.loadOlderMessages()
-
-    expect($chat.get()).toMatchObject({ historyHasMore: false, historyLoadingOlder: false, historyNextOffset: 3 })
-    expect($chat.get().messages.map(message => message.content)).toEqual(['older answer', 'recent question', 'recent answer'])
-    controller.dispose()
-  })
-
-  it('falls back to live history when a resumed session is not yet available through REST', async () => {
-    $chat.set({ ...emptyChatState(), storedSessionId: 'stored-1' })
-    const connection = {
-      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
-    }
-    const gateway = new MemoryGateway()
-      .handle('session.resume', () => ({
-        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'stored-1' },
-        session_id: 'runtime-1'
-      }))
-      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => {
-        throw Object.assign(new Error('Session not found'), { status: 404 })
-      })
-      .handle('session.history', () => ({ messages: [{ content: 'live answer', role: 'assistant' }] }))
-      .handle('session.list', () => ({ sessions: [] }))
-    const controller = new GatewayController(connection as never, gateway)
-
-    await controller.connect()
-
-    expect($connection.get()).toMatchObject({ error: null, phase: 'connected' })
-    expect($chat.get().messages.map(message => message.content)).toEqual(['live answer'])
-    controller.dispose()
-  })
-
   it('starts with a bounded session list and expands it on demand', async () => {
     const gateway = new MemoryGateway().handle('session.list', params => {
       const limit = (params as { limit: number }).limit
@@ -214,89 +115,6 @@ describe('incremental session loading', () => {
       { limit: 30, profile: 'default' },
       { limit: 60, profile: 'default' }
     ])
-    controller.dispose()
-  })
-})
-
-describe('prompt submission safety', () => {
-  it('submits ordinary prompts without truncation parameters', async () => {
-    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
-    const controller = new GatewayController({} as never, gateway)
-
-    await controller.send('  hello  ')
-
-    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: { session_id: 'runtime-1', text: 'hello' } })
-    controller.dispose()
-  })
-
-  it('queues active-turn prompts at the gateway instead of client memory', async () => {
-    $chat.set({ ...emptyChatState(), running: true, runtimeSessionId: 'runtime-1' })
-    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
-    const controller = new GatewayController({} as never, gateway)
-
-    await controller.send('next task')
-
-    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: {
-      queued: true,
-      session_id: 'runtime-1',
-      text: 'next task'
-    } })
-    controller.dispose()
-  })
-
-  it('confirms a durable first-turn rewind by both ordinal and row id', async () => {
-    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
-    const controller = new GatewayController({} as never, gateway)
-
-    await controller.retryFrom(0, 41, 'edited hello')
-
-    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: {
-      confirm_empty_truncate: true,
-      confirm_truncate: true,
-      session_id: 'runtime-1',
-      text: 'edited hello',
-      truncate_before_row_id: 41,
-      truncate_before_user_ordinal: 0
-    } })
-    controller.dispose()
-  })
-
-  it('leaves chat retryable when prompt submission fails', async () => {
-    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const gateway = new MemoryGateway().handle('prompt.submit', () => {
-      throw Object.assign(new Error('Unauthorized'), { status: 401 })
-    })
-    const controller = new GatewayController({} as never, gateway)
-
-    await expect(controller.send('hello')).rejects.toMatchObject({ kind: 'auth' })
-
-    expect($chat.get()).toMatchObject({ error: 'Unauthorized', running: false, runtimeSessionId: 'runtime-1' })
-    controller.dispose()
-  })
-
-  it('keeps a pending response when delivery fails', async () => {
-    const pendingPrompt = { kind: 'approval' as const, payload: {}, requestId: 'request-1' }
-    $chat.set({ ...emptyChatState(), pendingPrompt, runtimeSessionId: 'runtime-1' })
-    const gateway = new MemoryGateway().handle('approval.respond', () => {
-      throw new Error('Network disconnected')
-    })
-    const controller = new GatewayController({} as never, gateway)
-
-    await expect(controller.respond('yes')).rejects.toMatchObject({ kind: 'network' })
-
-    expect($chat.get().pendingPrompt).toEqual(pendingPrompt)
-    controller.dispose()
-  })
-
-  it('refuses to rewind without a durable row id', async () => {
-    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
-    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
-    const controller = new GatewayController({} as never, gateway)
-
-    await expect(controller.retryFrom(1, undefined as never, 'unsafe')).rejects.toThrow(/durable message row/i)
-    expect(gateway.calls).not.toContainEqual(expect.objectContaining({ method: 'prompt.submit' }))
     controller.dispose()
   })
 })
@@ -623,6 +441,23 @@ describe('connection restoration', () => {
     await initialConnect
     expect(gateway.activeProfile).toBe('work')
     expect($chat.get().runtimeSessionId).toBe('runtime-work')
+    controller.dispose()
+  })
+})
+
+describe('conversation delegation', () => {
+  it('publishes the opened session through the conversation when connecting', async () => {
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-open' }))
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.connect()
+
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-open', storedSessionId: null })
     controller.dispose()
   })
 })

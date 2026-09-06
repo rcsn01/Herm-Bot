@@ -2,12 +2,14 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const controller = vi.hoisted(() => ({
+  conversation: {
+    reconcileHistory: vi.fn().mockResolvedValue(undefined)
+  },
   deleteSession: vi.fn().mockResolvedValue(undefined),
   dispose: vi.fn(),
   gateway: {},
   initialize: vi.fn().mockResolvedValue(undefined),
   newSession: vi.fn().mockResolvedValue(undefined),
-  reconcileHistory: vi.fn().mockResolvedValue(undefined),
   refreshSessions: vi.fn().mockResolvedValue(undefined),
   resumeSession: vi.fn().mockResolvedValue(undefined),
   switchProfile: vi.fn().mockResolvedValue(undefined)
@@ -33,9 +35,9 @@ vi.mock('~/features/capabilities/capabilities-screen', () => ({ CapabilitiesScre
 vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: { onOpenSession?(sessionId: string): Promise<void> }) => <div>Cron screen{onOpenSession && <button onClick={() => void onOpenSession('cron-session-1')}>Open run session</button>}</div> }))
 
 import { App } from '~/app'
-import { emptyChatState } from '~/state/event-reducer'
+import { $chat, emptyChatState } from '~/state/conversation'
 import { resetNavigation } from '~/navigation/navigation-store'
-import { $chat, $connection, $preferences, $sessions } from '~/state/store'
+import { $connection, $preferences, $sessions } from '~/state/store'
 
 afterEach(cleanup)
 

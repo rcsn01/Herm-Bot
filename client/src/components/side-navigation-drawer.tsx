@@ -14,8 +14,9 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { errorMessage } from '~/gateway/gateway-error'
+import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $chat, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 interface SideNavigationDrawerProps {
   activeTab: MobileTab

@@ -1,7 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import type { AuthMode, ChatState, ConnectionPreferences, GatewayStatus, StoredSession } from '~/lib/types'
-import { emptyChatState } from '~/state/event-reducer'
+import type { AuthMode, ConnectionPreferences, GatewayStatus, StoredSession } from '~/lib/types'
 
 export type ConnectionPhase = 'connected' | 'connecting' | 'disconnected' | 'error' | 'reconnecting' | 'unsupported'
 
@@ -19,11 +18,9 @@ export const $preferences = atom<ConnectionPreferences>({
   theme: (localStorage.getItem('hermes.theme') as ConnectionPreferences['theme']) ?? 'system'
 })
 
-export const $chat = atom<ChatState>(emptyChatState())
 export const $sessions = atom<StoredSession[]>([])
 export const $sessionsHasMore = atom(false)
 export const $sessionsLoadingMore = atom(false)
-export const $queuedPrompts = atom<string[]>([])
 export const $isReady = computed($connection, connection => connection.phase === 'connected')
 
 export function savePreferences(next: Partial<ConnectionPreferences>) {

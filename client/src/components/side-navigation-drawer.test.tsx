@@ -7,9 +7,9 @@ vi.mock('~/compat/primitives', () => ({
 }))
 
 import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
-import { emptyChatState } from '~/state/event-reducer'
+import { $chat, emptyChatState } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $chat, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 function controllerStub() {
   return {
