@@ -3,22 +3,22 @@ import { useEffect, useState, type FormEvent } from 'react'
 
 import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { cronApi, type CronJob, type CronJobCreate, type CronJobUpdate } from './api'
+import { createCronApi, type CronJob, type CronJobCreate, type CronJobUpdate } from './api'
 import { CronDeliveryFields } from './cron-delivery-fields'
 import { CronScheduleFields, scheduleValue, type CronScheduleValue } from './cron-schedule-fields'
 
 export function CronJobEditor({ job, onCancel, onSaved }: { job?: CronJob; onCancel(): void; onSaved(job: CronJob): void }) {
-  const gateway = useGateway()
+  const cron = useApi(createCronApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const defaultProfile = profileKey(profile) === 'default'
-  const targets = useQuery({ enabled: defaultProfile, queryFn: ({ signal }) => cronApi.deliveryTargets(gateway, profile, signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'cron', 'delivery-targets') })
+  const targets = useQuery({ enabled: defaultProfile, queryFn: ({ signal }) => cron.deliveryTargets(signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'cron', 'delivery-targets') })
   const initialSchedule = scheduleValue(job?.schedule)
   const [name, setName] = useState(job?.name ?? '')
   const [prompt, setPrompt] = useState(job?.prompt ?? '')
@@ -36,10 +36,10 @@ export function CronJobEditor({ job, onCancel, onSaved }: { job?: CronJob; onCan
   const [error, setError] = useState<string | null>(null)
   const mutation = useMutation<CronJob, unknown, CronJobCreate & { enabled?: boolean }, { scope: CurrentGatewayScope }>({
     mutationFn: async body => {
-      if (job) return cronApi.update(gateway, profile, job.id, body)
+      if (job) return cron.update(job.id, body)
       const { enabled: requestedEnabled, ...createBody } = body
-      const created = await cronApi.create(gateway, profile, createBody)
-      if (requestedEnabled === false) return cronApi.pause(gateway, profile, created.id)
+      const created = await cron.create(createBody)
+      if (requestedEnabled === false) return cron.pause(created.id)
       return created
     },
     onError: (caught, _body, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(formatCronError(caught)) },

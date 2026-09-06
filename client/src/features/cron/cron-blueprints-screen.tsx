@@ -4,26 +4,26 @@ import { useEffect, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton, Textarea } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { cronApi, type AutomationBlueprint, type CronJob } from './api'
+import { createCronApi, type AutomationBlueprint, type CronJob } from './api'
 
 export function CronBlueprintsScreen({ onBack, onCreated }: { onBack(): void; onCreated(job: CronJob): void }) {
-  const gateway = useGateway()
+  const cron = useApi(createCronApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const defaultProfile = profileKey(profile) === 'default'
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'cron', 'blueprints')
-  const blueprints = useQuery({ enabled: defaultProfile, queryFn: ({ signal }) => cronApi.blueprints(gateway, profile, signal), queryKey: key })
+  const blueprints = useQuery({ enabled: defaultProfile, queryFn: ({ signal }) => cron.blueprints(signal), queryKey: key })
   const [selected, setSelected] = useState<AutomationBlueprint | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const create = useMutation<CronJob, unknown, { blueprint: string; values: Record<string, string> }, { scope: CurrentGatewayScope }>({
-    mutationFn: ({ blueprint, values: selectedValues }) => cronApi.instantiate(gateway, profile, blueprint, selectedValues),
+    mutationFn: ({ blueprint, values: selectedValues }) => cron.instantiate(blueprint, selectedValues),
     onError: (caught, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (job, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) onCreated(job) }

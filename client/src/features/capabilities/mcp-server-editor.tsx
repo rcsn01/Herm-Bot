@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react'
 
 import { Button, Input, Textarea } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { mcpApi, type McpServerConfig, type McpServerSummary } from './mcp-api'
+import { createMcpApi, type McpServerConfig, type McpServerSummary } from './mcp-api'
 
 export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): void; onSaved(): void; server?: McpServerSummary }) {
-  const gateway = useGateway()
+  const mcpApi = useApi(createMcpApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const [name, setName] = useState(server?.name ?? '')
@@ -58,8 +58,8 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
     if (transport === 'stdio' && !command.trim()) { setError('A stdio command is required.'); return }
     setSaving(true)
     try {
-      if (server) await mcpApi.update(gateway, profile, server.name, draft)
-      else await mcpApi.add(gateway, profile, { ...draft, name: name.trim() })
+      if (server) await mcpApi.update(server.name, draft)
+      else await mcpApi.add({ ...draft, name: name.trim() })
       if (!isCurrentGatewayScope(scope)) return
       onSaved()
     } catch (caught) {

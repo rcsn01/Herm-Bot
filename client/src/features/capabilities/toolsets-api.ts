@@ -1,5 +1,4 @@
-import type { GatewayPort } from '~/gateway/gateway-port'
-import { profileKey, profilePath, profileParams, type MobileProfile } from '~/gateway/profile-path'
+import type { GatewayApi } from '~/gateway/gateway-api'
 import { assertRemoteActionStart, remoteActionName, runRemoteAction, type RemoteActionState } from '~/gateway/remote-action'
 import type { ToolEnvVar, ToolProvider, ToolsetInfo } from '~/lib/types'
 import type { ActionStartResponse, ActionStatusResponse } from './skills-api'
@@ -42,95 +41,83 @@ export interface ComputerUseStatus {
   [key: string]: unknown
 }
 
-async function request<T>(gateway: GatewayPort, path: string, options: { body?: unknown; method?: string; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
-  return (await gateway.request<T>({ ...options, path })).body
+export interface ToolsetsApi {
+  list(signal?: AbortSignal): Promise<ToolsetInfo[]>
+  config(name: string, signal?: AbortSignal): Promise<ToolsetConfig>
+  models(name: string, provider?: string, signal?: AbortSignal): Promise<ToolsetModelsResponse>
+  toggle(name: string, enabled: boolean, signal?: AbortSignal): Promise<{ enabled: boolean; name: string; ok: boolean }>
+  selectProvider(name: string, provider: string, capability?: 'extract' | 'search', signal?: AbortSignal): Promise<{ feature?: string; name: string; needs_nous_auth?: boolean; ok: boolean; provider: string }>
+  selectModel(name: string, model: string, provider?: string, signal?: AbortSignal): Promise<{ model: string; name: string; ok: boolean }>
+  saveEnv(name: string, env: Record<string, string>, signal?: AbortSignal): Promise<{ is_set: Record<string, boolean>; name: string; ok: boolean; saved: string[]; skipped: string[] }>
+  postSetup(name: string, key: string, signal?: AbortSignal): Promise<ActionStartResponse & { key: string }>
+  terminalBackends(signal?: AbortSignal): Promise<TerminalBackendsResponse>
+  selectTerminalBackend(backend: string, signal?: AbortSignal): Promise<{ backend: string; ok: boolean }>
+  computerUseStatus(signal?: AbortSignal): Promise<ComputerUseStatus>
+  grantComputerUsePermissions(signal?: AbortSignal): Promise<ActionStartResponse>
 }
 
-export const toolsetsApi = {
-  list(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<ToolsetInfo[]> {
-    return request(gateway, profilePath('/api/tools/toolsets', profile), { signal })
-  },
-
-  config(gateway: GatewayPort, profile: MobileProfile, name: string, signal?: AbortSignal): Promise<ToolsetConfig> {
-    return request(gateway, profilePath(`/api/tools/toolsets/${encodeURIComponent(name)}/config`, profile), { signal })
-  },
-
-  models(gateway: GatewayPort, profile: MobileProfile, name: string, provider?: string, signal?: AbortSignal): Promise<ToolsetModelsResponse> {
-    const query = profileParams(profile, provider ? { provider } : {})
-    return request(gateway, `/api/tools/toolsets/${encodeURIComponent(name)}/models?${query}`, { signal })
-  },
-
-  toggle(gateway: GatewayPort, profile: MobileProfile, name: string, enabled: boolean, signal?: AbortSignal): Promise<{ enabled: boolean; name: string; ok: boolean }> {
-    return request(gateway, profilePath(`/api/tools/toolsets/${encodeURIComponent(name)}`, profile), { body: { enabled, profile: profileKey(profile) }, method: 'PUT', signal })
-  },
-
-  selectProvider(gateway: GatewayPort, profile: MobileProfile, name: string, provider: string, capability?: 'extract' | 'search', signal?: AbortSignal) {
-    return request<{ feature?: string; name: string; needs_nous_auth?: boolean; ok: boolean; provider: string }>(gateway, profilePath(`/api/tools/toolsets/${encodeURIComponent(name)}/provider`, profile), {
-      body: capability ? { capability, profile: profileKey(profile), provider } : { profile: profileKey(profile), provider },
-      method: 'PUT',
-      signal
-    })
-  },
-
-  selectModel(gateway: GatewayPort, profile: MobileProfile, name: string, model: string, provider?: string, signal?: AbortSignal) {
-    return request<{ model: string; name: string; ok: boolean }>(gateway, profilePath(`/api/tools/toolsets/${encodeURIComponent(name)}/model`, profile), {
-      body: { model, profile: profileKey(profile), provider },
-      method: 'PUT',
-      signal
-    })
-  },
-
-  saveEnv(gateway: GatewayPort, profile: MobileProfile, name: string, env: Record<string, string>, signal?: AbortSignal) {
-    return request<{ is_set: Record<string, boolean>; name: string; ok: boolean; saved: string[]; skipped: string[] }>(gateway, profilePath(`/api/tools/toolsets/${encodeURIComponent(name)}/env`, profile), {
-      body: { env, profile: profileKey(profile) },
-      method: 'PUT',
-      signal
-    })
-  },
-
-  postSetup(gateway: GatewayPort, profile: MobileProfile, name: string, key: string, signal?: AbortSignal): Promise<ActionStartResponse & { key: string }> {
-    return request(gateway, profilePath(`/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`, profile), {
-      body: { key, profile: profileKey(profile) },
-      method: 'POST',
-      signal
-    })
-  },
-
-  terminalBackends(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<TerminalBackendsResponse> {
-    return request(gateway, profilePath('/api/tools/terminal/backends', profile), { signal })
-  },
-
-  selectTerminalBackend(gateway: GatewayPort, profile: MobileProfile, backend: string, signal?: AbortSignal) {
-    return request<{ backend: string; ok: boolean }>(gateway, profilePath('/api/tools/terminal/backend', profile), { body: { backend, profile: profileKey(profile) }, method: 'PUT', signal })
-  },
-
-  computerUseStatus(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<ComputerUseStatus> {
-    return request(gateway, profilePath('/api/tools/computer-use/status', profile), { signal })
-  },
-
-  grantComputerUsePermissions(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<ActionStartResponse> {
-    return request(gateway, profilePath('/api/tools/computer-use/permissions/grant', profile), { method: 'POST', signal })
+export function createToolsetsApi(api: GatewayApi): ToolsetsApi {
+  return {
+    list: (signal?: AbortSignal) => api.request('/api/tools/toolsets', { signal }),
+    config: (name: string, signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}/config`, { signal }),
+    models: (name: string, provider?: string, signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}/models`, { params: provider ? { provider } : {}, signal }),
+    toggle: (name: string, enabled: boolean, signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}`, {
+        body: { enabled, profile: api.profileKey },
+        method: 'PUT',
+        signal
+      }),
+    selectProvider: (name: string, provider: string, capability?: 'extract' | 'search', signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}/provider`, {
+        body: capability ? { capability, profile: api.profileKey, provider } : { profile: api.profileKey, provider },
+        method: 'PUT',
+        signal
+      }),
+    selectModel: (name: string, model: string, provider?: string, signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}/model`, {
+        body: { model, profile: api.profileKey, provider },
+        method: 'PUT',
+        signal
+      }),
+    saveEnv: (name: string, env: Record<string, string>, signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}/env`, {
+        body: { env, profile: api.profileKey },
+        method: 'PUT',
+        signal
+      }),
+    postSetup: (name: string, key: string, signal?: AbortSignal) =>
+      api.request(`/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`, {
+        body: { key, profile: api.profileKey },
+        method: 'POST',
+        signal
+      }),
+    terminalBackends: (signal?: AbortSignal) => api.request('/api/tools/terminal/backends', { signal }),
+    selectTerminalBackend: (backend: string, signal?: AbortSignal) =>
+      api.request('/api/tools/terminal/backend', { body: { backend, profile: api.profileKey }, method: 'PUT', signal }),
+    computerUseStatus: (signal?: AbortSignal) => api.request('/api/tools/computer-use/status', { signal }),
+    grantComputerUsePermissions: (signal?: AbortSignal) =>
+      api.request('/api/tools/computer-use/permissions/grant', { method: 'POST', signal })
   }
 }
 
-export function toolActionStatus(gateway: GatewayPort, _profile: MobileProfile, name: string, signal?: AbortSignal): Promise<ActionStatusResponse> {
-  return request(gateway, `/api/actions/${encodeURIComponent(name)}/status`, { signal })
-}
-
 export async function runToolsetAction(
-  gateway: GatewayPort,
-  profile: MobileProfile,
+  api: GatewayApi,
   start: (signal: AbortSignal) => Promise<ActionStartResponse>,
   signal?: AbortSignal,
   isCurrentScope?: () => boolean
 ): Promise<RemoteActionState<ActionStatusResponse>> {
   let action = ''
   return runRemoteAction<ActionStatusResponse>({
-    gateway,
+    gateway: api.gateway,
     isCurrentScope,
     maxAttempts: 120,
     poll: async (_gateway, pollSignal) => {
-      const status = await toolActionStatus(gateway, profile, action, pollSignal)
+      // Action status is owned by the dashboard process. The route has no
+      // profile scope; the action name returned by the start endpoint is the
+      // authoritative handle.
+      const status = await api.unscoped<ActionStatusResponse>(`/api/actions/${encodeURIComponent(action)}/status`, { signal: pollSignal })
       return { result: status, status: status.running ? 'running' : status.exit_code === 0 ? 'complete' : 'failed' }
     },
     signal,

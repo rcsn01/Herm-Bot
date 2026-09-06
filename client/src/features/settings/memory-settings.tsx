@@ -10,17 +10,18 @@ import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { runRemoteAction } from '~/gateway/remote-action'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import type { MemoryProviderConfig, MemoryProviderField, MemoryProviderOAuthStatus } from '~/lib/types'
 import type { SettingsCategory } from '~/navigation/routes'
 import { $preferences } from '~/state/store'
-import { settingsApi } from './settings-api'
+import { createSettingsApi } from './settings-api'
 import { SettingsPageShell } from './settings-page-shell'
 
 type MemoryValues = Record<string, unknown>
 
 export function MemorySettings({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
@@ -29,7 +30,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   const statusKey = useMemo(() => gatewayScopeKey(scope, 'settings', 'memory'), [preferences.remoteURL, profile])
   const status = useQuery({
     enabled: profileSupportsMemoryManagement,
-    queryFn: ({ signal }) => settingsApi.memoryStatus(gateway, profile, signal),
+    queryFn: ({ signal }) => settings.memoryStatus(signal),
     queryKey: statusKey
   })
   const [selectedProvider, setSelectedProvider] = useState('')
@@ -43,12 +44,12 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   const selectedStatus = providers.find(provider => provider.name === providerKey)
   const config = useQuery({
     enabled: Boolean(providerKey),
-    queryFn: ({ signal }) => settingsApi.memoryProviderConfig(gateway, profile, providerKey, signal),
+    queryFn: ({ signal }) => settings.memoryProviderConfig(providerKey, signal),
     queryKey: [...statusKey, 'provider', providerKey]
   })
   const oauth = useQuery({
     enabled: Boolean(providerKey),
-    queryFn: ({ signal }) => settingsApi.memoryOAuthStatus(gateway, profile, providerKey, signal),
+    queryFn: ({ signal }) => settings.memoryOAuthStatus(providerKey, signal),
     queryKey: [...statusKey, 'oauth', providerKey],
     retry: false
   })
@@ -65,8 +66,8 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     if (!selectedProvider && status.data?.active) setSelectedProvider(status.data.active)
   }, [selectedProvider, status.data?.active])
 
-  const selectProvider = useMutation<Awaited<ReturnType<typeof settingsApi.selectMemoryProvider>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (provider: string) => settingsApi.selectMemoryProvider(gateway, profile, provider),
+  const selectProvider = useMutation<Awaited<ReturnType<typeof settings.selectMemoryProvider>>, unknown, string, { scope: CurrentGatewayScope }>({
+    mutationFn: (provider: string) => settings.selectMemoryProvider(provider),
     onError: (caught, _provider, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _provider, context) => {
@@ -75,8 +76,8 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       void queryClient.invalidateQueries({ queryKey: statusKey })
     }
   })
-  const saveProvider = useMutation<Awaited<ReturnType<typeof settingsApi.saveMemoryProviderConfig>>, unknown, MemoryValues, { scope: CurrentGatewayScope }>({
-    mutationFn: (values: MemoryValues) => settingsApi.saveMemoryProviderConfig(gateway, profile, providerKey, values),
+  const saveProvider = useMutation<Awaited<ReturnType<typeof settings.saveMemoryProviderConfig>>, unknown, MemoryValues, { scope: CurrentGatewayScope }>({
+    mutationFn: (values: MemoryValues) => settings.saveMemoryProviderConfig(providerKey, values),
     onError: (caught, _values, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _values, context) => {
@@ -86,8 +87,8 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       void config.refetch()
     }
   })
-  const setupProvider = useMutation<Awaited<ReturnType<typeof settingsApi.setupMemoryProvider>>, unknown, void, { scope: CurrentGatewayScope }>({
-    mutationFn: () => settingsApi.setupMemoryProvider(gateway, profile, providerKey),
+  const setupProvider = useMutation<Awaited<ReturnType<typeof settings.setupMemoryProvider>>, unknown, void, { scope: CurrentGatewayScope }>({
+    mutationFn: () => settings.setupMemoryProvider(providerKey),
     onError: (caught, _values, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _values, context) => {
@@ -97,8 +98,8 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       void config.refetch()
     }
   })
-  const reset = useMutation<Awaited<ReturnType<typeof settingsApi.resetMemory>>, unknown, 'all' | 'memory' | 'user', { scope: CurrentGatewayScope }>({
-    mutationFn: (target: 'all' | 'memory' | 'user') => settingsApi.resetMemory(gateway, profile, target),
+  const reset = useMutation<Awaited<ReturnType<typeof settings.resetMemory>>, unknown, 'all' | 'memory' | 'user', { scope: CurrentGatewayScope }>({
+    mutationFn: (target: 'all' | 'memory' | 'user') => settings.resetMemory(target),
     onError: (caught, _target, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSettled: (_data, _error, _target, context) => {
@@ -113,13 +114,13 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     const controller = new AbortController()
     const oauthScope = currentGatewayScope()
     void runRemoteAction<MemoryProviderOAuthStatus>({
-      gateway,
+      gateway: api.gateway,
       isCurrentScope: () => isCurrentGatewayScope(oauthScope),
       intervalMs: 2_000,
       maxAttempts: 60,
       maxIntervalMs: 10_000,
       poll: async (_transport, signal) => {
-        const next = await settingsApi.memoryOAuthStatus(gateway, profile, providerKey, signal)
+        const next = await settings.memoryOAuthStatus(providerKey, signal)
         return { result: next, status: next.state }
       },
       signal: controller.signal,
@@ -141,7 +142,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       setOAuthError(classifyGatewayError(caught).message)
     })
     return () => controller.abort()
-  }, [gateway, oauth.data, oauthPending, profile, providerKey, queryClient, statusKey])
+  }, [api, oauth.data, oauthPending, providerKey, queryClient, settings, statusKey])
 
   const chooseProvider = (name: string) => {
     setSelectedProvider(name)
@@ -154,7 +155,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     const oauthScope = currentGatewayScope()
     setOAuthError(null)
     try {
-      const next = await settingsApi.startMemoryOAuth(gateway, profile, providerKey)
+      const next = await settings.startMemoryOAuth(providerKey)
       if (!isCurrentGatewayScope(oauthScope)) return
       if (next.state === 'connected') {
         void queryClient.invalidateQueries({ queryKey: statusKey })

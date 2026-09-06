@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
@@ -12,7 +12,7 @@ import { $preferences } from '~/state/store'
 import type { SkillInfo } from '~/lib/types'
 import { SkillDetail } from './skill-detail'
 import { SkillHubScreen } from './skill-hub-screen'
-import { skillsApi } from './skills-api'
+import { createSkillsApi } from './skills-api'
 
 export interface SkillsScreenProps {
   onBack?(): void
@@ -22,13 +22,13 @@ export interface SkillsScreenProps {
 }
 
 export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsScreenProps) {
-  const gateway = useGateway()
+  const skillsApi = useApi(createSkillsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'list')
   const screenScope = currentGatewayScope()
-  const skills = useQuery({ queryFn: ({ signal }) => skillsApi.list(gateway, profile, signal), queryKey })
+  const skills = useQuery({ queryFn: ({ signal }) => skillsApi.list(signal), queryKey })
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
   const [activation, setActivation] = useState<'all' | 'disabled' | 'enabled'>('all')
@@ -43,7 +43,7 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
     )
   }, [activation, category, search, skills.data])
   const toggle = useMutation<unknown, unknown, { enabled: boolean; name: string }, { previous?: SkillInfo[]; scope: CurrentGatewayScope }>({
-    mutationFn: ({ name, enabled }: { enabled: boolean; name: string }) => skillsApi.toggle(gateway, profile, name, enabled),
+    mutationFn: ({ name, enabled }: { enabled: boolean; name: string }) => skillsApi.toggle(name, enabled),
     onError: (caught, _value, context) => {
       if (!context || !isCurrentGatewayScope(context.scope)) return
       if (context.previous) queryClient.setQueryData(queryKey, context.previous)

@@ -5,22 +5,22 @@ import { useEffect, useMemo, useState } from 'react'
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { ToolsetInfo } from '~/lib/types'
 import { ToolsetDetail } from './toolset-detail'
-import { toolsetsApi } from './toolsets-api'
+import { createToolsetsApi } from './toolsets-api'
 
 export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void; onSelect?(toolset: ToolsetInfo): void; selected?: string }) {
-  const gateway = useGateway()
+  const toolsetsApi = useApi(createToolsetsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'tools', 'list')
-  const toolsets = useQuery({ queryFn: ({ signal }) => toolsetsApi.list(gateway, profile, signal), queryKey })
+  const toolsets = useQuery({ queryFn: ({ signal }) => toolsetsApi.list(signal), queryKey })
   const [search, setSearch] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -29,7 +29,7 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
     return (toolsets.data ?? []).filter(toolset => !term || `${toolset.name} ${toolset.label} ${toolset.description}`.toLowerCase().includes(term))
   }, [search, toolsets.data])
   const toggle = useMutation<unknown, unknown, { enabled: boolean; name: string }, { previous?: ToolsetInfo[]; scope: CurrentGatewayScope }>({
-    mutationFn: ({ enabled, name }: { enabled: boolean; name: string }) => toolsetsApi.toggle(gateway, profile, name, enabled),
+    mutationFn: ({ enabled, name }: { enabled: boolean; name: string }) => toolsetsApi.toggle(name, enabled),
     onError: (caught, _value, context) => {
       if (!context || !isCurrentGatewayScope(context.scope)) return
       if (context.previous) queryClient.setQueryData(queryKey, context.previous)

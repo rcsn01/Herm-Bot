@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { Button, Input, Switch } from '~/compat/primitives'
-import { modelsApi } from '~/features/models/api'
+import { createModelsApi } from '~/features/models/api'
 import { moaConfigComplete, withActive } from '~/features/models/helpers'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
-import type { GatewayPort } from '~/gateway/gateway-port'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { profileKey } from '~/gateway/profile-path'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import type { ModelOptionProvider, MoaConfigResponse, MoaModelSlot } from '~/lib/types'
@@ -33,7 +33,6 @@ const MOA_SAVE_DEBOUNCE_MS = 600
 
 export interface MoaEditorProps {
   connectionKey: string
-  gateway: GatewayPort
   moa: MoaConfigResponse
   /** Persisted-config callback so the parent cache stays the single source of truth. */
   onMoaChange(next: MoaConfigResponse): void
@@ -60,7 +59,8 @@ export interface MoaEditorProps {
  *
  *  Fields mobile does not edit (temperatures, timeouts, fanout, token limits,
  *  per-slot reasoning effort) ride along untouched in the PUT body. */
-export function MoaEditor({ connectionKey, gateway, moa, onMoaChange, onError, onSaved, profile, providers }: MoaEditorProps) {
+export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, profile, providers }: MoaEditorProps) {
+  const models = useApi(createModelsApi)
   const [selectedPreset, setSelectedPreset] = useState(() => moa.default_preset)
   const [newPresetName, setNewPresetName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<null | string>(null)
@@ -106,7 +106,7 @@ export function MoaEditor({ connectionKey, gateway, moa, onMoaChange, onError, o
       activeRequest.current?.abort()
       activeRequest.current = null
     }
-  }, [connectionKey, gateway, profile])
+  }, [connectionKey, models, profile])
 
   const currentPreset = useMemo(
     () => moa.presets[selectedPreset] || moa.presets[moa.default_preset] || Object.values(moa.presets)[0] || null,
@@ -118,8 +118,8 @@ export function MoaEditor({ connectionKey, gateway, moa, onMoaChange, onError, o
   )
 
   const persist = useCallback(
-    (next: MoaConfigResponse, signal?: AbortSignal) => modelsApi.saveMoa(gateway, profile, next, signal),
-    [gateway, profile]
+    (next: MoaConfigResponse, signal?: AbortSignal) => models.saveMoa(next, signal),
+    [models]
   )
   const enqueuePersist = useCallback(
     (next: MoaConfigResponse, generation: number, scope: ReturnType<typeof currentGatewayScope>) => enqueueMoaWrite<SavedMoaConfig | null>(writeKey, async () => {

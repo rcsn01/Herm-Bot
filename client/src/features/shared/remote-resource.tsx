@@ -3,11 +3,10 @@ import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 
 import { Badge, Button, Skeleton } from '~/compat/primitives'
 import { GatewayError, classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { profileKey, profilePath } from '~/gateway/profile-path'
-import { $preferences } from '~/state/store'
 import { useStore } from '@nanostores/react'
+import { $preferences } from '~/state/store'
 
 export type RemoteResourcePresentation = 'credentials' | 'models' | 'providers' | 'summary'
 
@@ -23,16 +22,15 @@ export interface RemoteResourceDefinition {
 }
 
 export function RemoteResourceScreen({ definition, onBack }: { definition: RemoteResourceDefinition; onBack(): void }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const isProfileScoped = definition.profileScoped !== false
   const isDefaultProfileOnly = definition.defaultProfileOnly === true
-  const isUnavailableForProfile = isDefaultProfileOnly && profileKey(profile) !== 'default'
-  const path = isProfileScoped ? profilePath(definition.path, profile) : definition.path
+  const isUnavailableForProfile = isDefaultProfileOnly && !api.isDefaultProfile
   const query = useQuery({
     enabled: !isUnavailableForProfile,
-    queryFn: async ({ signal }) => (await gateway.request({ path, signal })).body,
+    queryFn: ({ signal }) => (isProfileScoped ? api.request(definition.path, { signal }) : api.unscoped(definition.path, { signal })),
     queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: isProfileScoped ? profile : null }, definition.id)
   })
   const error = query.error ? classifyGatewayError(query.error) : null

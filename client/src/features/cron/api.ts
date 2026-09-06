@@ -1,6 +1,4 @@
-import type { GatewayPort } from '~/gateway/gateway-port'
-import { GatewayError } from '~/gateway/gateway-error'
-import { profileKey, profilePath, profileParams, type MobileProfile } from '~/gateway/profile-path'
+import type { GatewayApi } from '~/gateway/gateway-api'
 
 export interface CronRun {
   actual_cost_usd?: null | number
@@ -91,59 +89,56 @@ const TRIGGER_TIMEOUT_MS = 24 * 60 * 60 * 1_000
 const REQUEST_TIMEOUT_MS = 60_000
 const PROCESS_SCOPED_CRON_MESSAGE = 'This gateway route reads process-wide cron delivery configuration and is only available from the default profile.'
 
-function requireDefaultProfile(profile: MobileProfile): void {
-  if (profileKey(profile) !== 'default') {
-    throw new GatewayError(PROCESS_SCOPED_CRON_MESSAGE, {
-      code: 'PROFILE_SCOPE_UNSUPPORTED',
-      kind: 'unsupported',
-      retryable: false
-    })
-  }
+function jobPath(id: string): string {
+  return `/api/cron/jobs/${encodeURIComponent(id)}`
 }
 
-async function request<T>(gateway: GatewayPort, path: string, options: { body?: unknown; method?: string; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
-  return (await gateway.request<T>({ ...options, path })).body
+export interface CronApi {
+  list(signal?: AbortSignal): Promise<CronJob[]>
+  get(id: string, signal?: AbortSignal): Promise<CronJob>
+  runs(id: string, limit?: number, signal?: AbortSignal): Promise<CronRun[]>
+  deliveryTargets(signal?: AbortSignal): Promise<CronDeliveryTarget[]>
+  create(body: CronJobCreate, signal?: AbortSignal): Promise<CronJob>
+  update(id: string, updates: CronJobUpdate, signal?: AbortSignal): Promise<CronJob>
+  pause(id: string, signal?: AbortSignal): Promise<CronJob>
+  resume(id: string, signal?: AbortSignal): Promise<CronJob>
+  trigger(id: string, signal?: AbortSignal): Promise<CronJob>
+  remove(id: string, signal?: AbortSignal): Promise<void>
+  blueprints(signal?: AbortSignal): Promise<{ blueprints: AutomationBlueprint[] }>
+  instantiate(blueprint: string, values: Record<string, string>, signal?: AbortSignal): Promise<CronJob>
 }
 
-export const cronApi = {
-  list(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<CronJob[]> {
-    return request(gateway, profilePath('/api/cron/jobs', profile), { signal, timeoutMs: REQUEST_TIMEOUT_MS })
-  },
-  get(gateway: GatewayPort, profile: MobileProfile, id: string, signal?: AbortSignal): Promise<CronJob> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}`, profile), { signal, timeoutMs: REQUEST_TIMEOUT_MS })
-  },
-  runs(gateway: GatewayPort, profile: MobileProfile, id: string, limit = 20, signal?: AbortSignal): Promise<CronRun[]> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}/runs?limit=${encodeURIComponent(String(limit))}`, profile), { signal, timeoutMs: REQUEST_TIMEOUT_MS }).then(value => (value as { runs?: CronRun[] }).runs ?? [])
-  },
-  deliveryTargets(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<CronDeliveryTarget[]> {
-    requireDefaultProfile(profile)
-    return request(gateway, '/api/cron/delivery-targets', { signal, timeoutMs: REQUEST_TIMEOUT_MS }).then(value => (value as { targets?: CronDeliveryTarget[] }).targets ?? [])
-  },
-  create(gateway: GatewayPort, profile: MobileProfile, body: CronJobCreate, signal?: AbortSignal): Promise<CronJob> {
-    return request(gateway, profilePath('/api/cron/jobs', profile), { body, method: 'POST', signal, timeoutMs: REQUEST_TIMEOUT_MS })
-  },
-  update(gateway: GatewayPort, profile: MobileProfile, id: string, updates: CronJobUpdate, signal?: AbortSignal): Promise<CronJob> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}`, profile), { body: { updates }, method: 'PUT', signal, timeoutMs: REQUEST_TIMEOUT_MS })
-  },
-  pause(gateway: GatewayPort, profile: MobileProfile, id: string, signal?: AbortSignal): Promise<CronJob> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}/pause`, profile), { method: 'POST', signal })
-  },
-  resume(gateway: GatewayPort, profile: MobileProfile, id: string, signal?: AbortSignal): Promise<CronJob> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}/resume`, profile), { method: 'POST', signal })
-  },
-  trigger(gateway: GatewayPort, profile: MobileProfile, id: string, signal?: AbortSignal): Promise<CronJob> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}/trigger`, profile), { method: 'POST', signal, timeoutMs: TRIGGER_TIMEOUT_MS })
-  },
-  remove(gateway: GatewayPort, profile: MobileProfile, id: string, signal?: AbortSignal): Promise<void> {
-    return request(gateway, profilePath(`/api/cron/jobs/${encodeURIComponent(id)}`, profile), { method: 'DELETE', signal }).then(() => undefined)
-  },
-  blueprints(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<{ blueprints: AutomationBlueprint[] }> {
-    requireDefaultProfile(profile)
-    return request(gateway, '/api/cron/blueprints', { signal, timeoutMs: REQUEST_TIMEOUT_MS })
-  },
-  instantiate(gateway: GatewayPort, profile: MobileProfile, blueprint: string, values: Record<string, string>, signal?: AbortSignal): Promise<CronJob> {
-    const query = profileParams(profile)
-    return request(gateway, `/api/cron/blueprints/instantiate?${query}`, { body: { blueprint, values }, method: 'POST', signal, timeoutMs: REQUEST_TIMEOUT_MS })
+export function createCronApi(api: GatewayApi): CronApi {
+  return {
+    list: (signal?: AbortSignal) => api.request('/api/cron/jobs', { signal, timeoutMs: REQUEST_TIMEOUT_MS }),
+    get: (id: string, signal?: AbortSignal) => api.request(jobPath(id), { signal, timeoutMs: REQUEST_TIMEOUT_MS }),
+    runs: (id: string, limit = 20, signal?: AbortSignal) =>
+      api
+        .request<{ runs?: CronRun[] }>(`${jobPath(id)}/runs`, { params: { limit }, signal, timeoutMs: REQUEST_TIMEOUT_MS })
+        .then(value => value.runs ?? []),
+    deliveryTargets: (signal?: AbortSignal) =>
+      api
+        .defaultOnly<{ targets?: CronDeliveryTarget[] }>(PROCESS_SCOPED_CRON_MESSAGE, '/api/cron/delivery-targets', { signal, timeoutMs: REQUEST_TIMEOUT_MS })
+        .then(value => value.targets ?? []),
+    create: (body: CronJobCreate, signal?: AbortSignal) =>
+      api.request('/api/cron/jobs', { body, method: 'POST', signal, timeoutMs: REQUEST_TIMEOUT_MS }),
+    update: (id: string, updates: CronJobUpdate, signal?: AbortSignal) =>
+      api.request(jobPath(id), { body: { updates }, method: 'PUT', signal, timeoutMs: REQUEST_TIMEOUT_MS }),
+    pause: (id: string, signal?: AbortSignal) => api.request(`${jobPath(id)}/pause`, { method: 'POST', signal }),
+    resume: (id: string, signal?: AbortSignal) => api.request(`${jobPath(id)}/resume`, { method: 'POST', signal }),
+    trigger: (id: string, signal?: AbortSignal) =>
+      api.request(`${jobPath(id)}/trigger`, { method: 'POST', signal, timeoutMs: TRIGGER_TIMEOUT_MS }),
+    remove: (id: string, signal?: AbortSignal) =>
+      api.request(jobPath(id), { method: 'DELETE', signal }).then(() => undefined),
+    blueprints: (signal?: AbortSignal) =>
+      api.defaultOnly(PROCESS_SCOPED_CRON_MESSAGE, '/api/cron/blueprints', { signal, timeoutMs: REQUEST_TIMEOUT_MS }),
+    instantiate: (blueprint: string, values: Record<string, string>, signal?: AbortSignal) =>
+      api.request('/api/cron/blueprints/instantiate', {
+        body: { blueprint, values },
+        method: 'POST',
+        signal,
+        timeoutMs: REQUEST_TIMEOUT_MS
+      })
   }
 }
 

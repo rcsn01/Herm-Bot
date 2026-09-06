@@ -5,29 +5,29 @@ import { useEffect, useState } from 'react'
 import { Badge, Button, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { cronApi, type CronJob, type CronRun } from './api'
+import { createCronApi, type CronJob, type CronRun } from './api'
 import { formatCronError } from './cron-job-editor'
 
 export function CronJobDetail({ jobId, onBack, onEdit, onDeleted, onOpenSession }: { jobId: string; onBack(): void; onDeleted(): void; onEdit(job: CronJob): void; onOpenSession?: (sessionId: string) => Promise<void> }) {
-  const gateway = useGateway()
+  const cron = useApi(createCronApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron', 'job', jobId)
-  const job = useQuery({ queryFn: ({ signal }) => cronApi.get(gateway, profile, jobId, signal), queryKey: key })
-  const runs = useQuery({ queryFn: ({ signal }) => cronApi.runs(gateway, profile, jobId, 50, signal), queryKey: [...key, 'runs'] })
+  const job = useQuery({ queryFn: ({ signal }) => cron.get(jobId, signal), queryKey: key })
+  const runs = useQuery({ queryFn: ({ signal }) => cron.runs(jobId, 50, signal), queryKey: [...key, 'runs'] })
   const [remove, setRemove] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [openingRunId, setOpeningRunId] = useState<string | null>(null)
   const action = useMutation<void, unknown, 'pause' | 'remove' | 'resume' | 'trigger', { scope: CurrentGatewayScope }>({
     mutationFn: async (type: 'pause' | 'remove' | 'resume' | 'trigger') => {
-      if (type === 'remove') await cronApi.remove(gateway, profile, jobId)
-      else await cronApi[type](gateway, profile, jobId)
+      if (type === 'remove') await cron.remove(jobId)
+      else await cron[type](jobId)
     },
     onError: (caught, _type, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(formatCronError(caught)) },
     onMutate: () => ({ scope: currentGatewayScope() }),

@@ -5,20 +5,21 @@ import { useEffect, useState } from 'react'
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { mcpApi, runMcpInstallAction, type McpCatalogEntry } from './mcp-api'
+import { createMcpApi, runMcpInstallAction, type McpCatalogEntry } from './mcp-api'
 
 export function McpCatalogScreen({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
+  const mcpApi = useApi(createMcpApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'mcp', 'catalog')
-  const catalog = useQuery({ queryFn: ({ signal }) => mcpApi.catalog(gateway, profile, signal), queryKey: scopeKey })
+  const catalog = useQuery({ queryFn: ({ signal }) => mcpApi.catalog(signal), queryKey: scopeKey })
   const [pending, setPending] = useState<McpCatalogEntry | null>(null)
   const [env, setEnv] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
@@ -26,7 +27,7 @@ export function McpCatalogScreen({ onBack }: { onBack(): void }) {
   const install = useMutation<Awaited<ReturnType<typeof runMcpInstallAction>>, unknown, InstallVariables, { scope: CurrentGatewayScope }>({
     mutationFn: ({ entry, env: values }) => {
       const scope = currentGatewayScope()
-      return runMcpInstallAction(gateway, profile, signal => mcpApi.installCatalog(gateway, profile, entry.name, values, signal), undefined, () => isCurrentGatewayScope(scope))
+      return runMcpInstallAction(api, signal => mcpApi.installCatalog(entry.name, values, signal), undefined, () => isCurrentGatewayScope(scope))
     },
     onError: (caught, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) { setEnv({}); setError(classifyGatewayError(caught).message) } },
     onMutate: () => ({ scope: currentGatewayScope() }),

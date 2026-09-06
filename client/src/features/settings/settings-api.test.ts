@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { settingsApi } from './settings-api'
+import { createSettingsApi } from './settings-api'
+import { createGatewayApi } from '~/gateway/gateway-api'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 describe('settingsApi', () => {
@@ -8,9 +9,10 @@ describe('settingsApi', () => {
     const gateway = new MemoryGateway()
       .handle('/api/config?profile=default', () => ({ model: {} }))
       .handle('/api/providers/custom-endpoints/endpoint%2Fone/activate?profile=default', () => ({ ok: true, model: 'demo', provider: 'custom' }))
+    const settings = createSettingsApi(createGatewayApi(gateway, null))
 
-    await settingsApi.config(gateway, null)
-    await settingsApi.activateCustomEndpoint(gateway, null, 'endpoint/one')
+    await settings.config()
+    await settings.activateCustomEndpoint('endpoint/one')
 
     expect(gateway.calls.map(call => call.value)).toEqual([
       expect.objectContaining({ path: '/api/config?profile=default' }),
@@ -22,9 +24,10 @@ describe('settingsApi', () => {
     const gateway = new MemoryGateway()
       .handle('billing.state', params => { expect(params).toEqual({}); return { ok: true, logged_in: false } })
       .handle('subscription.state', params => { expect(params).toEqual({}); return { ok: true, logged_in: false } })
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    await settingsApi.billingState(gateway, 'work')
-    await settingsApi.subscriptionState(gateway, 'work')
+    await settings.billingState()
+    await settings.subscriptionState()
 
     expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => ({ method: call.method, value: call.value }))).toEqual([
       { method: 'billing.state', value: {} },
@@ -38,8 +41,9 @@ describe('settingsApi', () => {
       expect(String((options as { path: string }).path)).not.toContain('secret-value')
       return { message: '', models: [], ok: true, reachable: true }
     })
+    const settings = createSettingsApi(createGatewayApi(gateway, null))
 
-    await settingsApi.validateProvider(gateway, null, 'OPENAI_API_KEY', 'secret-value')
+    await settings.validateProvider('OPENAI_API_KEY', 'secret-value')
 
     expect(gateway.calls.at(-1)?.value).toMatchObject({ path: '/api/providers/validate?profile=default' })
   })
@@ -48,9 +52,10 @@ describe('settingsApi', () => {
     const gateway = new MemoryGateway()
       .handle('/api/providers/custom-endpoints/validate?profile=work', () => ({ message: '', models: [], ok: true, reachable: true }))
       .handle('/api/sessions/chat-1?profile=work', () => ({}))
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    await settingsApi.validateCustomEndpoint(gateway, 'work', { base_url: 'https://example.test', model: 'demo', name: 'Demo' })
-    await settingsApi.deleteSession(gateway, 'work', 'chat-1')
+    await settings.validateCustomEndpoint({ base_url: 'https://example.test', model: 'demo', name: 'Demo' })
+    await settings.deleteSession('chat-1')
 
     expect(gateway.calls.map(call => call.value)).toEqual([
       expect.objectContaining({ path: '/api/providers/custom-endpoints/validate?profile=work' }),
@@ -63,8 +68,9 @@ describe('settingsApi', () => {
       expect(value).toMatchObject({ body: { values: { workspace: 'team' } }, method: 'PUT' })
       return { ok: true }
     })
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    await settingsApi.saveMemoryProviderConfig(gateway, 'work', 'honcho', { workspace: 'team' })
+    await settings.saveMemoryProviderConfig('honcho', { workspace: 'team' })
 
     expect(gateway.calls).toHaveLength(1)
     expect(gateway.calls[0].value).toMatchObject({ path: '/api/memory/providers/honcho/config?surface=declared&profile=work' })
@@ -72,8 +78,9 @@ describe('settingsApi', () => {
 
   it('keeps machine health unscoped even when a profile is selected', async () => {
     const gateway = new MemoryGateway().handle('/api/status', () => ({ gateway_running: true }))
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    await settingsApi.status(gateway, 'work')
+    await settings.status()
 
     expect(gateway.calls).toContainEqual(expect.objectContaining({ value: expect.objectContaining({ path: '/api/status' }) }))
   })
@@ -85,9 +92,10 @@ describe('settingsApi', () => {
         expect(value).toMatchObject({ method: 'DELETE' })
         return { ok: true }
       })
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    await settingsApi.oauthPoll(gateway, 'work', 'nous', 'flow-1')
-    await settingsApi.oauthCancel(gateway, 'work', 'flow-1')
+    await settings.oauthPoll('nous', 'flow-1')
+    await settings.oauthCancel('flow-1')
 
     expect(gateway.calls.map(call => call.value)).toEqual([
       expect.objectContaining({ path: '/api/providers/oauth/nous/poll/flow-1' }),
@@ -97,19 +105,21 @@ describe('settingsApi', () => {
 
   it('does not pretend unsupported memory routes are profile-scoped', async () => {
     const gateway = new MemoryGateway()
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    await expect(settingsApi.memoryStatus(gateway, 'work')).rejects.toMatchObject({ kind: 'unsupported' })
-    await expect(settingsApi.selectMemoryProvider(gateway, 'work', 'honcho')).rejects.toMatchObject({ kind: 'unsupported' })
-    await expect(settingsApi.resetMemory(gateway, 'work', 'all')).rejects.toMatchObject({ kind: 'unsupported' })
+    await expect(settings.memoryStatus()).rejects.toMatchObject({ kind: 'unsupported' })
+    await expect(settings.selectMemoryProvider('honcho')).rejects.toMatchObject({ kind: 'unsupported' })
+    await expect(settings.resetMemory('all')).rejects.toMatchObject({ kind: 'unsupported' })
     expect(gateway.calls).toHaveLength(0)
   })
 
   it('keeps plugin inventory and mutations unavailable for named profiles', async () => {
     const gateway = new MemoryGateway()
+    const settings = createSettingsApi(createGatewayApi(gateway, 'work'))
 
-    expect(() => settingsApi.pluginsHub(gateway, 'work')).toThrow(/only for its default profile/i)
-    expect(() => settingsApi.pluginAction(gateway, 'work', 'example/plugin', 'enable')).toThrow(/only for its default profile/i)
-    expect(() => settingsApi.removePlugin(gateway, 'work', 'example/plugin')).toThrow(/only for its default profile/i)
+    expect(() => settings.pluginsHub()).toThrow(/only for its default profile/i)
+    expect(() => settings.pluginAction('example/plugin', 'enable')).toThrow(/only for its default profile/i)
+    expect(() => settings.removePlugin('example/plugin')).toThrow(/only for its default profile/i)
     expect(gateway.calls).toHaveLength(0)
   })
 
@@ -118,10 +128,11 @@ describe('settingsApi', () => {
       .handle('/api/dashboard/plugins/hub', () => ({ plugins: [] }))
       .handle('/api/dashboard/agent-plugins/example/plugin/enable', () => ({ ok: true }))
       .handle('/api/dashboard/agent-plugins/example/plugin', () => ({ ok: true }))
+    const settings = createSettingsApi(createGatewayApi(gateway, null))
 
-    await settingsApi.pluginsHub(gateway, null)
-    await settingsApi.pluginAction(gateway, null, 'example/plugin', 'enable')
-    await settingsApi.removePlugin(gateway, null, 'example/plugin')
+    await settings.pluginsHub()
+    await settings.pluginAction('example/plugin', 'enable')
+    await settings.removePlugin('example/plugin')
 
     expect(gateway.calls.map(call => call.value)).toEqual([
       expect.objectContaining({ path: '/api/dashboard/plugins/hub' }),
@@ -141,10 +152,11 @@ describe('settingsApi', () => {
         expect(value).toMatchObject({ body: { target: 'memory' }, method: 'POST' })
         return { deleted: [], ok: true }
       })
+    const settings = createSettingsApi(createGatewayApi(gateway, null))
 
-    await settingsApi.memoryStatus(gateway, null)
-    await settingsApi.selectMemoryProvider(gateway, null, 'honcho')
-    await settingsApi.resetMemory(gateway, null, 'memory')
+    await settings.memoryStatus()
+    await settings.selectMemoryProvider('honcho')
+    await settings.resetMemory('memory')
 
     expect(gateway.calls.map(call => call.value)).toEqual([
       expect.objectContaining({ path: '/api/memory' }),

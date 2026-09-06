@@ -5,20 +5,21 @@ import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Input, Skeleton, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { runSkillHubAction, skillsApi, type SkillHubPreview, type SkillHubScanResult } from './skills-api'
+import { createSkillsApi, runSkillHubAction, type SkillHubPreview, type SkillHubScanResult } from './skills-api'
 
 export function SkillHubScreen({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
+  const skillsApi = useApi(createSkillsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'hub')
-  const sources = useQuery({ queryFn: ({ signal }) => skillsApi.hubSources(gateway, profile, signal), queryKey: [...scopeKey, 'sources'] })
+  const sources = useQuery({ queryFn: ({ signal }) => skillsApi.hubSources(signal), queryKey: [...scopeKey, 'sources'] })
   const [term, setTerm] = useState('')
   const [source, setSource] = useState('all')
   const [submitted, setSubmitted] = useState('')
@@ -30,11 +31,11 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
   const [error, setError] = useState<string | null>(null)
   const search = useQuery({
     enabled: submitted.trim().length > 0,
-    queryFn: ({ signal }) => skillsApi.hubSearch(gateway, profile, submitted, source, 20, signal),
+    queryFn: ({ signal }) => skillsApi.hubSearch(submitted, source, 20, signal),
     queryKey: [...scopeKey, 'search', submitted, source]
   })
   const previewMutation = useMutation<SkillHubPreview, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (identifier: string) => skillsApi.hubPreview(gateway, profile, identifier),
+    mutationFn: (identifier: string) => skillsApi.hubPreview(identifier),
     onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (value, identifier, context) => {
@@ -45,7 +46,7 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
     }
   })
   const scanMutation = useMutation<SkillHubScanResult, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (identifier: string) => skillsApi.hubScan(gateway, profile, identifier),
+    mutationFn: (identifier: string) => skillsApi.hubScan(identifier),
     onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (value, identifier, context) => {
@@ -59,7 +60,7 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
   const installMutation = useMutation<Awaited<ReturnType<typeof runSkillHubAction>>, unknown, string, { scope: CurrentGatewayScope }>({
     mutationFn: (identifier: string) => {
       const scope = currentGatewayScope()
-      return runSkillHubAction(gateway, profile, signal => skillsApi.hubInstall(gateway, profile, identifier, signal), undefined, () => isCurrentGatewayScope(scope))
+      return runSkillHubAction(api, signal => skillsApi.hubInstall(identifier, signal), undefined, () => isCurrentGatewayScope(scope))
     },
     onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),

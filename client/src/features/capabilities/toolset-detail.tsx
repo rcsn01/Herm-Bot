@@ -4,21 +4,22 @@ import { useEffect, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { ToolsetInfo } from '~/lib/types'
-import { runToolsetAction, toolsetsApi } from './toolsets-api'
+import { createToolsetsApi, runToolsetAction } from './toolsets-api'
 
 export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: ToolsetInfo }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
+  const toolsetsApi = useApi(createToolsetsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'tools', toolset.name)
-  const config = useQuery({ queryFn: ({ signal }) => toolsetsApi.config(gateway, profile, toolset.name, signal), queryKey: [...scopeKey, 'config'] })
+  const config = useQuery({ queryFn: ({ signal }) => toolsetsApi.config(toolset.name, signal), queryKey: [...scopeKey, 'config'] })
   const [env, setEnv] = useState<Record<string, string>>({})
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
@@ -28,7 +29,7 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
   const activeProvider = providers.find(provider => provider.is_active)
   const models = useQuery({
     enabled: Boolean(selectedProvider),
-    queryFn: ({ signal }) => toolsetsApi.models(gateway, profile, toolset.name, selectedProvider, signal),
+    queryFn: ({ signal }) => toolsetsApi.models(toolset.name, selectedProvider, signal),
     queryKey: [...scopeKey, 'models', selectedProvider]
   })
 
@@ -37,7 +38,7 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
   }, [activeProvider, selectedProvider])
 
   const toggle = useMutation<unknown, unknown, boolean, { scope: CurrentGatewayScope }>({
-    mutationFn: (enabled: boolean) => toolsetsApi.toggle(gateway, profile, toolset.name, enabled),
+    mutationFn: (enabled: boolean) => toolsetsApi.toggle(toolset.name, enabled),
     onError: (caught, _enabled, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_data, _enabled, context) => {
@@ -47,7 +48,7 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
     }
   })
   const selectProvider = useMutation<Awaited<ReturnType<typeof toolsetsApi.selectProvider>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (provider: string) => toolsetsApi.selectProvider(gateway, profile, toolset.name, provider),
+    mutationFn: (provider: string) => toolsetsApi.selectProvider(toolset.name, provider),
     onError: (caught, _provider, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (response, _provider, context) => {
@@ -57,7 +58,7 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
     }
   })
   const saveEnv = useMutation<Awaited<ReturnType<typeof toolsetsApi.saveEnv>>, unknown, Record<string, string>, { scope: CurrentGatewayScope }>({
-    mutationFn: values => toolsetsApi.saveEnv(gateway, profile, toolset.name, values),
+    mutationFn: values => toolsetsApi.saveEnv(toolset.name, values),
     onError: (caught, _values, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_data, _values, context) => {
@@ -72,14 +73,14 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
   const setup = useMutation<Awaited<ReturnType<typeof runToolsetAction>>, unknown, string, { scope: CurrentGatewayScope }>({
     mutationFn: (key: string) => {
       const scope = currentGatewayScope()
-      return runToolsetAction(gateway, profile, signal => toolsetsApi.postSetup(gateway, profile, toolset.name, key, signal), undefined, () => isCurrentGatewayScope(scope))
+      return runToolsetAction(api, signal => toolsetsApi.postSetup(toolset.name, key, signal), undefined, () => isCurrentGatewayScope(scope))
     },
     onError: (caught, _key, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _key, context) => { if (context && isCurrentGatewayScope(context.scope)) setSetupMessage('Setup completed on the gateway.') }
   })
   const selectModel = useMutation<Awaited<ReturnType<typeof toolsetsApi.selectModel>>, unknown, string, { previous: string; scope: CurrentGatewayScope }>({
-    mutationFn: model => toolsetsApi.selectModel(gateway, profile, toolset.name, model, selectedProvider),
+    mutationFn: model => toolsetsApi.selectModel(toolset.name, model, selectedProvider),
     onError: (caught, _model, context) => {
       if (!context || !isCurrentGatewayScope(context.scope)) return
       setSelectedModel(context.previous)

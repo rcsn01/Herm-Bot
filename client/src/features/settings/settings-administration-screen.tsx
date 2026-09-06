@@ -11,7 +11,7 @@ import { classifyGatewayError } from '~/gateway/gateway-error'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { runRemoteAction } from '~/gateway/remote-action'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { profileKey } from '~/gateway/profile-path'
 import { PlatformActions } from '~/native/platform-actions'
 import type { SettingsAdministrationPage } from '~/navigation/routes'
@@ -19,7 +19,7 @@ import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences } from '~/state/store'
 import { useStore } from '@nanostores/react'
 import type { CustomEndpoint, EnvVarInfo, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '~/lib/types'
-import { settingsApi } from './settings-api'
+import { createSettingsApi } from './settings-api'
 import { SettingsPageShell } from './settings-page-shell'
 
 const platformActions = new PlatformActions()
@@ -53,15 +53,16 @@ export function SettingsAdministrationScreen({ controller, onBack, page }: { con
 }
 
 function BillingSettings({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const queryClient = useQueryClient()
   // Billing belongs to the gateway/account, not the selected Hermes profile.
   // Keep one cache entry and use the process-scoped RPC contract rather than
   // suggesting that an account balance is profile-local.
   const billingKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'billing')
-  const billing = useQuery({ queryFn: ({ signal }) => settingsApi.billingState(gateway, preferences.profile, signal), queryKey: [...billingKey, 'state'] })
-  const subscription = useQuery({ queryFn: ({ signal }) => settingsApi.subscriptionState(gateway, preferences.profile, signal), queryKey: [...billingKey, 'subscription'] })
+  const billing = useQuery({ queryFn: ({ signal }) => settings.billingState(signal), queryKey: [...billingKey, 'state'] })
+  const subscription = useQuery({ queryFn: ({ signal }) => settings.subscriptionState(signal), queryKey: [...billingKey, 'subscription'] })
   const [preview, setPreview] = useState<{ response: SubscriptionPreviewResponse; tierId: string } | null>(null)
   const [busyTier, setBusyTier] = useState<string | null>(null)
   const idempotencyKeys = useRef(new Map<string, string>())
@@ -80,7 +81,7 @@ function BillingSettings({ onBack }: { onBack(): void }) {
     setBusyTier(tierId)
     setError(null)
     try {
-      const result = await gateway.rpc<SubscriptionPreviewResponse>('subscription.preview', { subscription_type_id: tierId }, { timeoutMs: 60_000 })
+      const result = await api.rpc<SubscriptionPreviewResponse>('subscription.preview', { subscription_type_id: tierId }, { timeoutMs: 60_000 })
       if (!isCurrentGatewayScope(scope)) return
       if (!result.ok) setError(result.message || result.error || 'The gateway could not preview this plan change.')
       else setPreview({ response: result, tierId })
@@ -99,7 +100,7 @@ function BillingSettings({ onBack }: { onBack(): void }) {
         idempotencyKeys.current.set(pending.tierId, key)
         params.idempotency_key = key
       }
-      const result = await gateway.rpc<{ error?: string; message?: string; ok: boolean; recovery_url?: string }>(action, params, { timeoutMs: 120_000 })
+      const result = await api.rpc<{ error?: string; message?: string; ok: boolean; recovery_url?: string }>(action, params, { timeoutMs: 120_000 })
       if (!isCurrentGatewayScope(scope)) return
       if (!result.ok) { setError(result.message || result.error || 'The gateway rejected this plan change.'); return }
       idempotencyKeys.current.delete(pending.tierId)
@@ -126,10 +127,10 @@ function planChangeDescription(preview: SubscriptionPreviewResponse): string {
 }
 
 function GatewaySettings({ controller, onBack }: { controller: GatewayController; onBack(): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const connection = useStore($connection)
-  const status = useQuery({ queryFn: ({ signal }) => settingsApi.status(gateway, preferences.profile, signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'gateway') })
+  const status = useQuery({ queryFn: ({ signal }) => settings.status(signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'gateway') })
   const [subpage, setSubpage] = useState<keyof typeof ADMIN_RESOURCES | null>(null)
   const [remoteURL, setRemoteURL] = useState(preferences.remoteURL)
   const [token, setToken] = useState('')
@@ -162,12 +163,12 @@ function GatewaySettings({ controller, onBack }: { controller: GatewayController
 }
 
 function ProvidersSettings({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const queryClient = useQueryClient()
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'providers')
-  const providers = useQuery({ queryFn: ({ signal }) => settingsApi.oauthProviders(gateway, preferences.profile, signal), queryKey: [...key, 'oauth'] })
-  const endpoints = useQuery({ queryFn: ({ signal }) => settingsApi.customEndpoints(gateway, preferences.profile, signal), queryKey: [...key, 'endpoints'] })
+  const providers = useQuery({ queryFn: ({ signal }) => settings.oauthProviders(signal), queryKey: [...key, 'oauth'] })
+  const endpoints = useQuery({ queryFn: ({ signal }) => settings.customEndpoints(signal), queryKey: [...key, 'endpoints'] })
   const [oauth, setOAuth] = useState<{ provider: OAuthProvider; response: OAuthStartResponse } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [endpoint, setEndpoint] = useState<CustomEndpoint | null>(null)
@@ -190,7 +191,7 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     setOAuthBusy(true)
     setError(null)
     try {
-      const response = await settingsApi.oauthStart(gateway, preferences.profile, provider.id)
+      const response = await settings.oauthStart(provider.id)
       if (!isCurrentGatewayScope(scope)) return
       setOAuth({ provider, response })
       const url = 'auth_url' in response ? response.auth_url : response.verification_url
@@ -208,12 +209,12 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     // input before and after the cancellation attempt, including when the
     // gateway rejects the request or the scope changes while it is in flight.
     setOAuthCode('')
-    try { await settingsApi.oauthCancel(gateway, preferences.profile, sessionId); if (isCurrentGatewayScope(scope)) setOAuth(null) } catch (caught) { if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message) } finally { setOAuthCode('') }
+    try { await settings.oauthCancel(sessionId); if (isCurrentGatewayScope(scope)) setOAuth(null) } catch (caught) { if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message) } finally { setOAuthCode('') }
   }
   const activateEndpoint = async (id: string) => {
     const scope = currentGatewayScope()
     try {
-      await settingsApi.activateCustomEndpoint(gateway, preferences.profile, id)
+      await settings.activateCustomEndpoint(id)
       if (!isCurrentGatewayScope(scope)) return
       await queryClient.invalidateQueries({ queryKey: [...key, 'endpoints'] })
       if (isCurrentGatewayScope(scope)) setError(null)
@@ -223,7 +224,7 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     if (!removeEndpoint) return
     const scope = currentGatewayScope()
     try {
-      await settingsApi.deleteCustomEndpoint(gateway, preferences.profile, removeEndpoint)
+      await settings.deleteCustomEndpoint(removeEndpoint)
       if (!isCurrentGatewayScope(scope)) return
       setRemoveEndpoint(null)
       await endpoints.refetch()
@@ -238,8 +239,8 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
 }
 
 function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response, setError }: { code: string; onCancel(): void; onCode(value: string): void; onDone(): void; provider: OAuthProvider; response: OAuthStartResponse; setError(value: string | null): void }) {
-  const gateway = useGateway()
-  const preferences = useStore($preferences)
+  const api = useGatewayApi()
+  const settings = useApi(createSettingsApi)
   const [status, setStatus] = useState<OAuthPollResponse['status']>('pending')
   const [submitting, setSubmitting] = useState(false)
   const pollAbort = useRef<AbortController | null>(null)
@@ -263,13 +264,13 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
     setStatus('pending')
     setSubmitting(false)
     void runRemoteAction<OAuthPollResponse>({
-      gateway,
+      gateway: api.gateway,
       isCurrentScope: () => isCurrentGatewayScope(scope),
       intervalMs: 1_000,
       maxAttempts: 60,
       maxIntervalMs: 5_000,
       poll: async (_transport, signal) => {
-        const next = await settingsApi.oauthPoll(gateway, preferences.profile, provider.id, response.session_id, signal)
+        const next = await settings.oauthPoll(provider.id, response.session_id, signal)
         if (isCurrentGatewayScope(scope)) setStatus(next.status)
         return { result: next, status: next.status }
       },
@@ -287,7 +288,7 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
       pollController.abort()
       if (pollAbort.current === pollController) pollAbort.current = null
     }
-  }, [gateway, preferences.profile, preferences.remoteURL, provider.id, response.session_id])
+  }, [api, provider.id, response.session_id, settings])
 
   const submit = async () => {
     const submittedCode = code.trim()
@@ -295,7 +296,7 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
     const scope = currentGatewayScope()
     setSubmitting(true)
     try {
-      const result = await settingsApi.oauthSubmit(gateway, preferences.profile, provider.id, response.session_id, submittedCode)
+      const result = await settings.oauthSubmit(provider.id, response.session_id, submittedCode)
       if (!mountedRef.current || !isCurrentGatewayScope(scope)) return
       setStatus(result.status)
       if (result.ok && result.status === 'approved') onDoneRef.current()
@@ -313,7 +314,7 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
 }
 
 function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoint: CustomEndpoint | null; onCancel(): void; onSaved(): void; setError(value: string | null): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const [name, setName] = useState(endpoint?.name ?? '')
   const [baseURL, setBaseURL] = useState(endpoint?.base_url ?? '')
@@ -336,7 +337,7 @@ function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoin
     setValidation(null)
     setValidating(true)
     try {
-      const result = await settingsApi.validateCustomEndpoint(gateway, preferences.profile, { api_key: apiKey || undefined, base_url: baseURL.trim(), model: model.trim(), name: name.trim() })
+      const result = await settings.validateCustomEndpoint({ api_key: apiKey || undefined, base_url: baseURL.trim(), model: model.trim(), name: name.trim() })
       if (!isCurrentGatewayScope(scope)) return
       setValidation(result.ok ? `Reachable${result.models.length ? ` · ${result.models.length} models found` : ''}.` : result.message)
     } catch (caught) { if (isCurrentGatewayScope(scope)) setValidation(classifyGatewayError(caught).message) }
@@ -351,7 +352,7 @@ function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoin
     setSaving(true)
     setError(null)
     try {
-      await settingsApi.saveCustomEndpoint(gateway, preferences.profile, { api_key: apiKey || undefined, base_url: baseURL.trim(), id: endpoint?.id, model: model.trim(), name: name.trim() })
+      await settings.saveCustomEndpoint({ api_key: apiKey || undefined, base_url: baseURL.trim(), id: endpoint?.id, model: model.trim(), name: name.trim() })
       if (!isCurrentGatewayScope(scope)) return
       setApiKey('')
       onSaved()
@@ -361,12 +362,12 @@ function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoin
 }
 
 function ToolsKeysSettings({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const connection = useStore($connection)
   const queryClient = useQueryClient()
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'env')
-  const variables = useQuery({ queryFn: ({ signal }) => settingsApi.env(gateway, preferences.profile, signal), queryKey: key })
+  const variables = useQuery({ queryFn: ({ signal }) => settings.env(signal), queryKey: key })
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [remove, setRemove] = useState<{ name: string; variable: EnvVarInfo } | null>(null)
@@ -404,7 +405,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
     const scope = currentGatewayScope()
     const revision = draftRevisions.current.get(name) ?? 0
     try {
-      await settingsApi.setEnv(gateway, preferences.profile, name, value)
+      await settings.setEnv(name, value)
       if (!isCurrentGatewayScope(scope)) return
       void queryClient.invalidateQueries({ queryKey: key })
     } catch (caught) { if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message) }
@@ -413,7 +414,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
   const reveal = async (name: string) => {
     const scope = currentGatewayScope()
     try {
-      const response = await settingsApi.revealEnv(gateway, preferences.profile, name)
+      const response = await settings.revealEnv(name)
       if (!isCurrentGatewayScope(scope)) return
       const previous = revealTimers.current.get(name)
       if (previous !== undefined) window.clearTimeout(previous)
@@ -432,7 +433,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
     const scope = currentGatewayScope()
     const revision = draftRevisions.current.get(name) ?? 0
     try {
-      const result = await settingsApi.validateProvider(gateway, preferences.profile, name, value)
+      const result = await settings.validateProvider(name, value)
       if (isCurrentGatewayScope(scope)) setError(result.ok ? `${name} was accepted by the provider.` : result.message || `${name} could not be validated.`)
     } catch (caught) { if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message) }
     finally { clearDraft(name, revision, scope) }
@@ -441,7 +442,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
     if (!remove) return
     const scope = currentGatewayScope()
     try {
-      await settingsApi.deleteEnv(gateway, preferences.profile, remove.name)
+      await settings.deleteEnv(remove.name)
       if (!isCurrentGatewayScope(scope)) return
       setRemove(null)
       void queryClient.invalidateQueries({ queryKey: key })
@@ -457,18 +458,18 @@ function CredentialRow({ name, onDelete, onDraft, onReveal, onSave, onValidate, 
 
 
 function ArchivedChatsSettings({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const queryClient = useQueryClient()
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'archived-chats')
-  const sessions = useQuery({ queryFn: ({ signal }) => settingsApi.sessions(gateway, preferences.profile, signal), queryKey: key })
+  const sessions = useQuery({ queryFn: ({ signal }) => settings.sessions(signal), queryKey: key })
   const [remove, setRemove] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => { setRemove(null); setError(null) }, [preferences.profile, preferences.remoteURL])
   const restore = async (id: string) => {
     const scope = currentGatewayScope()
     try {
-      await settingsApi.restoreSession(gateway, preferences.profile, id)
+      await settings.restoreSession(id)
       if (isCurrentGatewayScope(scope)) void queryClient.invalidateQueries({ queryKey: key })
     } catch (caught) { if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message) }
   }
@@ -476,7 +477,7 @@ function ArchivedChatsSettings({ onBack }: { onBack(): void }) {
     if (!remove) return
     const scope = currentGatewayScope()
     try {
-      await settingsApi.deleteSession(gateway, preferences.profile, remove)
+      await settings.deleteSession(remove)
       if (!isCurrentGatewayScope(scope)) return
       setRemove(null)
       void queryClient.invalidateQueries({ queryKey: key })
@@ -486,19 +487,19 @@ function ArchivedChatsSettings({ onBack }: { onBack(): void }) {
 }
 
 function PluginsSettings({ onBack }: { onBack(): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const queryClient = useQueryClient()
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'plugins')
   const supportsPluginManagement = profileKey(preferences.profile) === 'default'
-  const plugins = useQuery({ enabled: supportsPluginManagement, queryFn: ({ signal }) => settingsApi.pluginsHub(gateway, preferences.profile, signal), queryKey: key })
+  const plugins = useQuery({ enabled: supportsPluginManagement, queryFn: ({ signal }) => settings.pluginsHub(signal), queryKey: key })
   const [remove, setRemove] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => { setRemove(null); setError(null) }, [preferences.profile, preferences.remoteURL])
   const toggle = async (name: string, action: 'disable' | 'enable') => {
     const scope = currentGatewayScope()
     try {
-      await settingsApi.pluginAction(gateway, preferences.profile, name, action)
+      await settings.pluginAction(name, action)
       if (isCurrentGatewayScope(scope)) void queryClient.invalidateQueries({ queryKey: key })
     } catch (caught) { if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message) }
   }
@@ -506,7 +507,7 @@ function PluginsSettings({ onBack }: { onBack(): void }) {
     if (!remove) return
     const scope = currentGatewayScope()
     try {
-      await settingsApi.removePlugin(gateway, preferences.profile, remove)
+      await settings.removePlugin(remove)
       if (!isCurrentGatewayScope(scope)) return
       setRemove(null)
       void queryClient.invalidateQueries({ queryKey: key })

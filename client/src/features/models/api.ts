@@ -7,43 +7,35 @@ import type {
   ModelOptionsResponse,
   MoaConfigResponse
 } from '~/lib/types'
-import type { GatewayPort } from '~/gateway/gateway-port'
-import { profilePath, type MobileProfile } from '~/gateway/profile-path'
+import type { GatewayApi } from '~/gateway/gateway-api'
 
 /** The backend deep-merges PUT /api/config over the on-disk document, so a
  *  partial record only overwrites the keys the screen explicitly sends. */
 export type PartialConfig = HermesConfigRecord
 
-export const modelsApi = {
-  async getInfo(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<ModelInfoResponse> {
-    return (await gateway.request<ModelInfoResponse>({ path: profilePath('/api/model/info', profile), signal })).body
-  },
+export interface ModelsApi {
+  getInfo(signal?: AbortSignal): Promise<ModelInfoResponse>
+  getOptions(signal?: AbortSignal): Promise<ModelOptionsResponse>
+  getAuxiliary(signal?: AbortSignal): Promise<AuxiliaryModelsResponse>
+  setAssignment(body: ModelAssignmentRequest, signal?: AbortSignal): Promise<ModelAssignmentResponse>
+  getMoa(signal?: AbortSignal): Promise<MoaConfigResponse>
+  saveMoa(body: MoaConfigResponse, signal?: AbortSignal): Promise<MoaConfigResponse & { ok: boolean }>
+  getConfig(signal?: AbortSignal): Promise<HermesConfigRecord>
+  saveConfig(partial: PartialConfig, signal?: AbortSignal): Promise<{ ok: boolean }>
+}
 
-  async getOptions(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<ModelOptionsResponse> {
-    return (await gateway.request<ModelOptionsResponse>({ path: profilePath('/api/model/options?explicit_only=1', profile), signal })).body
-  },
-
-  async getAuxiliary(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<AuxiliaryModelsResponse> {
-    return (await gateway.request<AuxiliaryModelsResponse>({ path: profilePath('/api/model/auxiliary', profile), signal })).body
-  },
-
-  async setAssignment(gateway: GatewayPort, profile: MobileProfile, body: ModelAssignmentRequest, signal?: AbortSignal): Promise<ModelAssignmentResponse> {
-    return (await gateway.request<ModelAssignmentResponse>({ body, method: 'POST', path: profilePath('/api/model/set', profile), signal })).body
-  },
-
-  async getMoa(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<MoaConfigResponse> {
-    return (await gateway.request<MoaConfigResponse>({ path: profilePath('/api/model/moa', profile), signal })).body
-  },
-
-  async saveMoa(gateway: GatewayPort, profile: MobileProfile, body: MoaConfigResponse, signal?: AbortSignal): Promise<MoaConfigResponse & { ok: boolean }> {
-    return (await gateway.request<MoaConfigResponse & { ok: boolean }>({ body, method: 'PUT', path: profilePath('/api/model/moa', profile), signal })).body
-  },
-
-  async getConfig(gateway: GatewayPort, profile: MobileProfile, signal?: AbortSignal): Promise<HermesConfigRecord> {
-    return (await gateway.request<HermesConfigRecord>({ path: profilePath('/api/config', profile), signal })).body
-  },
-
-  async saveConfig(gateway: GatewayPort, profile: MobileProfile, partial: PartialConfig, signal?: AbortSignal): Promise<{ ok: boolean }> {
-    return (await gateway.request<{ ok: boolean }>({ body: { config: partial }, method: 'PUT', path: profilePath('/api/config', profile), signal })).body
+export function createModelsApi(api: GatewayApi): ModelsApi {
+  return {
+    getInfo: (signal?: AbortSignal) => api.request<ModelInfoResponse>('/api/model/info', { signal }),
+    getOptions: (signal?: AbortSignal) => api.request<ModelOptionsResponse>('/api/model/options?explicit_only=1', { signal }),
+    getAuxiliary: (signal?: AbortSignal) => api.request<AuxiliaryModelsResponse>('/api/model/auxiliary', { signal }),
+    setAssignment: (body: ModelAssignmentRequest, signal?: AbortSignal) =>
+      api.request<ModelAssignmentResponse>('/api/model/set', { body, method: 'POST', signal }),
+    getMoa: (signal?: AbortSignal) => api.request<MoaConfigResponse>('/api/model/moa', { signal }),
+    saveMoa: (body: MoaConfigResponse, signal?: AbortSignal) =>
+      api.request<MoaConfigResponse & { ok: boolean }>('/api/model/moa', { body, method: 'PUT', signal }),
+    getConfig: (signal?: AbortSignal) => api.request<HermesConfigRecord>('/api/config', { signal }),
+    saveConfig: (partial: PartialConfig, signal?: AbortSignal) =>
+      api.request<{ ok: boolean }>('/api/config', { body: { config: partial }, method: 'PUT', signal })
   }
 }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import type { CronRoute } from '~/navigation/routes'
 import { useStore } from '@nanostores/react'
@@ -12,14 +12,14 @@ import { $preferences } from '~/state/store'
 import { CronBlueprintsScreen } from './cron-blueprints-screen'
 import { CronJobDetail } from './cron-job-detail'
 import { CronJobEditor } from './cron-job-editor'
-import { cronApi, type CronJob } from './api'
+import { createCronApi, type CronJob } from './api'
 
 export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBack?: () => void; onNavigate?: (route: CronRoute) => void; onOpenSession?: (sessionId: string) => Promise<void>; route?: CronRoute }) {
-  const gateway = useGateway()
+  const cron = useApi(createCronApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron', 'jobs')
-  const jobs = useQuery({ queryFn: ({ signal }) => cronApi.list(gateway, profile, signal), queryKey: scopeKey })
+  const jobs = useQuery({ queryFn: ({ signal }) => cron.list(signal), queryKey: scopeKey })
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<'all' | 'active' | 'paused' | 'error'>('all')
   const activeRoute = route ?? { tab: 'cron', type: 'cron-root' as const }

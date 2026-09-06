@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { mcpApi } from './mcp-api'
+import { createMcpApi } from './mcp-api'
+import { createGatewayApi } from '~/gateway/gateway-api'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 describe('mcpApi', () => {
@@ -23,8 +24,9 @@ describe('mcpApi', () => {
       })
       return { ok: true }
     })
+    const mcp = createMcpApi(createGatewayApi(gateway, 'work'))
 
-    await mcpApi.update(gateway, 'work', 'first', { auth: 'oauth' })
+    await mcp.update('first', { auth: 'oauth' })
   })
 
   it('keeps process-scoped OAuth cancellation unscoped', async () => {
@@ -32,7 +34,8 @@ describe('mcpApi', () => {
       expect(value).toMatchObject({ method: 'DELETE' })
       return { ok: true, status: 'cancelled' }
     })
+    const mcp = createMcpApi(createGatewayApi(gateway, null))
 
-    await mcpApi.cancelOAuth(gateway, null, 'flow/1')
+    await mcp.cancelOAuth('flow/1')
   })
 })

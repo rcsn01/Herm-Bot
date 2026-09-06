@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { runRemoteAction } from '~/gateway/remote-action'
@@ -14,18 +14,19 @@ import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { McpCatalogScreen } from './mcp-catalog-screen'
 import { McpServerEditor } from './mcp-server-editor'
-import { mcpApi, type McpOAuthFlow, type McpServerSummary } from './mcp-api'
+import { createMcpApi, type McpOAuthFlow, type McpServerSummary } from './mcp-api'
 
 const platformActions = new PlatformActions()
 
 export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBack(): void; onOpenCatalog?(): void; onSelect?(server: McpServerSummary): void; selected?: string }) {
-  const gateway = useGateway()
+  const api = useGatewayApi()
+  const mcpApi = useApi(createMcpApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'mcp', 'servers')
   const screenScope = currentGatewayScope()
-  const servers = useQuery({ queryFn: ({ signal }) => mcpApi.list(gateway, profile, signal), queryKey })
+  const servers = useQuery({ queryFn: ({ signal }) => mcpApi.list(signal), queryKey })
   const [editor, setEditor] = useState<McpServerSummary | 'new' | null>(null)
   const [catalog, setCatalog] = useState(false)
   const [remove, setRemove] = useState<McpServerSummary | null>(null)
@@ -34,7 +35,7 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
   const pollAbort = useRef<AbortController | null>(null)
   const [error, setError] = useState<string | null>(null)
   const toggle = useMutation<unknown, unknown, { enabled: boolean; name: string }, { previous?: { servers: McpServerSummary[] }; scope: CurrentGatewayScope }>({
-    mutationFn: ({ enabled, name }: { enabled: boolean; name: string }) => mcpApi.toggle(gateway, profile, name, enabled),
+    mutationFn: ({ enabled, name }: { enabled: boolean; name: string }) => mcpApi.toggle(name, enabled),
     onError: (caught, _value, context) => {
       if (!context || !isCurrentGatewayScope(context.scope)) return
       if (context.previous) queryClient.setQueryData(queryKey, context.previous)
@@ -52,20 +53,20 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
     onSettled: (_data, _error, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) void queryClient.invalidateQueries({ queryKey }) }
   })
   const removeMutation = useMutation<unknown, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (name: string) => mcpApi.remove(gateway, profile, name),
+    mutationFn: (name: string) => mcpApi.remove(name),
     onError: (caught, _name, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSettled: (_data, _error, _name, context) => { if (context && isCurrentGatewayScope(context.scope)) void queryClient.invalidateQueries({ queryKey }) },
     onSuccess: (_data, _name, context) => { if (context && isCurrentGatewayScope(context.scope)) setRemove(null) }
   })
   const testMutation = useMutation<Awaited<ReturnType<typeof mcpApi.test>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (name: string) => mcpApi.test(gateway, profile, name),
+    mutationFn: (name: string) => mcpApi.test(name),
     onError: (caught, _name, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (value, name, context) => { if (context && isCurrentGatewayScope(context.scope)) { setTestResult({ name, value }); setError(null) } }
   })
   const authMutation = useMutation<Awaited<ReturnType<typeof mcpApi.auth>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (name: string) => mcpApi.auth(gateway, profile, name),
+    mutationFn: (name: string) => mcpApi.auth(name),
     onError: (caught, _name, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: async (value, _name, context) => {
@@ -82,7 +83,7 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
     }
   })
   const cancelAuth = useMutation<unknown, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (flowId: string) => mcpApi.cancelOAuth(gateway, profile, flowId),
+    mutationFn: (flowId: string) => mcpApi.cancelOAuth(flowId),
     onError: (caught, _flowId, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_data, _flowId, context) => { if (context && isCurrentGatewayScope(context.scope)) setFlow(null) }
@@ -113,13 +114,13 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
     pollAbort.current = controller
     const flowId = flow.flow_id
     void runRemoteAction<typeof flow>({
-      gateway,
+      gateway: api.gateway,
       isCurrentScope: () => isCurrentGatewayScope(scope),
       intervalMs: 1_000,
       maxAttempts: 60,
       maxIntervalMs: 5_000,
       poll: async (_gateway, signal) => {
-        const next = await mcpApi.oauthStatus(gateway, profile, flowId, signal)
+        const next = await mcpApi.oauthStatus(flowId, signal)
         if (isCurrentGatewayScope(scope)) setFlow(next)
         return { result: next, status: next.status }
       },
@@ -140,7 +141,7 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
       controller.abort()
       if (pollAbort.current === controller) pollAbort.current = null
     }
-  }, [flow?.flow_id, gateway, profile])
+  }, [api, flow?.flow_id, mcpApi])
 
   const selectedServer = selected ? servers.data?.servers.find(server => server.name === selected) : undefined
   if (selected && selectedServer) return <McpServerRoute onBack={onBack} onSaved={() => { if (!isCurrentGatewayScope(screenScope)) return false; void queryClient.invalidateQueries({ queryKey }); return true }} server={selectedServer} />

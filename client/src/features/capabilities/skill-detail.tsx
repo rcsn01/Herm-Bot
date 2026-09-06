@@ -5,22 +5,22 @@ import { useEffect, useState } from 'react'
 import { Badge, Button, Skeleton, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import type { SkillInfo } from '~/lib/types'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { skillsApi } from './skills-api'
+import { createSkillsApi } from './skills-api'
 
 export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; onArchived(): void; onBack(): void }) {
-  const gateway = useGateway()
+  const skillsApi = useApi(createSkillsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'content', skill.name)
-  const content = useQuery({ queryFn: ({ signal }) => skillsApi.content(gateway, profile, skill.name, signal), queryKey })
+  const content = useQuery({ queryFn: ({ signal }) => skillsApi.content(skill.name, signal), queryKey })
   const [draft, setDraft] = useState('')
   const [remove, setRemove] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,7 +36,7 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
   }, [preferences.remoteURL, profile, skill.name])
 
   const save = useMutation<void, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: nextDraft => skillsApi.updateContent(gateway, profile, skill.name, nextDraft).then(() => undefined),
+    mutationFn: nextDraft => skillsApi.updateContent(skill.name, nextDraft).then(() => undefined),
     onError: (caught, _draft, context) => {
       if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message)
     },
@@ -48,7 +48,7 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
     }
   })
   const archive = useMutation<void, unknown, void, { scope: CurrentGatewayScope }>({
-    mutationFn: () => skillsApi.archiveLearningNode(gateway, profile, skill.name).then(() => undefined),
+    mutationFn: () => skillsApi.archiveLearningNode(skill.name).then(() => undefined),
     onError: (caught, _value, context) => {
       if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message)
     },

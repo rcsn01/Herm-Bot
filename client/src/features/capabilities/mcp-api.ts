@@ -1,5 +1,4 @@
-import type { GatewayPort } from '~/gateway/gateway-port'
-import { profileKey, profilePath } from '~/gateway/profile-path'
+import type { GatewayApi } from '~/gateway/gateway-api'
 import { assertRemoteActionStart, remoteActionName, runRemoteAction, type RemoteActionState } from '~/gateway/remote-action'
 import type { ActionStartResponse, ActionStatusResponse } from './skills-api'
 
@@ -65,8 +64,21 @@ export interface McpOAuthFlow {
   tools?: Array<{ description: string; name: string }>
 }
 
-async function request<T>(gateway: GatewayPort, path: string, options: { body?: unknown; method?: string; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
-  return (await gateway.request<T>({ ...options, path })).body
+export interface McpApi {
+  list(signal?: AbortSignal): Promise<{ servers: McpServerSummary[] }>
+  /** The config endpoint is the authoritative editable map. Summary rows are redacted. */
+  config(signal?: AbortSignal): Promise<Record<string, unknown>>
+  add(body: { args?: string[]; auth?: string; command?: string; env?: Record<string, string>; name: string; url?: string }, signal?: AbortSignal): Promise<McpServerSummary>
+  replace(servers: Record<string, McpServerConfig>, signal?: AbortSignal): Promise<{ ok: boolean }>
+  update(name: string, patch: McpServerConfig, signal?: AbortSignal): Promise<{ ok: boolean }>
+  remove(name: string, signal?: AbortSignal): Promise<{ ok: boolean }>
+  toggle(name: string, enabled: boolean, signal?: AbortSignal): Promise<{ enabled: boolean; name: string; ok: boolean }>
+  test(name: string, signal?: AbortSignal): Promise<McpTestResult>
+  catalog(signal?: AbortSignal): Promise<McpCatalogResponse>
+  installCatalog(name: string, env?: Record<string, string>, signal?: AbortSignal): Promise<ActionStartResponse & { background?: boolean }>
+  auth(name: string, signal?: AbortSignal): Promise<McpOAuthFlow>
+  oauthStatus(flowId: string, signal?: AbortSignal): Promise<McpOAuthFlow>
+  cancelOAuth(flowId: string, signal?: AbortSignal): Promise<{ ok: boolean; status: string }>
 }
 
 // Config responses are JSON-shaped, but iOS 15.0–15.3 WebViews do not
@@ -80,86 +92,69 @@ function cloneMcpConfig(value: unknown): unknown {
   return value
 }
 
-export const mcpApi = {
-  list(gateway: GatewayPort, profile: null | string, signal?: AbortSignal): Promise<{ servers: McpServerSummary[] }> {
-    return request(gateway, profilePath('/api/mcp/servers', profile), { signal })
-  },
-
-  /** The config endpoint is the authoritative editable map. Summary rows are redacted. */
-  config(gateway: GatewayPort, profile: null | string, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    return request(gateway, profilePath('/api/config', profile), { signal })
-  },
-
-  add(gateway: GatewayPort, profile: null | string, body: { args?: string[]; auth?: string; command?: string; env?: Record<string, string>; name: string; url?: string }, signal?: AbortSignal): Promise<McpServerSummary> {
-    return request(gateway, profilePath('/api/mcp/servers', profile), { body: { ...body, profile: profileKey(profile) }, method: 'POST', signal })
-  },
-
-  replace(gateway: GatewayPort, profile: null | string, servers: Record<string, McpServerConfig>, signal?: AbortSignal): Promise<{ ok: boolean }> {
-    return request(gateway, profilePath('/api/mcp/servers', profile), { body: { profile: profileKey(profile), servers }, method: 'PUT', signal })
-  },
-
-  async update(gateway: GatewayPort, profile: null | string, name: string, patch: McpServerConfig, signal?: AbortSignal): Promise<{ ok: boolean }> {
-    const config = await this.config(gateway, profile, signal)
-    const current = config.mcp_servers
-    if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('The gateway returned no editable MCP server map.')
-    const servers = cloneMcpConfig(current) as Record<string, McpServerConfig>
-    servers[name] = { ...(servers[name] ?? {}), ...patch }
-    return this.replace(gateway, profile, servers, signal)
-  },
-
-  remove(gateway: GatewayPort, profile: null | string, name: string, signal?: AbortSignal): Promise<{ ok: boolean }> {
-    return request(gateway, profilePath(`/api/mcp/servers/${encodeURIComponent(name)}`, profile), { method: 'DELETE', signal })
-  },
-
-  toggle(gateway: GatewayPort, profile: null | string, name: string, enabled: boolean, signal?: AbortSignal): Promise<{ enabled: boolean; name: string; ok: boolean }> {
-    return request(gateway, profilePath(`/api/mcp/servers/${encodeURIComponent(name)}/enabled`, profile), { body: { enabled, profile: profileKey(profile) }, method: 'PUT', signal })
-  },
-
-  test(gateway: GatewayPort, profile: null | string, name: string, signal?: AbortSignal): Promise<McpTestResult> {
-    return request(gateway, profilePath(`/api/mcp/servers/${encodeURIComponent(name)}/test`, profile), { method: 'POST', signal, timeoutMs: 60_000 })
-  },
-
-  catalog(gateway: GatewayPort, profile: null | string, signal?: AbortSignal): Promise<McpCatalogResponse> {
-    return request(gateway, profilePath('/api/mcp/catalog', profile), { signal, timeoutMs: 60_000 })
-  },
-
-  installCatalog(gateway: GatewayPort, profile: null | string, name: string, env: Record<string, string> = {}, signal?: AbortSignal): Promise<ActionStartResponse & { background?: boolean }> {
-    return request(gateway, profilePath('/api/mcp/catalog/install', profile), { body: { enable: true, env, name, profile: profileKey(profile) }, method: 'POST', signal, timeoutMs: 60_000 })
-  },
-
-  auth(gateway: GatewayPort, profile: null | string, name: string, signal?: AbortSignal): Promise<McpOAuthFlow> {
-    return request(gateway, profilePath(`/api/mcp/servers/${encodeURIComponent(name)}/auth`, profile), { method: 'POST', signal, timeoutMs: 60_000 })
-  },
-
-  oauthStatus(gateway: GatewayPort, _profile: null | string, flowId: string, signal?: AbortSignal): Promise<McpOAuthFlow> {
-    // OAuth flow state is held by the gateway process; this endpoint has no
-    // profile parameter. The opaque flow id is the scope returned by auth().
-    return request(gateway, `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`, { signal, timeoutMs: 60_000 })
-  },
-
-  cancelOAuth(gateway: GatewayPort, _profile: null | string, flowId: string, signal?: AbortSignal): Promise<{ ok: boolean; status: string }> {
-    return request(gateway, `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`, { method: 'DELETE', signal })
+export function createMcpApi(api: GatewayApi): McpApi {
+  const mcp: McpApi = {
+    list: (signal?: AbortSignal) => api.request('/api/mcp/servers', { signal }),
+    config: (signal?: AbortSignal) => api.request('/api/config', { signal }),
+    add: (body: { args?: string[]; auth?: string; command?: string; env?: Record<string, string>; name: string; url?: string }, signal?: AbortSignal) =>
+      api.request('/api/mcp/servers', { body: { ...body, profile: api.profileKey }, method: 'POST', signal }),
+    replace: (servers: Record<string, McpServerConfig>, signal?: AbortSignal) =>
+      api.request('/api/mcp/servers', { body: { profile: api.profileKey, servers }, method: 'PUT', signal }),
+    update: async (name: string, patch: McpServerConfig, signal?: AbortSignal) => {
+      const config = await mcp.config(signal)
+      const current = config.mcp_servers
+      if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('The gateway returned no editable MCP server map.')
+      const servers = cloneMcpConfig(current) as Record<string, McpServerConfig>
+      servers[name] = { ...(servers[name] ?? {}), ...patch }
+      return mcp.replace(servers, signal)
+    },
+    remove: (name: string, signal?: AbortSignal) =>
+      api.request(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE', signal }),
+    toggle: (name: string, enabled: boolean, signal?: AbortSignal) =>
+      api.request(`/api/mcp/servers/${encodeURIComponent(name)}/enabled`, {
+        body: { enabled, profile: api.profileKey },
+        method: 'PUT',
+        signal
+      }),
+    test: (name: string, signal?: AbortSignal) =>
+      api.request(`/api/mcp/servers/${encodeURIComponent(name)}/test`, { method: 'POST', signal, timeoutMs: 60_000 }),
+    catalog: (signal?: AbortSignal) => api.request('/api/mcp/catalog', { signal, timeoutMs: 60_000 }),
+    installCatalog: (name: string, env: Record<string, string> = {}, signal?: AbortSignal) =>
+      api.request('/api/mcp/catalog/install', {
+        body: { enable: true, env, name, profile: api.profileKey },
+        method: 'POST',
+        signal,
+        timeoutMs: 60_000
+      }),
+    auth: (name: string, signal?: AbortSignal) =>
+      api.request(`/api/mcp/servers/${encodeURIComponent(name)}/auth`, { method: 'POST', signal, timeoutMs: 60_000 }),
+    oauthStatus: (flowId: string, signal?: AbortSignal) => {
+      // OAuth flow state is held by the gateway process; this endpoint has no
+      // profile parameter. The opaque flow id is the scope returned by auth().
+      return api.unscoped(`/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`, { signal, timeoutMs: 60_000 })
+    },
+    cancelOAuth: (flowId: string, signal?: AbortSignal) =>
+      api.unscoped(`/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`, { method: 'DELETE', signal })
   }
-}
-
-export function mcpActionStatus(gateway: GatewayPort, _profile: null | string, name: string, signal?: AbortSignal): Promise<ActionStatusResponse> {
-  return request(gateway, `/api/actions/${encodeURIComponent(name)}/status`, { signal })
+  return mcp
 }
 
 export async function runMcpInstallAction(
-  gateway: GatewayPort,
-  profile: null | string,
+  api: GatewayApi,
   start: (signal: AbortSignal) => Promise<ActionStartResponse>,
   signal?: AbortSignal,
   isCurrentScope?: () => boolean
 ): Promise<RemoteActionState<ActionStatusResponse>> {
   let action = ''
   return runRemoteAction<ActionStatusResponse>({
-    gateway,
+    gateway: api.gateway,
     isCurrentScope,
     maxAttempts: 120,
     poll: async (_gateway, pollSignal) => {
-      const status = await mcpActionStatus(gateway, profile, action, pollSignal)
+      // Action status is owned by the dashboard process. The route has no
+      // profile scope; the action name returned by the start endpoint is the
+      // authoritative handle.
+      const status = await api.unscoped<ActionStatusResponse>(`/api/actions/${encodeURIComponent(action)}/status`, { signal: pollSignal })
       return { result: status, status: status.running ? 'running' : status.exit_code === 0 ? 'complete' : 'failed' }
     },
     signal,

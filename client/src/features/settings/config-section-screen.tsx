@@ -4,13 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge, Button, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { getConfigValue, setConfigValue } from '~/features/models/helpers'
 import type { ConfigFieldSchema, HermesConfigRecord } from '~/lib/types'
-import { settingsApi } from './settings-api'
+import { createSettingsApi } from './settings-api'
 import { ConfigField } from './config-field'
 import { settingsBackendSection } from './settings-registry'
 
@@ -27,14 +27,14 @@ type PendingConfigSave = {
 }
 
 export function ConfigSectionScreen({ category, onBack }: { category: string; onBack(): void }) {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const entry = settingsBackendSection(category)
   const queryClient = useQueryClient()
   const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'settings', 'config')
-  const config = useQuery({ queryFn: ({ signal }) => settingsApi.config(gateway, profile, signal), queryKey: key })
-  const schema = useQuery({ queryFn: ({ signal }) => settingsApi.schema(gateway, profile, signal), queryKey: [...key, 'schema'] })
+  const config = useQuery({ queryFn: ({ signal }) => settings.config(signal), queryKey: key })
+  const schema = useQuery({ queryFn: ({ signal }) => settings.schema(signal), queryKey: [...key, 'schema'] })
   const [drafts, setDrafts] = useState<Record<string, unknown>>({})
   const [error, setError] = useState<string | null>(null)
   const timers = useRef(new Map<string, number>())
@@ -42,13 +42,13 @@ export function ConfigSectionScreen({ category, onBack }: { category: string; on
   const active = useRef<PendingConfigSave | null>(null)
   const revisions = useRef(new Map<string, number>())
   const generation = useRef(0)
-  const scopeRef = useRef({ category, gateway, profile, remoteURL: preferences.remoteURL })
-  scopeRef.current = { category, gateway, profile, remoteURL: preferences.remoteURL }
+  const scopeRef = useRef({ category, profile, remoteURL: preferences.remoteURL, settings })
+  scopeRef.current = { category, profile, remoteURL: preferences.remoteURL, settings }
   const fields = useMemo(() => (entry ? entry.keys.filter(path => Boolean(schema.data?.fields[path])) : []), [entry, schema.data])
 
   const isCurrentScope = (save: PendingConfigSave) => {
     const scope = scopeRef.current
-    return save.generation === generation.current && scope.category === category && scope.gateway === gateway && scope.profile === profile && scope.remoteURL === preferences.remoteURL
+    return save.generation === generation.current && scope.category === category && scope.settings === settings && scope.profile === profile && scope.remoteURL === preferences.remoteURL
   }
 
   const removeDraft = (path: string) => setDrafts(current => {
@@ -66,7 +66,7 @@ export function ConfigSectionScreen({ category, onBack }: { category: string; on
     const controller = new AbortController()
     next.controller = controller
     queryClient.setQueryData<HermesConfigRecord>(key, current => current ? setConfigValue(current, next.path, next.value) : current)
-    void settingsApi.savePartial(gateway, profile, setConfigValue({}, next.path, next.value), controller.signal).then(result => {
+    void settings.savePartial(setConfigValue({}, next.path, next.value), controller.signal).then(result => {
       if (controller.signal.aborted || !result.ok) throw new Error(result.ok ? 'Configuration save was cancelled.' : 'The gateway rejected this setting.')
       if (!isCurrentScope(next)) return
       const newer = revisions.current.get(next.path) !== next.revision || pending.current.has(next.path)
@@ -105,7 +105,7 @@ export function ConfigSectionScreen({ category, onBack }: { category: string; on
       active.current?.controller?.abort()
       active.current = null
     }
-  }, [profile, preferences.remoteURL, category, gateway])
+  }, [profile, preferences.remoteURL, category, settings])
 
   const valueFor = (path: string) => Object.prototype.hasOwnProperty.call(drafts, path) ? drafts[path] : getConfigValue(config.data, path)
   const save = (path: string, value: unknown) => {
@@ -137,9 +137,9 @@ export function ConfigSectionScreen({ category, onBack }: { category: string; on
 }
 
 function VoiceProviderResources() {
-  const gateway = useGateway()
+  const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
-  const voices = useQuery({ queryFn: ({ signal }) => settingsApi.elevenLabsVoices(gateway, preferences.profile, signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'voice', 'elevenlabs') })
+  const voices = useQuery({ queryFn: ({ signal }) => settings.elevenLabsVoices(signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'voice', 'elevenlabs') })
   return <section className="data-card voice-resources"><h3>Gateway voice resources</h3>{voices.isPending && <Skeleton className="h-8 w-full" />}{voices.error && <p className="muted">Voice catalog unavailable: {classifyGatewayError(voices.error).message}</p>}{voices.data && <p className="muted">{voices.data.available ? `ElevenLabs voices available: ${voices.data.voices.slice(0, 8).map(voice => voice.name).join(', ')}${voices.data.voices.length > 8 ? '…' : ''}` : 'No ElevenLabs voice catalog is configured. Audio stays on the gateway unless the selected provider supports it.'}</p>}</section>
 }
 

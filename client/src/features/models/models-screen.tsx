@@ -6,7 +6,7 @@ import { useStore } from '@nanostores/react'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { Badge, Button, Skeleton, Switch } from '~/compat/primitives'
 import { CONFIG_SAVE_DEBOUNCE_MS, ContextWindowField, FallbackField, useDebouncedSave } from '~/features/models/config-editors'
-import { modelsApi } from '~/features/models/api'
+import { createModelsApi } from '~/features/models/api'
 import {
   REASONING_EFFORT_VALUES,
   fallbackEntriesEqual,
@@ -20,7 +20,7 @@ import {
 import { MoaEditor } from '~/features/models/moa-editor'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useGateway } from '~/gateway/gateway-context'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { $preferences } from '~/state/store'
@@ -69,7 +69,7 @@ interface MainAssignmentDraft {
 }
 
 export function ModelsScreen({ onBack }: ModelsScreenProps) {
-  const gateway = useGateway()
+  const models = useApi(createModelsApi)
   const queryClient = useQueryClient()
   const preferences = useStore($preferences)
   const profile = preferences.profile
@@ -78,11 +78,11 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const invalidateAll = () => queryClient.invalidateQueries({ queryKey: scopeKey })
   const screenScope = currentGatewayScope()
 
-  const info = useQuery({ queryFn: ({ signal }) => modelsApi.getInfo(gateway, profile, signal), queryKey: keyFor('info') })
-  const options = useQuery({ queryFn: ({ signal }) => modelsApi.getOptions(gateway, profile, signal), queryKey: keyFor('options') })
-  const auxiliary = useQuery({ queryFn: ({ signal }) => modelsApi.getAuxiliary(gateway, profile, signal), queryKey: keyFor('auxiliary') })
-  const config = useQuery({ queryFn: ({ signal }) => modelsApi.getConfig(gateway, profile, signal), queryKey: keyFor('config') })
-  const moa = useQuery({ queryFn: ({ signal }) => modelsApi.getMoa(gateway, profile, signal), queryKey: keyFor('moa') })
+  const info = useQuery({ queryFn: ({ signal }) => models.getInfo(signal), queryKey: keyFor('info') })
+  const options = useQuery({ queryFn: ({ signal }) => models.getOptions(signal), queryKey: keyFor('options') })
+  const auxiliary = useQuery({ queryFn: ({ signal }) => models.getAuxiliary(signal), queryKey: keyFor('auxiliary') })
+  const config = useQuery({ queryFn: ({ signal }) => models.getConfig(signal), queryKey: keyFor('config') })
+  const moa = useQuery({ queryFn: ({ signal }) => models.getMoa(signal), queryKey: keyFor('moa') })
 
   const providers = useMemo<ModelOptionProvider[]>(() => options.data?.providers ?? [], [options.data])
   const mainModel = useMemo(
@@ -140,7 +140,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
     setApplying(true)
     setApplyError(null)
     try {
-      const result = await modelsApi.setAssignment(gateway, profile, {
+      const result = await models.setAssignment({
         ...assignment,
         scope: 'main',
         ...(confirm ? { confirm_expensive_model: true } : {})
@@ -194,9 +194,9 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   // the on-disk document, so unrelated profile configuration stays untouched.
   const writePartialConfig = useCallback(
     async (partial: Record<string, unknown>) => {
-      await modelsApi.saveConfig(gateway, profile, partial)
+      await models.saveConfig(partial)
     },
-    [gateway, profile]
+    [models]
   )
   const writeAgentDefault = (key: string, value: string) => {
     if (!configData) return
@@ -290,7 +290,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
     setAuxApplying(true)
     setAuxError(null)
     try {
-      await modelsApi.setAssignment(gateway, profile, { scope: 'auxiliary', ...body, ...endpointForProvider(body.provider) })
+      await models.setAssignment({ scope: 'auxiliary', ...body, ...endpointForProvider(body.provider) })
       if (!isCurrentGatewayScope(scope)) return
       setEditingTask(null)
       await invalidateAll()
@@ -464,7 +464,6 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       {moa.data && moa.data.presets && (
         <MoaEditor
           connectionKey={preferences.remoteURL}
-          gateway={gateway}
           moa={moa.data}
           onMoaChange={next => { if (isCurrentGatewayScope(screenScope)) queryClient.setQueryData(keyFor('moa'), next) }}
           onError={error => {
