@@ -1,6 +1,7 @@
+import type { GatewayApi } from './gateway-api'
 import type { GatewayPort } from './gateway-port'
 import { abortError, throwIfAborted } from './abort'
-import { classifyGatewayError } from './gateway-error'
+import { classifyGatewayError, GatewayError } from './gateway-error'
 
 export interface RemoteActionState<T = unknown> {
   error?: unknown
@@ -99,4 +100,69 @@ export async function runRemoteAction<T>(options: RemoteActionOptions<T>): Promi
     options.signal?.removeEventListener('abort', abort)
     controller.abort()
   }
+}
+
+/** Status payload of the gateway's action routes — the protocol's result tier. */
+export interface ActionStatusResponse {
+  exit_code: number | null
+  lines?: string[]
+  pid?: number | null
+  running: boolean
+}
+
+/** Terminal state of a gateway action; `result` is the final status payload. */
+export type GatewayActionState = RemoteActionState<ActionStatusResponse>
+
+export interface GatewayActionOptions {
+  /** Bound to the operation's starting Scope. False aborts further polling. */
+  isCurrentScope?: () => boolean
+  /** Engine passthrough: first poll delay; defaults to the protocol cadence. */
+  intervalMs?: number
+  /** Engine passthrough: backoff ceiling; defaults to the protocol cadence. */
+  maxIntervalMs?: number
+  /** Poll bound for the action protocol; default 120. */
+  maxAttempts?: number
+  signal?: AbortSignal
+  /** Start route (feature vocabulary). Returns the start response carrying the poll handle. */
+  start: (signal: AbortSignal) => Promise<RemoteActionStartResponse>
+}
+
+const GATEWAY_ACTION_MAX_ATTEMPTS = 120
+
+/** Runs one gateway action end to end: start → poll handle → status → terminal. */
+export async function runGatewayAction(api: GatewayApi, options: GatewayActionOptions): Promise<GatewayActionState> {
+  let handle = ''
+  const state = await runRemoteAction<ActionStatusResponse>({
+    gateway: api.gateway,
+    intervalMs: options.intervalMs,
+    isCurrentScope: options.isCurrentScope,
+    maxAttempts: options.maxAttempts ?? GATEWAY_ACTION_MAX_ATTEMPTS,
+    maxIntervalMs: options.maxIntervalMs,
+    poll: async (_gateway, pollSignal) => {
+      // Action status is owned by the dashboard process. The route has no
+      // profile scope; the handle returned by the start endpoint is the
+      // authoritative poll id.
+      const status = await api.unscoped<ActionStatusResponse>(`/api/actions/${encodeURIComponent(handle)}/status`, { signal: pollSignal })
+      return { result: status, status: status.running ? 'running' : status.exit_code === 0 ? 'complete' : 'failed' }
+    },
+    signal: options.signal,
+    start: async (_gateway, startSignal) => {
+      const response = assertRemoteActionStart(await options.start(startSignal))
+      handle = remoteActionName(response)
+      return { result: undefined, status: response.background === false ? 'complete' : 'running' }
+    }
+  })
+  // A terminal failure is the caller's error, never a silent success: every
+  // pre-protocol call site ignored the failed status.
+  if (state.status === 'failed') {
+    const status = state.result
+    const exit = status?.exit_code != null ? ` (exit code ${status.exit_code})` : ''
+    throw new GatewayError(`The gateway action failed${exit}.`, {
+      code: 'ACTION_FAILED',
+      details: status,
+      kind: 'server',
+      retryable: false
+    })
+  }
+  return state
 }

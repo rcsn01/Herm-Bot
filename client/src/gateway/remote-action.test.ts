@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { assertRemoteActionStart, remoteActionName, runRemoteAction, type RemoteActionState } from './remote-action'
+import { createGatewayApi } from './gateway-api'
+import { assertRemoteActionStart, remoteActionName, runGatewayAction, runRemoteAction, type GatewayActionState, type RemoteActionState } from './remote-action'
 import { MemoryGateway } from '~/test/memory-gateway'
+
+const requestPaths = (gateway: MemoryGateway): string[] =>
+  gateway.calls.flatMap(call => (call.kind === 'request' ? [(call.value as { path: string }).path] : []))
 
 describe('runRemoteAction', () => {
   it('rejects an explicit action-start refusal before polling', () => {
@@ -159,5 +163,90 @@ describe('runRemoteAction', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('runGatewayAction', () => {
+  it('runs an async action to completion over the unscoped status route', async () => {
+    const gateway = new MemoryGateway()
+    const api = createGatewayApi(gateway, 'work')
+    let polls = 0
+    gateway
+      .handle('/api/skills/hub/install?profile=work', () => ({ action: 'install-1', background: true, ok: true }))
+      .handle('/api/actions/install-1/status', () => {
+        polls += 1
+        return polls === 1 ? { exit_code: null, running: true } : { exit_code: 0, running: false }
+      })
+    const state: GatewayActionState = await runGatewayAction(api, {
+      intervalMs: 0,
+      start: signal => api.request('/api/skills/hub/install', { method: 'POST', signal })
+    })
+    expect(state.status).toBe('complete')
+    expect(state.result?.exit_code).toBe(0)
+    expect(requestPaths(gateway).filter(path => path.startsWith('/api/actions')))
+      .toEqual(['/api/actions/install-1/status', '/api/actions/install-1/status'])
+  })
+
+  it('resolves a synchronous start without polling the status route', async () => {
+    const gateway = new MemoryGateway()
+    const api = createGatewayApi(gateway, 'work')
+    gateway.handle('/api/skills/hub/install?profile=work', () => ({ background: false, ok: true }))
+    const state = await runGatewayAction(api, {
+      intervalMs: 0,
+      start: signal => api.request('/api/skills/hub/install', { method: 'POST', signal })
+    })
+    expect(state.status).toBe('complete')
+    expect(requestPaths(gateway).some(path => path.startsWith('/api/actions'))).toBe(false)
+  })
+
+  it('rejects with ACTION_FAILED when the action exits nonzero', async () => {
+    const gateway = new MemoryGateway()
+    const api = createGatewayApi(gateway, 'work')
+    gateway
+      .handle('/api/skills/hub/install?profile=work', () => ({ action: 'install-1', background: true, ok: true }))
+      .handle('/api/actions/install-1/status', () => ({ exit_code: 1, running: false }))
+    const failure = runGatewayAction(api, {
+      intervalMs: 0,
+      start: signal => api.request('/api/skills/hub/install', { method: 'POST', signal })
+    })
+    await expect(failure).rejects.toMatchObject({ code: 'ACTION_FAILED', kind: 'server' })
+    await expect(failure).rejects.toThrow(/exit code 1/)
+  })
+
+  it('preserves a refused start response message', async () => {
+    const gateway = new MemoryGateway()
+    const api = createGatewayApi(gateway, 'work')
+    gateway.handle('/api/skills/hub/install?profile=work', () => ({ error: 'Install refused.', ok: false }))
+    await expect(runGatewayAction(api, {
+      intervalMs: 0,
+      start: signal => api.request('/api/skills/hub/install', { method: 'POST', signal })
+    })).rejects.toThrow('Install refused.')
+  })
+
+  it('rejects an asynchronous start that returns no poll handle', async () => {
+    const gateway = new MemoryGateway()
+    const api = createGatewayApi(gateway, 'work')
+    gateway.handle('/api/skills/hub/install?profile=work', () => ({ background: true, ok: true }))
+    await expect(runGatewayAction(api, {
+      intervalMs: 0,
+      start: signal => api.request('/api/skills/hub/install', { method: 'POST', signal })
+    })).rejects.toThrow(/poll handle/i)
+  })
+
+  it('aborts polling once the starting scope is no longer current', async () => {
+    const gateway = new MemoryGateway()
+    const api = createGatewayApi(gateway, 'work')
+    let current = true
+    gateway
+      .handle('/api/skills/hub/install?profile=work', () => ({ action: 'install-1', background: true, ok: true }))
+      .handle('/api/actions/install-1/status', () => {
+        current = false
+        return { exit_code: null, running: true }
+      })
+    await expect(runGatewayAction(api, {
+      intervalMs: 0,
+      isCurrentScope: () => current,
+      start: signal => api.request('/api/skills/hub/install', { method: 'POST', signal })
+    })).rejects.toMatchObject({ name: 'AbortError' })
   })
 })
