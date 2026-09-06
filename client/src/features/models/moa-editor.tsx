@@ -7,7 +7,7 @@ import { moaConfigComplete, withActive } from '~/features/models/helpers'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { profileKey } from '~/gateway/profile-path'
-import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, type ScopedTask } from '~/gateway/scope-guard'
 import type { ModelOptionProvider, MoaConfigResponse, MoaModelSlot } from '~/lib/types'
 
 type SavedMoaConfig = MoaConfigResponse & { ok: boolean }
@@ -87,8 +87,8 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
   useEffect(() => {
     // A profile or connection switch can leave this component mounted while a
     // request is in flight. Invalidate both timers and completions; the
-    // generation in currentGatewayScope also catches switching away and back
-    // to the same profile.
+    // scoped task guard also catches switching away and back to the same
+    // profile.
     saveGeneration.current += 1
     activeSave.current += 1
     if (saveTimer.current !== null) {
@@ -122,8 +122,8 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
     [models]
   )
   const enqueuePersist = useCallback(
-    (next: MoaConfigResponse, generation: number, scope: ReturnType<typeof currentGatewayScope>) => enqueueMoaWrite<SavedMoaConfig | null>(writeKey, async () => {
-      if (saveGeneration.current !== generation || !isCurrentGatewayScope(scope)) return null
+    (next: MoaConfigResponse, generation: number, task: ScopedTask) => enqueueMoaWrite<SavedMoaConfig | null>(writeKey, async () => {
+      if (saveGeneration.current !== generation || !task.isCurrent()) return null
       const controller = new AbortController()
       activeRequest.current = controller
       try {
@@ -147,17 +147,17 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
       }
       const generation = saveGeneration.current + 1
       saveGeneration.current = generation
-      const scope = currentGatewayScope()
+      const task = beginScopedTask()
       if (!moaConfigComplete(next)) return // hold the write; disk keeps the last complete config
       saveTimer.current = window.setTimeout(() => {
         saveTimer.current = null
-        if (saveGeneration.current !== generation || !isCurrentGatewayScope(scope)) return
-        void enqueuePersist(next, generation, scope)
+        if (saveGeneration.current !== generation || !task.isCurrent()) return
+        void enqueuePersist(next, generation, task)
           .then(saved => {
-            if (saved && saveGeneration.current === generation && isCurrentGatewayScope(scope)) onSaved(saved, profile)
+            if (saved && saveGeneration.current === generation && task.isCurrent()) onSaved(saved, profile)
           })
           .catch(error => {
-            if (saveGeneration.current === generation && isCurrentGatewayScope(scope)) onError(error)
+            if (saveGeneration.current === generation && task.isCurrent()) onError(error)
           })
       }, MOA_SAVE_DEBOUNCE_MS)
     },
@@ -186,17 +186,17 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
         saveTimer.current = null
       }
       const generation = ++saveGeneration.current
-      const scope = currentGatewayScope()
+      const task = beginScopedTask()
       const saveId = ++activeSave.current
       const previous = moaRef.current
       moaRef.current = next
-      if (isCurrentGatewayScope(scope)) onMoaChange(next)
+      if (task.isCurrent()) onMoaChange(next)
       setApplying(true)
       try {
-        const saved = await enqueuePersist(next, generation, scope)
-        if (saved && saveGeneration.current === generation && isCurrentGatewayScope(scope)) onSaved(saved, profile)
+        const saved = await enqueuePersist(next, generation, task)
+        if (saved && saveGeneration.current === generation && task.isCurrent()) onSaved(saved, profile)
       } catch (error) {
-        if (saveGeneration.current === generation && isCurrentGatewayScope(scope)) {
+        if (saveGeneration.current === generation && task.isCurrent()) {
           moaRef.current = previous
           onMoaChange(previous)
           onError(error)

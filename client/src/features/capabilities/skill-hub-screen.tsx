@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconSearch, IconShieldCheck } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createSkillsApi, runSkillHubAction, type SkillHubPreview, type SkillHubScanResult } from './skills-api'
@@ -34,38 +34,34 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
     queryFn: ({ signal }) => skillsApi.hubSearch(submitted, source, 20, signal),
     queryKey: [...scopeKey, 'search', submitted, source]
   })
-  const previewMutation = useMutation<SkillHubPreview, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (identifier: string) => skillsApi.hubPreview(identifier),
-    onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (value, identifier, context) => {
-      if (context && isCurrentGatewayScope(context.scope) && previewTarget.current === identifier) {
+  const previewMutation = useScopedMutation<SkillHubPreview, string>({
+    mutationFn: identifier => skillsApi.hubPreview(identifier),
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: (value, identifier) => {
+      if (previewTarget.current === identifier) {
         setPreview(value)
         setError(null)
       }
     }
   })
-  const scanMutation = useMutation<SkillHubScanResult, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (identifier: string) => skillsApi.hubScan(identifier),
-    onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (value, identifier, context) => {
-      if (context && isCurrentGatewayScope(context.scope) && scanTarget.current === identifier) {
+  const scanMutation = useScopedMutation<SkillHubScanResult, string>({
+    mutationFn: identifier => skillsApi.hubScan(identifier),
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: (value, identifier) => {
+      if (scanTarget.current === identifier) {
         setScan(value)
         setError(null)
       }
     }
   })
   const [install, setInstall] = useState<{ identifier: string; name: string } | null>(null)
-  const installMutation = useMutation<Awaited<ReturnType<typeof runSkillHubAction>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (identifier: string) => {
-      const scope = currentGatewayScope()
-      return runSkillHubAction(api, signal => skillsApi.hubInstall(identifier, signal), undefined, () => isCurrentGatewayScope(scope))
+  const installMutation = useScopedMutation<Awaited<ReturnType<typeof runSkillHubAction>>, string>({
+    mutationFn: identifier => {
+      const task = beginScopedTask()
+      return runSkillHubAction(api, signal => skillsApi.hubInstall(identifier, signal), undefined, () => task.isCurrent())
     },
-    onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (_value, _identifier, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => {
       setInstall(null)
       setError(null)
       void queryClient.invalidateQueries({ queryKey: scopeKey })

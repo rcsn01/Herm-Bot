@@ -22,7 +22,7 @@ import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/feat
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, currentGatewayScope } from '~/gateway/scope-guard'
 import { $preferences } from '~/state/store'
 import type { ModelOptionProvider, StaleAuxAssignment } from '~/lib/types'
 
@@ -76,8 +76,6 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'models')
   const keyFor = (domain: string) => [...scopeKey, domain]
   const invalidateAll = () => queryClient.invalidateQueries({ queryKey: scopeKey })
-  const screenScope = currentGatewayScope()
-
   const info = useQuery({ queryFn: ({ signal }) => models.getInfo(signal), queryKey: keyFor('info') })
   const options = useQuery({ queryFn: ({ signal }) => models.getOptions(signal), queryKey: keyFor('options') })
   const auxiliary = useQuery({ queryFn: ({ signal }) => models.getAuxiliary(signal), queryKey: keyFor('auxiliary') })
@@ -136,7 +134,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
     }
     if (!assignment.provider || !assignment.model) return
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     setApplying(true)
     setApplyError(null)
     try {
@@ -145,7 +143,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
         scope: 'main',
         ...(confirm ? { confirm_expensive_model: true } : {})
       })
-      if (!isCurrentGatewayScope(scope)) return
+      if (!task.isCurrent()) return
       if (result.confirm_required) {
         if (confirm) {
           // Already acked — fail closed instead of recursing.
@@ -167,9 +165,9 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       setStaleAux(result.stale_aux ?? [])
       await invalidateAll()
     } catch (error) {
-      if (isCurrentGatewayScope(scope)) setApplyError(classifyGatewayError(error).message)
+      if (task.isCurrent()) setApplyError(classifyGatewayError(error).message)
     } finally {
-      if (isCurrentGatewayScope(scope)) setApplying(false)
+      if (task.isCurrent()) setApplying(false)
     }
   }
 
@@ -200,12 +198,12 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   )
   const writeAgentDefault = (key: string, value: string) => {
     if (!configData) return
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     const configKey = keyFor('config')
     const previous = queryClient.getQueryData(configKey) ?? configData
     queryClient.setQueryData(configKey, setConfigValue(previous, key, value))
     void writePartialConfig(setConfigValue({}, key, value)).catch(error => {
-      if (!isCurrentGatewayScope(scope)) return
+      if (!task.isCurrent()) return
       const current = queryClient.getQueryData(configKey)
       // Do not roll back a newer edit that landed while this request was in
       // flight. TanStack may reuse structurally shared objects, so compare the
@@ -217,7 +215,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
 
   const saveContext = useDebouncedSave(
     async (contextLength: number) => {
-      const scope = currentGatewayScope()
+      const task = beginScopedTask()
       const configKey = keyFor('config')
       const previous = queryClient.getQueryData(configKey) ?? configData
       if (previous) queryClient.setQueryData(configKey, setConfigValue(previous, 'model_context_length', contextLength))
@@ -225,17 +223,17 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
         await writePartialConfig(setConfigValue({}, 'model_context_length', contextLength))
       } catch (error) {
         const current = queryClient.getQueryData(configKey)
-        if (isCurrentGatewayScope(scope) && getConfigValue(current, 'model_context_length') === contextLength && previous) queryClient.setQueryData(configKey, previous)
+        if (task.isCurrent() && getConfigValue(current, 'model_context_length') === contextLength && previous) queryClient.setQueryData(configKey, previous)
         throw error
       }
     },
     CONFIG_SAVE_DEBOUNCE_MS,
-    error => { if (isCurrentGatewayScope(screenScope)) setConfigError(classifyGatewayError(error).message) },
+    error => { setConfigError(classifyGatewayError(error).message) },
     () => currentGatewayScope().generation
   )
   const saveFallbacks = useDebouncedSave(
     async (entries: FallbackEntry[]) => {
-      const scope = currentGatewayScope()
+      const task = beginScopedTask()
       const configKey = keyFor('config')
       const previous = queryClient.getQueryData(configKey) ?? configData
       if (previous) queryClient.setQueryData(configKey, setConfigValue(previous, 'fallback_providers', entries))
@@ -244,12 +242,12 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       } catch (error) {
         const current = queryClient.getQueryData(configKey)
         const currentEntries = getConfigValue(current, 'fallback_providers')
-        if (isCurrentGatewayScope(scope) && fallbackEntriesEqual(normalizeFallbackEntries(currentEntries), entries) && previous) queryClient.setQueryData(configKey, previous)
+        if (task.isCurrent() && fallbackEntriesEqual(normalizeFallbackEntries(currentEntries), entries) && previous) queryClient.setQueryData(configKey, previous)
         throw error
       }
     },
     CONFIG_SAVE_DEBOUNCE_MS,
-    error => { if (isCurrentGatewayScope(screenScope)) setConfigError(classifyGatewayError(error).message) },
+    error => { setConfigError(classifyGatewayError(error).message) },
     () => currentGatewayScope().generation
   )
 
@@ -286,26 +284,26 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   }
 
   async function submitAuxiliary(body: { model: string; provider: string; task: string }) {
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     setAuxApplying(true)
     setAuxError(null)
     try {
       await models.setAssignment({ scope: 'auxiliary', ...body, ...endpointForProvider(body.provider) })
-      if (!isCurrentGatewayScope(scope)) return
+      if (!task.isCurrent()) return
       setEditingTask(null)
       await invalidateAll()
     } catch (error) {
-      if (isCurrentGatewayScope(scope)) setAuxError(classifyGatewayError(error).message)
+      if (task.isCurrent()) setAuxError(classifyGatewayError(error).message)
     } finally {
-      if (isCurrentGatewayScope(scope)) setAuxApplying(false)
+      if (task.isCurrent()) setAuxApplying(false)
     }
   }
 
   async function resetAuxiliary() {
     if (!mainModel) return
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     await submitAuxiliary({ model: mainModel.model, provider: mainModel.provider, task: '__reset__' })
-    if (isCurrentGatewayScope(scope)) setStaleAux([])
+    if (task.isCurrent()) setStaleAux([])
   }
 
   function beginAuxiliaryEdit(task: string) {
@@ -465,9 +463,10 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
         <MoaEditor
           connectionKey={preferences.remoteURL}
           moa={moa.data}
-          onMoaChange={next => { if (isCurrentGatewayScope(screenScope)) queryClient.setQueryData(keyFor('moa'), next) }}
+          onMoaChange={next => { const task = beginScopedTask(); if (task.isCurrent()) queryClient.setQueryData(keyFor('moa'), next) }}
           onError={error => {
-            if (!isCurrentGatewayScope(screenScope)) return
+            const task = beginScopedTask()
+            if (!task.isCurrent()) return
             setAuxError(classifyGatewayError(error).message)
             // Autosaves and preset writes are optimistic. Refetch the
             // authoritative document after a failure instead of leaving a
@@ -475,7 +474,8 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
             void moa.refetch()
           }}
           onSaved={(saved, savedProfile) => {
-            if (savedProfile === profile && isCurrentGatewayScope(screenScope)) queryClient.setQueryData(keyFor('moa'), saved)
+            const task = beginScopedTask()
+            if (savedProfile === profile && task.isCurrent()) queryClient.setQueryData(keyFor('moa'), saved)
           }}
           profile={profile}
           providers={providers}

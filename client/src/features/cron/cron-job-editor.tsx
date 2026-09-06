@@ -1,11 +1,11 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState, type FormEvent } from 'react'
 
 import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { useScopedMutation } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
@@ -34,7 +34,7 @@ export function CronJobEditor({ job, onCancel, onSaved }: { job?: CronJob; onCan
   const [toolsets, setToolsets] = useState((job?.enabled_toolsets ?? []).join(', '))
   const [noAgent, setNoAgent] = useState(job?.no_agent ?? false)
   const [error, setError] = useState<string | null>(null)
-  const mutation = useMutation<CronJob, unknown, CronJobCreate & { enabled?: boolean }, { scope: CurrentGatewayScope }>({
+  const mutation = useScopedMutation<CronJob, CronJobCreate & { enabled?: boolean }>({
     mutationFn: async body => {
       if (job) return cron.update(job.id, body)
       const { enabled: requestedEnabled, ...createBody } = body
@@ -42,9 +42,8 @@ export function CronJobEditor({ job, onCancel, onSaved }: { job?: CronJob; onCan
       if (requestedEnabled === false) return cron.pause(created.id)
       return created
     },
-    onError: (caught, _body, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(formatCronError(caught)) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (value, _body, context) => { if (context && isCurrentGatewayScope(context.scope)) onSaved(value) }
+    onError: caught => setError(formatCronError(caught)),
+    onSuccess: value => onSaved(value)
   })
 
   useEffect(() => {

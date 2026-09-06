@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { IconChevronRight, IconRefresh, IconSearch, IconTools } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { ToolsetInfo } from '~/lib/types'
@@ -18,7 +18,6 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
   const toolsetsApi = useApi(createToolsetsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
-  const queryClient = useQueryClient()
   const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'tools', 'list')
   const toolsets = useQuery({ queryFn: ({ signal }) => toolsetsApi.list(signal), queryKey })
   const [search, setSearch] = useState('')
@@ -28,28 +27,14 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
     const term = search.trim().toLowerCase()
     return (toolsets.data ?? []).filter(toolset => !term || `${toolset.name} ${toolset.label} ${toolset.description}`.toLowerCase().includes(term))
   }, [search, toolsets.data])
-  const toggle = useMutation<unknown, unknown, { enabled: boolean; name: string }, { previous?: ToolsetInfo[]; scope: CurrentGatewayScope }>({
-    mutationFn: ({ enabled, name }: { enabled: boolean; name: string }) => toolsetsApi.toggle(name, enabled),
-    onError: (caught, _value, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
-      if (context.previous) queryClient.setQueryData(queryKey, context.previous)
-      setError(classifyGatewayError(caught).message)
+  const toggle = useScopedMutation<unknown, { enabled: boolean; name: string }, ToolsetInfo[]>({
+    mutationFn: ({ enabled, name }) => toolsetsApi.toggle(name, enabled),
+    optimistic: {
+      queryKey,
+      apply: (rows, { name, enabled }) => rows?.map(row => row.name === name ? { ...row, enabled } : row)
     },
-    onMutate: async ({ enabled, name }) => {
-      const scope = currentGatewayScope()
-      await queryClient.cancelQueries({ queryKey })
-      const previous = queryClient.getQueryData<ToolsetInfo[]>(queryKey)
-      if (isCurrentGatewayScope(scope)) {
-        queryClient.setQueryData<ToolsetInfo[]>(queryKey, rows => rows?.map(row => row.name === name ? { ...row, enabled } : row))
-      }
-      return { previous, scope }
-    },
-    onSettled: (_data, _error, _variables, context) => {
-      if (context && isCurrentGatewayScope(context.scope)) void queryClient.invalidateQueries({ queryKey })
-    },
-    onSuccess: (_data, _variables, context) => {
-      if (context && isCurrentGatewayScope(context.scope)) setError(null)
-    }
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => setError(null)
   })
 
   useEffect(() => {
@@ -59,10 +44,10 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
   }, [preferences.remoteURL, profile])
   const clearAll = async () => {
     setConfirmClear(false)
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     const enabled = toolsets.data?.filter(toolset => toolset.enabled) ?? []
     for (const toolset of enabled) {
-      if (!isCurrentGatewayScope(scope)) return
+      if (!task.isCurrent()) return
       try {
         await toggle.mutateAsync({ enabled: false, name: toolset.name })
       } catch {

@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
-import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask } from '~/gateway/scope-guard'
 import { errorMessage } from '~/gateway/gateway-error'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
@@ -61,11 +61,11 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     return needle ? sessions.filter(session => session.title.toLowerCase().includes(needle)) : sessions
   }, [query, sessions])
   const loadMoreSessions = useCallback(async () => {
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     try {
       await controller.loadMoreSessions()
     } catch (caught) {
-      if (isCurrentGatewayScope(scope)) setError(errorMessage(caught))
+      if (task.isCurrent()) setError(errorMessage(caught))
     }
   }, [controller])
 
@@ -75,9 +75,9 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     panelRef.current?.focus({ preventScroll: true })
     setError(null)
     const generation = ++refreshGeneration.current
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     void controller.refreshSessions().catch(caught => {
-      if (refreshGeneration.current === generation && isCurrentGatewayScope(scope)) setError(errorMessage(caught))
+      if (refreshGeneration.current === generation && task.isCurrent()) setError(errorMessage(caught))
     })
     return () => {
       ++refreshGeneration.current
@@ -98,17 +98,17 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
 
   const runSessionAction = async (callback: () => Promise<unknown>) => {
     if (actionPendingRef.current) return
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     actionPendingRef.current = true
     setPendingSessionAction(true)
     setError(null)
     try {
       await callback()
-      if (!isCurrentGatewayScope(scope)) return
+      if (!task.isCurrent()) return
       onNavigate('sessions')
       onClose()
     } catch (caught) {
-      if (isCurrentGatewayScope(scope)) setError(errorMessage(caught))
+      if (task.isCurrent()) setError(errorMessage(caught))
     } finally {
       actionPendingRef.current = false
       setPendingSessionAction(false)
@@ -116,12 +116,12 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   }
 
   const deleteSession = async (id: string) => {
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     setError(null)
     try {
       await controller.deleteSession(id)
     } catch (caught) {
-      if (isCurrentGatewayScope(scope)) setError(errorMessage(caught))
+      if (task.isCurrent()) setError(errorMessage(caught))
     }
   }
 

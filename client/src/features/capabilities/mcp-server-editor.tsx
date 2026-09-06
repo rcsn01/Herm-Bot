@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button, Input, Textarea } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createMcpApi, type McpServerConfig, type McpServerSummary } from './mcp-api'
@@ -46,7 +46,7 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     const draft = config()
     // Environment values are only needed to construct this request. Never
     // retain them in component state after a submit, including validation or
@@ -60,12 +60,12 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
     try {
       if (server) await mcpApi.update(server.name, draft)
       else await mcpApi.add({ ...draft, name: name.trim() })
-      if (!isCurrentGatewayScope(scope)) return
+      if (!task.isCurrent()) return
       onSaved()
     } catch (caught) {
-      if (isCurrentGatewayScope(scope)) setError(classifyGatewayError(caught).message)
+      if (task.isCurrent()) setError(classifyGatewayError(caught).message)
     } finally {
-      if (isCurrentGatewayScope(scope)) setSaving(false)
+      if (task.isCurrent()) setSaving(false)
     }
   }
 

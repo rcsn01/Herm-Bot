@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { useScopedMutation } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import type { SkillInfo } from '~/lib/types'
 import { useStore } from '@nanostores/react'
@@ -35,26 +35,18 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
     setError(null)
   }, [preferences.remoteURL, profile, skill.name])
 
-  const save = useMutation<void, unknown, string, { scope: CurrentGatewayScope }>({
+  const save = useScopedMutation<void, string>({
     mutationFn: nextDraft => skillsApi.updateContent(skill.name, nextDraft).then(() => undefined),
-    onError: (caught, _draft, context) => {
-      if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message)
-    },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (_data, _draft, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => {
       setError(null)
       void queryClient.invalidateQueries({ queryKey })
     }
   })
-  const archive = useMutation<void, unknown, void, { scope: CurrentGatewayScope }>({
+  const archive = useScopedMutation<void, void>({
     mutationFn: () => skillsApi.archiveLearningNode(skill.name).then(() => undefined),
-    onError: (caught, _value, context) => {
-      if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message)
-    },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (_data, _value, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => {
       setRemove(false)
       onArchived()
     }

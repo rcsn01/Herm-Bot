@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -7,7 +7,7 @@ import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primi
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { runRemoteAction } from '~/gateway/remote-action'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
@@ -66,44 +66,36 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     if (!selectedProvider && status.data?.active) setSelectedProvider(status.data.active)
   }, [selectedProvider, status.data?.active])
 
-  const selectProvider = useMutation<Awaited<ReturnType<typeof settings.selectMemoryProvider>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (provider: string) => settings.selectMemoryProvider(provider),
-    onError: (caught, _provider, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (_value, _provider, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+  const selectProvider = useScopedMutation<Awaited<ReturnType<typeof settings.selectMemoryProvider>>, string>({
+    mutationFn: provider => settings.selectMemoryProvider(provider),
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => {
       setError(null)
       void queryClient.invalidateQueries({ queryKey: statusKey })
     }
   })
-  const saveProvider = useMutation<Awaited<ReturnType<typeof settings.saveMemoryProviderConfig>>, unknown, MemoryValues, { scope: CurrentGatewayScope }>({
-    mutationFn: (values: MemoryValues) => settings.saveMemoryProviderConfig(providerKey, values),
-    onError: (caught, _values, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (_value, _values, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+  const saveProvider = useScopedMutation<Awaited<ReturnType<typeof settings.saveMemoryProviderConfig>>, MemoryValues>({
+    mutationFn: values => settings.saveMemoryProviderConfig(providerKey, values),
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => {
       setError(null)
       void queryClient.invalidateQueries({ queryKey: statusKey })
       void config.refetch()
     }
   })
-  const setupProvider = useMutation<Awaited<ReturnType<typeof settings.setupMemoryProvider>>, unknown, void, { scope: CurrentGatewayScope }>({
+  const setupProvider = useScopedMutation<Awaited<ReturnType<typeof settings.setupMemoryProvider>>, void>({
     mutationFn: () => settings.setupMemoryProvider(providerKey),
-    onError: (caught, _values, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (_value, _values, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => {
       setError(null)
       void queryClient.invalidateQueries({ queryKey: statusKey })
       void config.refetch()
     }
   })
-  const reset = useMutation<Awaited<ReturnType<typeof settings.resetMemory>>, unknown, 'all' | 'memory' | 'user', { scope: CurrentGatewayScope }>({
-    mutationFn: (target: 'all' | 'memory' | 'user') => settings.resetMemory(target),
-    onError: (caught, _target, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSettled: (_data, _error, _target, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+  const reset = useScopedMutation<Awaited<ReturnType<typeof settings.resetMemory>>, 'all' | 'memory' | 'user'>({
+    mutationFn: target => settings.resetMemory(target),
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSettled: () => {
       setResetTarget(null)
       void queryClient.invalidateQueries({ queryKey: statusKey })
     }
@@ -112,10 +104,10 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   useEffect(() => {
     if (!oauthPending || !providerKey) return
     const controller = new AbortController()
-    const oauthScope = currentGatewayScope()
+    const task = beginScopedTask()
     void runRemoteAction<MemoryProviderOAuthStatus>({
       gateway: api.gateway,
-      isCurrentScope: () => isCurrentGatewayScope(oauthScope),
+      isCurrentScope: () => task.isCurrent(),
       intervalMs: 2_000,
       maxAttempts: 60,
       maxIntervalMs: 10_000,
@@ -127,7 +119,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       start: async () => ({ result: oauth.data, status: 'pending' }),
       isComplete: state => state.status !== 'pending'
     }).then(state => {
-      if (controller.signal.aborted || !isCurrentGatewayScope(oauthScope)) return
+      if (controller.signal.aborted || !task.isCurrent()) return
       setOAuthPending(false)
       const next = state.result
       if (next?.state === 'error') setOAuthError(next.detail || 'The provider rejected the connection.')
@@ -137,7 +129,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
         void queryClient.invalidateQueries({ queryKey: statusKey })
       }
     }).catch(caught => {
-      if (controller.signal.aborted || !isCurrentGatewayScope(oauthScope)) return
+      if (controller.signal.aborted || !task.isCurrent()) return
       setOAuthPending(false)
       setOAuthError(classifyGatewayError(caught).message)
     })
@@ -152,11 +144,11 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
 
   const startOAuth = async () => {
     if (!providerKey) return
-    const oauthScope = currentGatewayScope()
+    const task = beginScopedTask()
     setOAuthError(null)
     try {
       const next = await settings.startMemoryOAuth(providerKey)
-      if (!isCurrentGatewayScope(oauthScope)) return
+      if (!task.isCurrent()) return
       if (next.state === 'connected') {
         void queryClient.invalidateQueries({ queryKey: statusKey })
         void oauth.refetch()
@@ -164,7 +156,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
         setOAuthPending(true)
       }
     } catch (caught) {
-      if (!isCurrentGatewayScope(oauthScope)) return
+      if (!task.isCurrent()) return
       setOAuthError(classifyGatewayError(caught).kind === 'unsupported' ? 'This memory provider does not offer OAuth.' : classifyGatewayError(caught).message)
     }
   }

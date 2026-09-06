@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { IconChevronLeft } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
@@ -6,7 +6,7 @@ import { Badge, Button, Input, Skeleton, Textarea } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { useScopedMutation } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
@@ -22,11 +22,10 @@ export function CronBlueprintsScreen({ onBack, onCreated }: { onBack(): void; on
   const [selected, setSelected] = useState<AutomationBlueprint | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
-  const create = useMutation<CronJob, unknown, { blueprint: string; values: Record<string, string> }, { scope: CurrentGatewayScope }>({
+  const create = useScopedMutation<CronJob, { blueprint: string; values: Record<string, string> }>({
     mutationFn: ({ blueprint, values: selectedValues }) => cron.instantiate(blueprint, selectedValues),
-    onError: (caught, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSuccess: (job, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) onCreated(job) }
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: job => onCreated(job)
   })
 
   useEffect(() => {

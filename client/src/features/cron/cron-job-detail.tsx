@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconChevronRight, IconEdit, IconPlayerPlay, IconRefresh, IconTrash } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createCronApi, type CronJob, type CronRun } from './api'
@@ -24,16 +24,14 @@ export function CronJobDetail({ jobId, onBack, onEdit, onDeleted, onOpenSession 
   const [remove, setRemove] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [openingRunId, setOpeningRunId] = useState<string | null>(null)
-  const action = useMutation<void, unknown, 'pause' | 'remove' | 'resume' | 'trigger', { scope: CurrentGatewayScope }>({
-    mutationFn: async (type: 'pause' | 'remove' | 'resume' | 'trigger') => {
+  const action = useScopedMutation<void, 'pause' | 'remove' | 'resume' | 'trigger'>({
+    mutationFn: async type => {
       if (type === 'remove') await cron.remove(jobId)
       else await cron[type](jobId)
     },
-    onError: (caught, _type, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(formatCronError(caught)) },
-    onMutate: () => ({ scope: currentGatewayScope() }),
-    onSettled: (_data, _error, _type, context) => { if (context && isCurrentGatewayScope(context.scope)) void queryClient.invalidateQueries({ queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron') }) },
-    onSuccess: (_value, type, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
+    onError: caught => setError(formatCronError(caught)),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron') }) },
+    onSuccess: (_value, type) => {
       setError(null)
       if (type === 'remove') { setRemove(false); onDeleted() }
     }
@@ -48,15 +46,15 @@ export function CronJobDetail({ jobId, onBack, onEdit, onDeleted, onOpenSession 
 
   const openRunSession = async (sessionId: string) => {
     if (!onOpenSession || openingRunId) return
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     setOpeningRunId(sessionId)
     setError(null)
     try {
       await onOpenSession(sessionId)
     } catch (caught) {
-      if (isCurrentGatewayScope(scope)) setError(formatCronError(caught))
+      if (task.isCurrent()) setError(formatCronError(caught))
     } finally {
-      if (isCurrentGatewayScope(scope)) setOpeningRunId(null)
+      if (task.isCurrent()) setOpeningRunId(null)
     }
   }
 

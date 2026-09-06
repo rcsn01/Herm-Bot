@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
-import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask } from '~/gateway/scope-guard'
 import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage } from '~/gateway/gateway-error'
@@ -87,9 +87,9 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   }, [chat.runtimeSessionId, interaction])
 
   const reportSessionAction = (action: () => Promise<unknown>) => {
-    const scope = currentGatewayScope()
+    const task = beginScopedTask()
     void action().catch(caught => {
-      if (isCurrentGatewayScope(scope)) setSessionActionError(errorMessage(caught))
+      if (task.isCurrent()) setSessionActionError(errorMessage(caught))
     })
   }
 

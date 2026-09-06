@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconBook, IconChevronRight, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -6,7 +6,7 @@ import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { SkillInfo } from '~/lib/types'
@@ -27,7 +27,6 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'list')
-  const screenScope = currentGatewayScope()
   const skills = useQuery({ queryFn: ({ signal }) => skillsApi.list(signal), queryKey })
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
@@ -42,28 +41,14 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
       (activation === 'all' || (activation === 'enabled' && skill.enabled) || (activation === 'disabled' && !skill.enabled))
     )
   }, [activation, category, search, skills.data])
-  const toggle = useMutation<unknown, unknown, { enabled: boolean; name: string }, { previous?: SkillInfo[]; scope: CurrentGatewayScope }>({
-    mutationFn: ({ name, enabled }: { enabled: boolean; name: string }) => skillsApi.toggle(name, enabled),
-    onError: (caught, _value, context) => {
-      if (!context || !isCurrentGatewayScope(context.scope)) return
-      if (context.previous) queryClient.setQueryData(queryKey, context.previous)
-      setError(classifyGatewayError(caught).message)
+  const toggle = useScopedMutation<unknown, { enabled: boolean; name: string }, SkillInfo[]>({
+    mutationFn: ({ name, enabled }) => skillsApi.toggle(name, enabled),
+    optimistic: {
+      queryKey,
+      apply: (rows, { name, enabled }) => rows?.map(row => row.name === name ? { ...row, enabled } : row)
     },
-    onMutate: async ({ name, enabled }) => {
-      const scope = currentGatewayScope()
-      await queryClient.cancelQueries({ queryKey })
-      const previous = queryClient.getQueryData<SkillInfo[]>(queryKey)
-      if (isCurrentGatewayScope(scope)) {
-        queryClient.setQueryData<SkillInfo[]>(queryKey, rows => rows?.map(row => row.name === name ? { ...row, enabled } : row))
-      }
-      return { previous, scope }
-    },
-    onSettled: (_data, _error, _variables, context) => {
-      if (context && isCurrentGatewayScope(context.scope)) void queryClient.invalidateQueries({ queryKey })
-    },
-    onSuccess: (_data, _variables, context) => {
-      if (context && isCurrentGatewayScope(context.scope)) setError(null)
-    }
+    onError: caught => setError(classifyGatewayError(caught).message),
+    onSuccess: () => setError(null)
   })
 
   useEffect(() => {
@@ -75,7 +60,7 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
 
 
   const selectedSkill = selected ? skills.data?.find(skill => skill.name === selected) : undefined
-  if (selected && selectedSkill && onBack) return <SkillDetail onArchived={() => { if (!isCurrentGatewayScope(screenScope)) return; void queryClient.invalidateQueries({ queryKey }); onBack() }} onBack={onBack} skill={selectedSkill} />
+  if (selected && selectedSkill && onBack) return <SkillDetail onArchived={() => { const task = beginScopedTask(); if (!task.isCurrent()) return; void queryClient.invalidateQueries({ queryKey }); onBack() }} onBack={onBack} skill={selectedSkill} />
   if (selected && skills.data && !selectedSkill) return <section className="screen page-screen"><Button onClick={onBack} variant="text">‹ Back</Button><div className="empty-panel">That skill is no longer installed.</div></section>
 
   return (

@@ -117,6 +117,34 @@ describe('MemorySettings', () => {
     await waitFor(() => expect(savedBody).toEqual({ values: { workspace: 'updated-without-secret' } }))
   })
 
+  it('discards mutation errors after the gateway scope changes mid-flight', async () => {
+    let rejectSave!: (reason?: unknown) => void
+    const pendingSave = new Promise<never>((_, reject) => { rejectSave = reject })
+    const gateway = new MemoryGateway()
+      .handle('/api/memory', () => ({
+        active: 'honcho',
+        builtin_files: { memory: 0, user: 0 },
+        providers: [{ configured: true, description: 'Remote memory', name: 'honcho', status: 'ready' }]
+      }))
+      .handle('/api/memory/providers/honcho/config?surface=declared&profile=default', value => {
+        const options = value as { body?: unknown; method?: string }
+        if (options.method === 'PUT') return pendingSave
+        return memoryProviderConfig()
+      })
+      .handle('/api/memory/providers/honcho/oauth/status?profile=default', () => ({ auth: null, connected: false, detail: '', state: 'idle' }))
+
+    renderMemorySettings(gateway)
+    const input = await screen.findByDisplayValue('old-workspace')
+    fireEvent.change(input, { target: { value: 'stale-save' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save provider settings' }))
+    await waitFor(() => expect(gateway.calls.some(call => (call.value as { method?: string }).method === 'PUT')).toBe(true))
+
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://other-gateway.example' })
+    rejectSave(new Error('stale save failed'))
+
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+  })
+
   it('does not offer process-scoped memory operations for a named profile', async () => {
     $preferences.set({ ...$preferences.get(), profile: 'work' })
     const gateway = new MemoryGateway()
