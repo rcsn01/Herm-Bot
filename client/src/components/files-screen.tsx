@@ -9,7 +9,7 @@ import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guar
 import { profileKey } from '~/gateway/profile-path'
 import { HermesConnection, type NativeRequestOptions } from '~/native/hermes-connection'
 import { PlatformActions } from '~/native/platform-actions'
-import { errorMessage } from '~/state/gateway-controller'
+import { errorMessage } from '~/gateway/gateway-error'
 import { $preferences } from '~/state/store'
 
 interface FileEntry {

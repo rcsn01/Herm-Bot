@@ -2,7 +2,7 @@ import { App } from '@capacitor/app'
 import { Haptics, ImpactStyle } from '@capacitor/haptics'
 import type { GatewayEvent } from '@hermes/shared'
 
-import { classifyGatewayError } from '~/gateway/gateway-error'
+import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
 import type { GatewayPort } from '~/gateway/gateway-port'
 import { clearGatewayQueries, queryClient } from '~/gateway/query-client'
 import { RemoteGateway } from '~/gateway/remote-gateway'
@@ -614,8 +614,6 @@ function graftLatestTranscript(latest: ReturnType<typeof toTranscript>, current:
   const anchor = current.findIndex(message => messageIdentity(message) === identity)
   return anchor > 0 ? [...current.slice(0, anchor), ...latest] : latest
 }
-
-export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 export function isReauthenticationError(error: unknown): boolean {
   const candidate = error as { code?: unknown; kind?: unknown; message?: unknown; status?: unknown } | null

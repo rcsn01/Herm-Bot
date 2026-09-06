@@ -1,7 +1,8 @@
 import { atom } from 'nanostores'
 
+import { errorMessage } from '~/gateway/gateway-error'
 import type { HermesConnectionPlugin } from '~/native/hermes-connection'
-import { errorMessage, type GatewayController } from '~/state/gateway-controller'
+import type { GatewayController } from '~/state/gateway-controller'
 
 export interface ChatSuggestion {
   display?: string

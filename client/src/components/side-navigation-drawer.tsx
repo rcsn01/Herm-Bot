@@ -13,7 +13,8 @@ import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
-import { errorMessage, type GatewayController } from '~/state/gateway-controller'
+import { errorMessage } from '~/gateway/gateway-error'
+import type { GatewayController } from '~/state/gateway-controller'
 import { $chat, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 interface SideNavigationDrawerProps {

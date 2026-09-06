@@ -4,7 +4,8 @@ import { useState } from 'react'
 import { Badge, Button, Input } from '~/compat/primitives'
 import { providerAuthMethod } from '~/lib/url'
 import { HermesConnection } from '~/native/hermes-connection'
-import { errorMessage, type GatewayController } from '~/state/gateway-controller'
+import { errorMessage } from '~/gateway/gateway-error'
+import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences } from '~/state/store'
 
 interface AuthProvider {

@@ -1,5 +1,7 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 
+export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
+
 export type GatewayErrorKind = 'aborted' | 'auth' | 'conflict' | 'network' | 'server' | 'unsupported' | 'validation'
 
 export interface GatewayErrorOptions {

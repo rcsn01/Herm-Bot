@@ -4,7 +4,6 @@ import type { AuthMode, ChatState, ConnectionPreferences, GatewayStatus, StoredS
 import { emptyChatState } from '~/state/event-reducer'
 
 export type ConnectionPhase = 'connected' | 'connecting' | 'disconnected' | 'error' | 'reconnecting' | 'unsupported'
-export type MobileView = 'chat' | 'files' | 'remote' | 'sessions' | 'settings'
 
 export const $connection = atom<{
   authMode: AuthMode
@@ -24,7 +23,6 @@ export const $chat = atom<ChatState>(emptyChatState())
 export const $sessions = atom<StoredSession[]>([])
 export const $sessionsHasMore = atom(false)
 export const $sessionsLoadingMore = atom(false)
-export const $view = atom<MobileView>('chat')
 export const $queuedPrompts = atom<string[]>([])
 export const $isReady = computed($connection, connection => connection.phase === 'connected')
 

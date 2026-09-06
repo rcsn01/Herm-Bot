@@ -10,7 +10,8 @@ import { TextDialog } from '~/components/ui/text-dialog'
 import { currentGatewayScope, isCurrentGatewayScope } from '~/gateway/scope-guard'
 import { ChatInteraction, type ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { HermesConnection } from '~/native/hermes-connection'
-import { errorMessage, type GatewayController } from '~/state/gateway-controller'
+import { errorMessage } from '~/gateway/gateway-error'
+import type { GatewayController } from '~/state/gateway-controller'
 import { $chat, $connection, $queuedPrompts } from '~/state/store'
 
 interface ChatScreenProps {
