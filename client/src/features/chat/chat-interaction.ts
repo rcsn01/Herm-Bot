@@ -2,7 +2,6 @@ import { atom } from 'nanostores'
 
 import { errorMessage } from '~/gateway/gateway-error'
 import type { HermesConnectionPlugin } from '~/native/hermes-connection'
-import type { GatewayController } from '~/state/gateway-controller'
 
 export interface ChatSuggestion {
   display?: string
@@ -27,7 +26,12 @@ export interface ChatInteractionState {
   submitting: boolean
 }
 
-export type ChatInteractionCommands = Pick<GatewayController, 'attach' | 'request' | 'retryFrom' | 'send'>
+export interface ChatInteractionCommands {
+  attach(file: File): Promise<unknown>
+  request<T>(method: string, params?: Record<string, unknown>): Promise<T>
+  retryFrom(userOrdinal: number, rowId: number, text: string): Promise<void>
+  send(text: string): Promise<void>
+}
 export type ChatMediaConnection = Pick<HermesConnectionPlugin, 'request' | 'upload'>
 
 interface SlashCompletionResponse {
