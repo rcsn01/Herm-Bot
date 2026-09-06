@@ -1,7 +1,6 @@
 import type { GatewayApi } from '~/gateway/gateway-api'
-import { assertRemoteActionStart, remoteActionName, runRemoteAction, type RemoteActionState } from '~/gateway/remote-action'
+import type { RemoteActionStartResponse } from '~/gateway/remote-action'
 import type { ToolEnvVar, ToolProvider, ToolsetInfo } from '~/lib/types'
-import type { ActionStartResponse, ActionStatusResponse } from './skills-api'
 
 export interface ToolsetConfig {
   active_extract_backend?: string | null
@@ -49,11 +48,11 @@ export interface ToolsetsApi {
   selectProvider(name: string, provider: string, capability?: 'extract' | 'search', signal?: AbortSignal): Promise<{ feature?: string; name: string; needs_nous_auth?: boolean; ok: boolean; provider: string }>
   selectModel(name: string, model: string, provider?: string, signal?: AbortSignal): Promise<{ model: string; name: string; ok: boolean }>
   saveEnv(name: string, env: Record<string, string>, signal?: AbortSignal): Promise<{ is_set: Record<string, boolean>; name: string; ok: boolean; saved: string[]; skipped: string[] }>
-  postSetup(name: string, key: string, signal?: AbortSignal): Promise<ActionStartResponse & { key: string }>
+  postSetup(name: string, key: string, signal?: AbortSignal): Promise<RemoteActionStartResponse & { key: string }>
   terminalBackends(signal?: AbortSignal): Promise<TerminalBackendsResponse>
   selectTerminalBackend(backend: string, signal?: AbortSignal): Promise<{ backend: string; ok: boolean }>
   computerUseStatus(signal?: AbortSignal): Promise<ComputerUseStatus>
-  grantComputerUsePermissions(signal?: AbortSignal): Promise<ActionStartResponse>
+  grantComputerUsePermissions(signal?: AbortSignal): Promise<RemoteActionStartResponse>
 }
 
 export function createToolsetsApi(api: GatewayApi): ToolsetsApi {
@@ -100,33 +99,6 @@ export function createToolsetsApi(api: GatewayApi): ToolsetsApi {
     grantComputerUsePermissions: (signal?: AbortSignal) =>
       api.request('/api/tools/computer-use/permissions/grant', { method: 'POST', signal })
   }
-}
-
-export async function runToolsetAction(
-  api: GatewayApi,
-  start: (signal: AbortSignal) => Promise<ActionStartResponse>,
-  signal?: AbortSignal,
-  isCurrentScope?: () => boolean
-): Promise<RemoteActionState<ActionStatusResponse>> {
-  let action = ''
-  return runRemoteAction<ActionStatusResponse>({
-    gateway: api.gateway,
-    isCurrentScope,
-    maxAttempts: 120,
-    poll: async (_gateway, pollSignal) => {
-      // Action status is owned by the dashboard process. The route has no
-      // profile scope; the action name returned by the start endpoint is the
-      // authoritative handle.
-      const status = await api.unscoped<ActionStatusResponse>(`/api/actions/${encodeURIComponent(action)}/status`, { signal: pollSignal })
-      return { result: status, status: status.running ? 'running' : status.exit_code === 0 ? 'complete' : 'failed' }
-    },
-    signal,
-    start: async (_gateway, startSignal) => {
-      const response = assertRemoteActionStart(await start(startSignal))
-      action = remoteActionName(response)
-      return { result: undefined, status: response.background === false ? 'complete' : 'running' }
-    }
-  })
 }
 
 export type { ToolEnvVar }

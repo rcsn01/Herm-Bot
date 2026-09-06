@@ -6,11 +6,12 @@ import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { runGatewayAction, type GatewayActionState } from '~/gateway/remote-action'
 import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { ToolsetInfo } from '~/lib/types'
-import { createToolsetsApi, runToolsetAction } from './toolsets-api'
+import { createToolsetsApi } from './toolsets-api'
 
 export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: ToolsetInfo }) {
   const api = useGatewayApi()
@@ -61,10 +62,13 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
       void config.refetch()
     }
   })
-  const setup = useScopedMutation<Awaited<ReturnType<typeof runToolsetAction>>, string>({
+  const setup = useScopedMutation<GatewayActionState, string>({
     mutationFn: key => {
       const task = beginScopedTask()
-      return runToolsetAction(api, signal => toolsetsApi.postSetup(toolset.name, key, signal), undefined, () => task.isCurrent())
+      return runGatewayAction(api, {
+        isCurrentScope: () => task.isCurrent(),
+        start: signal => toolsetsApi.postSetup(toolset.name, key, signal)
+      })
     },
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: () => setSetupMessage('Setup completed on the gateway.')

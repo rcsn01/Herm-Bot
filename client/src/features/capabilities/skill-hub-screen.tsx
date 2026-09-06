@@ -7,10 +7,11 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { runGatewayAction, type GatewayActionState } from '~/gateway/remote-action'
 import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { createSkillsApi, runSkillHubAction, type SkillHubPreview, type SkillHubScanResult } from './skills-api'
+import { createSkillsApi, type SkillHubPreview, type SkillHubScanResult } from './skills-api'
 
 export function SkillHubScreen({ onBack }: { onBack(): void }) {
   const api = useGatewayApi()
@@ -55,10 +56,13 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
     }
   })
   const [install, setInstall] = useState<{ identifier: string; name: string } | null>(null)
-  const installMutation = useScopedMutation<Awaited<ReturnType<typeof runSkillHubAction>>, string>({
+  const installMutation = useScopedMutation<GatewayActionState, string>({
     mutationFn: identifier => {
       const task = beginScopedTask()
-      return runSkillHubAction(api, signal => skillsApi.hubInstall(identifier, signal), undefined, () => task.isCurrent())
+      return runGatewayAction(api, {
+        isCurrentScope: () => task.isCurrent(),
+        start: signal => skillsApi.hubInstall(identifier, signal)
+      })
     },
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: () => {

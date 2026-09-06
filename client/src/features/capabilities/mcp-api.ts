@@ -1,6 +1,5 @@
 import type { GatewayApi } from '~/gateway/gateway-api'
-import { assertRemoteActionStart, remoteActionName, runRemoteAction, type RemoteActionState } from '~/gateway/remote-action'
-import type { ActionStartResponse, ActionStatusResponse } from './skills-api'
+import type { RemoteActionStartResponse } from '~/gateway/remote-action'
 
 export interface McpServerSummary {
   args: string[]
@@ -75,7 +74,7 @@ export interface McpApi {
   toggle(name: string, enabled: boolean, signal?: AbortSignal): Promise<{ enabled: boolean; name: string; ok: boolean }>
   test(name: string, signal?: AbortSignal): Promise<McpTestResult>
   catalog(signal?: AbortSignal): Promise<McpCatalogResponse>
-  installCatalog(name: string, env?: Record<string, string>, signal?: AbortSignal): Promise<ActionStartResponse & { background?: boolean }>
+  installCatalog(name: string, env?: Record<string, string>, signal?: AbortSignal): Promise<RemoteActionStartResponse>
   auth(name: string, signal?: AbortSignal): Promise<McpOAuthFlow>
   oauthStatus(flowId: string, signal?: AbortSignal): Promise<McpOAuthFlow>
   cancelOAuth(flowId: string, signal?: AbortSignal): Promise<{ ok: boolean; status: string }>
@@ -137,31 +136,4 @@ export function createMcpApi(api: GatewayApi): McpApi {
       api.unscoped(`/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`, { method: 'DELETE', signal })
   }
   return mcp
-}
-
-export async function runMcpInstallAction(
-  api: GatewayApi,
-  start: (signal: AbortSignal) => Promise<ActionStartResponse>,
-  signal?: AbortSignal,
-  isCurrentScope?: () => boolean
-): Promise<RemoteActionState<ActionStatusResponse>> {
-  let action = ''
-  return runRemoteAction<ActionStatusResponse>({
-    gateway: api.gateway,
-    isCurrentScope,
-    maxAttempts: 120,
-    poll: async (_gateway, pollSignal) => {
-      // Action status is owned by the dashboard process. The route has no
-      // profile scope; the action name returned by the start endpoint is the
-      // authoritative handle.
-      const status = await api.unscoped<ActionStatusResponse>(`/api/actions/${encodeURIComponent(action)}/status`, { signal: pollSignal })
-      return { result: status, status: status.running ? 'running' : status.exit_code === 0 ? 'complete' : 'failed' }
-    },
-    signal,
-    start: async (_gateway, startSignal) => {
-      const response = assertRemoteActionStart(await start(startSignal))
-      action = remoteActionName(response)
-      return { result: undefined, status: response.background === false ? 'complete' : 'running' }
-    }
-  })
 }

@@ -1,5 +1,5 @@
 import type { GatewayApi } from '~/gateway/gateway-api'
-import { assertRemoteActionStart, remoteActionName, runRemoteAction, type RemoteActionState } from '~/gateway/remote-action'
+import type { RemoteActionStartResponse } from '~/gateway/remote-action'
 import type { SkillInfo } from '~/lib/types'
 
 export interface SkillContent {
@@ -74,20 +74,6 @@ export interface SkillHubScanResult {
   verdict: string
 }
 
-export interface ActionStartResponse {
-  action?: string
-  background?: boolean
-  name: string
-  ok: boolean
-}
-
-export interface ActionStatusResponse {
-  exit_code: number | null
-  lines?: string[]
-  pid?: number | null
-  running: boolean
-}
-
 const HUB_TIMEOUT_MS = 45_000
 
 export interface SkillsApi {
@@ -103,9 +89,9 @@ export interface SkillsApi {
   hubSearch(query: string, source?: string, limit?: number, signal?: AbortSignal): Promise<SkillHubSearchResponse>
   hubPreview(identifier: string, signal?: AbortSignal): Promise<SkillHubPreview>
   hubScan(identifier: string, signal?: AbortSignal): Promise<SkillHubScanResult>
-  hubInstall(identifier: string, signal?: AbortSignal): Promise<ActionStartResponse>
-  hubUninstall(name: string, signal?: AbortSignal): Promise<ActionStartResponse>
-  hubUpdate(signal?: AbortSignal): Promise<ActionStartResponse>
+  hubInstall(identifier: string, signal?: AbortSignal): Promise<RemoteActionStartResponse>
+  hubUninstall(name: string, signal?: AbortSignal): Promise<RemoteActionStartResponse>
+  hubUpdate(signal?: AbortSignal): Promise<RemoteActionStartResponse>
 }
 
 export function createSkillsApi(api: GatewayApi): SkillsApi {
@@ -137,38 +123,4 @@ export function createSkillsApi(api: GatewayApi): SkillsApi {
     hubUpdate: (signal?: AbortSignal) =>
       api.request('/api/skills/hub/update', { body: { profile: api.profileKey }, method: 'POST', signal })
   }
-}
-
-function actionState(value: ActionStatusResponse): RemoteActionState<ActionStatusResponse> {
-  return {
-    result: value,
-    status: value.running ? 'running' : value.exit_code === 0 ? 'complete' : 'failed'
-  }
-}
-
-export async function runSkillHubAction(
-  api: GatewayApi,
-  start: (signal: AbortSignal) => Promise<ActionStartResponse>,
-  signal?: AbortSignal,
-  isCurrentScope?: () => boolean
-): Promise<RemoteActionState<ActionStatusResponse>> {
-  let name = ''
-  return runRemoteAction<ActionStatusResponse>({
-    gateway: api.gateway,
-    isCurrentScope,
-    maxAttempts: 120,
-    poll: async (_gateway, pollSignal) =>
-      actionState(
-        // Action status is owned by the dashboard process. The route has no
-        // profile scope; the action name returned by the start endpoint is the
-        // authoritative handle.
-        await api.unscoped<ActionStatusResponse>(`/api/actions/${encodeURIComponent(name)}/status`, { signal: pollSignal })
-      ),
-    signal,
-    start: async (_gateway, startSignal) => {
-      const response = assertRemoteActionStart(await start(startSignal))
-      name = remoteActionName(response)
-      return { result: undefined, status: response.background === false ? 'complete' : 'running' }
-    }
-  })
 }

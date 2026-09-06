@@ -7,10 +7,11 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { runGatewayAction, type GatewayActionState } from '~/gateway/remote-action'
 import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
-import { createMcpApi, runMcpInstallAction, type McpCatalogEntry } from './mcp-api'
+import { createMcpApi, type McpCatalogEntry } from './mcp-api'
 
 export function McpCatalogScreen({ onBack }: { onBack(): void }) {
   const api = useGatewayApi()
@@ -24,10 +25,13 @@ export function McpCatalogScreen({ onBack }: { onBack(): void }) {
   const [env, setEnv] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   type InstallVariables = { entry: McpCatalogEntry; env: Record<string, string> }
-  const install = useScopedMutation<Awaited<ReturnType<typeof runMcpInstallAction>>, InstallVariables>({
+  const install = useScopedMutation<GatewayActionState, InstallVariables>({
     mutationFn: ({ entry, env: values }) => {
       const task = beginScopedTask()
-      return runMcpInstallAction(api, signal => mcpApi.installCatalog(entry.name, values, signal), undefined, () => task.isCurrent())
+      return runGatewayAction(api, {
+        isCurrentScope: () => task.isCurrent(),
+        start: signal => mcpApi.installCatalog(entry.name, values, signal)
+      })
     },
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: () => {
