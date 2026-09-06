@@ -57,7 +57,10 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
   })
   const [install, setInstall] = useState<{ identifier: string; name: string } | null>(null)
   const installMutation = useMutation<Awaited<ReturnType<typeof runSkillHubAction>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (identifier: string) => runSkillHubAction(gateway, profile, signal => skillsApi.hubInstall(gateway, profile, identifier, signal), undefined, () => currentGatewayScope().generation),
+    mutationFn: (identifier: string) => {
+      const scope = currentGatewayScope()
+      return runSkillHubAction(gateway, profile, signal => skillsApi.hubInstall(gateway, profile, identifier, signal), undefined, () => isCurrentGatewayScope(scope))
+    },
     onError: (caught, _identifier, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _identifier, context) => {

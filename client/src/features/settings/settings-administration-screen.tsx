@@ -264,7 +264,7 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
     setSubmitting(false)
     void runRemoteAction<OAuthPollResponse>({
       gateway,
-      getScopeEpoch: () => currentGatewayScope().generation,
+      isCurrentScope: () => isCurrentGatewayScope(scope),
       intervalMs: 1_000,
       maxAttempts: 60,
       maxIntervalMs: 5_000,

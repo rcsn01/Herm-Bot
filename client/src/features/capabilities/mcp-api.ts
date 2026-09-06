@@ -151,12 +151,12 @@ export async function runMcpInstallAction(
   profile: null | string,
   start: (signal: AbortSignal) => Promise<ActionStartResponse>,
   signal?: AbortSignal,
-  getScopeEpoch?: () => number
+  isCurrentScope?: () => boolean
 ): Promise<RemoteActionState<ActionStatusResponse>> {
   let action = ''
   return runRemoteAction<ActionStatusResponse>({
     gateway,
-    getScopeEpoch,
+    isCurrentScope,
     maxAttempts: 120,
     poll: async (_gateway, pollSignal) => {
       const status = await mcpActionStatus(gateway, profile, action, pollSignal)

@@ -114,7 +114,7 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
     const flowId = flow.flow_id
     void runRemoteAction<typeof flow>({
       gateway,
-      getScopeEpoch: () => currentGatewayScope().generation,
+      isCurrentScope: () => isCurrentGatewayScope(scope),
       intervalMs: 1_000,
       maxAttempts: 60,
       maxIntervalMs: 5_000,

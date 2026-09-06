@@ -114,7 +114,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     const oauthScope = currentGatewayScope()
     void runRemoteAction<MemoryProviderOAuthStatus>({
       gateway,
-      getScopeEpoch: () => currentGatewayScope().generation,
+      isCurrentScope: () => isCurrentGatewayScope(oauthScope),
       intervalMs: 2_000,
       maxAttempts: 60,
       maxIntervalMs: 10_000,

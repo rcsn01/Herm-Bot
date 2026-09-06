@@ -34,19 +34,47 @@ describe('runRemoteAction', () => {
     expect(polls).toBe(2)
   })
 
-  it('stops when the gateway scope changes', async () => {
+  it('allows start and completion while the scope predicate stays true', async () => {
     const gateway = new MemoryGateway()
-    let epoch = 1
+    const result = await runRemoteAction({
+      gateway,
+      intervalMs: 0,
+      isCurrentScope: () => true,
+      start: async () => ({ status: 'pending' }),
+      poll: async () => ({ result: 7, status: 'complete' })
+    })
+    expect(result.result).toBe(7)
+  })
+
+  it('rejects before another poll once the scope predicate turns false', async () => {
+    const gateway = new MemoryGateway()
+    let current = true
     await expect(runRemoteAction({
       gateway,
-      getScopeEpoch: () => epoch,
       intervalMs: 0,
+      isCurrentScope: () => current,
       start: async () => {
-        epoch += 1
+        current = false
         return { status: 'pending' }
       },
       poll: async () => ({ status: 'complete' })
     })).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('rejects before start when the scope predicate is already false', async () => {
+    const gateway = new MemoryGateway()
+    let started = false
+    await expect(runRemoteAction({
+      gateway,
+      intervalMs: 0,
+      isCurrentScope: () => false,
+      start: async () => {
+        started = true
+        return { status: 'pending' }
+      },
+      poll: async () => ({ status: 'complete' })
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(started).toBe(false)
   })
 
   it('honors cancellation', async () => {

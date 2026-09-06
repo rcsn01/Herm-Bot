@@ -10,7 +10,8 @@ export interface RemoteActionState<T = unknown> {
 
 export interface RemoteActionOptions<T> {
   gateway: GatewayPort
-  getScopeEpoch?: () => number
+  /** Bound to the operation's starting Scope. False aborts further polling. */
+  isCurrentScope?: () => boolean
   intervalMs?: number
   isComplete?: (state: RemoteActionState<T>) => boolean
   maxAttempts?: number
@@ -64,10 +65,9 @@ export async function runRemoteAction<T>(options: RemoteActionOptions<T>): Promi
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   if (options.signal?.aborted) abort()
-  const epoch = options.getScopeEpoch?.()
   const assertScope = () => {
     throwIfAborted(controller.signal)
-    if (epoch !== undefined && options.getScopeEpoch?.() !== epoch) throw abortError('Gateway scope changed.')
+    if (options.isCurrentScope && !options.isCurrentScope()) throw abortError('Gateway scope changed.')
   }
 
   try {

@@ -178,12 +178,12 @@ export async function runSkillHubAction(
   profile: MobileProfile,
   start: (signal: AbortSignal) => Promise<ActionStartResponse>,
   signal?: AbortSignal,
-  getScopeEpoch?: () => number
+  isCurrentScope?: () => boolean
 ): Promise<RemoteActionState<ActionStatusResponse>> {
   let name = ''
   return runRemoteAction<ActionStatusResponse>({
     gateway,
-    getScopeEpoch,
+    isCurrentScope,
     maxAttempts: 120,
     poll: async (_gateway, pollSignal) => actionState(await actionStatus(gateway, profile, name, pollSignal)),
     signal,

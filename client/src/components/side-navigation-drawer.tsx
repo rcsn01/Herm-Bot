@@ -5,8 +5,7 @@ import {
   IconCalendarClock,
   IconPlus,
   IconSearch,
-  IconTrash,
-  IconX
+  IconTrash
 } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
@@ -51,7 +50,6 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   const [swipedId, setSwipedId] = useState<string | null>(null)
   const loadMoreRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLElement>(null)
-  const searchRef = useRef<HTMLInputElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const swipeStart = useRef<SwipeStart | null>(null)
   const actionPendingRef = useRef(false)
@@ -72,7 +70,7 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   useEffect(() => {
     if (!open) return
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    searchRef.current?.focus()
+    panelRef.current?.focus({ preventScroll: true })
     setError(null)
     const generation = ++refreshGeneration.current
     const scope = currentGatewayScope()
@@ -146,7 +144,7 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     if (focusable.length === 0) return
     const first = focusable[0]
     const last = focusable[focusable.length - 1]
-    if (event.shiftKey && document.activeElement === first) {
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === panelRef.current)) {
       event.preventDefault()
       last.focus()
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -171,11 +169,11 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
         onKeyDown={trapFocus}
         ref={panelRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="side-drawer-top">
           <strong>Hermes</strong>
-          <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" ref={searchRef} value={query} /></label>
-          <Button aria-label="Close navigation" className="drawer-icon-button" disabled={pendingSessionAction} onClick={requestClose} variant="ghost"><IconX size={20} /></Button>
+          <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
         </header>
 
         <nav aria-label="Primary navigation" className="drawer-primary-navigation">

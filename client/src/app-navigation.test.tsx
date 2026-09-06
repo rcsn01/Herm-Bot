@@ -103,7 +103,7 @@ describe('App navigation', () => {
     expect(chat.textContent).toContain('Chat')
 
     openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Close navigation' }))
+    fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
     openDrawer()

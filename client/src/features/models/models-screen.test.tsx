@@ -493,6 +493,38 @@ describe('ModelsScreen', () => {
     }
   })
 
+  it('ignores a stale MoA save error after switching to a different profile', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const pendingRejects: Array<(error: unknown) => void> = []
+    try {
+      const gateway = baseGateway({ onMoaPut: () => new Promise((_resolve, reject) => { pendingRejects.push(reject) }) })
+        .handle('/api/model/info?profile=default', () => modelInfo)
+        .handle('/api/model/options?explicit_only=1&profile=default', () => ({ model: modelInfo.model, provider: modelInfo.provider, providers: PROVIDERS }))
+        .handle('/api/model/auxiliary?profile=default', () => auxiliaryResponse())
+        .handle('/api/config?profile=default', () => baseConfig())
+        .handle('/api/model/moa?profile=default', () => moaConfig())
+      await loadedScreen(gateway)
+
+      // Start an edit on the work profile; hold its write in flight.
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle reference 1' }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(700) })
+      expect(pendingRejects).toHaveLength(1)
+
+      // Switch to a different profile before the work-profile write settles.
+      act(() => { $preferences.set({ ...$preferences.get(), profile: null }) })
+      await screen.findByRole('button', { name: 'Add preset' })
+
+      // The stale write now fails. Its render-bound onError must not surface
+      // into the profile that is on screen now.
+      pendingRejects.shift()?.(new Error('MoA save rejected'))
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+
+      expect(screen.queryByText('MoA save rejected')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('serializes MoA writes when switching away and back to a profile', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const pending: Array<(value: unknown) => void> = []

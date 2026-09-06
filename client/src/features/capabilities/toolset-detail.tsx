@@ -70,7 +70,10 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
     onSettled: () => setEnv({})
   })
   const setup = useMutation<Awaited<ReturnType<typeof runToolsetAction>>, unknown, string, { scope: CurrentGatewayScope }>({
-    mutationFn: (key: string) => runToolsetAction(gateway, profile, signal => toolsetsApi.postSetup(gateway, profile, toolset.name, key, signal), undefined, () => currentGatewayScope().generation),
+    mutationFn: (key: string) => {
+      const scope = currentGatewayScope()
+      return runToolsetAction(gateway, profile, signal => toolsetsApi.postSetup(gateway, profile, toolset.name, key, signal), undefined, () => isCurrentGatewayScope(scope))
+    },
     onError: (caught, _key, context) => { if (context && isCurrentGatewayScope(context.scope)) setError(classifyGatewayError(caught).message) },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _key, context) => { if (context && isCurrentGatewayScope(context.scope)) setSetupMessage('Setup completed on the gateway.') }

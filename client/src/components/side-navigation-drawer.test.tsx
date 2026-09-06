@@ -200,7 +200,7 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('closes with Escape, backdrop click, and the close button', () => {
+  it('closes with Escape and backdrop click', () => {
     const escape = renderDrawer()
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
     expect(escape.onClose).toHaveBeenCalledOnce()
@@ -209,14 +209,9 @@ describe('SideNavigationDrawer', () => {
     const backdrop = renderDrawer()
     fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
     expect(backdrop.onClose).toHaveBeenCalledOnce()
-    backdrop.unmount()
-
-    const close = renderDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Close navigation' }))
-    expect(close.onClose).toHaveBeenCalledOnce()
   })
 
-  it('makes the closed drawer inert, focuses search on open, and restores opener focus', () => {
+  it('makes the closed drawer inert, focuses the panel on open without focusing search, and restores opener focus', () => {
     const controller = controllerStub()
     const opener = document.createElement('button')
     document.body.append(opener)
@@ -227,7 +222,8 @@ describe('SideNavigationDrawer', () => {
     expect(backdrop.hasAttribute('inert')).toBe(true)
 
     rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open />)
-    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
+    expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Navigation' }))
+    expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
     rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()

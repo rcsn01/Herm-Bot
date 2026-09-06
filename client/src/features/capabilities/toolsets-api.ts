@@ -122,12 +122,12 @@ export async function runToolsetAction(
   profile: MobileProfile,
   start: (signal: AbortSignal) => Promise<ActionStartResponse>,
   signal?: AbortSignal,
-  getScopeEpoch?: () => number
+  isCurrentScope?: () => boolean
 ): Promise<RemoteActionState<ActionStatusResponse>> {
   let action = ''
   return runRemoteAction<ActionStatusResponse>({
     gateway,
-    getScopeEpoch,
+    isCurrentScope,
     maxAttempts: 120,
     poll: async (_gateway, pollSignal) => {
       const status = await toolActionStatus(gateway, profile, action, pollSignal)

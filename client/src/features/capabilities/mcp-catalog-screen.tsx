@@ -24,7 +24,10 @@ export function McpCatalogScreen({ onBack }: { onBack(): void }) {
   const [error, setError] = useState<string | null>(null)
   type InstallVariables = { entry: McpCatalogEntry; env: Record<string, string> }
   const install = useMutation<Awaited<ReturnType<typeof runMcpInstallAction>>, unknown, InstallVariables, { scope: CurrentGatewayScope }>({
-    mutationFn: ({ entry, env: values }) => runMcpInstallAction(gateway, profile, signal => mcpApi.installCatalog(gateway, profile, entry.name, values, signal), undefined, () => currentGatewayScope().generation),
+    mutationFn: ({ entry, env: values }) => {
+      const scope = currentGatewayScope()
+      return runMcpInstallAction(gateway, profile, signal => mcpApi.installCatalog(gateway, profile, entry.name, values, signal), undefined, () => isCurrentGatewayScope(scope))
+    },
     onError: (caught, _variables, context) => { if (context && isCurrentGatewayScope(context.scope)) { setEnv({}); setError(classifyGatewayError(caught).message) } },
     onMutate: () => ({ scope: currentGatewayScope() }),
     onSuccess: (_value, _variables, context) => {

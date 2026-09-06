@@ -1,19 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import { GatewayError, classifyGatewayError } from './gateway-error'
-import { createEpochGuard, gatewayScopeKey } from './gateway-scope'
+import { gatewayScopeKey } from './gateway-scope'
 import { QueryClient } from '@tanstack/react-query'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 describe('gateway foundation', () => {
-  it('builds profile-isolated scope keys and guards epochs', () => {
+  it('builds profile-isolated scope keys', () => {
     expect(gatewayScopeKey({ connectionKey: 'remote-a', profile: 'work' }, 'sessions', 3))
       .toEqual(['gateway', 'remote-a', 'work', 'sessions', 3])
-    let epoch = 4
-    const current = createEpochGuard(() => epoch)
-    expect(current()).toBe(true)
-    epoch += 1
-    expect(current()).toBe(false)
   })
 
   it('classifies structured errors', () => {
