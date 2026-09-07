@@ -1,4 +1,5 @@
 import type { BillingStateResponse, SubscriptionStateResponse } from '@hermes/shared/billing'
+import { createSessionsApi } from '~/features/sessions/api'
 import type { GatewayApi } from '~/gateway/gateway-api'
 import type { ConfigSchemaResponse, CustomEndpointUpdate, CustomEndpointsResponse, EnvVarInfo, HermesConfigRecord, MemoryProviderConfig, MemoryProviderOAuthStatus, MemoryStatusResponse, OAuthPollResponse, OAuthProvidersResponse, OAuthStartResponse } from '~/lib/types'
 
@@ -47,6 +48,7 @@ export interface SettingsApi {
 }
 
 export function createSettingsApi(api: GatewayApi): SettingsApi {
+  const sessionsApi = createSessionsApi(api)
   return {
     config: (signal?: AbortSignal) => api.request('/api/config', { signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
     schema: (signal?: AbortSignal) => api.request('/api/config/schema', { signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
@@ -148,12 +150,8 @@ export function createSettingsApi(api: GatewayApi): SettingsApi {
       api.request('/api/providers/custom-endpoints/validate', { body, method: 'POST', signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
     sessions: (signal?: AbortSignal) =>
       api.request('/api/sessions?archived=only&limit=100&order=recent', { signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
-    restoreSession: (id: string, signal?: AbortSignal) =>
-      api
-        .request(`/api/sessions/${encodeURIComponent(id)}`, { body: { archived: false }, method: 'PATCH', signal, timeoutMs: SETTINGS_TIMEOUT_MS })
-        .then(() => undefined),
-    deleteSession: (id: string, signal?: AbortSignal) =>
-      api.request(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', signal, timeoutMs: SETTINGS_TIMEOUT_MS }).then(() => undefined),
+    restoreSession: (id: string, signal?: AbortSignal) => sessionsApi.restore(id, signal, SETTINGS_TIMEOUT_MS),
+    deleteSession: (id: string, signal?: AbortSignal) => sessionsApi.remove(id, signal, SETTINGS_TIMEOUT_MS),
     pluginsHub: (signal?: AbortSignal) =>
       api.defaultOnly(DEFAULT_PROFILE_ONLY_PLUGIN_MESSAGE, '/api/dashboard/plugins/hub', { signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
     pluginAction: (name: string, action: 'disable' | 'enable', signal?: AbortSignal) =>

@@ -2,13 +2,13 @@ import { App } from '@capacitor/app'
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import type { GatewayPort } from '~/gateway/gateway-port'
-import { clearGatewayQueries, queryClient } from '~/gateway/query-client'
+import { cancelGatewayQueries, clearGatewayQueries, queryClient } from '~/gateway/query-client'
 import { RemoteGateway } from '~/gateway/remote-gateway'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
-import { profileKey, profilePath } from '~/gateway/profile-path'
+import { createGatewayApi } from '~/gateway/gateway-api'
 import { SessionRuntime, type RuntimeSession } from '~/gateway/session-runtime'
-import type { StoredSession } from '~/lib/types'
+import { createSessionsApi, type SessionsApi } from '~/features/sessions/api'
 import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetRoutes } from '~/navigation/navigation-store'
 import { $chat, Conversation } from '~/state/conversation'
@@ -79,10 +79,7 @@ export class GatewayController {
     if (previousURL && previousURL !== configured.remoteURL) {
       this.invalidateReconnect()
       $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
-      this.runtime.close()
-      clearGatewayQueries()
-      this.clearForegroundScope()
-      resetRoutes()
+      await this.teardownGatewayScope()
     }
     savePreferences({ remoteURL: configured.remoteURL })
     const { authMode, status } = await this.connection.probe()
@@ -156,10 +153,7 @@ export class GatewayController {
       await this.connection.logout()
     } finally {
       this.invalidateReconnect()
-      this.runtime.close()
-      clearGatewayQueries()
-      this.clearForegroundScope()
-      resetRoutes()
+      await this.teardownGatewayScope()
       $connection.set({ ...$connection.get(), phase: 'disconnected' })
       this.logoutInProgress = false
     }
@@ -169,10 +163,7 @@ export class GatewayController {
     if (profile === $preferences.get().profile) return
     this.invalidateReconnect()
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
-    this.runtime.close()
-    await queryClient.cancelQueries({ queryKey: ['gateway'] })
-    this.clearForegroundScope()
-    resetRoutes()
+    await this.teardownGatewayScope({ cancelQueries: true })
     savePreferences({ profile })
     await this.connect()
   }
@@ -197,10 +188,7 @@ export class GatewayController {
   async refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()) {
     const limit = this.sessionListLimit
     const response = await queryClient.fetchQuery({
-      queryFn: ({ signal }) => this.gateway.rpc<{ sessions: StoredSession[] }>('session.list', {
-        profile: profileKey(scope.profile),
-        limit
-      }, { signal }),
+      queryFn: ({ signal }) => this.sessionsApi(scope).list(limit, signal),
       queryKey: gatewayScopeKey(scope, 'sessions', 'list', limit),
       staleTime: 0
     })
@@ -227,21 +215,24 @@ export class GatewayController {
   }
 
   async renameSession(storedSessionId: string, title: string) {
-    const scope = await this.mutateStoredSession(storedSessionId, 'PATCH', { title })
+    const scope = currentGatewayScope()
+    await this.sessionsApi(scope).rename(storedSessionId, title)
     if (!isCurrentGatewayScope(scope)) return
     this.conversation.retitleActive(storedSessionId, title)
     await this.refreshSessions()
   }
 
   async deleteSession(storedSessionId: string) {
-    const scope = await this.mutateStoredSession(storedSessionId, 'DELETE')
+    const scope = currentGatewayScope()
+    await this.sessionsApi(scope).remove(storedSessionId)
     if (!isCurrentGatewayScope(scope)) return
     if ($chat.get().storedSessionId === storedSessionId) await this.newSession()
     if (isCurrentGatewayScope(scope)) await this.refreshSessions()
   }
 
   async archiveSession(storedSessionId: string) {
-    const scope = await this.mutateStoredSession(storedSessionId, 'PATCH', { archived: true })
+    const scope = currentGatewayScope()
+    await this.sessionsApi(scope).archive(storedSessionId)
     if (isCurrentGatewayScope(scope)) await this.refreshSessions()
   }
 
@@ -277,22 +268,17 @@ export class GatewayController {
     void this.activeListener?.remove()
   }
 
-  private async mutateStoredSession(
-    storedSessionId: string,
-    method: 'DELETE' | 'PATCH',
-    body?: Record<string, unknown>
-  ) {
-    const scope = currentGatewayScope()
-    const profile = profileKey(scope.profile)
-    const path = profilePath(`/api/sessions/${encodeURIComponent(storedSessionId)}`, scope.profile)
+  /** Shared teardown for every Scope-ending transition (configure-URL change, logout, profile switch). */
+  private async teardownGatewayScope(options: { cancelQueries?: boolean } = {}) {
+    this.runtime.close()
+    if (options.cancelQueries) await cancelGatewayQueries() // switchProfile: cancel in-flight, KEEP the cache
+    else clearGatewayQueries()                              // configure/logout: remove the gateway cache
+    this.clearForegroundScope()
+    resetRoutes()
+  }
 
-    await this.runtime.request({
-      ...(body === undefined ? {} : { body: { ...body, profile } }),
-      method,
-      path
-    })
-    if (!isCurrentGatewayScope(scope)) throw new DOMException('Gateway scope changed.', 'AbortError')
-    return scope
+  private sessionsApi(scope: CurrentGatewayScope): SessionsApi {
+    return createSessionsApi(createGatewayApi(this.runtime, scope.profile))
   }
 
   private subscribeRuntime() {
@@ -342,7 +328,7 @@ export class GatewayController {
     const classified = classifyGatewayError(error)
     if (classified.kind === 'unsupported') {
       $connection.set({ ...$connection.get(), error: classified.message, phase: 'unsupported' })
-    } else if (isReauthenticationError(classified)) {
+    } else if (classified.kind === 'auth') {
       $connection.set({ ...$connection.get(), error: 'Your Hermes session expired. Sign in again.', phase: 'error' })
     } else {
       $connection.set({ ...$connection.get(), error: classified.message, phase: 'error' })
@@ -381,11 +367,4 @@ export class GatewayController {
   private clearSessionBookmark(scope: { connectionKey: string; profile: null | string } = this.scopeSnapshot()) {
     localStorage.removeItem(this.sessionBookmarkKey(scope))
   }
-}
-
-export function isReauthenticationError(error: unknown): boolean {
-  const candidate = error as { code?: unknown; kind?: unknown; message?: unknown; status?: unknown } | null
-  if (candidate?.kind === 'auth' || candidate?.code === 'AUTH_REQUIRED' || candidate?.status === 401 || candidate?.status === 403) return true
-  const message = String(candidate?.message ?? error).toLowerCase()
-  return message.includes('http 401') || message.includes('unauthorized') || message.includes('no_cookie')
 }

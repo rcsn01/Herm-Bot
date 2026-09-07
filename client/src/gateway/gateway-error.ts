@@ -51,7 +51,9 @@ export function classifyGatewayError(error: unknown): GatewayError {
   const details = error instanceof JsonRpcGatewayError ? error.data : value.details ?? value.data
 
   if (value.name === 'AbortError' || code === 'ABORT_ERR') return new GatewayError(message, { cause: error, code, details, kind: 'aborted', retryable: false, status })
-  if (status === 401 || status === 403 || code === 'AUTH_REQUIRED') return new GatewayError(message, { cause: error, code, details, kind: 'auth', retryable: false, status })
+  if (status === 401 || status === 403 || code === 'AUTH_REQUIRED'
+    || /http 40[13]|unauthorized|no_cookie/.test(text))
+    return new GatewayError(message, { cause: error, code, details, kind: 'auth', retryable: false, status })
   if (status === 404 || code === -32_601 || /method not found|unsupported endpoint/.test(text)) return new GatewayError(message, { cause: error, code, details, kind: 'unsupported', retryable: false, status })
   if (status === 400 || status === 422 || code === -32_602) return new GatewayError(message, { cause: error, code, details, kind: 'validation', retryable: false, status })
   if (status === 409) return new GatewayError(message, { cause: error, code, details, kind: 'conflict', retryable: false, status })

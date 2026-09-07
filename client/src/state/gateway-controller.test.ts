@@ -6,7 +6,7 @@ vi.mock('@capacitor/app', () => ({ App: { addListener: capacitorApp.addListener 
 
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { $chat, emptyChatState } from '~/state/conversation'
-import { GatewayController, isReauthenticationError, MINIMUM_CONTRACT } from '~/state/gateway-controller'
+import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 
@@ -547,13 +547,6 @@ describe('backend compatibility', () => {
 })
 
 describe('authentication lifecycle', () => {
-  it('recognizes native and HTTP authentication failures without treating network errors as logout', () => {
-    expect(isReauthenticationError({ code: 'AUTH_REQUIRED', message: 'expired' })).toBe(true)
-    expect(isReauthenticationError(new Error('Hermes returned HTTP 401.'))).toBe(true)
-    expect(isReauthenticationError(new Error('Unauthorized'))).toBe(true)
-    expect(isReauthenticationError(new Error('Network connection lost'))).toBe(false)
-  })
-
   it('connects after native OAuth succeeds and preserves native login errors', async () => {
     const identity = {
       display_name: 'Mobile User', email: 'mobile@example.com', expires_at: 1,

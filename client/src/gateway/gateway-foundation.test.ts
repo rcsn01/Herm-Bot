@@ -20,6 +20,13 @@ describe('gateway foundation', () => {
     expect(classifyGatewayError(new GatewayError('known', { kind: 'conflict' })).kind).toBe('conflict')
   })
 
+  it('classifies message-based authentication failures without treating network errors as auth', () => {
+    expect(classifyGatewayError({ code: 'AUTH_REQUIRED', message: 'expired' }).kind).toBe('auth')
+    expect(classifyGatewayError(new Error('Hermes returned HTTP 401.')).kind).toBe('auth')
+    expect(classifyGatewayError(new Error('Unauthorized')).kind).toBe('auth')
+    expect(classifyGatewayError(new Error('Network connection lost')).kind).toBe('network')
+  })
+
   it('deduplicates cache reads and supports the memory adapter', async () => {
     const cache = new QueryClient()
     let reads = 0
