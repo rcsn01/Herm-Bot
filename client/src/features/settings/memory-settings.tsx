@@ -7,7 +7,7 @@ import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primi
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation, useScopedTask } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { runRemoteAction } from '~/gateway/remote-action'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
@@ -38,6 +38,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   const [oauthError, setOAuthError] = useState<string | null>(null)
   const [resetTarget, setResetTarget] = useState<'all' | 'memory' | 'user' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const action = useScopedTask()
 
   const providers = status.data?.providers ?? []
   const providerKey = profileSupportsMemoryManagement ? selectedProvider || status.data?.active || providers[0]?.name || '' : ''
@@ -144,9 +145,8 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
 
   const startOAuth = async () => {
     if (!providerKey) return
-    const task = beginScopedTask()
-    setOAuthError(null)
-    try {
+    await action.run(async task => {
+      setOAuthError(null)
       const next = await settings.startMemoryOAuth(providerKey)
       if (!task.isCurrent()) return
       if (next.state === 'connected') {
@@ -155,10 +155,9 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       } else {
         setOAuthPending(true)
       }
-    } catch (caught) {
-      if (!task.isCurrent()) return
-      setOAuthError(classifyGatewayError(caught).kind === 'unsupported' ? 'This memory provider does not offer OAuth.' : classifyGatewayError(caught).message)
-    }
+    }, {
+      onError: error => setOAuthError(error.kind === 'unsupported' ? 'This memory provider does not offer OAuth.' : error.message)
+    })
   }
 
   return <SettingsPageShell title="Memory & Context" subtitle="Provider configuration and memory files belong to the selected gateway profile. Changes apply to new sessions.">

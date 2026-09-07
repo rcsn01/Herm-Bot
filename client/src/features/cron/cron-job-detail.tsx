@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { useScopedMutation, useScopedTask } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createCronApi, type CronJob, type CronRun } from './api'
@@ -24,6 +24,7 @@ export function CronJobDetail({ jobId, onBack, onEdit, onDeleted, onOpenSession 
   const [remove, setRemove] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [openingRunId, setOpeningRunId] = useState<string | null>(null)
+  const taskRunner = useScopedTask()
   const action = useScopedMutation<void, 'pause' | 'remove' | 'resume' | 'trigger'>({
     mutationFn: async type => {
       if (type === 'remove') await cron.remove(jobId)
@@ -46,16 +47,10 @@ export function CronJobDetail({ jobId, onBack, onEdit, onDeleted, onOpenSession 
 
   const openRunSession = async (sessionId: string) => {
     if (!onOpenSession || openingRunId) return
-    const task = beginScopedTask()
-    setOpeningRunId(sessionId)
-    setError(null)
-    try {
+    await taskRunner.run(async () => {
+      setError(null)
       await onOpenSession(sessionId)
-    } catch (caught) {
-      if (task.isCurrent()) setError(formatCronError(caught))
-    } finally {
-      if (task.isCurrent()) setOpeningRunId(null)
-    }
+    }, { onBusy: busy => setOpeningRunId(busy ? sessionId : null), onError: error => setError(formatCronError(error)) })
   }
 
   return <section className="screen page-screen"><header className="page-heading"><Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><Button aria-label="Refresh cron job" onClick={() => void Promise.all([job.refetch(), runs.refetch()])} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header>{job.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-24 w-full" /></div>}{job.error && <div className="error-banner" role="alert">{formatCronError(job.error)}</div>}{value && <><header className="page-heading"><div><p className="eyebrow">Cron job</p><h2>{value.name || 'Untitled job'}</h2></div><Badge variant={value.enabled ? 'default' : 'muted'}>{value.enabled ? value.state || 'Active' : 'Paused'}</Badge></header><details className="cron-job-instructions" key={jobId}><summary>Instructions</summary><p>{value.prompt || 'No instructions'}</p></details><p className="muted cron-job-schedule">{value.schedule_display || value.schedule?.display || value.schedule?.expr || 'Schedule unavailable'}</p>{(value.provider || value.model) && <p className="muted cron-job-model">Model override: {[value.provider, value.model].filter(Boolean).join(' · ')}</p>}{value.last_error && <div className="warning-banner" role="status">{value.last_error}</div>}<div className="button-row"><Button disabled={action.isPending} onClick={() => action.mutate('trigger')}><IconPlayerPlay size={16} /> Run now</Button><Button disabled={action.isPending} onClick={() => action.mutate(value.enabled ? 'pause' : 'resume')} variant="secondary">{value.enabled ? 'Pause' : 'Resume'}</Button><Button onClick={() => onEdit(value)} variant="secondary"><IconEdit size={16} /> Edit</Button><Button disabled={action.isPending} onClick={() => setRemove(true)} variant="destructive"><IconTrash size={16} /> Delete</Button></div>{action.isPending && <p className="muted" role="status">The gateway is processing this action. Leaving this screen will not cancel it.</p>}{error && <div className="error-banner" role="alert">{error}</div>}<section className="cron-run-history"><h3>Run history</h3>{runs.isPending && <Skeleton className="h-16 w-full" />}{runs.error && <div className="error-banner" role="alert">{classifyGatewayError(runs.error).message}</div>}{runs.data?.map(run => <RunRow disabled={openingRunId !== null} key={run.id} onOpen={onOpenSession ? () => void openRunSession(run.id) : undefined} opening={openingRunId === run.id} run={run} />)}{runs.data?.length === 0 && <p className="muted">No runs yet.</p>}</section></>}{remove && <ConfirmDialog confirmLabel="Delete" description="Delete this cron job? The gateway will stop registering future runs." onCancel={() => setRemove(false)} onConfirm={() => { setRemove(false); action.mutate('remove') }} title="Delete cron job" />}</section>

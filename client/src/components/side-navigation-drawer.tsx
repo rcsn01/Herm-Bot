@@ -12,8 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
-import { beginScopedTask } from '~/gateway/scope-guard'
-import { errorMessage } from '~/gateway/gateway-error'
+import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
@@ -56,18 +55,14 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   const swipeStart = useRef<SwipeStart | null>(null)
   const actionPendingRef = useRef(false)
   const refreshGeneration = useRef(0)
+  const action = useScopedTask()
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return needle ? sessions.filter(session => session.title.toLowerCase().includes(needle)) : sessions
   }, [query, sessions])
   const loadMoreSessions = useCallback(async () => {
-    const task = beginScopedTask()
-    try {
-      await controller.loadMoreSessions()
-    } catch (caught) {
-      if (task.isCurrent()) setError(errorMessage(caught))
-    }
-  }, [controller])
+    await action.run(() => controller.loadMoreSessions(), { onError: error => setError(error.message) })
+  }, [action, controller])
 
   useEffect(() => {
     if (!open) return
@@ -75,16 +70,15 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     panelRef.current?.focus({ preventScroll: true })
     setError(null)
     const generation = ++refreshGeneration.current
-    const task = beginScopedTask()
-    void controller.refreshSessions().catch(caught => {
-      if (refreshGeneration.current === generation && task.isCurrent()) setError(errorMessage(caught))
+    void action.run(async () => { await controller.refreshSessions() }, {
+      onError: error => { if (refreshGeneration.current === generation) setError(error.message) }
     })
     return () => {
       ++refreshGeneration.current
       const opener = restoreFocusRef.current
       if (opener?.isConnected) opener.focus()
     }
-  }, [controller, open])
+  }, [action, controller, open])
 
   useEffect(() => {
     const target = loadMoreRef.current
@@ -98,31 +92,26 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
 
   const runSessionAction = async (callback: () => Promise<unknown>) => {
     if (actionPendingRef.current) return
-    const task = beginScopedTask()
     actionPendingRef.current = true
     setPendingSessionAction(true)
-    setError(null)
-    try {
+    await action.run(async task => {
+      setError(null)
       await callback()
       if (!task.isCurrent()) return
       onNavigate('sessions')
       onClose()
-    } catch (caught) {
-      if (task.isCurrent()) setError(errorMessage(caught))
-    } finally {
-      actionPendingRef.current = false
-      setPendingSessionAction(false)
-    }
+    }, { onError: error => setError(error.message) })
+    // The pending latch is unconditional cleanup: it must reset even when the
+    // scope went stale mid-action, exactly as the previous unguarded finally did.
+    actionPendingRef.current = false
+    setPendingSessionAction(false)
   }
 
   const deleteSession = async (id: string) => {
-    const task = beginScopedTask()
-    setError(null)
-    try {
+    await action.run(async () => {
+      setError(null)
       await controller.deleteSession(id)
-    } catch (caught) {
-      if (task.isCurrent()) setError(errorMessage(caught))
-    }
+    }, { onError: error => setError(error.message) })
   }
 
   const requestClose = () => {

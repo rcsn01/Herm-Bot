@@ -7,7 +7,7 @@ import { moaConfigComplete, withActive } from '~/features/models/helpers'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { profileKey } from '~/gateway/profile-path'
-import { beginScopedTask, type ScopedTask } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedTask, type ScopedTask } from '~/gateway/scope-guard'
 import type { ModelOptionProvider, MoaConfigResponse, MoaModelSlot } from '~/lib/types'
 
 type SavedMoaConfig = MoaConfigResponse & { ok: boolean }
@@ -84,6 +84,7 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
   const activeSave = useRef(0)
   const activeRequest = useRef<AbortController | null>(null)
   const writeKey = `${connectionKey}\u0000${profileKey(profile)}`
+  const action = useScopedTask()
   useEffect(() => {
     // A profile or connection switch can leave this component mounted while a
     // request is in flight. Invalidate both timers and completions; the
@@ -186,26 +187,30 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
         saveTimer.current = null
       }
       const generation = ++saveGeneration.current
-      const task = beginScopedTask()
       const saveId = ++activeSave.current
       const previous = moaRef.current
-      moaRef.current = next
-      if (task.isCurrent()) onMoaChange(next)
-      setApplying(true)
-      try {
+      await action.run(async task => {
+        moaRef.current = next
+        if (task.isCurrent()) onMoaChange(next)
+        setApplying(true)
         const saved = await enqueuePersist(next, generation, task)
         if (saved && saveGeneration.current === generation && task.isCurrent()) onSaved(saved, profile)
-      } catch (error) {
-        if (saveGeneration.current === generation && task.isCurrent()) {
-          moaRef.current = previous
-          onMoaChange(previous)
-          onError(error)
+      }, {
+        // Rollback stays call-site policy: only a save that is still the
+        // newest generation republishes the previous config.
+        onError: error => {
+          if (saveGeneration.current === generation) {
+            moaRef.current = previous
+            onMoaChange(previous)
+            onError(error)
+          }
         }
-      } finally {
-        if (activeSave.current === saveId) setApplying(false)
-      }
+      })
+      // The busy-clear is gated on the active-save identity, not the Scope,
+      // so it runs unconditionally after the run settles.
+      if (activeSave.current === saveId) setApplying(false)
     },
-    [enqueuePersist, onError, onMoaChange, onSaved, profile]
+    [action, enqueuePersist, onError, onMoaChange, onSaved, profile]
   )
 
   const updateSlot = useCallback((slot: MoaModelSlot, patch: Partial<MoaModelSlot>): MoaModelSlot => {

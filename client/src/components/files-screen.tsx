@@ -5,11 +5,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
-import { beginScopedTask } from '~/gateway/scope-guard'
+import { useScopedTask } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { HermesConnection, type NativeRequestOptions } from '~/native/hermes-connection'
 import { PlatformActions } from '~/native/platform-actions'
-import { errorMessage } from '~/gateway/gateway-error'
 import { $preferences } from '~/state/store'
 
 interface FileEntry {
@@ -50,19 +49,20 @@ function FileBrowser() {
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<{ path: string; recursive: boolean } | null>(null)
   const viewGeneration = useRef(0)
+  const action = useScopedTask()
 
   const load = async (nextPath = path) => {
     const requestGeneration = ++viewGeneration.current
-    const task = beginScopedTask()
     setError(null); setContent(null)
-    try {
+    await action.run(async task => {
       const response = await scopedRequest<{ entries?: FileEntry[]; files?: FileEntry[]; parent?: string | null; path?: string }>({ path: `/api/files?path=${encodeURIComponent(nextPath)}` })
       if (requestGeneration !== viewGeneration.current || !task.isCurrent()) return
       const resolvedPath = response.body.path ?? nextPath
       setPath(resolvedPath); setDraftPath(resolvedPath); setParent(response.body.parent ?? null); setEntries(response.body.entries ?? response.body.files ?? [])
-    } catch (caught) {
-      if (requestGeneration === viewGeneration.current && task.isCurrent()) setError(errorMessage(caught))
-    }
+    }, {
+      // A superseded request (Request epoch) never repaints the error banner.
+      onError: error => { if (requestGeneration === viewGeneration.current) setError(error.message) }
+    })
   }
   useEffect(() => {
     void load('.')
@@ -72,23 +72,21 @@ function FileBrowser() {
   const open = async (entry: FileEntry) => {
     if (isDirectory(entry)) return load(entry.path)
     const requestGeneration = ++viewGeneration.current
-    const task = beginScopedTask()
-    try {
+    await action.run(async task => {
       const response = await scopedRequest<{ content?: string; data_url?: string }>({ path: `/api/files/read?path=${encodeURIComponent(entry.path)}` })
       let decoded = response.body.content
       if (decoded === undefined && response.body.data_url) decoded = await fetch(response.body.data_url).then(item => item.text())
       if (requestGeneration !== viewGeneration.current || !task.isCurrent()) return
       setSelectedPath(entry.path)
       setContent(decoded ?? JSON.stringify(response.body, null, 2) ?? '')
-    } catch (caught) {
-      if (requestGeneration === viewGeneration.current && task.isCurrent()) setError(errorMessage(caught))
-    }
+    }, {
+      onError: error => { if (requestGeneration === viewGeneration.current) setError(error.message) }
+    })
   }
 
   const upload = async (file: File | undefined) => {
     if (!file) return
-    const task = beginScopedTask()
-    try {
+    await action.run(async task => {
       if (file.size > 50 * 1_024 * 1_024) throw new Error('Project uploads are limited to 50 MB in this version of Hermes Mobile.')
       const destination = joinPath(path, file.name)
       const dataURL = await fileToDataURL(file)
@@ -99,33 +97,26 @@ function FileBrowser() {
         path: '/api/files/upload'
       })
       if (task.isCurrent()) await load(path)
-    } catch (caught) { if (task.isCurrent()) setError(errorMessage(caught)) }
+    }, { onError: error => setError(error.message) })
   }
 
   const createFolder = async (name: string) => {
-    const task = beginScopedTask()
-    try {
+    await action.run(async task => {
       await scopedRequest({ body: { path: joinPath(path, name) }, method: 'POST', path: '/api/files/mkdir' })
       if (task.isCurrent()) await load(path)
-    } catch (caught) { if (task.isCurrent()) setError(errorMessage(caught)) }
+    }, { onError: error => setError(error.message) })
   }
 
   const remove = async (target: string, recursive: boolean) => {
-    const task = beginScopedTask()
-    try {
+    await action.run(async task => {
       await scopedRequest({ body: { path: target, recursive }, method: 'DELETE', path: '/api/files' })
       if (!task.isCurrent()) return
       setContent(null); setSelectedPath(null); await load(path)
-    } catch (caught) { if (task.isCurrent()) setError(errorMessage(caught)) }
+    }, { onError: error => setError(error.message) })
   }
 
   const share = async (target: string) => {
-    const task = beginScopedTask()
-    try {
-      await platformActions.downloadAndShare({ filename: target.split('/').at(-1), maxBytes: 100 * 1_024 * 1_024, path: `/api/files/download?path=${encodeURIComponent(target)}`, profile: profileKey($preferences.get().profile) })
-    } catch (caught) {
-      if (task.isCurrent()) setError(errorMessage(caught))
-    }
+    await action.run(() => platformActions.downloadAndShare({ filename: target.split('/').at(-1), maxBytes: 100 * 1_024 * 1_024, path: `/api/files/download?path=${encodeURIComponent(target)}`, profile: profileKey($preferences.get().profile) }), { onError: error => setError(error.message) })
   }
 
   return (
@@ -164,42 +155,36 @@ function GitPanel() {
   const [confirmMutation, setConfirmMutation] = useState<GitMutation | null>(null)
   const [mutating, setMutating] = useState(false)
   const requestGeneration = useRef(0)
+  const action = useScopedTask()
   const load = async (suffix = '/api/git/status') => {
     const generation = ++requestGeneration.current
-    const task = beginScopedTask()
     setError(null)
-    try {
+    await action.run(async task => {
       const response = await scopedRequest({ path: `${suffix}?path=${encodeURIComponent(cwd)}` })
       if (generation === requestGeneration.current && task.isCurrent()) setData(response.body)
-    } catch (caught) {
-      if (generation === requestGeneration.current && task.isCurrent()) setError(errorMessage(caught))
-    }
+    }, {
+      onError: error => { if (generation === requestGeneration.current) setError(error.message) }
+    })
   }
   const mutate = async (path: string, body: Record<string, unknown>) => {
-    const task = beginScopedTask()
-    setMutating(true)
-    setError(null)
-    try {
+    await action.run(async task => {
+      setError(null)
       const response = await scopedRequest({ body, method: 'POST', path })
       if (!task.isCurrent()) return
       setData(response.body)
       if (path.endsWith('/commit')) setMessage('')
       await load()
-    } catch (caught) {
-      if (task.isCurrent()) setError(errorMessage(caught))
-    } finally {
-      if (task.isCurrent()) setMutating(false)
-    }
+    }, { onBusy: setMutating, onError: error => setError(error.message) })
   }
   const askForConfirmation = (mutation: GitMutation) => {
     if (!mutating) setConfirmMutation(mutation)
   }
   useEffect(() => {
-    const task = beginScopedTask()
-    void scopedRequest<{ cwd?: string }>({ path: '/api/fs/default-cwd' })
-      .then(response => { if (task.isCurrent() && response.body.cwd) setCwd(response.body.cwd) })
-      .catch(() => undefined)
-  }, [])
+    void action.run(async task => {
+      const response = await scopedRequest<{ cwd?: string }>({ path: '/api/fs/default-cwd' })
+      if (task.isCurrent() && response.body.cwd) setCwd(response.body.cwd)
+    })
+  }, [action])
   return <div className="panel-stack"><label>Project path<Input onChange={event => setCwd(event.target.value)} value={cwd} /></label><div className="button-row"><Button disabled={mutating} onClick={() => void load()}>Status</Button><Button disabled={mutating} onClick={() => void load('/api/git/review/list')} variant="secondary">Review</Button><Button disabled={mutating} onClick={() => void load('/api/git/branches')} variant="secondary"><IconGitBranch size={16} /> Branches</Button></div><div className="button-row"><Button disabled={mutating} onClick={() => void mutate('/api/git/review/stage', { path: cwd })} variant="secondary">Stage all</Button><Button disabled={mutating} onClick={() => void mutate('/api/git/review/unstage', { path: cwd })} variant="secondary">Unstage all</Button><Button disabled={mutating} onClick={() => askForConfirmation({ body: { path: cwd }, description: 'Push the current project changes to its configured remote?', label: 'Push changes', path: '/api/git/review/push' })} variant="secondary">Push</Button><Button disabled={mutating} onClick={() => askForConfirmation({ body: { path: cwd }, description: 'Create a pull request from the current project state?', label: 'Create pull request', path: '/api/git/review/create-pr' })} variant="secondary">Create PR</Button></div><label>Commit message<Input onChange={event => setMessage(event.target.value)} value={message} /></label><Button disabled={mutating || !message.trim()} onClick={() => askForConfirmation({ body: { message: message.trim(), path: cwd, push: false }, description: 'Create a commit from the staged changes in this project?', label: 'Commit staged changes', path: '/api/git/review/commit' })}>Commit staged changes</Button>{error && <div className="error-banner">{error}</div>}{data !== null && <pre className="file-content">{JSON.stringify(data, null, 2)}</pre>}{confirmMutation && <ConfirmDialog confirmLabel={confirmMutation.label} description={confirmMutation.description} onCancel={() => setConfirmMutation(null)} onConfirm={() => { const mutation = confirmMutation; setConfirmMutation(null); void mutate(mutation.path, mutation.body) }} title="Confirm Git action" />}</div>
 }
 
@@ -207,16 +192,16 @@ function ArtifactsPanel() {
   const [data, setData] = useState<unknown>(null)
   const [error, setError] = useState<string | null>(null)
   const requestGeneration = useRef(0)
+  const action = useScopedTask()
   const load = async () => {
     const generation = ++requestGeneration.current
-    const task = beginScopedTask()
     setError(null)
-    try {
+    await action.run(async task => {
       const response = await scopedRequest({ path: '/api/files?path=.hermes/artifacts' })
       if (generation === requestGeneration.current && task.isCurrent()) setData(response.body)
-    } catch (caught) {
-      if (generation === requestGeneration.current && task.isCurrent()) setError(errorMessage(caught))
-    }
+    }, {
+      onError: error => { if (generation === requestGeneration.current) setError(error.message) }
+    })
   }
   return <div className="panel-stack"><p>Browse files produced by remote agent runs without invoking local reveal/open actions.</p><Button onClick={() => void load()}>Load artifacts</Button>{error && <div className="unsupported-card">Artifacts are unavailable: {error}</div>}{data !== null && <pre className="file-content">{JSON.stringify(data, null, 2)}</pre>}</div>
 }

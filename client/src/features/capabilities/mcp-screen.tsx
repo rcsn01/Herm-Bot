@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedMutation, useScopedTask } from '~/gateway/scope-guard'
 import { runRemoteAction } from '~/gateway/remote-action'
 import { PlatformActions } from '~/native/platform-actions'
 import { useStore } from '@nanostores/react'
@@ -33,6 +33,7 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
   const [testResult, setTestResult] = useState<{ name: string; value: Awaited<ReturnType<typeof mcpApi.test>> } | null>(null)
   const pollAbort = useRef<AbortController | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const action = useScopedTask()
   const toggle = useScopedMutation<unknown, { enabled: boolean; name: string }, { servers: McpServerSummary[] }>({
     mutationFn: ({ enabled, name }) => mcpApi.toggle(name, enabled),
     optimistic: {
@@ -56,15 +57,10 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
     mutationFn: name => mcpApi.auth(name),
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: async value => {
-      const task = beginScopedTask()
       setFlow(value)
-      if (value.authorization_url) {
-        try {
-          await platformActions.openExternal(value.authorization_url)
-          if (!task.isCurrent()) return
-        } catch (caught) {
-          if (task.isCurrent()) setError(classifyGatewayError(caught).message)
-        }
+      const url = value.authorization_url
+      if (url) {
+        await action.run(() => platformActions.openExternal(url), { onError: error => setError(error.message) })
       }
     }
   })
@@ -75,12 +71,7 @@ export function McpScreen({ onBack, onOpenCatalog, onSelect, selected }: { onBac
   })
 
   const openExternal = async (url: string) => {
-    const task = beginScopedTask()
-    try {
-      await platformActions.openExternal(url)
-    } catch (caught) {
-      if (task.isCurrent()) setError(classifyGatewayError(caught).message)
-    }
+    await action.run(() => platformActions.openExternal(url), { onError: error => setError(error.message) })
   }
 
   useEffect(() => {

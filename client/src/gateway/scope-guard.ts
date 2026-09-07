@@ -1,5 +1,7 @@
+import { useCallback, useMemo } from 'react'
 import { useMutation, useQueryClient, type QueryKey, type UseMutationResult } from '@tanstack/react-query'
 
+import { classifyGatewayError, type GatewayError } from './gateway-error'
 import { gatewayScopeSnapshot, sameGatewayScope, type GatewayScopeSnapshot } from './gateway-scope'
 import { $preferences } from '~/state/store'
 
@@ -50,6 +52,55 @@ export function beginScopedTask(): ScopedTask {
     scope,
     isCurrent: () => isCurrentGatewayScope(scope)
   }
+}
+
+/** Policy callbacks for a managed Scoped task. Every callback is optional. */
+export interface ScopedTaskCallbacks {
+  /** Classified failure, invoked ONLY while the captured Scope is current.
+   *  Receives the classified GatewayError — display policy stays with the caller. */
+  onError?: (error: GatewayError) => void
+  /** Busy signal: invoked with `true` at start (unconditionally, matching today's
+   *  unguarded setBusy(true)) and `false` when settled while the Scope is current. */
+  onBusy?: (busy: boolean) => void
+  /** Invoked once after success or handled failure, ONLY while the Scope is current. */
+  onSettled?: () => void
+}
+
+export interface ScopedTaskRunner {
+  /**
+   * Run one manual async operation guarded by the Scope captured at call time.
+   * Resolves the body's result, or `undefined` when the Scope went stale or the
+   * body threw (the classified error went to `onError` instead). Never rejects.
+   */
+  run<T>(body: (task: ScopedTask) => Promise<T>, callbacks?: ScopedTaskCallbacks): Promise<T | undefined>
+}
+
+/** Managed Scoped task: owns capture, stale discard, and error classification. */
+export function useScopedTask(): ScopedTaskRunner {
+  // Stable across renders: the runner owns no reactive state, so overlapping
+  // run() calls stay independent — identical to today's per-handler tasks.
+  const run = useCallback(
+    async <T,>(body: (task: ScopedTask) => Promise<T>, callbacks: ScopedTaskCallbacks = {}): Promise<T | undefined> => {
+      const task = beginScopedTask()
+      callbacks.onBusy?.(true)
+      try {
+        const result = await body(task)
+        if (!task.isCurrent()) return undefined
+        return result
+      } catch (caught) {
+        if (task.isCurrent()) callbacks.onError?.(classifyGatewayError(caught))
+        return undefined
+      } finally {
+        if (task.isCurrent()) {
+          callbacks.onSettled?.()
+          callbacks.onBusy?.(false)
+        }
+      }
+    },
+    []
+  )
+  // Stable across renders too, so effect dependency arrays can include the runner.
+  return useMemo(() => ({ run }), [run])
 }
 
 export interface ScopedMutationOptimistic<TQueryData, TVariables> {

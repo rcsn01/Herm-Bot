@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 
 import { Button, Input, Textarea } from '~/compat/primitives'
-import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { beginScopedTask } from '~/gateway/scope-guard'
+import { useScopedTask } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createMcpApi, type McpServerConfig, type McpServerSummary } from './mcp-api'
@@ -21,6 +20,7 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
   const [envText, setEnvText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const action = useScopedTask()
 
   const parseEnv = (): Record<string, string> => Object.fromEntries(envText.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
     const index = line.indexOf('=')
@@ -46,7 +46,6 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()
-    const task = beginScopedTask()
     const draft = config()
     // Environment values are only needed to construct this request. Never
     // retain them in component state after a submit, including validation or
@@ -56,17 +55,12 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
     if (!name.trim()) { setError('A server name is required.'); return }
     if (transport === 'url' && !url.trim()) { setError('A server URL is required.'); return }
     if (transport === 'stdio' && !command.trim()) { setError('A stdio command is required.'); return }
-    setSaving(true)
-    try {
+    await action.run(async task => {
       if (server) await mcpApi.update(server.name, draft)
       else await mcpApi.add({ ...draft, name: name.trim() })
       if (!task.isCurrent()) return
       onSaved()
-    } catch (caught) {
-      if (task.isCurrent()) setError(classifyGatewayError(caught).message)
-    } finally {
-      if (task.isCurrent()) setSaving(false)
-    }
+    }, { onBusy: setSaving, onError: error => setError(error.message) })
   }
 
   return <form className="panel-stack data-card" onSubmit={save}><header className="page-heading"><div><p className="eyebrow">MCP</p><h3>{server ? 'Edit server' : 'Add server'}</h3></div></header>{error && <div className="error-banner" role="alert">{error}</div>}<label className="config-field"><span>Name</span><Input disabled={Boolean(server)} onChange={event => setName(event.target.value)} value={name} /></label><label className="config-field"><span>Transport</span><select onChange={event => setTransport(event.target.value as typeof transport)} value={transport}><option value="url">URL</option><option value="stdio">stdio</option></select></label>{transport === 'url' ? <label className="config-field"><span>URL</span><Input onChange={event => setUrl(event.target.value)} placeholder="https://example.test/mcp" type="url" value={url} /></label> : <><label className="config-field"><span>Command</span><Input onChange={event => setCommand(event.target.value)} placeholder="npx" value={command} /></label><label className="config-field"><span>Arguments (one per line)</span><Textarea onChange={event => setArgs(event.target.value)} value={args} /></label></>}<label className="config-field"><span>Authentication mode</span><Input onChange={event => setAuth(event.target.value)} placeholder="oauth (optional)" value={auth} /></label><label className="config-field"><span>Environment variables (KEY=value, one per line)</span><Textarea autoComplete="off" onChange={event => setEnvText(event.target.value)} placeholder="Values are kept only while this form is open." value={envText} /></label><div className="button-row"><Button disabled={saving} type="submit">{saving ? 'Saving…' : server ? 'Save changes' : 'Add server'}</Button><Button onClick={onCancel} type="button" variant="secondary">Cancel</Button></div></form>

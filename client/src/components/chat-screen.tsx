@@ -7,7 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
-import { beginScopedTask } from '~/gateway/scope-guard'
+import { useScopedTask } from '~/gateway/scope-guard'
 import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage } from '~/gateway/gateway-error'
@@ -40,6 +40,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const [showSessionActions, setShowSessionActions] = useState(false)
   const [renameSession, setRenameSession] = useState(false)
   const [archiveSession, setArchiveSession] = useState(false)
+  const action = useScopedTask()
   const bottomRef = useRef<HTMLDivElement>(null)
   const olderMessagesRef = useRef<HTMLButtonElement>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
@@ -86,11 +87,8 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
     setArchiveSession(false)
   }, [chat.runtimeSessionId, interaction])
 
-  const reportSessionAction = (action: () => Promise<unknown>) => {
-    const task = beginScopedTask()
-    void action().catch(caught => {
-      if (task.isCurrent()) setSessionActionError(errorMessage(caught))
-    })
+  const reportSessionAction = (perform: () => Promise<unknown>) => {
+    void action.run(perform, { onError: error => setSessionActionError(error.message) })
   }
 
   const userOrdinals = useMemo(() => {

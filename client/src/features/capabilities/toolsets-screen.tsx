@@ -7,7 +7,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { useScopedMutation, useScopedTask } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { ToolsetInfo } from '~/lib/types'
@@ -36,6 +36,7 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: () => setError(null)
   })
+  const action = useScopedTask()
 
   useEffect(() => {
     setSearch('')
@@ -44,16 +45,15 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
   }, [preferences.remoteURL, profile])
   const clearAll = async () => {
     setConfirmClear(false)
-    const task = beginScopedTask()
     const enabled = toolsets.data?.filter(toolset => toolset.enabled) ?? []
-    for (const toolset of enabled) {
-      if (!task.isCurrent()) return
-      try {
+    await action.run(async task => {
+      for (const toolset of enabled) {
+        if (!task.isCurrent()) return
+        // A failed toggle ends the loop: the rejection is discarded silently
+        // by the runner (no onError callback), matching the previous bare break.
         await toggle.mutateAsync({ enabled: false, name: toolset.name })
-      } catch {
-        break
       }
-    }
+    })
   }
 
   const selectedToolset = selected ? toolsets.data?.find(toolset => toolset.name === selected) : undefined

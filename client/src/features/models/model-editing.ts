@@ -15,7 +15,7 @@ import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { profileKey } from '~/gateway/profile-path'
-import { beginScopedTask, type ScopedTask } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopedTask, type ScopedTask } from '~/gateway/scope-guard'
 import type { HermesConfigRecord, ModelOptionProvider, StaleAuxAssignment } from '~/lib/types'
 import { $preferences } from '~/state/store'
 
@@ -89,6 +89,7 @@ export function useMainModelEditing(): MainModelEditing {
     version: number
   }>({ items: [], version: 0 })
   const operationGeneration = useRef(0)
+  const action = useScopedTask()
 
   useEffect(() => {
     operationGeneration.current += 1
@@ -106,16 +107,14 @@ export function useMainModelEditing(): MainModelEditing {
     if (!assignment.provider || !assignment.model) return
     const generation = operationGeneration.current + 1
     operationGeneration.current = generation
-    const task = beginScopedTask()
-    const isCurrent = () => task.isCurrent() && operationGeneration.current === generation
-    setApplying(true)
-    setError(null)
-
-    void models.setAssignment({
-      ...assignment,
-      scope: 'main',
-      ...(confirmed ? { confirm_expensive_model: true } : {})
-    }).then(async result => {
+    void action.run(async task => {
+      const isCurrent = () => task.isCurrent() && operationGeneration.current === generation
+      setError(null)
+      const result = await models.setAssignment({
+        ...assignment,
+        scope: 'main',
+        ...(confirmed ? { confirm_expensive_model: true } : {})
+      })
       if (!isCurrent()) return
       if (result.confirm_required) {
         if (confirmed) {
@@ -137,12 +136,14 @@ export function useMainModelEditing(): MainModelEditing {
       setDeclined(false)
       setStaleReport(current => ({ items: result.stale_aux ?? [], version: current.version + 1 }))
       if (isCurrent()) await queryClient.invalidateQueries({ queryKey: modelsKey })
-    }).catch(caught => {
-      if (isCurrent()) setError(errorMessage(caught))
-    }).finally(() => {
-      if (isCurrent()) setApplying(false)
+    }, {
+      // A superseded operation must never clear the newer run's busy flag or
+      // publish its error; the Scope gate is the runner's, the generation
+      // gate is this caller's.
+      onBusy: busy => { if (operationGeneration.current === generation) setApplying(busy) },
+      onError: error => { if (operationGeneration.current === generation) setError(error.message) }
     })
-  }, [models, modelsKey, queryClient])
+  }, [action, models, modelsKey, queryClient])
 
   const apply = useCallback((assignment: MainModelAssignment) => {
     setDeclined(false)
@@ -189,6 +190,7 @@ export function useAuxiliaryModelEditing(
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const operationGeneration = useRef(0)
+  const action = useScopedTask()
 
   useEffect(() => {
     operationGeneration.current += 1
@@ -202,12 +204,10 @@ export function useAuxiliaryModelEditing(
   const submit = useCallback(async (assignment: AuxiliaryAssignment): Promise<boolean> => {
     const generation = operationGeneration.current + 1
     operationGeneration.current = generation
-    const task = beginScopedTask()
-    const isCurrent = () => task.isCurrent() && operationGeneration.current === generation
     const endpoint = providers.find(provider => provider.slug === assignment.provider)?.api_url
-    setApplying(true)
-    setError(null)
-    try {
+    return (await action.run(async task => {
+      const isCurrent = () => task.isCurrent() && operationGeneration.current === generation
+      setError(null)
       const result = await models.setAssignment({
         ...assignment,
         scope: 'auxiliary',
@@ -217,13 +217,11 @@ export function useAuxiliaryModelEditing(
       if (result.ok !== true) throw new Error('The auxiliary model assignment was not applied.')
       await queryClient.invalidateQueries({ queryKey: modelsKey })
       return isCurrent()
-    } catch (caught) {
-      if (isCurrent()) setError(errorMessage(caught))
-      return false
-    } finally {
-      if (isCurrent()) setApplying(false)
-    }
-  }, [models, modelsKey, providers, queryClient])
+    }, {
+      onBusy: busy => { if (operationGeneration.current === generation) setApplying(busy) },
+      onError: error => { if (operationGeneration.current === generation) setError(error.message) }
+    })) === true
+  }, [action, models, modelsKey, providers, queryClient])
 
   const assign = useCallback((assignment: AuxiliaryAssignment) => submit(assignment), [submit])
   const resetAll = useCallback(

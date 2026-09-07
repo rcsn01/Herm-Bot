@@ -4,7 +4,8 @@ import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $preferences } from '~/state/store'
-import { beginScopedTask, currentGatewayScope, useScopedMutation } from './scope-guard'
+import { beginScopedTask, currentGatewayScope, useScopedMutation, useScopedTask, type ScopedTask } from './scope-guard'
+import { GatewayError } from './gateway-error'
 
 const originalPreferences = $preferences.get()
 
@@ -236,5 +237,183 @@ describe('scoped operation toolkit', () => {
 
     bumpProfile('task-stale')
     expect(task.isCurrent()).toBe(false)
+  })
+})
+
+describe('useScopedTask', () => {
+  function useRunnerEvents(events: string[]) {
+    return {
+      onBusy: (busy: boolean) => events.push(`busy:${busy}`),
+      onError: () => events.push('error'),
+      onSettled: () => events.push('settled')
+    }
+  }
+
+  it('resolves the body value and fires the busy/settled callbacks on the happy path', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const events: string[] = []
+    let outcome: string | undefined
+    await act(async () => {
+      outcome = await result.current.run(async () => 'value', useRunnerEvents(events))
+    })
+    expect(outcome).toBe('value')
+    expect(events).toEqual(['busy:true', 'settled', 'busy:false'])
+  })
+
+  it('discards a stale run without firing any completion callback', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const body = deferred<string>()
+    const events: string[] = []
+    let outcome: string | undefined
+    await act(async () => {
+      const running = result.current.run(async () => body.promise, useRunnerEvents(events))
+      bumpProfile('stale-run')
+      body.resolve('late')
+      outcome = await running
+    })
+    expect(outcome).toBeUndefined()
+    expect(events).toEqual(['busy:true'])
+  })
+
+  it('classifies a current-scope failure and settles in order', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const events: string[] = []
+    const errors: GatewayError[] = []
+    let outcome: string | undefined
+    await act(async () => {
+      outcome = await result.current.run(async () => { throw new Error('failed') }, {
+        ...useRunnerEvents(events),
+        onError: error => { errors.push(error); events.push('error') }
+      })
+    })
+    expect(outcome).toBeUndefined()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(GatewayError)
+    expect(errors[0].kind).toBe('server')
+    expect(errors[0].message).toBe('failed')
+    expect(events).toEqual(['busy:true', 'error', 'settled', 'busy:false'])
+  })
+
+  it('does not invoke onError when the scope changed before the failure', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const body = deferred<string>()
+    const events: string[] = []
+    let outcome: string | undefined
+    await act(async () => {
+      const running = result.current.run(async () => body.promise, useRunnerEvents(events))
+      bumpProfile('stale-error')
+      body.reject(new Error('late failure'))
+      outcome = await running
+    })
+    expect(outcome).toBeUndefined()
+    expect(events).toEqual(['busy:true'])
+  })
+
+  it('skips settled callbacks when the scope goes stale inside onError', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const events: string[] = []
+    await act(async () => {
+      await result.current.run(async () => { throw new Error('failed') }, {
+        onBusy: busy => events.push(`busy:${busy}`),
+        onError: () => { events.push('error'); bumpProfile('stale-in-onerror') },
+        onSettled: () => events.push('settled')
+      })
+    })
+    expect(events).toEqual(['busy:true', 'error'])
+  })
+
+  it('fires onBusy(true) unconditionally even when the scope goes stale mid-flight', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const events: string[] = []
+    await act(async () => {
+      const outcome = await result.current.run(async () => {
+        bumpProfile('mid-flight-stale')
+        return 'never'
+      }, useRunnerEvents(events))
+      expect(outcome).toBeUndefined()
+    })
+    expect(events).toEqual(['busy:true'])
+  })
+
+  it('lets the body gate its own mid-run effects via the task handle', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const applied: string[] = []
+    const gate = deferred<void>()
+    let kept: boolean | undefined
+    await act(async () => {
+      const running = result.current.run(async task => {
+        await gate.promise
+        if (task.isCurrent()) applied.push('kept')
+        return task.isCurrent()
+      })
+      gate.resolve()
+      kept = await running
+    })
+    expect(kept).toBe(true)
+    expect(applied).toEqual(['kept'])
+
+    const staleGate = deferred<void>()
+    let staleOutcome: boolean | undefined
+    await act(async () => {
+      const running = result.current.run(async task => {
+        await staleGate.promise
+        if (task.isCurrent()) applied.push('skipped')
+        return task.isCurrent()
+      }, { onSettled: () => applied.push('settled') })
+      bumpProfile('mid-run-gate')
+      staleGate.resolve()
+      staleOutcome = await running
+    })
+    expect(staleOutcome).toBeUndefined()
+    expect(applied).toEqual(['kept'])
+  })
+
+  it('keeps concurrent runs independent', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const firstBody = deferred<string>()
+    const secondBody = deferred<string>()
+    const firstEvents: string[] = []
+    const secondEvents: string[] = []
+    let firstOutcome: string | undefined
+    let secondOutcome: string | undefined
+    await act(async () => {
+      const first = result.current.run(async () => firstBody.promise, useRunnerEvents(firstEvents))
+      bumpProfile('concurrent-stale')
+      const second = result.current.run(async () => secondBody.promise, useRunnerEvents(secondEvents))
+      firstBody.resolve('first')
+      firstOutcome = await first
+      secondBody.resolve('second')
+      secondOutcome = await second
+    })
+    expect(firstOutcome).toBeUndefined()
+    expect(secondOutcome).toBe('second')
+    expect(firstEvents).toEqual(['busy:true'])
+    expect(secondEvents).toEqual(['busy:true', 'settled', 'busy:false'])
+  })
+
+  it('never rejects and classifies non-Error throwables', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    const errors: GatewayError[] = []
+    let outcome: string | undefined
+    await act(async () => {
+      outcome = await result.current.run(async () => {
+        throw 'plain string'
+      }, { onError: error => errors.push(error) })
+    })
+    expect(outcome).toBeUndefined()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(GatewayError)
+    expect(errors[0].message).toBe('plain string')
+  })
+
+  it('exposes the captured task handle to the body', async () => {
+    const { result } = renderHook(() => useScopedTask())
+    let captured: ScopedTask | undefined
+    await act(async () => {
+      await result.current.run(async task => { captured = task })
+    })
+    expect(captured?.isCurrent()).toBe(true)
+    bumpProfile('after-capture')
+    expect(captured?.isCurrent()).toBe(false)
   })
 })
