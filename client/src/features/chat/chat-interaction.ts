@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import { errorMessage } from '~/gateway/gateway-error'
-import type { HermesConnectionPlugin } from '~/native/hermes-connection'
+import type { GatewayPort } from '~/gateway/gateway-port'
 
 export interface ChatSuggestion {
   display?: string
@@ -32,7 +32,8 @@ export interface ChatInteractionCommands {
   retryFrom(userOrdinal: number, rowId: number, text: string): Promise<void>
   send(text: string): Promise<void>
 }
-export type ChatMediaConnection = Pick<HermesConnectionPlugin, 'request' | 'upload'>
+/** Chat audio rides the GatewayPort directly (installation-wide /api/audio routes, no profile param). */
+export type ChatMediaConnection = Pick<GatewayPort, 'request' | 'upload'>
 
 interface SlashCompletionResponse {
   items?: Array<Omit<ChatSuggestion, 'insertText'>>

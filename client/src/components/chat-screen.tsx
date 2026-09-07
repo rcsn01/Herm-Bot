@@ -9,7 +9,6 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection } from '~/features/chat/chat-interaction'
-import { HermesConnection } from '~/native/hermes-connection'
 import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
@@ -22,7 +21,7 @@ interface ChatScreenProps {
   mediaConnection?: ChatMediaConnection
 }
 
-export function ChatScreen({ active = true, controller, conversation, mediaConnection = HermesConnection }: ChatScreenProps) {
+export function ChatScreen({ active = true, controller, conversation, mediaConnection = controller.gateway }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
   // A fresh literal, not the live instances: every method must be bound so

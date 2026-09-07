@@ -171,6 +171,22 @@ describe('session runtime', () => {
     await expect(stale).rejects.toMatchObject({ kind: 'aborted' })
   })
 
+  it('aborts in-flight uploads that cross the runtime seam when scope changes', async () => {
+    let observedSignal: AbortSignal | undefined
+    const transport = new MemoryGateway()
+      .handle('/api/audio/transcribe', (_request, options) => {
+        observedSignal = options?.signal
+        return new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true }))
+      })
+    const runtime = new SessionRuntime(transport, { minimumContract: 6, retryDelays: [] })
+    const stale = runtime.upload({ dataBase64: 'dm9pY2U=', field: 'file', filename: 'note.m4a', path: '/api/audio/transcribe' })
+
+    runtime.close()
+
+    expect(observedSignal?.aborted).toBe(true)
+    await expect(stale).rejects.toMatchObject({ kind: 'aborted' })
+  })
+
   it('aborts in-flight work before opening a new scope', async () => {
     let observedSignal: AbortSignal | undefined
     const gateway = new MemoryGateway()

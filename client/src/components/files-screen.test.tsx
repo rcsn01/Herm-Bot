@@ -3,14 +3,9 @@ import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { FilesScreen } from './files-screen'
-import { HermesConnection, withProfile } from '~/native/hermes-connection'
+import { GatewayProvider } from '~/gateway/gateway-context'
 import { $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
-
-vi.mock('~/native/hermes-connection', async importOriginal => {
-  const actual = await importOriginal<typeof import('~/native/hermes-connection')>()
-  return { ...actual, HermesConnection: { request: vi.fn() } }
-})
 
 vi.mock('~/compat/primitives', () => ({
   Badge: ({ children }: { children: ReactNode }) => <span>{children}</span>,
@@ -55,14 +50,20 @@ let gateway: MemoryGateway
 beforeEach(() => {
   gateway = new MemoryGateway().handle('/api/fs/default-cwd?profile=default', () => ({ cwd: '.' }))
   $preferences.set({ ...originalPreferences, profile: null, remoteURL: 'https://gateway.example' })
-  vi.mocked(HermesConnection.request).mockReset().mockImplementation(options => gateway.request({ ...options, path: withProfile(options.path, options.profile) }))
 })
 
 afterEach(() => {
-  vi.restoreAllMocks()
   cleanup()
   $preferences.set(originalPreferences)
 })
+
+function renderFilesScreen() {
+  return render(
+    <GatewayProvider gateway={gateway}>
+      <FilesScreen />
+    </GatewayProvider>
+  )
+}
 
 describe('FilesScreen', () => {
   it('loads, uploads, and removes a project file through the gateway', async () => {
@@ -76,7 +77,7 @@ describe('FilesScreen', () => {
         return { ok: true }
       })
 
-    const { container } = render(<FilesScreen />)
+    const { container } = renderFilesScreen()
     expect(await screen.findByText('hello.txt')).not.toBeNull()
 
     fireEvent.click(screen.getAllByRole('button', { name: /hello\.txt/ })[0])
@@ -100,7 +101,7 @@ describe('FilesScreen', () => {
       .handle(readPath('stale.txt'), () => pendingRead.promise)
       .handle(listPath('.', 'other'), () => ({ entries: [], path: '.' }))
 
-    render(<FilesScreen />)
+    renderFilesScreen()
     await screen.findByText('stale.txt')
     fireEvent.click(screen.getAllByRole('button', { name: /stale\.txt/ })[0])
 
@@ -118,7 +119,7 @@ describe('FilesScreen', () => {
       .handle(listPath('first'), () => first.promise)
       .handle(listPath('second'), () => second.promise)
 
-    const { container } = render(<FilesScreen />)
+    const { container } = renderFilesScreen()
     await screen.findByText('This folder is empty.')
     const pathInput = container.querySelector('.path-bar input') as HTMLInputElement
     const form = pathInput.closest('form')!
@@ -134,5 +135,19 @@ describe('FilesScreen', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(screen.queryByText('first.txt')).toBeNull()
     expect(screen.getByText('second.txt')).not.toBeNull()
+  })
+
+  it('blocks an oversized upload with the cap message before any upload request', async () => {
+    gateway.handle(listPath('.'), () => ({ entries: [], path: '.' }))
+
+    const { container } = renderFilesScreen()
+    await screen.findByText('This folder is empty.')
+
+    const file = new File(['tiny'], 'big.bin', { type: 'application/octet-stream' })
+    Object.defineProperty(file, 'size', { value: 50 * 1_024 * 1_024 + 1 })
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } })
+
+    await screen.findByText('Project uploads are limited to 50 MB in this version of Hermes Mobile.')
+    expect(gateway.calls.some(call => call.kind === 'request' && (call.value as { path?: string }).path === '/api/files/upload?profile=default')).toBe(false)
   })
 })
