@@ -1,28 +1,29 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { Badge, Button, Skeleton, Switch } from '~/compat/primitives'
-import { CONFIG_SAVE_DEBOUNCE_MS, ContextWindowField, FallbackField, useDebouncedSave } from '~/features/models/config-editors'
+import { ContextWindowField, FallbackField } from '~/features/models/config-editors'
 import { createModelsApi } from '~/features/models/api'
 import {
   REASONING_EFFORT_VALUES,
-  fallbackEntriesEqual,
   getConfigValue,
   isFastTier,
-  normalizeFallbackEntries,
-  normalizeEffort,
-  setConfigValue,
-  type FallbackEntry
+  normalizeEffort
 } from '~/features/models/helpers'
+import {
+  useAuxiliaryModelEditing,
+  useMainModelEditing,
+  useModelConfigEditing
+} from '~/features/models/model-editing'
 import { MoaEditor } from '~/features/models/moa-editor'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, currentGatewayScope } from '~/gateway/scope-guard'
+import { beginScopedTask } from '~/gateway/scope-guard'
 import { $preferences } from '~/state/store'
 import type { ModelOptionProvider, StaleAuxAssignment } from '~/lib/types'
 
@@ -62,12 +63,6 @@ interface ModelsScreenProps {
   onBack(): void
 }
 
-interface MainAssignmentDraft {
-  base_url?: string
-  model: string
-  provider: string
-}
-
 export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const models = useApi(createModelsApi)
   const queryClient = useQueryClient()
@@ -75,7 +70,6 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const profile = preferences.profile
   const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'models')
   const keyFor = (domain: string) => [...scopeKey, domain]
-  const invalidateAll = () => queryClient.invalidateQueries({ queryKey: scopeKey })
   const info = useQuery({ queryFn: ({ signal }) => models.getInfo(signal), queryKey: keyFor('info') })
   const options = useQuery({ queryFn: ({ signal }) => models.getOptions(signal), queryKey: keyFor('options') })
   const auxiliary = useQuery({ queryFn: ({ signal }) => models.getAuxiliary(signal), queryKey: keyFor('auxiliary') })
@@ -92,6 +86,9 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   // refetches so an in-progress pick survives a refresh.
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
+  const [editingTask, setEditingTask] = useState<null | string>(null)
+  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+  const [moaError, setMoaError] = useState<string | null>(null)
   useEffect(() => {
     if (!info.data) return
     setSelectedProvider(prev => prev || info.data.provider)
@@ -101,79 +98,20 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   useEffect(() => {
     setSelectedProvider('')
     setSelectedModel('')
-    setApplying(false)
-    setApplyError(null)
-    setPendingConfirm(null)
-    setDeclined(false)
-    setStaleAux([])
-    setConfigError(null)
     setEditingTask(null)
     setAuxDraft({ model: '', provider: '' })
-    setAuxError(null)
-    setAuxApplying(false)
+    setMoaError(null)
   }, [preferences.remoteURL, profile])
 
   const selectedProviderRow = useMemo(() => providers.find(provider => provider.slug === selectedProvider), [providers, selectedProvider])
   const selectedProviderModels = selectedProviderRow?.models ?? []
   const providerSelectOptions = useMemo(() => ensureOption(providerOptions(providers), selectedProvider), [providers, selectedProvider])
 
-  // Apply main model — with the backend's expensive-model confirmation loop:
-  // the first POST answers confirm_required instead of persisting; the dialog
-  // acks and the retry carries confirm_expensive_model.
-  const [applying, setApplying] = useState(false)
-  const [applyError, setApplyError] = useState<string | null>(null)
-  const [pendingConfirm, setPendingConfirm] = useState<null | { assignment: MainAssignmentDraft; message: string }>(null)
-  const [declined, setDeclined] = useState(false)
-  const [staleAux, setStaleAux] = useState<StaleAuxAssignment[]>([])
+  const mainEditing = useMainModelEditing()
+  const auxiliaryEditing = useAuxiliaryModelEditing(providers)
+  const configEditing = useModelConfigEditing(config.data)
 
-  async function applyMain(confirm = false, requested?: MainAssignmentDraft) {
-    const assignment = requested ?? {
-      model: selectedModel,
-      provider: selectedProvider,
-      // Carry a custom provider's endpoint so switching does not discard it.
-      ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
-    }
-    if (!assignment.provider || !assignment.model) return
-    const task = beginScopedTask()
-    setApplying(true)
-    setApplyError(null)
-    try {
-      const result = await models.setAssignment({
-        ...assignment,
-        scope: 'main',
-        ...(confirm ? { confirm_expensive_model: true } : {})
-      })
-      if (!task.isCurrent()) return
-      if (result.confirm_required) {
-        if (confirm) {
-          // Already acked — fail closed instead of recursing.
-          setApplyError(result.confirm_message?.trim() || 'The gateway still refuses this model.')
-          return
-        }
-        setPendingConfirm({
-          assignment,
-          message: result.confirm_message?.trim() || 'This model may be expensive to run. Apply anyway?'
-        })
-        return
-      }
-      if (result.ok !== true) {
-        setApplyError(result.confirm_message?.trim() || 'The model assignment was not applied.')
-        return
-      }
-      setPendingConfirm(null)
-      setDeclined(false)
-      setStaleAux(result.stale_aux ?? [])
-      await invalidateAll()
-    } catch (error) {
-      if (task.isCurrent()) setApplyError(classifyGatewayError(error).message)
-    } finally {
-      if (task.isCurrent()) setApplying(false)
-    }
-  }
-
-  // Capabilities of the APPLIED main model — gates the profile-default
-  // reasoning/speed controls (reasoning defaults on, fast defaults off when
-  // unreported).
+  // Capabilities of the APPLIED main model gate the profile-default controls.
   const mainCaps = useMemo(
     () => (mainModel ? providers.find(provider => provider.slug === mainModel.provider)?.capabilities?.[mainModel.model] : undefined),
     [providers, mainModel]
@@ -184,78 +122,6 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const configData = config.data
   const effortValue = normalizeEffort(getConfigValue(configData, 'agent.reasoning_effort'))
   const fastOn = isFastTier(getConfigValue(configData, 'agent.service_tier'))
-
-  const [configError, setConfigError] = useState<string | null>(null)
-
-  // agent.* defaults and model_context_length / fallback_providers ride
-  // partial /api/config updates: the backend deep-merges the PUT body over
-  // the on-disk document, so unrelated profile configuration stays untouched.
-  const writePartialConfig = useCallback(
-    async (partial: Record<string, unknown>) => {
-      await models.saveConfig(partial)
-    },
-    [models]
-  )
-  const writeAgentDefault = (key: string, value: string) => {
-    if (!configData) return
-    const task = beginScopedTask()
-    const configKey = keyFor('config')
-    const previous = queryClient.getQueryData(configKey) ?? configData
-    queryClient.setQueryData(configKey, setConfigValue(previous, key, value))
-    void writePartialConfig(setConfigValue({}, key, value)).catch(error => {
-      if (!task.isCurrent()) return
-      const current = queryClient.getQueryData(configKey)
-      // Do not roll back a newer edit that landed while this request was in
-      // flight. TanStack may reuse structurally shared objects, so compare the
-      // value rather than object identity.
-      if (getConfigValue(current, key) === value) queryClient.setQueryData(configKey, previous)
-      setConfigError(classifyGatewayError(error).message)
-    })
-  }
-
-  const saveContext = useDebouncedSave(
-    async (contextLength: number) => {
-      const task = beginScopedTask()
-      const configKey = keyFor('config')
-      const previous = queryClient.getQueryData(configKey) ?? configData
-      if (previous) queryClient.setQueryData(configKey, setConfigValue(previous, 'model_context_length', contextLength))
-      try {
-        await writePartialConfig(setConfigValue({}, 'model_context_length', contextLength))
-      } catch (error) {
-        const current = queryClient.getQueryData(configKey)
-        if (task.isCurrent() && getConfigValue(current, 'model_context_length') === contextLength && previous) queryClient.setQueryData(configKey, previous)
-        throw error
-      }
-    },
-    CONFIG_SAVE_DEBOUNCE_MS,
-    error => { setConfigError(classifyGatewayError(error).message) },
-    () => currentGatewayScope().generation
-  )
-  const saveFallbacks = useDebouncedSave(
-    async (entries: FallbackEntry[]) => {
-      const task = beginScopedTask()
-      const configKey = keyFor('config')
-      const previous = queryClient.getQueryData(configKey) ?? configData
-      if (previous) queryClient.setQueryData(configKey, setConfigValue(previous, 'fallback_providers', entries))
-      try {
-        await writePartialConfig(setConfigValue({}, 'fallback_providers', entries))
-      } catch (error) {
-        const current = queryClient.getQueryData(configKey)
-        const currentEntries = getConfigValue(current, 'fallback_providers')
-        if (task.isCurrent() && fallbackEntriesEqual(normalizeFallbackEntries(currentEntries), entries) && previous) queryClient.setQueryData(configKey, previous)
-        throw error
-      }
-    },
-    CONFIG_SAVE_DEBOUNCE_MS,
-    error => { setConfigError(classifyGatewayError(error).message) },
-    () => currentGatewayScope().generation
-  )
-
-  // Auxiliary: draft edit state + actions.
-  const [editingTask, setEditingTask] = useState<null | string>(null)
-  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
-  const [auxError, setAuxError] = useState<string | null>(null)
-  const [auxApplying, setAuxApplying] = useState(false)
 
   const auxDraftProviderModels = useMemo(
     () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
@@ -276,34 +142,20 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       })
       .map(entry => ({ model: entry.model, provider: entry.provider, task: entry.task }))
   }, [auxiliary.data, mainModel])
-  const staleWarning = staleAux.length > 0 ? staleAux : persistentStaleAux
-
-  const endpointForProvider = (provider: string) => {
-    const row = providers.find(entry => entry.slug === provider)
-    return row?.api_url ? { base_url: row.api_url } : {}
-  }
+  const staleWarning = mainEditing.staleAuxiliary.length > 0
+    ? mainEditing.staleAuxiliary
+    : persistentStaleAux
 
   async function submitAuxiliary(body: { model: string; provider: string; task: string }) {
-    const task = beginScopedTask()
-    setAuxApplying(true)
-    setAuxError(null)
-    try {
-      await models.setAssignment({ scope: 'auxiliary', ...body, ...endpointForProvider(body.provider) })
-      if (!task.isCurrent()) return
-      setEditingTask(null)
-      await invalidateAll()
-    } catch (error) {
-      if (task.isCurrent()) setAuxError(classifyGatewayError(error).message)
-    } finally {
-      if (task.isCurrent()) setAuxApplying(false)
-    }
+    if (await auxiliaryEditing.assign(body)) setEditingTask(null)
   }
 
   async function resetAuxiliary() {
     if (!mainModel) return
-    const task = beginScopedTask()
-    await submitAuxiliary({ model: mainModel.model, provider: mainModel.provider, task: '__reset__' })
-    if (task.isCurrent()) setStaleAux([])
+    const reportVersion = mainEditing.staleAuxiliaryVersion
+    if (await auxiliaryEditing.resetAll(mainModel)) {
+      mainEditing.clearStaleAuxiliary(reportVersion)
+    }
   }
 
   function beginAuxiliaryEdit(task: string) {
@@ -349,7 +201,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
           <div className="models-controls">
             <ModelSelect
               ariaLabel="Provider"
-              disabled={applying}
+              disabled={mainEditing.applying}
               onChange={value => { setSelectedProvider(value); setSelectedModel('') }}
               options={providerSelectOptions}
               placeholder="Provider"
@@ -357,7 +209,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
             />
             <ModelSelect
               ariaLabel="Model"
-              disabled={applying || !selectedProvider}
+              disabled={mainEditing.applying || !selectedProvider}
               onChange={setSelectedModel}
               options={ensureOption(modelOptions(selectedProviderModels), selectedModel)}
               placeholder="Model"
@@ -365,12 +217,21 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
             />
           </div>
           <div className="models-controls">
-            <Button disabled={!selectedProvider || !selectedModel || applying} onClick={() => void applyMain()} size="sm" variant="default">
-              {applying ? 'Applying…' : 'Apply'}
+            <Button
+              disabled={!selectedProvider || !selectedModel || mainEditing.applying}
+              onClick={() => mainEditing.apply({
+                model: selectedModel,
+                provider: selectedProvider,
+                ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
+              })}
+              size="sm"
+              variant="default"
+            >
+              {mainEditing.applying ? 'Applying…' : 'Apply'}
             </Button>
-            {declined && !applying && <Badge variant="muted">Model change cancelled</Badge>}
+            {mainEditing.declined && !mainEditing.applying && <Badge variant="muted">Model change cancelled</Badge>}
           </div>
-          {applyError && <div className="error-banner" role="alert">{applyError}</div>}
+          {mainEditing.error && <div className="error-banner" role="alert">{mainEditing.error}</div>}
 
           {configData && mainModel && (reasoningSupported || fastSupported) && (
             <div className="models-controls" aria-label="Profile defaults">
@@ -379,7 +240,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
                   <span>Reasoning</span>
                   <ModelSelect
                     ariaLabel="Default reasoning effort"
-                    onChange={value => writeAgentDefault('agent.reasoning_effort', value)}
+                    onChange={configEditing.setReasoningEffort}
                     options={REASONING_OPTIONS}
                     placeholder="Reasoning"
                     value={effortValue}
@@ -389,12 +250,12 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
               {fastSupported && (
                 <label className="models-field-label models-toggle">
                   <span>Fast tier</span>
-                  <Switch checked={fastOn} onCheckedChange={checked => writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')} />
+                  <Switch checked={fastOn} onCheckedChange={configEditing.setFastTier} />
                 </label>
               )}
             </div>
           )}
-          {configError && <div className="error-banner" role="alert">{configError}</div>}
+          {configEditing.error && <div className="error-banner" role="alert">{configEditing.error}</div>}
         </div>
       </section>
 
@@ -409,7 +270,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
               <span className="models-mono">{staleWarning.every(entry => entry.provider === staleWarning[0].provider) ? staleWarning[0].provider : 'other providers'}</span>,
               not your main model.
             </p>
-            <Button disabled={auxApplying || !mainModel} onClick={() => void resetAuxiliary()} size="sm" variant="secondary">Reset all to main</Button>
+            <Button disabled={auxiliaryEditing.applying || !mainModel} onClick={() => void resetAuxiliary()} size="sm" variant="secondary">Reset all to main</Button>
           </div>
         )}
         <div className="models-card">
@@ -423,8 +284,8 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
                   <span className="models-slot-title">{label}</span>
                   {!isEditing && (
                     <>
-                      <Button disabled={!mainModel || auxApplying} onClick={() => void submitAuxiliary({ model: mainModel!.model, provider: mainModel!.provider, task: key })} size="sm" variant="secondary">Set to main</Button>
-                      <Button disabled={!providers.length || auxApplying} onClick={() => beginAuxiliaryEdit(key)} size="sm" variant="secondary">Change</Button>
+                      <Button disabled={!mainModel || auxiliaryEditing.applying} onClick={() => void submitAuxiliary({ model: mainModel!.model, provider: mainModel!.provider, task: key })} size="sm" variant="secondary">Set to main</Button>
+                      <Button disabled={!providers.length || auxiliaryEditing.applying} onClick={() => beginAuxiliaryEdit(key)} size="sm" variant="secondary">Change</Button>
                     </>
                   )}
                 </div>
@@ -445,7 +306,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
                       placeholder="Model"
                       value={auxDraft.model}
                     />
-                    <Button disabled={!auxDraft.provider || !auxDraft.model || auxApplying} onClick={() => void submitAuxiliary({ model: auxDraft.model, provider: auxDraft.provider, task: key })} size="sm" variant="default">{auxApplying ? 'Applying…' : 'Apply'}</Button>
+                    <Button disabled={!auxDraft.provider || !auxDraft.model || auxiliaryEditing.applying} onClick={() => void submitAuxiliary({ model: auxDraft.model, provider: auxDraft.provider, task: key })} size="sm" variant="default">{auxiliaryEditing.applying ? 'Applying…' : 'Apply'}</Button>
                     <Button onClick={() => setEditingTask(null)} size="sm" variant="secondary">Cancel</Button>
                   </div>
                 )}
@@ -453,9 +314,9 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
             )
           })}
           <div className="models-controls">
-            <Button disabled={!mainModel || auxApplying} onClick={() => void resetAuxiliary()} size="sm" variant="secondary">Reset all to main</Button>
+            <Button disabled={!mainModel || auxiliaryEditing.applying} onClick={() => void resetAuxiliary()} size="sm" variant="secondary">Reset all to main</Button>
           </div>
-          {auxError && <div className="error-banner" role="alert">{auxError}</div>}
+          {(auxiliaryEditing.error || moaError) && <div className="error-banner" role="alert">{auxiliaryEditing.error || moaError}</div>}
         </div>
       </section>
 
@@ -467,7 +328,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
           onError={error => {
             const task = beginScopedTask()
             if (!task.isCurrent()) return
-            setAuxError(classifyGatewayError(error).message)
+            setMoaError(classifyGatewayError(error).message)
             // Autosaves and preset writes are optimistic. Refetch the
             // authoritative document after a failure instead of leaving a
             // draft that never reached the gateway in the query cache.
@@ -496,27 +357,23 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
           <ContextWindowField
             autoDetected={info.data?.auto_context_length}
             effective={info.data?.effective_context_length}
-            onWrite={saveContext}
+            onWrite={configEditing.setContextLength}
             value={typeof getConfigValue(configData, 'model_context_length') === 'number' ? Number(getConfigValue(configData, 'model_context_length')) : 0}
           />
           <FallbackField
-            onWrite={saveFallbacks}
+            onWrite={configEditing.setFallbacks}
             providers={providers}
             value={getConfigValue(configData, 'fallback_providers')}
           />
         </section>
       )}
 
-      {pendingConfirm !== null && (
+      {mainEditing.pendingConfirmation !== null && (
         <ConfirmDialog
           confirmLabel="Apply anyway"
-          description={pendingConfirm.message}
-          onCancel={() => { setPendingConfirm(null); setDeclined(true) }}
-          onConfirm={() => {
-            const request = pendingConfirm
-            setPendingConfirm(null)
-            void applyMain(true, request.assignment)
-          }}
+          description={mainEditing.pendingConfirmation.message}
+          onCancel={mainEditing.decline}
+          onConfirm={mainEditing.confirm}
           title="Confirm model change"
         />
       )}

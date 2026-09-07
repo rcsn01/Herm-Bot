@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
@@ -9,49 +9,6 @@ import {
   type FallbackEntry
 } from '~/features/models/helpers'
 import type { ModelOptionProvider } from '~/lib/types'
-
-/** Debounced writer: collapses rapid edits into one call after `delayMs`.
- *  A generation counter drops error reports from superseded writes so an
- *  older save can never surface an error over newer edits. */
-export function useDebouncedSave<Args extends unknown[]>(
-  save: (...args: Args) => Promise<void>,
-  delayMs: number,
-  onError: (error: unknown) => void,
-  getScopeToken?: () => unknown
-): (...args: Args) => void {
-  const timer = useRef<number | null>(null)
-  const generation = useRef(0)
-  const saveRef = useRef(save)
-  const errorRef = useRef(onError)
-  const scopeRef = useRef(getScopeToken)
-  useEffect(() => {
-    saveRef.current = save
-    errorRef.current = onError
-    scopeRef.current = getScopeToken
-  })
-  useEffect(
-    () => () => {
-      generation.current += 1
-      if (timer.current) window.clearTimeout(timer.current)
-    },
-    []
-  )
-  return useCallback(
-    (...args: Args) => {
-      if (timer.current) window.clearTimeout(timer.current)
-      const scheduled = ++generation.current
-      const scheduledScope = scopeRef.current?.()
-      timer.current = window.setTimeout(() => {
-        timer.current = null
-        if (generation.current !== scheduled || (scopeRef.current && scopeRef.current() !== scheduledScope)) return
-        void saveRef.current(...args).catch(error => {
-          if (generation.current === scheduled && (!scopeRef.current || scopeRef.current() === scheduledScope)) errorRef.current(error)
-        })
-      }, delayMs)
-    },
-    [delayMs]
-  )
-}
 
 export const CONFIG_SAVE_DEBOUNCE_MS = 550
 
@@ -65,8 +22,11 @@ export function ContextWindowField({ autoDetected, effective, onWrite, value }: 
   // Our own committed value echoes back after the save; skip that echo so the
   // user can keep typing. A genuinely different persisted value resyncs.
   const lastWritten = useRef(value)
+  const lastReceived = useRef(value)
 
   useEffect(() => {
+    if (value === lastReceived.current) return
+    lastReceived.current = value
     if (value === lastWritten.current) return
     lastWritten.current = value
     setDraft(value > 0 ? String(value) : '')
