@@ -4,6 +4,7 @@ import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from
 import { registerRoute } from 'workbox-routing'
 
 import { isAppShellNavigation } from './policy'
+import { parsePushPayload } from './push-payload'
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ revision?: string; url: string }>
@@ -32,4 +33,35 @@ registerRoute(
 
 self.addEventListener('message', event => {
   if (event.data?.type === 'SKIP_WAITING') void self.skipWaiting()
+})
+
+self.addEventListener('push', event => {
+  let value: unknown
+  try {
+    value = event.data?.json()
+  } catch {
+    value = event.data?.text()
+  }
+  const payload = parsePushPayload(value, self.location.origin)
+  event.waitUntil(self.registration.showNotification(payload.title, {
+    body: payload.body,
+    data: { url: payload.url },
+    icon: '/icons/icon-192.png',
+    tag: payload.tag
+  }))
+})
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close()
+  const payload = parsePushPayload({ url: event.notification.data?.url }, self.location.origin)
+  const target = new URL(payload.url, self.location.origin).href
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
+    const existing = windows.find(client => new URL(client.url).origin === self.location.origin)
+    if (existing) {
+      await existing.navigate(target)
+      return existing.focus()
+    }
+    return self.clients.openWindow(target)
+  })())
 })

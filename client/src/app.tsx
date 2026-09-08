@@ -58,7 +58,7 @@ export function App() {
   const reconnecting = connection.phase === 'reconnecting' && Boolean(chat.runtimeSessionId)
 
   if (connection.phase === 'unsupported') {
-    return <main className="blocking-screen"><div className="brand-mark">!</div><h1>Update remote Hermes</h1><p>{connection.error}</p><Button onClick={() => void controller.connect().catch(() => undefined)}>Check again</Button></main>
+    return <main className="blocking-screen"><div className="brand-mark letter">!</div><h1>Update remote Hermes</h1><p>{connection.error}</p><Button onClick={() => void controller.connect().catch(() => undefined)}>Check again</Button></main>
   }
   if (connection.phase !== 'connected' && !reconnecting) return <ConnectScreen controller={controller} />
 

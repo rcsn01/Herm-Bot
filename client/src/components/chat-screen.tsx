@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
+import { BrandMark } from '~/components/brand-mark'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask } from '~/gateway/scope-guard'
@@ -143,7 +144,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         )}
         {chat.messages.length === 0 && (
           <div className="empty-chat">
-            <div className="brand-mark small">H</div>
+            <BrandMark small />
             <h2>What can Hermes do for you?</h2>
             <p>This conversation runs on {connection.status?.version ? `Hermes ${connection.status.version}` : 'your remote gateway'}.</p>
           </div>

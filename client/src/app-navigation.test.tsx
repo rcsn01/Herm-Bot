@@ -130,7 +130,7 @@ describe('App navigation', () => {
     render(<App />)
 
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
-    expect(screen.queryByText('Remote gateway')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Hermes Mobile' })).toBeNull()
     expect(screen.getByRole('status').textContent).toContain('Reconnecting')
   })
 
@@ -155,7 +155,7 @@ describe('App navigation', () => {
     render(<App />)
 
     expect(screen.queryByTestId('chat-instance')).toBeNull()
-    expect(screen.getByText('Remote gateway')).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Hermes Mobile' })).not.toBeNull()
   })
 
   it('does not show cached chat after an unexpected disconnect', () => {
@@ -164,6 +164,6 @@ describe('App navigation', () => {
     render(<App />)
 
     expect(screen.queryByTestId('chat-instance')).toBeNull()
-    expect(screen.getByText('Remote gateway')).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Hermes Mobile' })).not.toBeNull()
   })
 })

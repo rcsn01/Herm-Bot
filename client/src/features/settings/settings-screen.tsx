@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { IconAdjustments, IconArchive, IconBell, IconBrain, IconBrowser, IconChevronLeft, IconChevronRight, IconCloud, IconCode, IconCoin, IconDeviceDesktop, IconInfoCircle, IconKey, IconLock, IconMessage, IconMoodSmile, IconNetwork, IconPalette, IconPlug, IconRobot, IconServer, IconSettings, IconShield, IconSpeakerphone, IconTools, IconUser, IconUsers, IconWorld } from '@tabler/icons-react'
 
 import { Badge, Button } from '~/compat/primitives'
@@ -16,6 +16,7 @@ import { SettingsAdministrationScreen } from './settings-administration-screen'
 import { MemorySettings } from './memory-settings'
 import { isNativeIOS } from '~/native/hermes-connection'
 import { PwaInstallHelp } from '~/pwa/PwaStatus'
+import { $webPush, disableWebPush, enableWebPush, refreshWebPushState } from '~/pwa/push'
 
 const ICONS: Record<string, typeof IconSettings> = {
   about: IconInfoCircle,
@@ -75,7 +76,10 @@ function AppearanceSettings({ onBack }: { onBack(): void }) {
 }
 
 function NotificationsSettings({ onBack }: { onBack(): void }) {
-  return <SettingsPageShell title="Notifications"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="data-card"><h3>Foreground notifications</h3><p className="muted">Activity is shown while Hermes is open. Web Push delivery needs a server-side sender and is not included in this PWA release. Installing the app alone does not enable background notifications.</p></div></SettingsPageShell>
+  const push = useStore($webPush)
+  useEffect(() => { if (!isNativeIOS()) void refreshWebPushState() }, [])
+
+  return <SettingsPageShell title="Notifications"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="data-card"><h3>Background notifications</h3>{isNativeIOS() ? <p className="muted">Web Push is available in the installed PWA. Native app notifications require APNs support.</p> : <><p className="muted">{push.enabled ? 'This device can receive messages delivered to the Hermes Web Push channel.' : 'Enable Web Push so cron jobs and explicit deliveries can notify this device while Hermes Mobile is closed.'}</p><Button className="touch-button" disabled={push.busy || push.permission === 'unsupported' || push.permission === 'denied'} onClick={() => void (push.enabled ? disableWebPush() : enableWebPush())}>{push.busy ? 'Updating…' : push.enabled ? 'Disable notifications' : 'Enable notifications'}</Button>{push.permission === 'denied' && <p className="error-text">Notifications are blocked. Allow them in this site’s browser settings, then try again.</p>}{push.error && <p className="error-text">{push.error}</p>}</>}</div></SettingsPageShell>
 }
 
 function KeyboardShortcutsSettings({ onBack }: { onBack(): void }) {

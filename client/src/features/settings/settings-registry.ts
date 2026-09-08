@@ -75,7 +75,7 @@ const backendEntries: SettingsEntry[] = BACKEND_SETTINGS_SECTIONS.map(section =>
 
 export const SETTINGS_ENTRIES: readonly SettingsEntry[] = [
   ...backendEntries,
-  { category: 'notifications', description: 'Foreground alerts and mobile limitations.', id: 'notifications', kind: 'local', label: 'Notifications' },
+  { category: 'notifications', description: 'Background Web Push delivery for this device.', id: 'notifications', kind: 'local', label: 'Notifications' },
   { description: 'Plan, entitlement, balance, and usage.', id: 'billing', kind: 'administration', label: 'Billing' },
   { description: 'Provider accounts, OAuth, keys, and endpoints.', id: 'providers', kind: 'administration', label: 'Providers' },
   { description: 'Remote gateway, profiles, and connection controls.', id: 'gateway', kind: 'administration', label: 'Gateways' },

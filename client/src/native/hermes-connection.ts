@@ -2,7 +2,7 @@ import { Capacitor, registerPlugin, WebPlugin } from '@capacitor/core'
 
 import type { AuthMode, GatewayStatus, NativeIdentity, NativeResponse } from '~/lib/types'
 import { throwIfAborted } from '~/gateway/abort'
-import { authModeForCredentials, absoluteGatewayURL, normalizeRemoteURL } from '~/lib/url'
+import { absoluteGatewayURL, authModeForCredentials, normalizeRemoteURL } from '~/lib/url'
 
 export interface ConfigureOptions {
   remoteURL: string
@@ -76,7 +76,7 @@ export interface HermesConnectionPlugin {
 const configuredDevGateway = typeof __HERMES_MOBILE_DEV_GATEWAY__ === 'string' ? __HERMES_MOBILE_DEV_GATEWAY__ : ''
 
 export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
-  private remoteURL = defaultRemoteURL() || browserGatewayURL()
+  private remoteURL = defaultRemoteURL() || (Capacitor.isNativePlatform() ? '' : browserGatewayURL())
   private token = localStorage.getItem('hermes.remoteURL') === this.remoteURL ? sessionStorage.getItem('hermes.token') ?? '' : ''
   private authMode: AuthMode = 'token'
 
@@ -112,7 +112,7 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
     form.append(options.field ?? 'file', new Blob([bytes], { type: options.contentType }), options.filename)
     const response = await fetch(this.httpURL(withProfile(options.path, options.profile)), {
       body: form,
-      credentials: this.requestCredentials(),
+      credentials: 'include',
       headers: this.token ? { 'X-Hermes-Session-Token': this.token } : {},
       method: 'POST',
       redirect: 'error',
@@ -123,7 +123,7 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
 
   async download(options: NativeDownloadOptions) {
     const response = await fetch(this.httpURL(withProfile(options.path, options.profile)), {
-      credentials: this.requestCredentials(),
+      credentials: 'include',
       headers: this.token ? { 'X-Hermes-Session-Token': this.token } : {},
       redirect: 'error'
     })
@@ -192,7 +192,7 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
   async logout() {
     try {
       const response = await fetch(this.httpURL('/auth/logout'), {
-        credentials: this.requestCredentials(), method: 'POST', redirect: 'manual'
+        credentials: 'include', method: 'POST', redirect: 'manual'
       })
       // The gateway expires its cookies and redirects to /login. Do not fetch
       // or parse that HTML page as JSON, or navigate out of the PWA on logout.
@@ -222,7 +222,7 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
     try {
       const response = await fetch(this.httpURL(path), {
         body: body === undefined ? undefined : JSON.stringify(body),
-        credentials: this.requestCredentials(),
+        credentials: 'include',
         headers: {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           ...(this.token ? { 'X-Hermes-Session-Token': this.token } : {})
@@ -232,30 +232,21 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
         signal: controller.signal
       })
       return await jsonResponse<T>(response)
-    } catch (error) {
-      if (error instanceof TypeError && !usesBrowserGatewayProxy(this.remoteURL)) {
-        throw new Error('This browser could not reach that Hermes URL. Use this site\'s URL so the Docker proxy contacts Hermes.')
-      }
-      throw error
     } finally {
       window.clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
     }
   }
 
-  private requestCredentials(): RequestCredentials {
-    return usesBrowserGatewayProxy(this.remoteURL) ? 'include' : 'omit'
-  }
-
   private httpURL(path: string) {
     if (!this.remoteURL) throw new Error('Configure a gateway first.')
-    const base = usesBrowserGatewayProxy(this.remoteURL) ? window.location.origin : this.remoteURL
-    const url = new URL(absoluteGatewayURL(base, path))
-    const expected = new URL(base)
-    if (!path.startsWith('/') || url.origin !== expected.origin || url.username || url.password) {
-      throw new Error(usesBrowserGatewayProxy(this.remoteURL)
-        ? 'Gateway requests must stay on this app origin.'
-        : 'Gateway requests must stay on the configured gateway origin.')
+    if (!path.startsWith('/') || path.startsWith('//')) {
+      throw new Error('Gateway requests require a same-origin path.')
+    }
+    const url = new URL(absoluteGatewayURL(this.remoteURL, path))
+    const root = new URL(this.remoteURL)
+    if (url.origin !== root.origin || url.username || url.password) {
+      throw new Error('Gateway requests must stay on the configured gateway origin.')
     }
     return url.toString()
   }
@@ -281,15 +272,9 @@ export function usesBrowserGatewayProxy(remoteURL: string): boolean {
 
 export function defaultRemoteURL(): string {
   const stored = localStorage.getItem('hermes.remoteURL') ?? ''
-  if (Capacitor.isNativePlatform()) return stored
-  const origin = browserGatewayURL()
-  if (!stored) return origin
-  try {
-    const normalized = normalizeRemoteURL(stored, true)
-    return usesBrowserGatewayProxy(normalized) ? normalized : origin
-  } catch {
-    return origin
-  }
+  if (stored) return stored
+  if (Capacitor.isNativePlatform()) return ''
+  return browserGatewayURL()
 }
 
 async function jsonResponse<T>(response: Response): Promise<NativeResponse<T>> {

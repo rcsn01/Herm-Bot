@@ -22,9 +22,8 @@ existing gateway; it does not move or replace the gateway. Native builds remain
 available. See [README.md](README.md) for deployment and test commands.
 
 This does not mark the domain workflows below as complete. Browser sharing can
-fall back to a download. Offline chat and Web Push delivery are not implemented;
-Web Push is a follow-up that requires a server-side sender, rather than an
-excluded long-term capability.
+fall back to a download. Offline chat is not implemented. Web Push is available
+through the bundled relay and the normal `webpush` cron delivery channel.
 
 ## Status and milestones
 
@@ -124,7 +123,8 @@ These are not parity gaps:
   reveal/open actions.
 - Native APNs and guaranteed client background execution. Foreground resume
   reconnects and reconciles gateway history. Active work after a disconnect
-  depends on gateway policy. Web Push delivery remains a planned follow-up.
+  depends on gateway policy. Installed PWAs can receive targeted Web Push
+  deliveries while closed.
 - Desktop plugin-rendered routes or arbitrary plugin React/HTML execution.
   Supported plugin data and generic gateway administration may still be shown
   through native mobile UI.

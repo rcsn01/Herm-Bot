@@ -11,9 +11,10 @@ docker compose build
 docker compose up -d
 ```
 
-Compose publishes HTTP only on `127.0.0.1:8080`. Point a Cloudflare Tunnel (or
-another trusted TLS reverse proxy) at that address. Do not expose port 8080
-publicly. Serve this app at the hostname root, not under a path prefix.
+Compose publishes HTTP on port `8080` on all host interfaces (LAN included).
+Do not forward that port to the public internet. Point a Cloudflare Tunnel or
+other TLS reverse proxy at `http://127.0.0.1:8080` if you want HTTPS. Serve
+this app at the hostname root, not under a path prefix.
 
 If `cloudflared` runs in another container, `localhost` refers to that container.
 Attach it to the Compose network and use `http://mobile:8080` as its origin
@@ -53,10 +54,28 @@ docker compose up -d
 To supply a raw nginx `upstream` block instead, mount it over
 `/tmp/hermes-gateway.conf`.
 
-Configure Hermes `dashboard.public_url` to the external HTTPS PWA origin (for
-example, `https://mobile.example.com`). The gateway uses that public hostname
-for Host/Origin validation and OAuth redirects. Configure the gateway's trusted
-proxy settings for the actual Cloudflare/reverse-proxy hop(s), and ensure the
+Configure Hermes `dashboard.public_url` to the external HTTPS origin of the
+dashboard itself when OAuth/Host checks need it (for example the Tailscale
+Serve URL of Hermes). That is **not** the PWA origin.
+
+If the PWA will type a Hermes Tailscale URL and talk to it directly from the
+phone browser, add this PWA origin to `dashboard.cors_origins` on that Hermes
+instance:
+
+```yaml
+dashboard:
+  cors_origins:
+    - http://mac.tail3ce9b9.ts.net:8080
+    - http://192.168.1.10:8080
+```
+
+Exact origins only. Cookie/OAuth sign-in from the PWA works when both hosts
+share a tailnet MagicDNS site (`*.<tailnet>.ts.net`). A gateway token works
+from any allowlisted origin. The Docker proxy still uses `HERMES_GATEWAY` when
+the PWA stays on this site; it never takes a request-supplied upstream.
+
+When the PWA is reached through Cloudflare or another TLS reverse proxy,
+configure the gateway's trusted proxy settings for that hop, and ensure the
 outer proxy sets `X-Forwarded-Proto: https`. nginx accepts only `http` or
 `https` for that header and otherwise uses its connection scheme.
 
@@ -69,11 +88,6 @@ tokens can occur there. nginx upstream error logging is disabled on proxied
 routes because its error format includes the full request URI; sanitized access
 logs still report status codes. Configure gateway and tunnel logs to avoid
 recording credentials too.
-
-A user can also type a different Hermes URL in the PWA. That traffic leaves the
-proxy and is a browser request to that host. Set `dashboard.public_url` to the
-PWA origin so the gateway can allow that Origin; cookie sign-in still belongs
-on this site's proxy.
 
 Do not configure a Cloudflare Cache Everything rule for this hostname. `/api`,
 `/auth`, `/login`, `/index.html`, `/sw.js`, and `/manifest.webmanifest` must not be
@@ -96,6 +110,76 @@ button rather than reloading an active conversation. Keep the previous image
 for rollback. A rolled-back service worker still needs the normal update/reload
 cycle; if an installation is stuck, clear that site's data and sign in again.
 This never deletes gateway sessions.
+
+## Web Push notifications
+
+Compose includes a private Web Push relay with persistent VAPID keys and
+subscriptions. It is reached through `/push` on the existing PWA origin, so it
+does not need another hostname or published port.
+
+Generate the relay bearer secret once in `apps/mobile/.env`, then deploy:
+
+```sh
+umask 077
+printf '\nHERMES_WEB_PUSH_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
+docker compose up -d --build
+```
+
+Do not repeat the append command if the variable already exists. Set the
+`WEBPUSH_*` deployment values shown in `.env.example`. For a remote Docker
+gateway, install the profile-scoped delivery extension:
+
+```sh
+./configure-web-push-docker.sh
+```
+
+The script securely copies the extension and relay secret into the remote
+`HERMES_HOME`, removes the unreliable process-scoped outbound target if
+present, registers `webpush` as a normal delivery channel, and restarts only
+the Hermes service:
+
+```yaml
+plugins:
+  enabled:
+    - mobile-push-delivery
+  entries:
+    mobile-push-delivery:
+      enabled: true
+      allow_tool_override: false
+platforms:
+  webpush:
+    enabled: true
+    gateway_restart_notification: false
+    home_channel:
+      platform: webpush
+      chat_id: all
+      name: All subscribed devices
+    extra:
+      relay_url: https://mobile.example/push/v1/notify
+```
+
+This extension is loaded through Hermes' supported user-plugin layer; it does
+not change `/opt/hermes` or the container image and survives image updates
+because it lives under the mounted `HERMES_HOME`. The `webpush` home channel
+means all devices subscribed to this Mobile deployment. Select `webpush` as a
+cron delivery target, use `webpush:all` explicitly, or send directly:
+
+```sh
+hermes send --to webpush "The deployment finished."
+```
+
+Ordinary unscheduled Hermes turns do not send Web Push notifications.
+
+Open the installed PWA after deploying its update, sign in, then choose
+**Settings → Notifications → Enable notifications**. Registration mutations
+are accepted only when the PWA's Hermes cookie or session token authenticates
+against the fixed `HERMES_GATEWAY`; `/api/status` is deliberately not used
+because it is a public liveness endpoint. Test end-to-end with `hermes send` or
+a cron job configured to deliver to `webpush`.
+
+The relay removes expired browser subscriptions automatically. Back up the
+`web-push-data` volume if retaining subscriptions across a host migration
+matters; ordinary container rebuilds preserve it.
 
 ## Build context and inputs
 

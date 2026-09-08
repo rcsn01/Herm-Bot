@@ -43,8 +43,10 @@ From `apps/mobile`:
    `apps/mobile/.env`; see `.env.example`). Use `host:port` or `http://host:port`.
    It must serve `/api/status` and `/api/ws`, such as `hermes serve` or
    `hermes dashboard`. `hermes gateway run` alone is not this backend.
-2. Configure the gateway's `dashboard.public_url` to your external app origin,
-   such as `https://mobile.example.com`, and configure its trusted proxy peers.
+2. If you stay on this site's proxy, set Hermes `dashboard.public_url` to this
+   PWA origin for OAuth and configure trusted proxy peers. If you type a Hermes
+   Tailscale URL in the app, set `dashboard.public_url` to that Hermes URL and
+   add this PWA origin to `dashboard.cors_origins`.
 3. Build and start the app:
 
    ```sh
@@ -56,11 +58,11 @@ From `apps/mobile`:
 5. Open the hostname and sign in to Hermes. In Safari, use Share, then Add to
    Home Screen. Chromium browsers also offer an Install app button when eligible.
 
-The connect screen accepts a Hermes URL. Leave it as this site's origin to use
-the Docker proxy (HttpOnly cookies and OAuth stay same-origin). Enter a different
-URL to contact that Hermes host directly from the browser; that path typically
-needs a gateway token, and the Hermes process must allow this PWA origin via
-`dashboard.public_url`. The proxy never takes a request-supplied upstream.
+The connect screen can stay on this site (nginx contacts Hermes from
+`HERMES_GATEWAY`) or accept a Hermes Tailscale/LAN URL. A typed URL is
+fetched by the browser, so that Hermes instance must list this PWA origin in
+`dashboard.cors_origins`. The iOS app can still type a gateway URL without
+CORS. The Docker proxy never takes a request-supplied upstream.
 See [deploy/README.md](deploy/README.md) for networking, proxy trust, caching,
 and gateway configuration details.
 
@@ -77,9 +79,16 @@ and gateway configuration details.
   after signing in; switching profiles still clears the previous profile's UI.
 - Downloads use the browser share sheet when available and still permitted by
   user activation. Otherwise, they save a file through the browser.
-- Web Push delivery is **not included yet**. It needs a server-side sender and
-  authenticated subscription storage. Installing the PWA does not enable push.
-  The existing optional Bark plugin is unchanged and still links to the native app.
+- Web Push uses the bundled relay sidecar and the profile-scoped
+  `mobile-push-delivery` extension. The extension lives in `HERMES_HOME`, does
+  not modify Hermes core, and registers the normal `webpush` delivery channel.
+  Cron jobs can select `webpush`; explicit sends use
+  `hermes send --to webpush "..."`. The channel broadcasts only to
+  devices that opted in under **Settings → Notifications**; installing the PWA
+  alone does not grant notification permission. Ordinary unscheduled turns do
+  not trigger a push. See
+  [deploy/README.md](deploy/README.md#web-push-notifications). The existing
+  optional Bark plugin remains available for the native app.
 
 Existing gateway data needs no migration. Native Keychain credentials, native
 cookies, and native session bookmarks cannot transfer to a browser. Sign in
@@ -119,18 +128,19 @@ npm run ios:open
 npm run ios:test
 ```
 
-Browser development can proxy REST and WebSocket traffic through the fixed
-localhost origin when a gateway does not allow credentialed cross-origin
-requests:
+Browser development can proxy REST and WebSocket traffic through this origin:
 
 ```bash
 HERMES_MOBILE_DEV_GATEWAY=http://h-lap02.tail3ce9b9.ts.net:9119 npm run dev
 ```
 
-The connection screen displays that fixed target. The proxy binds to
-`127.0.0.1` and never accepts a request-supplied destination. The Vite development
-proxy is not a production server. PWA caching runs only in production builds;
-`npm run preview` previews assets but does not proxy a remote gateway.
+The Vite proxy uses that fixed target when the connect screen stays on this
+origin. A typed Tailscale URL is fetched by the browser instead, and needs
+`dashboard.cors_origins` on that Hermes instance. The proxy binds to
+`127.0.0.1` and never accepts a request-supplied destination. The Vite
+development proxy is not a production server. PWA caching runs only in
+production builds; `npm run preview` previews assets but does not proxy a
+remote gateway.
 
 ### Live reload in the iOS simulator
 
@@ -190,11 +200,13 @@ disconnect-grace policy; this client does not change that policy.
 ## Security
 
 - PWA sign-in uses same-origin HttpOnly gateway cookies and fresh WebSocket
-  tickets when the URL is this site (the Docker proxy). Optional static tokens
-  use `sessionStorage`, never persistent `localStorage`. They are cleared on
-  sign out and when the browser session ends. Keep untrusted scripts off this
-  origin; sessionStorage is not a Keychain. A different Hermes URL is contacted
-  directly; the token is sent only to that configured host.
+  tickets through this site's Docker proxy. Optional static tokens use
+  `sessionStorage`, never persistent `localStorage`. They are cleared on sign
+  out and when the browser session ends. Keep untrusted scripts off this
+  origin; sessionStorage is not a Keychain. A typed Hermes URL is contacted
+  directly by the browser; add this page's origin to that instance's
+  `dashboard.cors_origins`. Do not derive the Docker upstream from a
+  request-supplied URL.
 - Browser OAuth navigates through the gateway's `/auth/login` and returns to
   the app. The proxy preserves cookies and redirects. Browser API requests
   refuse redirects rather than forwarding a static token to a different host.

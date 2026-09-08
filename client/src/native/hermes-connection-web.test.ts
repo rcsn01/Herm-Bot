@@ -30,8 +30,8 @@ describe('browser gateway connection', () => {
     expect(fetchMock).toHaveBeenCalledWith(`${origin}/api/status`, expect.objectContaining({ credentials: 'include', redirect: 'error' }))
   })
 
-  it('keeps tokens session-only and sends them through the same-origin proxy by default', async () => {
-    fetchMock.mockResolvedValue(json({ ok: true }))
+  it('keeps tokens session-only and can send them to a Tailscale Hermes URL', async () => {
+    fetchMock.mockImplementation(async () => json({ ok: true }))
     const connection = new HermesConnectionWeb()
     await connection.configure({ remoteURL: origin, token: ' test-token ' })
     await connection.request({ path: '/api/config', profile: 'client work' })
@@ -40,40 +40,14 @@ describe('browser gateway connection', () => {
     }))
     expect(sessionStorage.getItem('hermes.token')).toBe('test-token')
     expect(localStorage.getItem('hermes.token')).toBeNull()
-    expect(fetchMock).toHaveBeenCalledOnce()
-  })
-
-  it('contacts a user-supplied Hermes URL directly and does not reuse another gateway token', async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(json({ ok: true })))
-    const connection = new HermesConnectionWeb()
-    await connection.configure({ remoteURL: 'https://hermes.example:9119', token: 'gateway-token' })
-    await connection.request({ path: '/api/status' })
-    expect(fetchMock).toHaveBeenCalledWith('https://hermes.example:9119/api/status', expect.objectContaining({
-      credentials: 'omit',
-      headers: { 'X-Hermes-Session-Token': 'gateway-token' },
-      redirect: 'error'
-    }))
-    expect(localStorage.getItem('hermes.remoteURL')).toBe('https://hermes.example:9119')
-    expect(sessionStorage.getItem('hermes.token')).toBe('gateway-token')
-
     fetchMock.mockClear()
-    const restored = new HermesConnectionWeb()
-    await restored.configure({ remoteURL: 'https://other.example' })
-    await restored.request({ path: '/api/status' })
-    expect(fetchMock).toHaveBeenCalledWith('https://other.example/api/status', expect.objectContaining({
-      headers: {}
-    }))
-    expect(sessionStorage.getItem('hermes.token')).toBeNull()
-  })
-
-  it('strips a pasted /sessions path before contacting a custom gateway', async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(json({ ok: true })))
-    const connection = new HermesConnectionWeb()
-    await connection.configure({ remoteURL: 'http://h-lap02.tail3ce9b9.ts.net:9119/sessions' })
+    await connection.configure({ remoteURL: 'http://h-lap02.tail3ce9b9.ts.net:9119', token: 'tailscale-token' })
     await connection.request({ path: '/api/status' })
     expect(fetchMock).toHaveBeenCalledWith('http://h-lap02.tail3ce9b9.ts.net:9119/api/status', expect.objectContaining({
-      credentials: 'omit'
+      credentials: 'include',
+      headers: { 'X-Hermes-Session-Token': 'tailscale-token' }
     }))
+    expect(sessionStorage.getItem('hermes.token')).toBe('tailscale-token')
   })
 
   it.each(['//other.example/api/status', 'https://other.example/api/status', '/\\other.example/api/status'])(
@@ -84,40 +58,24 @@ describe('browser gateway connection', () => {
     }
   )
 
-  it('rejects a request that could leave a user-supplied gateway origin', async () => {
-    const connection = new HermesConnectionWeb()
-    await connection.configure({ remoteURL: 'https://hermes.example' })
-    await expect(connection.request({ path: '//evil.example/api/status' })).rejects.toThrow('same-origin')
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it('opens a WebSocket on a user-supplied gateway', async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(json({ auth_required: false })))
-    const connection = new HermesConnectionWeb()
-    await connection.configure({ remoteURL: 'https://hermes.example', token: 't' })
-    await connection.probe()
-    const url = new URL((await connection.getWebSocketURL({ profile: 'work' })).url)
-    expect(url.origin).toBe('wss://hermes.example')
-    expect(url.pathname).toBe('/api/ws')
-    expect(url.searchParams.get('token')).toBe('t')
-    expect(url.searchParams.get('profile')).toBe('work')
-  })
-
-  it('keeps a stored different-origin gateway unused until the user configures it', async () => {
-    localStorage.setItem('hermes.remoteURL', 'https://hermes.example:9119')
+  it('restores a stored Tailscale gateway URL in the browser', async () => {
+    localStorage.setItem('hermes.remoteURL', 'http://h-lap02.tail3ce9b9.ts.net:9119')
     sessionStorage.setItem('hermes.token', 'saved-token')
-    fetchMock.mockResolvedValue(json({ auth_required: true }))
+    fetchMock.mockResolvedValue(json({ auth_required: false }))
     await new HermesConnectionWeb().probe()
-    expect(fetchMock).toHaveBeenCalledWith(`${origin}/api/status`, expect.objectContaining({ headers: {} }))
+    expect(fetchMock).toHaveBeenCalledWith('http://h-lap02.tail3ce9b9.ts.net:9119/api/status', expect.objectContaining({
+      headers: { 'X-Hermes-Session-Token': 'saved-token' }
+    }))
   })
 
-  it('does not send a previous gateway token to this origin after switching back to the proxy', async () => {
+  it('opens a WebSocket on the configured Tailscale origin', async () => {
     const connection = new HermesConnectionWeb()
-    await connection.configure({ remoteURL: 'https://old.example', token: 'old-secret' })
-    await connection.configure({ remoteURL: origin })
-    fetchMock.mockResolvedValue(json({ auth_required: true }))
-    await connection.probe()
-    expect(fetchMock).toHaveBeenCalledWith(`${origin}/api/status`, expect.objectContaining({ headers: {} }))
+    await connection.configure({ remoteURL: 'http://h-lap02.tail3ce9b9.ts.net:9119', token: 'ws-token' })
+    const url = new URL((await connection.getWebSocketURL({ profile: 'work' })).url)
+    expect(url.origin).toBe('ws://h-lap02.tail3ce9b9.ts.net:9119')
+    expect(url.pathname).toBe('/api/ws')
+    expect(url.searchParams.get('token')).toBe('ws-token')
+    expect(url.searchParams.get('profile')).toBe('work')
   })
 
   it('restores a same-origin token when the browser session reloads', async () => {

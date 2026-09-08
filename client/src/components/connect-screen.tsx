@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { Badge, Button, Input } from '~/compat/primitives'
+import { BrandMark } from '~/components/brand-mark'
 import { providerAuthMethod } from '~/lib/url'
 import { HermesConnection, isNativeIOS } from '~/native/hermes-connection'
 import { errorMessage } from '~/gateway/gateway-error'
@@ -61,11 +62,13 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
   return (
     <main className="connect-screen">
       <section className="connect-card">
-        <div className="brand-mark">H</div>
+        <BrandMark />
         <div>
           <Badge variant="muted">{native ? 'Remote iOS client' : 'Remote web app'}</Badge>
           <h1>Hermes Mobile</h1>
-          <p>Connect through this site's Docker proxy, or enter a different Hermes URL.</p>
+          <p>{native
+            ? 'Enter your Hermes gateway URL to connect this iOS app.'
+            : "Leave this page's origin to use the Docker proxy, or paste your Hermes Tailscale URL to talk to that instance directly."}</p>
         </div>
 
         <label>
@@ -75,7 +78,7 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
             autoCorrect="off"
             inputMode="url"
             onChange={event => setRemoteURL(event.target.value)}
-            placeholder="http://127.0.0.1:8080"
+            placeholder="http://machine.tailnet.ts.net:9119"
             value={remoteURL}
           />
         </label>
@@ -108,7 +111,7 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
         {(error || connection.error) && <div className="error-banner" role="alert">{error || connection.error}</div>}
         <p className="security-note">{native
           ? 'Tokens stay in Keychain; browser sessions stay in the native cookie jar.'
-          : 'Leave this as this site to use the Docker proxy. A different URL is fetched directly by the browser and often fails CORS without a gateway token.'}</p>
+          : "Direct Tailscale URLs are fetched by this browser. On that Hermes instance, set dashboard.cors_origins to this page's origin. A gateway token always works; cookie sign-in works when both hosts are on the same tailnet MagicDNS."}</p>
       </section>
     </main>
   )

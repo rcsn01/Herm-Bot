@@ -1,0 +1,7 @@
+name: mobile-push-delivery
+version: 1.0.0
+kind: platform
+description: "Deliver targeted messages through Mobile Web Push."
+author: "Hermes Mobile"
+requires_env:
+  - HERMES_WEB_PUSH_TOKEN

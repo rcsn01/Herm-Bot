@@ -5,13 +5,16 @@ services:
       dockerfile: apps/mobile/Dockerfile
     image: hermes-mobile-pwa:local
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Point at your Hermes HTTP backend (host:port). Compose also reads .env.
     environment:
       HERMES_GATEWAY: ${HERMES_GATEWAY:-}
       HERMES_URL: ${HERMES_URL:-}
+    depends_on:
+      web-push-relay:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
@@ -27,3 +30,37 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+
+  web-push-relay:
+    build:
+      context: ./web-push-relay
+    image: hermes-mobile-web-push-relay:local
+    environment:
+      HERMES_WEB_PUSH_TOKEN: ${HERMES_WEB_PUSH_TOKEN:?set HERMES_WEB_PUSH_TOKEN}
+      HERMES_WEB_PUSH_APP_URL: ${WEBPUSH_PWA_URL:?set WEBPUSH_PWA_URL}
+      HERMES_WEB_PUSH_SUBJECT: ${HERMES_WEB_PUSH_SUBJECT:-}
+    volumes:
+      - web-push-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  web-push-data:

@@ -1,0 +1,16 @@
+{
+  "name": "hermes-mobile-web-push-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "web-push": ">=3.6.7 <4"
+  }
+}
