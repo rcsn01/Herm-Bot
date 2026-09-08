@@ -11,7 +11,7 @@ const outputDir = path.resolve(root, '../output')
 const output = path.join(outputDir, 'Hermes-Mobile.ipa')
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' })
 
-run('npm', ['run', 'build'])
+run('npm', ['run', 'build:native'])
 run('npx', ['cap', 'sync', 'ios'])
 run('xcodebuild', [
   '-project', 'ios/App/App.xcodeproj',

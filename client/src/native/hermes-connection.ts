@@ -2,7 +2,7 @@ import { Capacitor, registerPlugin, WebPlugin } from '@capacitor/core'
 
 import type { AuthMode, GatewayStatus, NativeIdentity, NativeResponse } from '~/lib/types'
 import { throwIfAborted } from '~/gateway/abort'
-import { absoluteGatewayURL, authModeForCredentials, normalizeRemoteURL } from '~/lib/url'
+import { authModeForCredentials, absoluteGatewayURL, normalizeRemoteURL } from '~/lib/url'
 
 export interface ConfigureOptions {
   remoteURL: string
@@ -63,7 +63,7 @@ export interface HermesConnectionPlugin {
   configure(options: ConfigureOptions): Promise<{ remoteURL: string }>
   getAuthMode(): Promise<{ authMode: AuthMode }>
   getWebSocketURL(options?: { profile?: null | string }): Promise<{ url: string }>
-  login(options: NativeLoginOptions): Promise<NativeIdentity>
+  login(options: NativeLoginOptions): Promise<NativeIdentity | null>
   logout(): Promise<void>
   openExternal(options: { url: string }): Promise<void>
   passwordLogin(options: PasswordLoginOptions): Promise<NativeIdentity>
@@ -75,16 +75,18 @@ export interface HermesConnectionPlugin {
 
 const configuredDevGateway = typeof __HERMES_MOBILE_DEV_GATEWAY__ === 'string' ? __HERMES_MOBILE_DEV_GATEWAY__ : ''
 
-class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
-  private remoteURL = localStorage.getItem('hermes.remoteURL') ?? ''
-  private token = sessionStorage.getItem('hermes.token') ?? ''
+export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
+  private remoteURL = defaultRemoteURL() || browserGatewayURL()
+  private token = localStorage.getItem('hermes.remoteURL') === this.remoteURL ? sessionStorage.getItem('hermes.token') ?? '' : ''
   private authMode: AuthMode = 'token'
 
+  constructor(private readonly navigate: (url: string) => void = url => window.location.assign(url)) {
+    super()
+  }
+
   async configure(options: ConfigureOptions) {
-    this.remoteURL = normalizeRemoteURL(options.remoteURL, true)
-    if (configuredDevGateway && this.remoteURL !== normalizeRemoteURL(configuredDevGateway, true)) {
-      throw new Error(`Browser development is proxied to ${configuredDevGateway}. Enter that exact gateway URL or restart Vite with HERMES_MOBILE_DEV_GATEWAY set to this gateway.`)
-    }
+    const remoteURL = normalizeRemoteURL(options.remoteURL, true)
+    this.remoteURL = remoteURL
     this.token = options.token?.trim() ?? ''
     localStorage.setItem('hermes.remoteURL', this.remoteURL)
     if (this.token) sessionStorage.setItem('hermes.token', this.token)
@@ -110,33 +112,45 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
     form.append(options.field ?? 'file', new Blob([bytes], { type: options.contentType }), options.filename)
     const response = await fetch(this.httpURL(withProfile(options.path, options.profile)), {
       body: form,
-      credentials: 'include',
+      credentials: this.requestCredentials(),
       headers: this.token ? { 'X-Hermes-Session-Token': this.token } : {},
       method: 'POST',
+      redirect: 'error',
       signal: options.signal
     })
-    const body = await response.json() as T
-    if (!response.ok) throw new HermesHTTPError((body as { detail?: string }).detail || `Hermes returned HTTP ${response.status}`, response.status, body)
-    return { body, headers: Object.fromEntries(response.headers), status: response.status }
+    return jsonResponse<T>(response)
   }
 
   async download(options: NativeDownloadOptions) {
     const response = await fetch(this.httpURL(withProfile(options.path, options.profile)), {
-      credentials: 'include',
-      headers: this.token ? { 'X-Hermes-Session-Token': this.token } : {}
+      credentials: this.requestCredentials(),
+      headers: this.token ? { 'X-Hermes-Session-Token': this.token } : {},
+      redirect: 'error'
     })
     if (!response.ok) throw new HermesHTTPError(`Hermes returned HTTP ${response.status}`, response.status)
-    const declaredSize = Number(response.headers.get('content-length') ?? 0)
-    if (options.maxBytes && declaredSize > options.maxBytes) throw new Error('The download exceeds the allowed size.')
-    const blob = await response.blob()
-    if (options.maxBytes && blob.size > options.maxBytes) throw new Error('The download exceeds the allowed size.')
+    const blob = await limitedDownload(response, options.maxBytes ?? 100 * 1024 * 1024)
+    const filename = (options.filename || 'download').replace(/[\\/\\\\\x00-\x1f]/g, '_')
+    const file = new File([blob], filename, { type: blob.type })
+    if (navigator.share && navigator.canShare?.({ files: [file] }) && navigator.userActivation?.isActive) {
+      try {
+        await navigator.share({ files: [file] })
+        return { filename, path: '', size: blob.size }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return { filename, path: '', size: blob.size }
+        // Browsers may lose user activation during the download. Save instead.
+      }
+    }
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = options.filename ?? 'download'
+    anchor.download = filename
+    anchor.hidden = true
+    document.body.append(anchor)
     anchor.click()
-    URL.revokeObjectURL(url)
-    return { filename: anchor.download, path: '', size: blob.size }
+    anchor.remove()
+    // Safari needs the object URL to remain valid while it starts the download.
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    return { filename, path: '', size: blob.size }
   }
 
   async openExternal(options: { url: string }) {
@@ -161,8 +175,12 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
     return { url: this.wsURL('/api/ws', { ...profile, token: this.token }) }
   }
 
-  async login(_options: NativeLoginOptions): Promise<NativeIdentity> {
-    throw new Error('Use an iOS simulator or device for native OAuth.')
+  async login(options: NativeLoginOptions): Promise<null> {
+    const url = new URL(this.httpURL('/auth/login'))
+    url.searchParams.set('provider', options.provider)
+    url.searchParams.set('next', `${window.location.pathname}${window.location.search}${window.location.hash}`)
+    this.navigate(url.toString())
+    return null
   }
 
   async passwordLogin(options: PasswordLoginOptions): Promise<NativeIdentity> {
@@ -172,11 +190,23 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
   }
 
   async logout() {
-    await this.fetch('/auth/logout', 'POST').catch(() => undefined)
+    try {
+      const response = await fetch(this.httpURL('/auth/logout'), {
+        credentials: this.requestCredentials(), method: 'POST', redirect: 'manual'
+      })
+      // The gateway expires its cookies and redirects to /login. Do not fetch
+      // or parse that HTML page as JSON, or navigate out of the PWA on logout.
+      if (!response.ok && response.type !== 'opaqueredirect' && response.status !== 302) {
+        throw new HermesHTTPError('Gateway sign out failed. Reload to sign in again.', response.status)
+      }
+    } finally {
+      this.token = ''
+      sessionStorage.removeItem('hermes.token')
+    }
   }
 
   async clearConnection() {
-    this.remoteURL = ''
+    this.remoteURL = browserGatewayURL()
     this.token = ''
     localStorage.removeItem('hermes.remoteURL')
     sessionStorage.removeItem('hermes.token')
@@ -192,29 +222,42 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
     try {
       const response = await fetch(this.httpURL(path), {
         body: body === undefined ? undefined : JSON.stringify(body),
-        credentials: 'include',
+        credentials: this.requestCredentials(),
         headers: {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           ...(this.token ? { 'X-Hermes-Session-Token': this.token } : {})
         },
         method,
+        redirect: 'error',
         signal: controller.signal
       })
-      const raw = await response.text()
-      const parsed = raw ? (JSON.parse(raw) as T) : ({} as T)
-      if (!response.ok) {
-        const detail = (parsed as { detail?: string }).detail
-        throw new HermesHTTPError(detail || `Hermes returned HTTP ${response.status}`, response.status, parsed)
+      return await jsonResponse<T>(response)
+    } catch (error) {
+      if (error instanceof TypeError && !usesBrowserGatewayProxy(this.remoteURL)) {
+        throw new Error('This browser could not reach that Hermes URL. Use this site\'s URL so the Docker proxy contacts Hermes.')
       }
-      return { body: parsed, headers: Object.fromEntries(response.headers), status: response.status }
+      throw error
     } finally {
       window.clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
     }
   }
 
+  private requestCredentials(): RequestCredentials {
+    return usesBrowserGatewayProxy(this.remoteURL) ? 'include' : 'omit'
+  }
+
   private httpURL(path: string) {
-    return configuredDevGateway ? new URL(path, window.location.origin).toString() : absoluteGatewayURL(this.remoteURL, path)
+    if (!this.remoteURL) throw new Error('Configure a gateway first.')
+    const base = usesBrowserGatewayProxy(this.remoteURL) ? window.location.origin : this.remoteURL
+    const url = new URL(absoluteGatewayURL(base, path))
+    const expected = new URL(base)
+    if (!path.startsWith('/') || url.origin !== expected.origin || url.username || url.password) {
+      throw new Error(usesBrowserGatewayProxy(this.remoteURL)
+        ? 'Gateway requests must stay on this app origin.'
+        : 'Gateway requests must stay on the configured gateway origin.')
+    }
+    return url.toString()
   }
 
   private wsURL(path: string, params: Record<string, string>) {
@@ -223,6 +266,74 @@ class HermesConnectionWeb extends WebPlugin implements HermesConnectionPlugin {
     Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value))
     return url.toString()
   }
+}
+
+function browserGatewayURL(): string {
+  return normalizeRemoteURL(configuredDevGateway || window.location.origin, true)
+}
+
+/** Same-origin nginx/Vite proxy, including the development gateway rewrite. */
+export function usesBrowserGatewayProxy(remoteURL: string): boolean {
+  const configured = normalizeRemoteURL(remoteURL, true)
+  if (configured === normalizeRemoteURL(window.location.origin, true)) return true
+  return Boolean(configuredDevGateway) && configured === normalizeRemoteURL(configuredDevGateway, true)
+}
+
+export function defaultRemoteURL(): string {
+  const stored = localStorage.getItem('hermes.remoteURL') ?? ''
+  if (Capacitor.isNativePlatform()) return stored
+  const origin = browserGatewayURL()
+  if (!stored) return origin
+  try {
+    const normalized = normalizeRemoteURL(stored, true)
+    return usesBrowserGatewayProxy(normalized) ? normalized : origin
+  } catch {
+    return origin
+  }
+}
+
+async function jsonResponse<T>(response: Response): Promise<NativeResponse<T>> {
+  const raw = await response.text()
+  let body: T
+  try {
+    body = raw ? JSON.parse(raw) as T : {} as T
+  } catch {
+    throw new HermesHTTPError(
+      response.ok ? 'Expected a Hermes response. Reload to sign in, or check the gateway proxy.' : `Hermes returned HTTP ${response.status}`,
+      response.status
+    )
+  }
+  if (!response.ok) {
+    const detail = (body as { detail?: unknown } | null)?.detail
+    throw new HermesHTTPError(typeof detail === 'string' ? detail : `Hermes returned HTTP ${response.status}`, response.status, body)
+  }
+  return { body, headers: Object.fromEntries(response.headers), status: response.status }
+}
+
+async function limitedDownload(response: Response, maxBytes: number): Promise<Blob> {
+  if (Number(response.headers.get('content-length') ?? 0) > maxBytes) {
+    await response.body?.cancel()
+    throw new Error('The download exceeds the allowed size.')
+  }
+  const reader = response.body?.getReader()
+  if (!reader) return new Blob([])
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maxBytes) {
+        await reader.cancel()
+        throw new Error('The download exceeds the allowed size.')
+      }
+      chunks.push(new Uint8Array(value))
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return new Blob(chunks, { type: response.headers.get('content-type') ?? 'application/octet-stream' })
 }
 
 export const HermesConnection = registerPlugin<HermesConnectionPlugin>('HermesConnection', {
@@ -235,6 +346,9 @@ export function withProfile(path: string, profile?: null | string): string {
   // argument. An omitted profile means this is an installation-wide route, so
   // do not add a misleading default-profile query parameter.
   const url = new URL(path, 'http://gateway.invalid')
+  if (!path.startsWith('/') || url.origin !== 'http://gateway.invalid' || url.username || url.password) {
+    throw new Error('Gateway requests require a same-origin path.')
+  }
   if (profile !== undefined) url.searchParams.set('profile', profile ?? 'default')
   return `${url.pathname}${url.search}${url.hash}`
 }

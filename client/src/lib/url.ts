@@ -16,7 +16,12 @@ export function normalizeRemoteURL(input: string, allowLocalHTTP = false): strin
     throw new Error('Enter a gateway URL starting with http:// or https://.')
   }
 
-  url.pathname = url.pathname.replace(/\/+$/, '')
+  const firstSegment = url.pathname.split('/').filter(Boolean)[0] ?? ''
+  if (/^(?:sessions?|settings|login|auth|capabilities|cron|chat|more|operations)$/i.test(firstSegment)) {
+    url.pathname = ''
+  } else {
+    url.pathname = url.pathname.replace(/\/+$/, '')
+  }
   return url.toString().replace(/\/$/, '')
 }
 

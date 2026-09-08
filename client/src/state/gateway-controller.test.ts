@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const capacitorApp = vi.hoisted(() => ({ addListener: vi.fn() }))
 
-vi.mock('@capacitor/app', () => ({ App: { addListener: capacitorApp.addListener } }))
+vi.mock('~/native/app-lifecycle', () => ({
+  observeAppLifecycle: (handler: unknown) => capacitorApp.addListener('appStateChange', handler)
+}))
 
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { $chat, emptyChatState } from '~/state/conversation'
@@ -139,6 +141,37 @@ describe('profile switching', () => {
 })
 
 describe('connection restoration', () => {
+  it('waits on the sign-in screen instead of opening a WebSocket for a fresh interactive browser', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: window.location.origin })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'interactive', status: { auth_required: true } }),
+      request: vi.fn().mockRejectedValue(Object.assign(new Error('Unauthorized'), { status: 401 }))
+    }
+    const gateway = new ConnectionAwareGateway()
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.initialize()
+
+    expect(connection.request).toHaveBeenCalledWith({ path: '/api/auth/me' })
+    expect(gateway.calls.filter(call => call.kind === 'connect')).toEqual([])
+    expect($connection.get()).toMatchObject({ authMode: 'interactive', error: null, phase: 'disconnected' })
+    controller.dispose()
+  })
+
+  it('reports a non-authentication failure while restoring a browser session', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: window.location.origin })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'interactive', status: { auth_required: true } }),
+      request: vi.fn().mockRejectedValue(new Error('proxy unavailable'))
+    }
+    const controller = new GatewayController(connection as never, new ConnectionAwareGateway())
+
+    await controller.initialize()
+
+    expect($connection.get()).toMatchObject({ error: expect.stringContaining('proxy unavailable'), phase: 'error' })
+    controller.dispose()
+  })
+
   it('restores transport-state observation when StrictMode reinitializes the controller', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
     const connection = {
@@ -563,6 +596,26 @@ describe('authentication lifecycle', () => {
     login.mockRejectedValueOnce(new Error('Sign in was cancelled.'))
     await expect(controller.login('stub')).rejects.toThrow('cancelled')
     expect(connect).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('does not connect while a browser OAuth redirect is leaving the page', async () => {
+    const login = vi.fn().mockResolvedValue(null)
+    const connect = vi.spyOn(GatewayController.prototype, 'connect').mockResolvedValue()
+    const controller = new GatewayController({ login } as never)
+    await controller.login('browser-provider')
+    expect(connect).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('reports incomplete remote sign out without reconnecting on foreground', async () => {
+    const logout = vi.fn().mockRejectedValue(new TypeError('offline'))
+    const controller = new GatewayController({ logout } as never)
+    await controller.initialize()
+    await expect(controller.logout()).rejects.toThrow('offline')
+    const lifecycleHandler = capacitorApp.addListener.mock.calls[0]?.[1] as ((state: { isActive: boolean }) => void)
+    lifecycleHandler({ isActive: true })
+    expect($connection.get()).toMatchObject({ phase: 'disconnected', error: expect.stringContaining('could not be confirmed') })
     controller.dispose()
   })
 

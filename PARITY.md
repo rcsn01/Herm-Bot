@@ -13,6 +13,19 @@ capability. Versioned gateways must advertise contract 6 or newer; unversioned
 legacy gateways remain supported. Mobile reports unsupported operations at the
 feature that needs them rather than attempting Desktop-only behavior.
 
+## PWA delivery
+
+The browser build now adds Home Screen installation, a cached offline shell,
+browser cookie/password/OAuth authentication, foreground/network reconnect,
+and same-origin session links. Docker serves this client and proxies the
+existing gateway; it does not move or replace the gateway. Native builds remain
+available. See [README.md](README.md) for deployment and test commands.
+
+This does not mark the domain workflows below as complete. Browser sharing can
+fall back to a download. Offline chat and Web Push delivery are not implemented;
+Web Push is a follow-up that requires a server-side sender, rather than an
+excluded long-term capability.
+
 ## Status and milestones
 
 | Mark | Meaning |
@@ -109,9 +122,9 @@ These are not parity gaps:
 - Electron lifecycle/updater behavior, local backend spawning, multi-window
   controls, pet overlays, marketplace themes, tray/menu integration, and OS
   reveal/open actions.
-- APNs, background push delivery, or background execution. Remote work
-  continues on the gateway; foreground resume reconnects and reconciles gateway
-  truth.
+- Native APNs and guaranteed client background execution. Foreground resume
+  reconnects and reconciles gateway history. Active work after a disconnect
+  depends on gateway policy. Web Push delivery remains a planned follow-up.
 - Desktop plugin-rendered routes or arbitrary plugin React/HTML execution.
   Supported plugin data and generic gateway administration may still be shown
   through native mobile UI.

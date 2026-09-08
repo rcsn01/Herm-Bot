@@ -21,8 +21,17 @@ describe('parseHermesDeepLink', () => {
     expect(parseHermesDeepLink('hermes:/session/abc')).toEqual({ kind: 'session', sessionId: 'abc' })
   })
 
-  it('ignores foreign, malformed, and unhandled links', () => {
+  it('accepts same-origin HTTPS session links', () => {
+    expect(parseHermesDeepLink(`${window.location.origin}/session/a%2Fb?profile=work`)).toEqual({
+      kind: 'session', profile: 'work', sessionId: 'a/b'
+    })
+  })
+
+  it('ignores foreign, credentialed, malformed, and unhandled links', () => {
     expect(parseHermesDeepLink('https://example.com/session/abc')).toBeNull()
+    expect(parseHermesDeepLink(`${window.location.protocol}//user:pass@${window.location.host}/session/abc`)).toBeNull()
+    expect(parseHermesDeepLink(`${window.location.origin}/settings/abc`)).toBeNull()
+    expect(parseHermesDeepLink(`${window.location.origin}/session/%E0%A4%A`)).toBeNull()
     expect(parseHermesDeepLink('hermes://unknown/abc')).toBeNull()
     expect(parseHermesDeepLink('hermes://session')).toBeNull()
     expect(parseHermesDeepLink('not a url')).toBeNull()

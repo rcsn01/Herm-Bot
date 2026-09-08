@@ -14,6 +14,8 @@ import { SettingsPageShell } from './settings-page-shell'
 import { SETTINGS_ENTRIES, type SettingsEntry } from './settings-registry'
 import { SettingsAdministrationScreen } from './settings-administration-screen'
 import { MemorySettings } from './memory-settings'
+import { isNativeIOS } from '~/native/hermes-connection'
+import { PwaInstallHelp } from '~/pwa/PwaStatus'
 
 const ICONS: Record<string, typeof IconSettings> = {
   about: IconInfoCircle,
@@ -69,15 +71,15 @@ function SettingsRow({ entry, onClick }: { entry: SettingsEntry; onClick(): void
 
 function AppearanceSettings({ onBack }: { onBack(): void }) {
   const preferences = useStore($preferences)
-  return <SettingsPageShell title="Appearance"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="settings-list static"><label><span><strong>Theme</strong><small>System follows the iOS appearance.</small></span><select onChange={event => savePreferences({ theme: event.target.value as typeof preferences.theme })} value={preferences.theme}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></SettingsPageShell>
+  return <SettingsPageShell title="Appearance"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="settings-list static"><label><span><strong>Theme</strong><small>System follows your device appearance.</small></span><select onChange={event => savePreferences({ theme: event.target.value as typeof preferences.theme })} value={preferences.theme}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></SettingsPageShell>
 }
 
 function NotificationsSettings({ onBack }: { onBack(): void }) {
-  return <SettingsPageShell title="Notifications"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="data-card"><h3>Foreground notifications</h3><p className="muted">Hermes Mobile can report activity while it is open. APNs and background execution are not implemented, so this screen does not present unavailable native controls.</p></div></SettingsPageShell>
+  return <SettingsPageShell title="Notifications"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="data-card"><h3>Foreground notifications</h3><p className="muted">Activity is shown while Hermes is open. Web Push delivery needs a server-side sender and is not included in this PWA release. Installing the app alone does not enable background notifications.</p></div></SettingsPageShell>
 }
 
 function KeyboardShortcutsSettings({ onBack }: { onBack(): void }) {
-  return <SettingsPageShell title="Keyboard Shortcuts"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="data-card"><h3>Implemented mobile commands</h3><ul><li>Send and stop from the composer</li><li>Open the navigation drawer</li><li>Pull to refresh the active screen</li></ul><p className="muted">Rebinding is unsupported on iOS. Mobile does not reuse the Desktop renderer keybinding registry.</p></div></SettingsPageShell>
+  return <SettingsPageShell title="Keyboard Shortcuts"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="data-card"><h3>Implemented mobile commands</h3><ul><li>Send and stop from the composer</li><li>Open the navigation drawer</li><li>Pull to refresh the active screen</li></ul><p className="muted">Shortcut rebinding is not available in Mobile. Mobile does not reuse the Desktop renderer keybinding registry.</p></div></SettingsPageShell>
 }
 
 export function applyTheme(theme: ThemeMode) {
@@ -87,5 +89,5 @@ export function applyTheme(theme: ThemeMode) {
 
 export function AboutSettings({ onBack }: { onBack(): void }) {
   const connection = useStore($connection)
-  return <SettingsPageShell title="About"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="settings-list static"><div><span><strong>Mobile app</strong><small>Hermes Mobile</small></span><Badge>iOS</Badge></div><div><span><strong>Gateway contract</strong><small>{connection.status?.version || 'Unknown'}</small></span><Badge>{connection.phase}</Badge></div></div><div className="data-card"><p>Remote diagnostics remain available through Gateway administration. Hermes runtime updates are not offered as an iOS app update.</p></div></SettingsPageShell>
+  return <SettingsPageShell title="About"><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><div className="settings-list static"><div><span><strong>Mobile app</strong><small>Hermes Mobile</small></span><Badge>{isNativeIOS() ? 'iOS' : 'PWA'}</Badge></div><div><span><strong>Gateway contract</strong><small>{connection.status?.version || 'Unknown'}</small></span><Badge>{connection.phase}</Badge></div></div><div className="data-card"><p>Remote diagnostics remain available through Gateway administration. App updates do not update the Hermes gateway.</p>{!isNativeIOS() && <PwaInstallHelp />}</div></SettingsPageShell>
 }

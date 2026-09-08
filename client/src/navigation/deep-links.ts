@@ -18,9 +18,13 @@ export function parseHermesDeepLink(raw: string): HermesDeepLink | null {
   } catch {
     return null
   }
-  if (url.protocol !== 'hermes:') return null
+  const isHermes = url.protocol === 'hermes:'
+  const isWeb = url.protocol === 'http:' || url.protocol === 'https:'
+  if (!isHermes && !isWeb) return null
+  if (url.username || url.password) return null
+  if (isWeb && (typeof window === 'undefined' || url.origin !== window.location.origin)) return null
 
-  const segments = (url.host ? `${url.host}${url.pathname}` : url.pathname).split('/').filter(Boolean)
+  const segments = (isHermes && url.host ? `${url.host}${url.pathname}` : url.pathname).split('/').filter(Boolean)
   if (segments.length !== 2 || segments[0] !== 'session') return null
   try {
     const sessionId = decodeURIComponent(segments[1])

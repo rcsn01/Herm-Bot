@@ -28,14 +28,33 @@ beforeEach(() => {
 })
 
 describe('observeHermesDeepLinks', () => {
-  it('is a no-op on the web', () => {
+  it('feeds a valid browser cold-start URL and warm popstate, then cleans up', () => {
     mocks.state.native = false
+    history.replaceState(null, '', '/session/cold?profile=work')
     const handler = vi.fn()
     const unsubscribe = observeHermesDeepLinks(handler)
+    expect(handler).toHaveBeenCalledExactlyOnceWith(`${window.location.origin}/session/cold?profile=work`)
+
+    history.pushState(null, '', '/session/warm')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(handler).toHaveBeenLastCalledWith(`${window.location.origin}/session/warm`)
+
     unsubscribe()
+    history.pushState(null, '', '/session/ignored')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    expect(handler).toHaveBeenCalledTimes(2)
     expect(mocks.addListener).not.toHaveBeenCalled()
     expect(mocks.getLaunchUrl).not.toHaveBeenCalled()
+  })
+
+  it('rejects foreign and unsupported browser URLs', () => {
+    mocks.state.native = false
+    history.replaceState(null, '', '/settings')
+    const handler = vi.fn()
+    const unsubscribe = observeHermesDeepLinks(handler)
+    window.dispatchEvent(new PopStateEvent('popstate'))
     expect(handler).not.toHaveBeenCalled()
+    unsubscribe()
   })
 
   it('handles the cold-start launch URL', async () => {

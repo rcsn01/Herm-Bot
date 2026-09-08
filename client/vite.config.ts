@@ -3,6 +3,7 @@ import path from 'node:path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type ProxyOptions } from 'vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 function devProxy(target: string, websocket = false): ProxyOptions {
   return {
@@ -22,15 +23,39 @@ function devProxy(target: string, websocket = false): ProxyOptions {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const devGateway = env.HERMES_MOBILE_DEV_GATEWAY?.replace(/\/$/, '') ?? ''
+  const devGateway = mode === 'development' ? env.HERMES_MOBILE_DEV_GATEWAY?.replace(/\/$/, '') ?? '' : ''
   const proxy = devGateway ? {
     '/api': devProxy(devGateway, true),
-    '/auth': devProxy(devGateway)
+    '/auth': devProxy(devGateway),
+    '/login': devProxy(devGateway)
   } : undefined
 
   return {
-    base: './',
-    plugins: [react(), tailwindcss()],
+    base: mode === 'native' ? './' : '/',
+    plugins: [react(), tailwindcss(), VitePWA({
+      disable: mode === 'native',
+      strategies: 'injectManifest',
+      srcDir: 'src/pwa',
+      filename: 'sw.ts',
+      injectRegister: false,
+      registerType: 'prompt',
+      injectManifest: { globPatterns: ['**/*.{js,css,html,png}'] },
+      manifest: {
+        id: '/',
+        name: 'Hermes Mobile',
+        short_name: 'Hermes',
+        description: 'Your remote Hermes agent, on your phone.',
+        start_url: '/',
+        scope: '/',
+        display: 'standalone',
+        background_color: '#0b0d12',
+        theme_color: '#0b0d12',
+        icons: [
+          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }
+        ]
+      }
+    })],
     css: { postcss: { plugins: [] } },
     define: { __HERMES_MOBILE_DEV_GATEWAY__: JSON.stringify(devGateway) },
     resolve: {

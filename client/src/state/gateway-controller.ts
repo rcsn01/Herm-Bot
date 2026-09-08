@@ -1,4 +1,4 @@
-import { App } from '@capacitor/app'
+import { observeAppLifecycle, type AppLifecycleHandle } from '~/native/app-lifecycle'
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import type { GatewayPort } from '~/gateway/gateway-port'
@@ -9,7 +9,7 @@ import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } 
 import { createGatewayApi } from '~/gateway/gateway-api'
 import { SessionRuntime, type RuntimeSession } from '~/gateway/session-runtime'
 import { createSessionsApi, type SessionsApi } from '~/features/sessions/api'
-import { HermesConnection, type HermesConnectionPlugin } from '~/native/hermes-connection'
+import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetRoutes } from '~/navigation/navigation-store'
 import { $chat, Conversation } from '~/state/conversation'
 import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
@@ -29,7 +29,7 @@ export class GatewayController {
   private sessionSelectionGeneration = 0
   private sessionListLimit = SESSION_LIST_PAGE_SIZE
   private disposed = false
-  private activeListener?: Awaited<ReturnType<typeof App.addListener>>
+  private activeListener?: AppLifecycleHandle
   private unsubscribeEvents?: () => void
   private unsubscribeState?: () => void
 
@@ -38,7 +38,11 @@ export class GatewayController {
     gateway?: GatewayPort
   ) {
     const transport = gateway ?? new RemoteGateway(connection)
-    this.runtime = new SessionRuntime(transport, { minimumContract: MINIMUM_CONTRACT, retryDelays: RETRY_DELAYS })
+    this.runtime = new SessionRuntime(transport, {
+      minimumContract: MINIMUM_CONTRACT,
+      retryDelays: RETRY_DELAYS,
+      sessionSource: isNativeIOS() ? 'ios' : 'mobile'
+    })
     this.gateway = this.runtime
     this.conversation = new Conversation(this.runtime)
     this.subscribeRuntime()
@@ -51,11 +55,11 @@ export class GatewayController {
     this.appBackgrounded = false
     if (wasDisposed) this.subscribeRuntime()
     await this.activeListener?.remove()
-    const listener = await App.addListener('appStateChange', ({ isActive }) => {
+    const listener = await observeAppLifecycle(({ isActive }) => {
       if (lifecycle !== this.lifecycleGeneration || this.disposed) return
       if (isActive) {
         this.appBackgrounded = false
-        if (!this.logoutInProgress) void this.reconnect(true)
+        if (!this.logoutInProgress && $connection.get().phase !== 'disconnected') void this.reconnect(true)
       } else {
         this.appBackgrounded = true
         this.invalidateReconnect()
@@ -70,7 +74,10 @@ export class GatewayController {
       return
     }
     this.activeListener = listener
-    if ($preferences.get().remoteURL) await this.connect().catch(() => undefined)
+    if ($preferences.get().remoteURL) {
+      if (isNativeIOS()) await this.connect().catch(() => undefined)
+      else await this.restoreBrowserConnection()
+    }
   }
 
   async configure(remoteURL: string, token?: string) {
@@ -135,8 +142,9 @@ export class GatewayController {
   }
 
   async login(provider: string) {
-    await this.connection.login({ provider })
-    return this.connect()
+    const identity = await this.connection.login({ provider })
+    // A browser OAuth login navigates away. The returning page reconnects.
+    if (identity !== null) return this.connect()
   }
 
   async passwordLogin(provider: string, username: string, password: string) {
@@ -149,13 +157,20 @@ export class GatewayController {
     this.invalidateReconnect()
     $connection.set({ ...$connection.get(), error: null, phase: 'disconnected' })
     this.runtime.close()
+    let logoutError: unknown
     try {
       await this.connection.logout()
+    } catch (error) {
+      logoutError = error
     } finally {
       this.invalidateReconnect()
       await this.teardownGatewayScope()
       $connection.set({ ...$connection.get(), phase: 'disconnected' })
       this.logoutInProgress = false
+    }
+    if (logoutError) {
+      $connection.set({ ...$connection.get(), phase: 'disconnected', error: 'Disconnected locally. Gateway sign out could not be confirmed. Reconnect to finish signing out.' })
+      throw logoutError
     }
   }
 
@@ -266,6 +281,25 @@ export class GatewayController {
     this.unsubscribeState = undefined
     this.runtime.dispose()
     void this.activeListener?.remove()
+  }
+
+  private async restoreBrowserConnection() {
+    try {
+      const { authMode, status } = await this.connection.probe()
+      savePreferences({ authMode })
+      $connection.set({ authMode, error: null, phase: 'disconnected', status })
+      if (authMode === 'interactive') {
+        try {
+          await this.connection.request({ path: '/api/auth/me' })
+        } catch (error) {
+          if (classifyGatewayError(error).kind === 'auth') return
+          throw error
+        }
+      }
+      await this.connect()
+    } catch (error) {
+      this.applyConnectionError(error)
+    }
   }
 
   /** Shared teardown for every Scope-ending transition (configure-URL change, logout, profile switch). */

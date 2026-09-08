@@ -1,5 +1,7 @@
 import { atom, computed } from 'nanostores'
 
+import { defaultRemoteURL } from '~/native/hermes-connection'
+
 import type { AuthMode, ConnectionPreferences, GatewayStatus, StoredSession } from '~/lib/types'
 
 export type ConnectionPhase = 'connected' | 'connecting' | 'disconnected' | 'error' | 'reconnecting' | 'unsupported'
@@ -14,7 +16,7 @@ export const $connection = atom<{
 export const $preferences = atom<ConnectionPreferences>({
   authMode: 'token',
   profile: localStorage.getItem('hermes.profile'),
-  remoteURL: localStorage.getItem('hermes.remoteURL') ?? '',
+  remoteURL: defaultRemoteURL(),
   theme: (localStorage.getItem('hermes.theme') as ConnectionPreferences['theme']) ?? 'system'
 })
 

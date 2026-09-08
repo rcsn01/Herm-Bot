@@ -19,6 +19,12 @@ describe('normalizeRemoteURL', () => {
     expect(normalizeRemoteURL('http://localhost:8000/', true)).toBe('http://localhost:8000')
   })
 
+  it('strips pasted app routes and keeps a reverse-proxy prefix', () => {
+    expect(normalizeRemoteURL('http://h-lap02.tail3ce9b9.ts.net:9119/sessions')).toBe('http://h-lap02.tail3ce9b9.ts.net:9119')
+    expect(normalizeRemoteURL('https://hermes.example/session/abc')).toBe('https://hermes.example')
+    expect(normalizeRemoteURL('https://agent.example/hermes/')).toBe('https://agent.example/hermes')
+  })
+
   it('builds same-gateway API URLs below a proxy prefix', () => {
     expect(absoluteGatewayURL('https://agent.example/hermes', '/api/status')).toBe('https://agent.example/hermes/api/status')
   })

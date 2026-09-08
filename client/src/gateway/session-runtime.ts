@@ -58,6 +58,7 @@ export interface OpenSessionOptions {
 export interface SessionRuntimeOptions {
   minimumContract: number
   retryDelays: readonly number[]
+  sessionSource?: string
 }
 
 export class SessionRuntime implements GatewayPort {
@@ -137,7 +138,7 @@ export class SessionRuntime implements GatewayPort {
   async createSession(profile: null | string): Promise<RuntimeSession> {
     return this.sessionFromResponse(await this.rpc<SessionRPCResponse>('session.create', {
       profile: profileKey(profile),
-      source: 'ios'
+      source: this.options.sessionSource ?? 'ios'
     }))
   }
 
@@ -147,7 +148,7 @@ export class SessionRuntime implements GatewayPort {
       omit_messages: true,
       profile: profileKey(profile),
       session_id: storedSessionId,
-      source: 'ios'
+      source: this.options.sessionSource ?? 'ios'
     }))
   }
 
@@ -267,7 +268,7 @@ export class SessionRuntime implements GatewayPort {
 
   private async createCurrent(profile: null | string, operation: { generation: number; signal: AbortSignal }): Promise<RuntimeSession> {
     try {
-      const response = await this.transport.rpc<SessionRPCResponse>('session.create', { profile: profileKey(profile), source: 'ios' }, { signal: operation.signal })
+      const response = await this.transport.rpc<SessionRPCResponse>('session.create', { profile: profileKey(profile), source: this.options.sessionSource ?? 'ios' }, { signal: operation.signal })
       this.assertCurrent(operation)
       return this.sessionFromResponse(response)
     } catch (error) {
@@ -282,7 +283,7 @@ export class SessionRuntime implements GatewayPort {
         omit_messages: true,
         profile: profileKey(profile),
         session_id: storedSessionId,
-        source: 'ios'
+        source: this.options.sessionSource ?? 'ios'
       }, { signal: operation.signal })
       this.assertCurrent(operation)
       return this.sessionFromResponse(response)

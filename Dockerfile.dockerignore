@@ -1,0 +1,45 @@
+# This Dockerfile is built from the repository root. Start denied and admit
+# only reproducible frontend inputs; credentials, local state, native builds,
+# node_modules, and the rest of the Hermes backend never enter the context.
+**
+!apps/
+!apps/mobile/
+!apps/mobile/client/
+!apps/mobile/client/package.json
+!apps/mobile/client/package-lock.json
+!apps/mobile/client/index.html
+!apps/mobile/client/tsconfig.json
+!apps/mobile/client/vite.config.ts
+!apps/mobile/client/capacitor.config.ts
+!apps/mobile/client/src/
+!apps/mobile/client/src/**
+!apps/mobile/client/public/
+!apps/mobile/client/public/**
+!apps/mobile/deploy/
+!apps/mobile/deploy/nginx.conf
+!apps/mobile/deploy/gateway.conf
+!apps/mobile/deploy/hermes-gateway.sh
+!apps/mobile/deploy/docker-entrypoint.sh
+!apps/shared/
+!apps/shared/package.json
+!apps/shared/tsconfig.json
+!apps/shared/src/
+!apps/shared/src/**
+!apps/desktop/
+!apps/desktop/src/
+!apps/desktop/src/types/
+!apps/desktop/src/types/hermes.ts
+!apps/desktop/src/components/
+!apps/desktop/src/components/ui/
+!apps/desktop/src/components/ui/badge.tsx
+!apps/desktop/src/components/ui/button.tsx
+!apps/desktop/src/components/ui/codicon.tsx
+!apps/desktop/src/components/ui/control.ts
+!apps/desktop/src/components/ui/empty-state.tsx
+!apps/desktop/src/components/ui/input.tsx
+!apps/desktop/src/components/ui/scroll-area.tsx
+!apps/desktop/src/components/ui/separator.tsx
+!apps/desktop/src/components/ui/skeleton.tsx
+!apps/desktop/src/components/ui/switch.tsx
+!apps/desktop/src/components/ui/tabs.tsx
+!apps/desktop/src/components/ui/textarea.tsx

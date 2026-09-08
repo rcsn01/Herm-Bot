@@ -1,6 +1,8 @@
 import { App } from '@capacitor/app'
 import { Capacitor } from '@capacitor/core'
 
+import { parseHermesDeepLink } from '~/navigation/deep-links'
+
 /**
  * Bridge iOS deep links (`hermes://` URLs opened via the app's URL scheme)
  * into a handler. Covers both cold start (`getLaunchUrl`) and warm taps
@@ -8,7 +10,19 @@ import { Capacitor } from '@capacitor/core'
  * browser dev sessions are unaffected.
  */
 export function observeHermesDeepLinks(handler: (rawURL: string) => void): () => void {
-  if (!Capacitor.isNativePlatform()) return () => {}
+  if (!Capacitor.isNativePlatform()) {
+    let active = true
+    const forwardCurrentURL = () => {
+      const rawURL = window.location.href
+      if (active && parseHermesDeepLink(rawURL)) handler(rawURL)
+    }
+    window.addEventListener('popstate', forwardCurrentURL)
+    forwardCurrentURL()
+    return () => {
+      active = false
+      window.removeEventListener('popstate', forwardCurrentURL)
+    }
+  }
 
   let active = true
   let receivedWarmURL = false
