@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '~/compat/hermes-shared'
 
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
 

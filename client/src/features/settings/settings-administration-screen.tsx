@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { BillingStateResponse, SubscriptionPreviewResponse, SubscriptionStateResponse } from '@hermes/shared/billing'
+import type { BillingStateResponse, SubscriptionPreviewResponse, SubscriptionStateResponse } from '~/compat/hermes-shared/billing'
 import { IconChevronLeft, IconChevronRight, IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 

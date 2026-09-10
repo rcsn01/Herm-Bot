@@ -1,5 +1,5 @@
 import { Haptics, ImpactStyle } from '@capacitor/haptics'
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '~/compat/hermes-shared'
 import { atom } from 'nanostores'
 
 import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
@@ -9,7 +9,7 @@ import type { ChatState, PendingPrompt, ToolActivity, TranscriptMessage } from '
 
 /**
  * The Conversation is the deep module between the UI and the GatewaySession's
- * chat surface (see apps/mobile/CONTEXT.md). It owns the active session's chat
+ * chat surface (see the repository's CONTEXT.md). It owns the active session's chat
  * state end to end — the `$chat` atom (this module is its sole writer),
  * gateway-event reduction, prompt submission (send / queue / interrupt /
  * steer / redirect / retry-from), interactive-prompt responses, attachments,

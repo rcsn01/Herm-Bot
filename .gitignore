@@ -1,3 +1,15 @@
+# Local deployment configuration and secrets.
+.env
+.env.*
+!.env.example
+node_modules/
+npm-debug.log*
+
 # Unsigned IPA build output (`npm run ipa`); *.ipa files inside are also
 # ignored by client/.gitignore, this keeps the directory itself quiet.
 output/
+
+# Local Python and tooling caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/

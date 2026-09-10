@@ -15,6 +15,7 @@ from unittest import mock
 from gateway.config import PlatformConfig
 
 KIT = Path(__file__).resolve().parent
+HERMES_AGENT_ROOT = Path(os.environ.get("HERMES_AGENT_ROOT", KIT.parent))
 
 
 def load_plugin():
@@ -105,7 +106,7 @@ class MobilePushDeliveryTest(unittest.TestCase):
             })
             completed = subprocess.run(
                 [sys.executable, "-c", script],
-                cwd=KIT.parents[2],
+                cwd=HERMES_AGENT_ROOT,
                 env=env,
                 text=True,
                 capture_output=True,

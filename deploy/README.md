@@ -4,7 +4,7 @@ This package builds only the existing React/Vite client and serves its static
 `dist/` with unprivileged nginx. It does not contain Hermes, Python, Xcode,
 backend state, Cloudflare credentials, or TLS termination.
 
-Run commands from `apps/mobile`:
+Run commands from the repository root:
 
 ```sh
 docker compose build
@@ -23,7 +23,7 @@ instead. Keep the mobile port private and do not commit tunnel credentials.
 ## Gateway
 
 Set `HERMES_GATEWAY` (or `HERMES_URL`) to one existing Hermes HTTP backend
-reachable from the container. Compose interpolates `apps/mobile/.env`. The
+reachable from the container. Compose interpolates `.env`. The
 default is `host.docker.internal:8642`; Compose adds the Linux `host-gateway`
 mapping. A gateway bound only to the host's loopback address is not generally
 reachable through the Docker bridge. Use an existing authenticated backend
@@ -117,7 +117,7 @@ Compose includes a private Web Push relay with persistent VAPID keys and
 subscriptions. It is reached through `/push` on the existing PWA origin, so it
 does not need another hostname or published port.
 
-Generate the relay bearer secret once in `apps/mobile/.env`, then deploy:
+Generate the relay bearer secret once in `.env`, then deploy:
 
 ```sh
 umask 077
@@ -183,20 +183,13 @@ matters; ordinary container rebuilds preserve it.
 
 ## Build context and inputs
 
-The build context must be the repository root (`../..` from this directory), as
-set in `compose.yaml`. `Dockerfile.dockerignore` is a deny-by-default allowlist.
-The admitted build inputs are:
-
-- mobile client package/lock files, Vite/TypeScript/Capacitor build config,
-  `index.html`, `src/`, and `public/`;
-- `apps/shared` package metadata, TypeScript config, and source (required by the
-  lockfile's `file:../../shared` dependency and source aliases);
-- the desktop `types/hermes.ts` contract and the small UI primitive set imported
-  by the mobile compatibility layer, including `control.ts`;
-- the nginx deployment files (`nginx.conf`, `gateway.conf`,
-  `hermes-gateway.sh`, and `docker-entrypoint.sh`).
+The build context is the repository root, as set in `compose.yaml`.
+`Dockerfile.dockerignore` is a deny-by-default allowlist. It admits only the
+client build inputs and nginx deployment files. The gateway contracts and UI
+primitives used by the client live under `client/src/compat/`, so a Hermes
+Agent checkout is not needed to build the image.
 
 Local `.env`, `.hermes`, `node_modules`, iOS/Xcode outputs, repository secrets,
-and backend sources are excluded by construction. If the client begins to
-import another shared source file, add that precise input to both the Dockerfile
-and its allowlist rather than broadening the context.
+and unrelated source files are excluded by construction. If the client begins
+to import another standalone source file, add that precise input to both the
+Dockerfile and its allowlist rather than broadening the context.

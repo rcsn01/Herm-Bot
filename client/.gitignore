@@ -1,6 +1,9 @@
 node_modules/
 dist/
 build/
+test-results/
+playwright-report/
+.vite/
 ios/App/Pods/
 ios/App/DerivedData/
 *.xcarchive

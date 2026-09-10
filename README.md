@@ -37,10 +37,10 @@ optional endpoints are shown as unavailable rather than simulated locally.
 
 ## Run with Docker and Cloudflare Tunnel
 
-From `apps/mobile`:
+From the repository root:
 
 1. Set `HERMES_GATEWAY` to your existing Hermes HTTP backend (Compose reads
-   `apps/mobile/.env`; see `.env.example`). Use `host:port` or `http://host:port`.
+   `.env`; see `.env.example`). Use `host:port` or `http://host:port`.
    It must serve `/api/status` and `/api/ws`, such as `hermes serve` or
    `hermes dashboard`. `hermes gateway run` alone is not this backend.
 2. If you stay on this site's proxy, set Hermes `dashboard.public_url` to this
@@ -107,11 +107,10 @@ Native builds additionally need Xcode 26 or newer and retain the iOS 15 target.
 
 ## Development
 
-The npm package intentionally lives at `apps/mobile/client/`, below the root
-`apps/*` workspace glob. Run all mobile commands from that directory.
+The npm package lives at `client/`. Run client commands from that directory.
 
 ```bash
-cd apps/mobile/client
+cd client
 npm ci
 npm run dev
 npm test
@@ -147,7 +146,7 @@ remote gateway.
 Start Vite, build, install, and launch the live-reload app with one command:
 
 ```bash
-cd apps/mobile/client
+cd client
 HERMES_MOBILE_DEV_GATEWAY=http://h-lap02.tail3ce9b9.ts.net:9119 npm run ios:live
 ```
 
@@ -170,14 +169,14 @@ not use the live-reload URL.
 ## Build an unsigned IPA
 
 ```bash
-cd apps/mobile/client
+cd client
 npm run ipa
 ```
 
 The script builds the web app, synchronizes Capacitor, compiles an unsigned
 release application, validates its executable and `Info.plist`, and writes:
 
-`apps/mobile/output/Hermes-Mobile.ipa`
+`output/Hermes-Mobile.ipa`
 
 The archive contains `Payload/Hermes Mobile.app`. It intentionally has no
 provisioning profile or distribution signature; iLoader or SideStore re-signs

@@ -1,4 +1,4 @@
-import { JsonRpcGatewayClient, type GatewayEvent } from '@hermes/shared'
+import { JsonRpcGatewayClient, type GatewayEvent } from '~/compat/hermes-shared'
 
 import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from './gateway-port'
 import { throwIfAborted } from './abort'

@@ -2,7 +2,7 @@
 
 Run from the repo root (or anywhere):
 
-    python3 -m pytest apps/mobile/push-notification/test_bark_notify.py -q
+    python3 -m unittest discover -s push-notification -p 'test_*.py'
 
 stdlib + unittest only; no network access — urllib is mocked.
 """

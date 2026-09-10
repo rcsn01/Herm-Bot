@@ -18,7 +18,6 @@
     "paths": {
       "~/*": ["./src/*"],
       "@/lib/utils": ["./src/compat/desktop-utils.ts"],
-      "@hermes/shared": ["../../shared/src/index.ts"],
       "@tabler/icons-react": ["./node_modules/@tabler/icons-react"],
       "class-variance-authority": ["./node_modules/class-variance-authority"],
       "radix-ui": ["./node_modules/radix-ui"],

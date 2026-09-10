@@ -64,8 +64,7 @@ form is intentionally not a parity workflow.
 
 ## Desktop route accounting
 
-Every core route declared by `apps/desktop/src/app/routes.ts` is accounted for
-here. Mobile owns its navigation, so a Desktop URL need not become an iOS URL.
+Every core route declared by the [Hermes Desktop route catalogue](https://github.com/NousResearch/hermes-agent/blob/main/apps/desktop/src/app/routes.ts) is accounted for here. Mobile owns its navigation, so a Desktop URL need not become an iOS URL.
 
 | Desktop route | Mobile mapping | Official route/RPC surface | Profile scope | Milestone | Workflow status |
 |---|---|---|---|---|---|

@@ -1,4 +1,4 @@
-import type { BillingStateResponse, SubscriptionStateResponse } from '@hermes/shared/billing'
+import type { BillingStateResponse, SubscriptionStateResponse } from '~/compat/hermes-shared/billing'
 import { createSessionsApi } from '~/features/sessions/api'
 import type { GatewayApi } from '~/gateway/gateway-api'
 import type { ConfigSchemaResponse, CustomEndpointUpdate, CustomEndpointsResponse, EnvVarInfo, HermesConfigRecord, MemoryProviderConfig, MemoryProviderOAuthStatus, MemoryStatusResponse, OAuthPollResponse, OAuthProvidersResponse, OAuthStartResponse } from '~/lib/types'

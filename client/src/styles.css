@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@source "../../../desktop/src/components/ui/{button,badge,input,textarea,switch,tabs,scroll-area,separator,skeleton,empty-state,codicon}.tsx";
+@source "./compat/ui/{button,badge,input,textarea,switch,tabs,scroll-area,separator,skeleton,empty-state,codicon}.tsx";
 
 :root {
   color-scheme: light dark;

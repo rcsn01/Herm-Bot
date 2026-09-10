@@ -107,19 +107,19 @@ isn't available (older installs), substitute `docker-compose` throughout.
 **Option 1 — copy from your checkout (this Mac):**
 
 ```bash
-scp -r apps/mobile/push-notification <user>@<gateway>:~/push-notification
+scp -r push-notification <user>@<gateway>:~/push-notification
 ```
 
 **Option 2 — download from GitHub, pinned to a commit:**
 
 ```bash
 export PLUGIN_REF="<full-40-char-SHA>"   # the kit commit you reviewed; run
-                                         # `git log -1 --format=%H -- apps/mobile/push-notification`
+                                         # `git log -1 --format=%H -- push-notification`
                                          # on the checkout to find the current one
 export PLUGIN_SOURCE="$HOME/push-notification"
 mkdir -p "$PLUGIN_SOURCE"
-curl -fsSL "https://raw.githubusercontent.com/<owner>/<repo>/$PLUGIN_REF/apps/mobile/push-notification/__init__.py" -o "$PLUGIN_SOURCE/__init__.py"
-curl -fsSL "https://raw.githubusercontent.com/<owner>/<repo>/$PLUGIN_REF/apps/mobile/push-notification/plugin.yaml" -o "$PLUGIN_SOURCE/plugin.yaml"
+curl -fsSL "https://raw.githubusercontent.com/<owner>/<repo>/$PLUGIN_REF/push-notification/__init__.py" -o "$PLUGIN_SOURCE/__init__.py"
+curl -fsSL "https://raw.githubusercontent.com/<owner>/<repo>/$PLUGIN_REF/push-notification/plugin.yaml" -o "$PLUGIN_SOURCE/plugin.yaml"
 ```
 
 (Downloading a moving branch ref is not recommended — pin a commit.)
@@ -330,7 +330,7 @@ the test (`hermes cron remove` / `hermes cron pause`).
 
 ```bash
 # 1. plugin
-scp -r apps/mobile/push-notification <user>@<gateway>:~/push-notification
+scp -r push-notification <user>@<gateway>:~/push-notification
 ssh <user>@<gateway> 'mkdir -p ~/.hermes/plugins && ln -sfn ~/push-notification ~/.hermes/plugins/bark-notify'
 
 # 2. relay (persistent + idempotent)
@@ -399,8 +399,8 @@ relay side: `docker logs bark`.
 ## Hand this to your Hermes agent
 
 > Set up Bark push notifications. The `bark-notify` plugin kit is already
-> available at ~/push-notification (or apps/mobile/push-notification in the
-> checkout) — read its README.md first and follow Setup A step by step. Do
+> available at ~/push-notification (or `push-notification/` in the checkout) —
+> read its README.md first and follow Setup A step by step. Do
 > NOT modify the plugin code and do NOT create any skill for this. Rules:
 > - Work block by block; verify each block's expected output before the next.
 > - Never print, log, or repeat the Bark device key. I will enter it myself

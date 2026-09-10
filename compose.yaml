@@ -1,8 +1,8 @@
 services:
   mobile:
     build:
-      context: ../..
-      dockerfile: apps/mobile/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: hermes-mobile-pwa:local
     ports:
       - "8080:8080"

@@ -36,7 +36,7 @@ import type {
   ToolEnvVar,
   ToolProvider,
   ToolsetInfo
-} from '../../../../desktop/src/types/hermes'
+} from '~/compat/hermes-types'
 
 export type {
   AutomationBlueprint,

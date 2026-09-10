@@ -63,7 +63,6 @@ export default defineConfig(({ mode }) => {
       alias: [
         { find: '~', replacement: path.resolve(import.meta.dirname, 'src') },
         { find: '@/lib/utils', replacement: path.resolve(import.meta.dirname, 'src/compat/desktop-utils.ts') },
-        { find: '@hermes/shared', replacement: path.resolve(import.meta.dirname, '../../shared/src/index.ts') },
         { find: 'react', replacement: path.resolve(import.meta.dirname, 'node_modules/react') },
         { find: 'react-dom', replacement: path.resolve(import.meta.dirname, 'node_modules/react-dom') },
         { find: 'radix-ui', replacement: path.resolve(import.meta.dirname, 'node_modules/radix-ui/dist/index.mjs') },
@@ -76,7 +75,7 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       port: 5175,
       strictPort: true,
-      fs: { allow: [path.resolve(import.meta.dirname, '../../..')] },
+      fs: { allow: [path.resolve(import.meta.dirname, '..')] },
       proxy
     }
   }

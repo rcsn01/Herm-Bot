@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '~/compat/hermes-shared'
 
 import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
 import { abortError, combineSignals, throwIfAborted } from './abort'

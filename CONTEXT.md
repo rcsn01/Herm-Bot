@@ -1,6 +1,6 @@
 # Hermes Mobile — Domain Glossary
 
-Terms used across `apps/mobile`. Add new concepts here when a refactor names something that didn't have a word.
+Terms used across the mobile repository. Add new concepts here when a refactor names something that didn't have a word.
 
 - **Gateway** — the remote Hermes backend the app talks to (JSON-RPC over WebSocket for prompts/events, native HTTP for REST/uploads). Identified by a `remoteURL` + `profile` pair.
 - **Profile** — an isolated Hermes instance on the gateway; the app scopes all state and queries to one profile at a time.

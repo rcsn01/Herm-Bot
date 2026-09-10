@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '~/compat/hermes-shared'
 import type { NativeRequestOptions, NativeUploadOptions } from '~/native/hermes-connection'
 import type { NativeResponse } from '~/lib/types'
 

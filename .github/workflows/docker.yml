@@ -1,0 +1,42 @@
+name: Docker
+
+on:
+  push:
+    paths:
+      - 'client/**'
+      - 'deploy/**'
+      - 'web-push-relay/**'
+      - 'Dockerfile'
+      - 'Dockerfile.dockerignore'
+      - 'compose.yaml'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'deploy/**'
+      - 'web-push-relay/**'
+      - 'Dockerfile'
+      - 'Dockerfile.dockerignore'
+      - 'compose.yaml'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HERMES_GATEWAY: host.docker.internal:8642
+      HERMES_WEB_PUSH_TOKEN: ci-only-token
+      WEBPUSH_PWA_URL: https://mobile.example
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build the PWA image
+        run: docker build --tag hermes-mobile-pwa:ci .
+      - name: Build the relay image
+        run: docker build --tag hermes-mobile-web-push-relay:ci ./web-push-relay

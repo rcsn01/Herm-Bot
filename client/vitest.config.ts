@@ -9,7 +9,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '~': path.resolve(import.meta.dirname, 'src'),
-      '@hermes/shared': path.resolve(import.meta.dirname, '../../shared/src/index.ts')
     }
   },
   test: { include: ['src/**/*.test.{ts,tsx}'], environment: 'jsdom', setupFiles: ['./src/test/setup.ts'] }
