@@ -9,6 +9,8 @@ const DELIVERED_LIMIT = 2048;
 const SESSION_LIMIT = 256;
 const DEFAULT_MAX_OBSERVERS = 64;
 const DEFAULT_RECONCILE_BUFFER_LIMIT = 2048;
+const RESPONSE_PREVIEW_LIMIT = 500;
+const RESPONSE_ACCUMULATOR_LIMIT = RESPONSE_PREVIEW_LIMIT + 1;
 
 function object(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -16,6 +18,37 @@ function object(value) {
 
 function boundedString(value, limit = 512) {
   return typeof value === "string" ? value.slice(0, limit) : "";
+}
+
+function utf16Prefix(value, limit) {
+  let end = Math.min(value.length, limit);
+  if (end < value.length && end > 0) {
+    const last = value.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function createResponsePreview() {
+  return { text: "", lastSequence: 0 };
+}
+
+function appendResponsePreview(preview, value) {
+  if (typeof value !== "string" || !value) return;
+  preview.text = utf16Prefix(
+    `${preview.text}${value}`.trimStart(),
+    RESPONSE_ACCUMULATOR_LIMIT,
+  );
+}
+
+function resetResponsePreview(preview) {
+  preview.text = "";
+}
+
+function formatResponsePreview(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (text.length <= RESPONSE_PREVIEW_LIMIT) return text;
+  return `${utf16Prefix(text, RESPONSE_PREVIEW_LIMIT - 1)}…`;
 }
 
 function sequence(event) {
@@ -331,6 +364,7 @@ export class HermesCompletionBridge {
         connection = await this.#connect();
         observer.connection = connection;
         const buffered = [];
+        const responsePreview = createResponsePreview();
         let bufferOverflow = false;
         let reconciling = true;
         const offEvent = connection.onEvent((event) => {
@@ -344,7 +378,7 @@ export class HermesCompletionBridge {
             buffered.push(event);
             return;
           }
-          this.#queueEvent(sessionId, observer, event, connection);
+          this.#queueEvent(sessionId, observer, event, connection, responsePreview);
         });
 
         let known = this.state.snapshot().sessions[sessionId];
@@ -392,11 +426,11 @@ export class HermesCompletionBridge {
         const replayed = Array.isArray(replay?.events) ? replay.events : [];
         replayed.sort((left, right) => sequence(left) - sequence(right));
         for (const event of replayed) {
-          await this.#queueEvent(sessionId, observer, event, connection);
+          await this.#queueEvent(sessionId, observer, event, connection, responsePreview);
         }
         buffered.sort((left, right) => sequence(left) - sequence(right));
         for (const event of buffered) {
-          await this.#queueEvent(sessionId, observer, event, connection);
+          await this.#queueEvent(sessionId, observer, event, connection, responsePreview);
         }
         buffered.length = 0;
         reconciling = false;
@@ -428,8 +462,10 @@ export class HermesCompletionBridge {
     if (this.observers.get(sessionId) === observer) this.observers.delete(sessionId);
   }
 
-  #queueEvent(sessionId, observer, event, connection) {
-    const operation = this.deliveryQueue.then(() => this.#handleEvent(sessionId, observer, event));
+  #queueEvent(sessionId, observer, event, connection, responsePreview) {
+    const operation = this.deliveryQueue.then(() => (
+      this.#handleEvent(sessionId, observer, event, responsePreview)
+    ));
     this.deliveryQueue = operation.catch((error) => {
       this.onError(error);
       connection.close();
@@ -437,35 +473,59 @@ export class HermesCompletionBridge {
     return operation;
   }
 
-  async #handleEvent(sessionId, observer, event) {
+  async #handleEvent(sessionId, observer, event, responsePreview) {
     if (event?.session_id && event.session_id !== sessionId) return;
     const seq = sequence(event);
     const known = this.state.snapshot().sessions[sessionId];
     if (seq && seq <= (known?.lastSeen ?? 0)) return;
+    if (seq && seq <= responsePreview.lastSequence) return;
+    if (seq) responsePreview.lastSequence = seq;
 
     if (event.type === "session.info") {
       observer.metadata = mergeMetadata(observer.metadata, sessionMetadata(event.payload));
     }
+    if (event.type === "message.start") {
+      resetResponsePreview(responsePreview);
+      return;
+    }
+
+    const payload = object(event.payload) ? event.payload : {};
+    if (event.type === "message.delta") {
+      appendResponsePreview(responsePreview, payload.delta ?? payload.text);
+      return;
+    }
     if (event.type !== "message.complete") return;
 
+    appendResponsePreview(responsePreview, payload.delta);
     const epoch = this.state.snapshot().epoch || "unknown";
-    const payload = object(event.payload) ? event.payload : {};
     const turnId = boundedString(payload.turn_id || payload.message_id, 128);
     const key = `${epoch}:${sessionId}:${seq || turnId || "complete"}`;
-    if (this.state.hasDelivered(key)) return;
+    if (this.state.hasDelivered(key)) {
+      resetResponsePreview(responsePreview);
+      return;
+    }
 
-    await this.deliver(this.#notification(sessionId, seq, turnId, observer.metadata, payload));
+    await this.deliver(this.#notification(
+      sessionId,
+      seq,
+      turnId,
+      observer.metadata,
+      payload,
+      responsePreview.text,
+    ));
     await this.state.markDelivered(sessionId, seq, key, observer.metadata);
+    resetResponsePreview(responsePreview);
   }
 
-  #notification(sessionId, seq, turnId, metadata, payload) {
+  #notification(sessionId, seq, turnId, metadata, payload, responseText) {
     const failed = payload.failed === true || Boolean(payload.error);
     const interrupted = payload.interrupted === true || payload.cancelled === true;
+    const body = formatResponsePreview(responseText);
     const status = failed
-      ? { title: "Hermes: task failed", body: "A Hermes turn failed." }
+      ? { title: "Hermes: task failed", body: body || "A Hermes turn failed." }
       : interrupted
-        ? { title: "Hermes: task stopped", body: "A Hermes turn was stopped." }
-        : { title: "Hermes: task finished", body: "Your Hermes response is ready." };
+        ? { title: "Hermes: task stopped", body: body || "A Hermes turn was stopped." }
+        : { title: "Hermes: task finished", body: body || "Your Hermes response is ready." };
     const storedSessionId = boundedString(metadata.storedSessionId);
     const url = new URL(storedSessionId
       ? `/session/${encodeURIComponent(storedSessionId)}`

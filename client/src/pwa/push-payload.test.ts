@@ -15,6 +15,11 @@ describe('Web Push payload policy', () => {
     })
   })
 
+  it('preserves an agent response preview supplied by the relay', () => {
+    const body = `${'a'.repeat(498)}…`
+    expect(parsePushPayload({ body }, 'https://mobile.example').body).toBe(body)
+  })
+
   it('does not open a cross-origin URL supplied by a notification', () => {
     expect(parsePushPayload({ url: 'https://attacker.example/login' }, 'https://mobile.example').url).toBe('/')
   })

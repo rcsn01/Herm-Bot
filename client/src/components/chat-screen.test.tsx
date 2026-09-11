@@ -140,6 +140,149 @@ describe('transcript rendering and durable edits', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
   })
 
+  it('keeps following when new content moves the bottom away without user scroll intent', async () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    $chat.set({
+      ...emptyChatState(),
+      running: true,
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
+    })
+
+    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
+    const scroller = document.querySelector<HTMLElement>('.view-container')!
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, value: 1_000 }
+    })
+    scroller.scrollTop = 500
+    fireEvent.scroll(scroller)
+    scrollIntoView.mockClear()
+
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 1_100 })
+    fireEvent.scroll(scroller)
+    $chat.set({
+      ...$chat.get(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
+    })
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
+    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
+  })
+
+  it('does not treat an iOS composer tap followed by viewport movement as scroll intent', async () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    $chat.set({
+      ...emptyChatState(),
+      running: true,
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
+    })
+
+    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
+    const scroller = document.querySelector<HTMLElement>('.view-container')!
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, value: 1_000 }
+    })
+    scroller.scrollTop = 500
+    fireEvent.scroll(scroller)
+    scrollIntoView.mockClear()
+
+    fireEvent.touchStart(scroller, { touches: [{ clientY: 400 }] })
+    scroller.scrollTop = 400
+    fireEvent.scroll(scroller)
+    fireEvent.touchEnd(scroller)
+    $chat.set({
+      ...$chat.get(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
+    })
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
+    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
+  })
+
+  it('ignores a small upward touch while following streamed output', async () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    $chat.set({
+      ...emptyChatState(),
+      running: true,
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
+    })
+
+    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
+    const scroller = document.querySelector<HTMLElement>('.view-container')!
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, value: 1_000 }
+    })
+    scroller.scrollTop = 500
+    fireEvent.scroll(scroller)
+    scrollIntoView.mockClear()
+
+    fireEvent.touchStart(scroller, { touches: [{ clientY: 300 }] })
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 330 }] })
+    scroller.scrollTop = 470
+    fireEvent.scroll(scroller)
+    fireEvent.touchEnd(scroller)
+    $chat.set({
+      ...$chat.get(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
+    })
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
+    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
+  })
+
+  it('stops following streamed output after the user scrolls up and offers a jump to the latest message', async () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    $chat.set({
+      ...emptyChatState(),
+      running: true,
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
+    })
+
+    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
+    const scroller = document.querySelector<HTMLElement>('.view-container')!
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 500 },
+      scrollHeight: { configurable: true, value: 1_000 }
+    })
+    scroller.scrollTop = 500
+    fireEvent.scroll(scroller)
+    scrollIntoView.mockClear()
+    fireEvent.touchStart(scroller, { touches: [{ clientY: 300 }] })
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 400 }] })
+    scroller.scrollTop = 400
+    fireEvent.scroll(scroller)
+    fireEvent.touchEnd(scroller)
+
+    $chat.set({
+      ...$chat.get(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New messages. Jump to latest' })).not.toBeNull())
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New messages. Jump to latest' }))
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' })
+    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
+
+    scroller.scrollTop = 500
+    fireEvent.scroll(scroller)
+    scrollIntoView.mockClear()
+    $chat.set({
+      ...$chat.get(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with the latest output', role: 'assistant' }])
+    })
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
+    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
+  })
+
   it('waits to position a hidden resumed chat until the chat becomes visible', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     $chat.set({

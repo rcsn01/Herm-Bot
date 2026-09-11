@@ -85,11 +85,15 @@ and gateway configuration details.
   user activation. Otherwise, they save a file through the browser.
 - Web Push uses the bundled relay and its external completion bridge. The
   bridge watches live sessions through Hermes' authenticated Gateway API and
-  sends a notification after each `message.complete` event. It installs
-  nothing in Hermes and does not change Hermes configuration, sessions, or
-  profiles. Only devices that opted in under **Settings → Notifications**
-  receive pushes. Installing the PWA alone does not grant notification
-  permission. See
+  sends a notification after each `message.complete` event. By default, the
+  notification previews up to 500 characters of response text available to
+  the bridge, and tapping it opens the conversation. The operating system may
+  show less text, and the preview can appear on the lock screen. If the bridge
+  attaches after the response has streamed or otherwise receives no response
+  text, it sends the generic completion message instead. It installs nothing
+  in Hermes and does not change Hermes configuration, sessions, or profiles.
+  Only devices that opted in under **Settings → Notifications** receive
+  pushes. Installing the PWA alone does not grant notification permission. See
   [deploy/README.md](deploy/README.md#web-push-notifications). The existing
   optional Bark plugin remains available for the native app.
 

@@ -149,6 +149,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .tool-timeline pre, .file-content { max-height: 52dvh; overflow: auto; padding: 12px; border-radius: var(--radius-control); background: #080a0f; color: #d9dbea; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .context-usage { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: var(--font-caption); }
 .context-usage progress { width: 100%; accent-color: var(--primary); }
+.new-messages-button { position: fixed; z-index: 24; left: 50%; bottom: calc(var(--composer-safe-lift) + 104px); transform: translateX(-50%); box-shadow: 0 8px 24px #0004; }
 .prompt-card { position: fixed; z-index: 26; inset: auto 12px calc(var(--composer-safe-lift) + 100px); padding: 14px; display: grid; gap: 10px; border: 1px solid var(--primary); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 16px 45px #0004; }
 .prompt-card p { margin: 0; color: var(--muted-foreground); }
 .prompt-card input { min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); }
