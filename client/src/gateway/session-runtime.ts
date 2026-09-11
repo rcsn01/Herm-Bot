@@ -345,13 +345,15 @@ export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage
     const rowIdValue = projected.row_id ?? projected.id
     const rowId = typeof rowIdValue === 'number' && Number.isInteger(rowIdValue) ? rowIdValue : undefined
     const reasoningValue = projected.reasoning ?? projected.reasoning_content
+    const reasoning = typeof reasoningValue === 'string' ? reasoningValue : undefined
     const timelineContent = timelineDisplayContent(displayKind, projected.display_metadata, rawContent)
+    if (storedRole === 'assistant' && timelineContent === null && !rawContent.trim() && !reasoning?.trim()) return []
 
     return [{
       content: timelineContent ?? rawContent,
       ...(timelineContent === null ? {} : { displayKind }),
       id: rowId === undefined ? `history-${index}` : `history-row-${rowId}`,
-      reasoning: typeof reasoningValue === 'string' ? reasoningValue : undefined,
+      reasoning,
       role: timelineContent === null ? storedRole : 'system',
       ...(rowId === undefined ? {} : { rowId }),
       streaming: false

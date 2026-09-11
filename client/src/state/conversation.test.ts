@@ -96,8 +96,7 @@ describe('session identity and history mapping', () => {
     expect(messages).toEqual([
       { content: 'visible', id: 'history-row-41', reasoning: undefined, role: 'user', rowId: 41, streaming: false },
       { content: 'answer', id: 'history-1', reasoning: 'carefully', role: 'assistant', streaming: false },
-      { content: 'terminal output', id: 'history-row-43', reasoning: undefined, role: 'tool', rowId: 43, streaming: false },
-      { content: '', id: 'history-3', reasoning: undefined, role: 'assistant', streaming: false }
+      { content: 'terminal output', id: 'history-row-43', reasoning: undefined, role: 'tool', rowId: 43, streaming: false }
     ])
   })
 })

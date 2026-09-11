@@ -134,6 +134,12 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .message-content { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; font-size: 1rem; line-height: 1.55; }
 .message details { margin-bottom: 8px; font-size: var(--font-caption); opacity: .8; }
 .message details pre { max-height: 240px; overflow: auto; }
+.message.collapsed-message { width: min(88%, 720px); padding: 0; overflow: hidden; }
+.collapsed-message details { margin: 0; opacity: 1; }
+.collapsed-message summary { min-height: 44px; padding: 0 12px; display: flex; align-items: center; color: var(--muted-foreground); cursor: pointer; font-size: var(--font-control); font-weight: var(--weight-semibold); }
+.collapsed-message summary::after { margin-left: auto; content: "Show"; font-size: var(--font-caption); font-weight: 400; }
+.collapsed-message details[open] summary::after { content: "Hide"; }
+.collapsed-message pre { max-height: 40dvh; margin: 0; padding: 12px; overflow: auto; border-top: 1px solid var(--line); background: var(--bg); color: var(--text); font: var(--font-caption)/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 .tool-timeline { padding: 10px 12px; border-left: 2px solid var(--line); }
 .tool-timeline details { padding: 7px 0; }
 .tool-timeline summary { display: flex; align-items: center; gap: 8px; font-size: var(--font-control); }

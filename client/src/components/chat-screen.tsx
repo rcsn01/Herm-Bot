@@ -13,7 +13,7 @@ import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection
 import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection } from '~/state/store'
+import { $connection, $sessions } from '~/state/store'
 
 interface ChatScreenProps {
   active?: boolean
@@ -25,6 +25,11 @@ interface ChatScreenProps {
 export function ChatScreen({ active = true, controller, conversation, mediaConnection = controller.gateway }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
+  const sessions = useStore($sessions)
+  const isCronSession = Boolean(
+    chat.storedSessionId?.startsWith('cron_')
+    || sessions.some(session => session.id === chat.storedSessionId && session.source === 'cron')
+  )
   // A fresh literal, not the live instances: every method must be bound so
   // `this` resolves to its owner (Conversation / GatewayController).
   const commands = useMemo<ChatInteractionCommands>(() => ({
@@ -149,7 +154,21 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             <p>This conversation runs on {connection.status?.version ? `Hermes ${connection.status.version}` : 'your remote gateway'}.</p>
           </div>
         )}
-        {chat.messages.map((message, index) => (
+        {chat.messages.map((message, index) => isCronSession && message.role === 'user' && message.content.startsWith('[IMPORTANT: You are running as a scheduled cron job.') ? (
+          <article className="message collapsed-message cron-instructions-message" key={message.id}>
+            <details>
+              <summary>Cron job instructions</summary>
+              <pre>{message.content}</pre>
+            </details>
+          </article>
+        ) : message.role === 'tool' ? (
+          <article className="message tool collapsed-message" key={message.id}>
+            <details>
+              <summary>Tool output</summary>
+              <pre>{message.content || 'No output'}</pre>
+            </details>
+          </article>
+        ) : (
           <article className={`message ${message.role}${message.displayKind ? ' timeline-event' : ''}`} key={message.id}>
             <div className="message-meta">
               <span>{message.displayKind ? 'Activity' : message.role === 'assistant' ? 'Hermes' : message.role}</span>

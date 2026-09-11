@@ -13,7 +13,7 @@ import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection } from '~/state/store'
+import { $connection, $sessions } from '~/state/store'
 
 const mediaConnectionStub = () => ({
   request: vi.fn(),
@@ -52,6 +52,7 @@ beforeEach(() => {
   })
   $chat.set(emptyChatState())
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
+  $sessions.set([])
 })
 
 afterEach(() => {
@@ -203,6 +204,44 @@ describe('transcript rendering and durable edits', () => {
 
     expect(screen.getByRole('status').textContent).toBe('Hermes is working')
     expect(screen.getByRole('button', { name: 'Interrupt' })).not.toBeNull()
+  })
+
+  it('collapses stored tool output until requested', () => {
+    $chat.set({
+      ...emptyChatState(),
+      messages: [{ content: '{"output":"a long result"}', id: 'tool-1', role: 'tool' }]
+    })
+
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    const summary = screen.getByText('Tool output')
+    const details = summary.closest('details')!
+    expect(details.open).toBe(false)
+    expect(details.closest('article')?.classList.contains('collapsed-message')).toBe(true)
+
+    fireEvent.click(summary)
+    expect(details.open).toBe(true)
+  })
+
+  it('collapses the generated instruction block only for cron sessions', () => {
+    const instructions = '[IMPORTANT: You are running as a scheduled cron job. DELIVERY: send the final result.]'
+    $sessions.set([{ id: 'scheduled-1', message_count: 2, preview: instructions, source: 'cron', started_at: 1, title: 'Daily job' }])
+    $chat.set({
+      ...emptyChatState(),
+      messages: [{ content: instructions, id: 'prompt-1', role: 'user' }],
+      storedSessionId: 'scheduled-1'
+    })
+
+    const { rerender } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    expect(screen.getByText('Cron job instructions').closest('details')?.open).toBe(false)
+
+    $sessions.set([{ id: 'ordinary-1', message_count: 1, preview: instructions, source: 'mobile', started_at: 1, title: 'Ordinary chat' }])
+    $chat.set({ ...$chat.get(), storedSessionId: 'ordinary-1' })
+    rerender(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    expect(screen.queryByText('Cron job instructions')).toBeNull()
+    expect(screen.getByText(instructions)).toBeTruthy()
   })
 
   it('labels internal timeline events as activity rather than user messages', () => {
