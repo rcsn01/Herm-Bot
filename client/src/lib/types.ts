@@ -37,6 +37,7 @@ import type {
   ToolProvider,
   ToolsetInfo
 } from '~/compat/hermes-types'
+import type { TranscriptSnapshot } from '~/transcript/transcript'
 
 export type {
   AutomationBlueprint,
@@ -149,16 +150,6 @@ export interface StoredSession {
   title: string
 }
 
-export interface TranscriptMessage {
-  content: string
-  displayKind?: string
-  id: string
-  reasoning?: string
-  role: 'assistant' | 'system' | 'tool' | 'user'
-  rowId?: number
-  streaming?: boolean
-}
-
 export interface ToolActivity {
   detail?: string
   id: string
@@ -180,7 +171,7 @@ export interface ChatState {
   historyLoadingOlder: boolean
   historyNextOffset: number
   info: null | SessionRuntimeInfo
-  messages: TranscriptMessage[]
+  transcript: TranscriptSnapshot
   pendingPrompt: null | PendingPrompt
   running: boolean
   runtimeSessionId: null | string

@@ -11,7 +11,7 @@ export const $connection = atom<{
   error: null | string
   phase: ConnectionPhase
   status: GatewayStatus | null
-}>({ authMode: 'token', error: null, phase: 'disconnected', status: null })
+}>({ authMode: 'token', error: null, phase: 'connecting', status: null })
 
 export const $preferences = atom<ConnectionPreferences>({
   authMode: 'token',

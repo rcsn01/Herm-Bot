@@ -14,7 +14,6 @@ export interface ChatSuggestion {
 export interface EditTarget {
   content: string
   rowId: number
-  userOrdinal: number
 }
 
 export interface ChatInteractionState {
@@ -29,7 +28,7 @@ export interface ChatInteractionState {
 export interface ChatInteractionCommands {
   attach(file: File): Promise<unknown>
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>
-  retryFrom(userOrdinal: number, rowId: number, text: string): Promise<void>
+  retryFrom(rowId: number, text: string): Promise<void>
   send(text: string): Promise<void>
 }
 /** Chat audio rides the GatewayPort directly (installation-wide /api/audio routes, no profile param). */
@@ -153,7 +152,7 @@ export class ChatInteraction {
 
     try {
       if (snapshot.editTarget) {
-        await this.commands.retryFrom(snapshot.editTarget.userOrdinal, snapshot.editTarget.rowId, combined)
+        await this.commands.retryFrom(snapshot.editTarget.rowId, combined)
       } else {
         await this.commands.send(combined)
       }

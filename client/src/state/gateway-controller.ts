@@ -77,6 +77,8 @@ export class GatewayController {
     if ($preferences.get().remoteURL) {
       if (isNativeIOS()) await this.connect().catch(() => undefined)
       else await this.restoreBrowserConnection()
+    } else {
+      $connection.set({ ...$connection.get(), phase: 'disconnected' })
     }
   }
 
@@ -211,6 +213,11 @@ export class GatewayController {
     const sessions = response.sessions ?? []
     $sessions.set(sessions)
     $sessionsHasMore.set(sessions.length >= limit)
+    const activeId = $chat.get().storedSessionId
+    if (activeId) {
+      const source = sessions.find(session => session.id === activeId)?.source
+      this.conversation.setSessionSource(activeId, typeof source === 'string' ? source : null)
+    }
   }
 
   async loadMoreSessions() {
@@ -287,12 +294,15 @@ export class GatewayController {
     try {
       const { authMode, status } = await this.connection.probe()
       savePreferences({ authMode })
-      $connection.set({ authMode, error: null, phase: 'disconnected', status })
+      $connection.set({ authMode, error: null, phase: 'connecting', status })
       if (authMode === 'interactive') {
         try {
           await this.connection.request({ path: '/api/auth/me' })
         } catch (error) {
-          if (classifyGatewayError(error).kind === 'auth') return
+          if (classifyGatewayError(error).kind === 'auth') {
+            $connection.set({ authMode, error: null, phase: 'disconnected', status })
+            return
+          }
           throw error
         }
       }
@@ -354,7 +364,10 @@ export class GatewayController {
 
   /** Install the session as the open conversation and remember it for reconnects. */
   private selectSession(session: RuntimeSession) {
-    this.conversation.adopt(session)
+    const source = session.storedSessionId
+      ? $sessions.get().find(candidate => candidate.id === session.storedSessionId)?.source
+      : null
+    this.conversation.adopt(session, typeof source === 'string' ? source : null)
     if (session.storedSessionId) localStorage.setItem(this.sessionBookmarkKey(), session.storedSessionId)
   }
 

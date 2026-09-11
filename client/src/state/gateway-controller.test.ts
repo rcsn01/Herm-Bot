@@ -11,6 +11,7 @@ import { $chat, emptyChatState } from '~/state/conversation'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
+import { createTranscript } from '~/transcript/transcript'
 
 class ConnectionAwareGateway extends MemoryGateway {
   activeProfile: null | string = null
@@ -158,6 +159,26 @@ describe('connection restoration', () => {
     controller.dispose()
   })
 
+  it('does not report disconnection while checking an existing browser session', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: window.location.origin })
+    let rejectIdentity!: (error: unknown) => void
+    const identity = new Promise<never>((_resolve, reject) => { rejectIdentity = reject })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'interactive', status: { auth_required: true } }),
+      request: vi.fn().mockReturnValue(identity)
+    }
+    const controller = new GatewayController(connection as never, new ConnectionAwareGateway())
+
+    const initialization = controller.initialize()
+    await vi.waitFor(() => expect(connection.request).toHaveBeenCalled())
+    expect($connection.get().phase).toBe('connecting')
+
+    rejectIdentity(Object.assign(new Error('Unauthorized'), { status: 401 }))
+    await initialization
+    expect($connection.get().phase).toBe('disconnected')
+    controller.dispose()
+  })
+
   it('reports a non-authentication failure while restoring a browser session', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: window.location.origin })
     const connection = {
@@ -255,7 +276,7 @@ describe('connection restoration', () => {
     lifecycleHandler({ isActive: false })
     expect($connection.get().phase).toBe('reconnecting')
     expect($chat.get().runtimeSessionId).toBe('runtime-restored')
-    expect($chat.get().messages).toEqual([{ content: 'reconciled', id: 'history-0', role: 'assistant', streaming: false }])
+    expect($chat.get().transcript.entries).toEqual([{ author: 'assistant', content: 'reconciled', id: 'history-0', kind: 'message', reasoning: undefined, streaming: false }])
 
     lifecycleHandler({ isActive: true })
     await vi.waitFor(() => expect(gateway.connect).toHaveBeenCalledOnce())
@@ -264,7 +285,7 @@ describe('connection restoration', () => {
 
     releaseReconnect()
     await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
-    expect($chat.get().messages).toEqual([{ content: 'reconciled', id: 'history-0', role: 'assistant', streaming: false }])
+    expect($chat.get().transcript.entries).toEqual([{ author: 'assistant', content: 'reconciled', id: 'history-0', kind: 'message', reasoning: undefined, streaming: false }])
     controller.dispose()
   })
 
@@ -491,6 +512,90 @@ describe('conversation delegation', () => {
     await controller.connect()
 
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-open', storedSessionId: null })
+    controller.dispose()
+  })
+})
+
+describe('transcript provenance', () => {
+  const marker = '[IMPORTANT: You are running as a scheduled cron job. DELIVERY: report.]'
+
+  it('passes selected session-list cron provenance into the transcript', async () => {
+    $sessions.set([{ id: 'scheduled-1', message_count: 1, preview: marker, source: 'cron', started_at: 1, title: 'Job' }])
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'scheduled-1' },
+        session_id: 'runtime-1'
+      }))
+      .handle('/api/sessions/scheduled-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ role: 'user', content: marker, row_id: 1 }]
+      }))
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.resumeSession('scheduled-1')
+
+    expect($chat.get().transcript.context.source).toBe('cron')
+    expect($chat.get().transcript.entries[0].kind).toBe('cron-instructions')
+    controller.dispose()
+  })
+
+  it('reclassifies a non-prefixed active session when refresh supplies cron source', async () => {
+    $chat.set({ ...emptyChatState(), storedSessionId: 'scheduled-1' })
+    const connection = { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) }
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'scheduled-1' },
+        session_id: 'runtime-1'
+      }))
+      .handle('/api/sessions/scheduled-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ role: 'user', content: marker, row_id: 1 }]
+      }))
+      .handle('session.list', () => ({
+        sessions: [{ id: 'scheduled-1', message_count: 1, preview: marker, source: 'cron', started_at: 1, title: 'Job' }]
+      }))
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.connect()
+
+    expect($chat.get().transcript.context.source).toBe('cron')
+    expect($chat.get().transcript.entries[0].kind).toBe('cron-instructions')
+    controller.dispose()
+  })
+
+  it('clears non-prefix provenance when refresh omits the active session', async () => {
+    $chat.set({
+      ...emptyChatState(),
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'scheduled-1',
+      transcript: createTranscript({ source: 'cron', storedSessionId: 'scheduled-1' }, [
+        { role: 'user', content: marker, row_id: 1 }
+      ])
+    })
+    const gateway = new MemoryGateway().handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.refreshSessions()
+
+    expect($chat.get().transcript.context.source).toBeNull()
+    expect($chat.get().transcript.entries[0].kind).toBe('message')
+    controller.dispose()
+  })
+
+  it('uses the cron id rule before the session list is populated', async () => {
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'cron_job-1' },
+        messages: [{ role: 'user', content: marker, row_id: 1 }],
+        session_id: 'runtime-1'
+      }))
+      .handle('/api/sessions/cron_job-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ role: 'user', content: marker, row_id: 1 }]
+      }))
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.resumeSession('cron_job-1')
+
+    expect($chat.get().transcript.context.source).toBeNull()
+    expect($chat.get().transcript.entries[0].kind).toBe('cron-instructions')
     controller.dispose()
   })
 })

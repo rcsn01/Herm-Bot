@@ -13,7 +13,7 @@ import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection
 import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection, $sessions } from '~/state/store'
+import { $connection } from '~/state/store'
 
 interface ChatScreenProps {
   active?: boolean
@@ -25,11 +25,7 @@ interface ChatScreenProps {
 export function ChatScreen({ active = true, controller, conversation, mediaConnection = controller.gateway }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
-  const sessions = useStore($sessions)
-  const isCronSession = Boolean(
-    chat.storedSessionId?.startsWith('cron_')
-    || sessions.some(session => session.id === chat.storedSessionId && session.source === 'cron')
-  )
+  const entries = chat.transcript.entries
   // A fresh literal, not the live instances: every method must be bound so
   // `this` resolves to its owner (Conversation / GatewayController).
   const commands = useMemo<ChatInteractionCommands>(() => ({
@@ -74,16 +70,16 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
     previousHistoryOffsetRef.current = chat.historyNextOffset
     if (sessionChanged) {
       previousSessionRef.current = chat.runtimeSessionId
-      awaitingInitialHistoryRef.current = Boolean(chat.runtimeSessionId && chat.storedSessionId && chat.messages.length === 0)
+      awaitingInitialHistoryRef.current = Boolean(chat.runtimeSessionId && chat.storedSessionId && entries.length === 0)
     }
-    const initialHistoryArrived = awaitingInitialHistoryRef.current && chat.messages.length > 0
+    const initialHistoryArrived = awaitingInitialHistoryRef.current && entries.length > 0
     if (!chat.runtimeSessionId || loadedOlder || (!sessionChanged && !initialHistoryArrived && chat.historyLoadingOlder)) return
     bottomRef.current?.scrollIntoView({
       behavior: sessionChanged || initialHistoryArrived ? 'auto' : 'smooth',
       block: 'end'
     })
     if (initialHistoryArrived) awaitingInitialHistoryRef.current = false
-  }, [active, chat.historyLoadingOlder, chat.historyNextOffset, chat.messages, chat.runtimeSessionId, chat.storedSessionId, chat.tools])
+  }, [active, chat.historyLoadingOlder, chat.historyNextOffset, entries, chat.runtimeSessionId, chat.storedSessionId, chat.tools])
   useEffect(() => {
     interaction.setSession(chat.runtimeSessionId)
     setSessionActionError(null)
@@ -95,11 +91,6 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const reportSessionAction = (perform: () => Promise<unknown>) => {
     void action.run(perform, { onError: error => setSessionActionError(error.message) })
   }
-
-  const userOrdinals = useMemo(() => {
-    let ordinal = -1
-    return chat.messages.map(message => message.role === 'user' ? ++ordinal : ordinal)
-  }, [chat.messages])
 
   const loadOlderMessages = useCallback(async () => {
     const sessionId = $chat.get().runtimeSessionId
@@ -147,41 +138,41 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             </div>}
           </div>
         )}
-        {chat.messages.length === 0 && (
+        {entries.length === 0 && (
           <div className="empty-chat">
             <BrandMark small />
             <h2>What can Hermes do for you?</h2>
             <p>This conversation runs on {connection.status?.version ? `Hermes ${connection.status.version}` : 'your remote gateway'}.</p>
           </div>
         )}
-        {chat.messages.map((message, index) => isCronSession && message.role === 'user' && message.content.startsWith('[IMPORTANT: You are running as a scheduled cron job.') ? (
-          <article className="message collapsed-message cron-instructions-message" key={message.id}>
+        {entries.map(entry => entry.kind === 'cron-instructions' ? (
+          <article className="message collapsed-message cron-instructions-message" key={entry.id}>
             <details>
               <summary>Cron job instructions</summary>
-              <pre>{message.content}</pre>
+              <pre>{entry.content}</pre>
             </details>
           </article>
-        ) : message.role === 'tool' ? (
-          <article className="message tool collapsed-message" key={message.id}>
+        ) : entry.kind === 'tool-output' ? (
+          <article className="message tool collapsed-message" key={entry.id}>
             <details>
               <summary>Tool output</summary>
-              <pre>{message.content || 'No output'}</pre>
+              <pre>{entry.content || 'No output'}</pre>
             </details>
           </article>
         ) : (
-          <article className={`message ${message.role}${message.displayKind ? ' timeline-event' : ''}`} key={message.id}>
+          <article className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
             <div className="message-meta">
-              <span>{message.displayKind ? 'Activity' : message.role === 'assistant' ? 'Hermes' : message.role}</span>
-              {message.streaming && <Badge variant="muted">Streaming</Badge>}
+              <span>{entry.kind === 'activity' ? 'Activity' : entry.author === 'assistant' ? 'Hermes' : entry.author}</span>
+              {entry.streaming && <Badge variant="muted">Streaming</Badge>}
             </div>
-            {message.reasoning && <details><summary>Reasoning</summary><pre>{message.reasoning}</pre></details>}
-            <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{message.content || (message.streaming ? '…' : '')}</ReactMarkdown></div>
-            {message.role === 'user' && (
+            {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
+            <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{entry.content || (entry.streaming ? '…' : '')}</ReactMarkdown></div>
+            {entry.author === 'user' && (
               <Button
-                disabled={chat.running || message.rowId === undefined}
+                disabled={chat.running || !entry.editTarget}
                 onClick={() => {
-                  if (message.rowId === undefined || chat.running) return
-                  interaction.beginEdit({ content: message.content, rowId: message.rowId, userOrdinal: userOrdinals[index] })
+                  if (!entry.editTarget || chat.running) return
+                  interaction.beginEdit({ content: entry.content, rowId: entry.editTarget.rowId })
                 }}
                 size="micro"
                 variant="text"
@@ -189,8 +180,8 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
                 Edit & retry
               </Button>
             )}
-            {message.role === 'assistant' && message.content && (
-              <Button onClick={() => void interaction.speak(message.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
+            {entry.author === 'assistant' && entry.content && (
+              <Button onClick={() => void interaction.speak(entry.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
                 <IconVolume size={16} />
               </Button>
             )}

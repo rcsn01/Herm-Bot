@@ -67,7 +67,7 @@ describe('session state', () => {
     const { commands, interaction: subject } = interaction()
     vi.mocked(commands.attach).mockResolvedValue({ ref_text: '@file:one' })
     await subject.attach([new File(['one'], 'one.txt')])
-    subject.beginEdit({ content: 'original', rowId: 4, userOrdinal: 0 })
+    subject.beginEdit({ content: 'original', rowId: 4 })
     subject.updateDraft('plain draft')
 
     subject.setSession('session-2')
@@ -153,13 +153,13 @@ describe('submission', () => {
     const { commands, interaction: subject } = interaction()
     const pending = deferred<void>()
     vi.mocked(commands.retryFrom).mockReturnValue(pending.promise)
-    subject.beginEdit({ content: 'original', rowId: 41, userOrdinal: 2 })
+    subject.beginEdit({ content: 'original', rowId: 41 })
     subject.updateDraft('edited')
 
     const first = subject.submit()
     const duplicate = subject.submit()
     expect(commands.retryFrom).toHaveBeenCalledTimes(1)
-    expect(commands.retryFrom).toHaveBeenCalledWith(2, 41, 'edited')
+    expect(commands.retryFrom).toHaveBeenCalledWith(41, 'edited')
     expect(subject.$state.get()).toMatchObject({ draft: '', submitting: true })
 
     pending.resolve()
@@ -172,7 +172,7 @@ describe('submission', () => {
     vi.mocked(commands.attach).mockResolvedValue({ ref_text: '@file:one' })
     vi.mocked(commands.retryFrom).mockRejectedValue(new Error('rewind refused'))
     await subject.attach([new File(['one'], 'one.txt')])
-    const target = { content: 'original', rowId: 41, userOrdinal: 0 }
+    const target = { content: 'original', rowId: 41 }
     subject.beginEdit(target)
     await subject.attach([new File(['one'], 'one.txt')])
     subject.updateDraft('  edited exactly  ')
@@ -186,7 +186,7 @@ describe('submission', () => {
       error: 'rewind refused',
       submitting: false
     })
-    expect(commands.retryFrom).toHaveBeenCalledWith(0, 41, 'edited exactly\n@file:one')
+    expect(commands.retryFrom).toHaveBeenCalledWith(41, 'edited exactly\n@file:one')
   })
 
   it.each(['resolve', 'reject'] as const)('ignores stale submission %s after switching away and back', async outcome => {

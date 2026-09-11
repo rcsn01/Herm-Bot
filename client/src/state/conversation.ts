@@ -4,8 +4,9 @@ import { atom } from 'nanostores'
 
 import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
-import { isConfirmedMissingSession, toTranscript, type RuntimeSession, type SessionRuntime, type TranscriptPage } from '~/gateway/session-runtime'
-import type { ChatState, PendingPrompt, ToolActivity, TranscriptMessage } from '~/lib/types'
+import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
+import type { ChatState, PendingPrompt, ToolActivity } from '~/lib/types'
+import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
 /**
  * The Conversation is the deep module between the UI and the GatewaySession's
@@ -26,7 +27,7 @@ export const emptyChatState = (): ChatState => ({
   historyLoadingOlder: false,
   historyNextOffset: 0,
   info: null,
-  messages: [],
+  transcript: createTranscript({ source: null, storedSessionId: null }),
   pendingPrompt: null,
   running: false,
   runtimeSessionId: null,
@@ -39,17 +40,6 @@ export const $chat = atom<ChatState>(emptyChatState())
 const text = (value: unknown) => (typeof value === 'string' ? value : '')
 const record = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
-
-function updateLastAssistant(messages: TranscriptMessage[], delta: string, streaming = true) {
-  const result = [...messages]
-  const last = result.at(-1)
-  if (last?.role === 'assistant') {
-    result[result.length - 1] = { ...last, content: `${last.content}${delta}`, streaming }
-  } else {
-    result.push({ content: delta, id: crypto.randomUUID(), role: 'assistant', streaming })
-  }
-  return result
-}
 
 function upsertTool(tools: ToolActivity[], payload: Record<string, unknown>, status: ToolActivity['status']) {
   const id = text(payload.tool_call_id ?? payload.id) || `${text(payload.name)}-${tools.length}`
@@ -84,29 +74,35 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
       const contractVersion = marker === undefined
         ? state.contractVersion
         : typeof marker === 'number' && Number.isFinite(marker) ? marker : state.contractVersion
+      const storedSessionId = text(payload.stored_session_id) || state.storedSessionId
+      const context = {
+        source: storedSessionId === state.transcript.context.storedSessionId ? state.transcript.context.source : null,
+        storedSessionId
+      }
       return {
         ...state,
         contractVersion,
         info: payload as unknown as ChatState['info'],
         running: Boolean(payload.running),
-        storedSessionId: text(payload.stored_session_id) || state.storedSessionId
+        storedSessionId,
+        transcript: updateTranscript(state.transcript, { kind: 'set-context', context })
       }
     }
     case 'message.start':
       return { ...state, error: null, running: true }
     case 'message.delta':
-      return { ...state, messages: updateLastAssistant(state.messages, text(payload.delta ?? payload.text)) }
     case 'thinking.delta':
-    case 'reasoning.delta': {
-      const messages = updateLastAssistant(state.messages, '', true)
-      const last = messages.at(-1)
-      if (last) messages[messages.length - 1] = { ...last, reasoning: `${last.reasoning ?? ''}${text(payload.delta ?? payload.text)}` }
-      return { ...state, messages }
-    }
-    case 'message.complete': {
-      const messages = updateLastAssistant(state.messages, text(payload.delta), false)
-      return { ...state, messages, running: false }
-    }
+    case 'reasoning.delta':
+    case 'message.complete':
+      return {
+        ...state,
+        transcript: updateTranscript(state.transcript, {
+          kind: 'gateway-event',
+          createId: crypto.randomUUID(),
+          event
+        }),
+        ...(event.type === 'message.complete' ? { running: false } : {})
+      }
     case 'tool.start':
       return { ...state, tools: upsertTool(state.tools, payload, 'running') }
     case 'tool.progress':
@@ -137,40 +133,22 @@ function fileToDataURL(file: File): Promise<string> {
   })
 }
 
-function transcriptPage(messages: ReturnType<typeof toTranscript>): TranscriptPage {
-  return { hasMore: false, messages, nextOffset: messages.length }
-}
-
-function messageIdentity(message: ReturnType<typeof toTranscript>[number]): string {
-  return message.rowId === undefined ? message.id : `row:${message.rowId}`
-}
-
-function prependOlderTranscript(older: ReturnType<typeof toTranscript>, current: ReturnType<typeof toTranscript>) {
-  const existing = new Set(current.map(messageIdentity))
-  const fresh = older.filter(message => !existing.has(messageIdentity(message)))
-  return fresh.length ? [...fresh, ...current] : current
-}
-
-function graftLatestTranscript(latest: ReturnType<typeof toTranscript>, current: ReturnType<typeof toTranscript>) {
-  const first = latest[0]
-  if (!first) return latest
-  const identity = messageIdentity(first)
-  const anchor = current.findIndex(message => messageIdentity(message) === identity)
-  return anchor > 0 ? [...current.slice(0, anchor), ...latest] : latest
+function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): SessionHistoryPage {
+  return { hasMore: false, nextOffset: rows.length, offset: 0, rows }
 }
 
 export class Conversation {
   constructor(private readonly runtime: SessionRuntime) {}
 
   /** Install a newly selected runtime session as the open conversation. */
-  adopt(session: RuntimeSession): void {
+  adopt(session: RuntimeSession, source: null | string = null): void {
     $chat.set({
       ...emptyChatState(),
       contractVersion: session.contractVersion,
       info: session.info,
-      messages: session.messages,
       runtimeSessionId: session.runtimeSessionId,
-      storedSessionId: session.storedSessionId
+      storedSessionId: session.storedSessionId,
+      transcript: createTranscript({ source, storedSessionId: session.storedSessionId }, session.rows)
     })
   }
 
@@ -182,6 +160,19 @@ export class Conversation {
     }
   }
 
+  /** Add or clear session-list provenance without letting the controller write `$chat`. */
+  setSessionSource(storedSessionId: string, source: null | string): void {
+    const current = $chat.get()
+    if (current.storedSessionId !== storedSessionId) return
+    $chat.set({
+      ...current,
+      transcript: updateTranscript(current.transcript, {
+        kind: 'set-context',
+        context: { source, storedSessionId }
+      })
+    })
+  }
+
   /** Clear the conversation (profile switch, logout, dispose). */
   reset(): void {
     $chat.set(emptyChatState())
@@ -189,6 +180,7 @@ export class Conversation {
 
   onGatewayEvent(event: GatewayEvent): void {
     const previous = $chat.get()
+    if (event.session_id && event.session_id !== previous.runtimeSessionId) return
     const next = reduceGatewayEvent(previous, event)
     $chat.set(next)
     if (event.type === 'message.complete') {
@@ -222,8 +214,8 @@ export class Conversation {
     $chat.set({
       ...current,
       error: null,
-      messages: [...current.messages, { content, id: crypto.randomUUID(), role: 'user' }],
-      running: true
+      running: true,
+      transcript: updateTranscript(current.transcript, { kind: 'local-user', content, id: crypto.randomUUID() })
     })
     await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
     try {
@@ -255,12 +247,15 @@ export class Conversation {
     if (sessionId && content) await this.runtime.rpc('session.redirect', { session_id: sessionId, text: content })
   }
 
-  async retryFrom(userOrdinal: number, rowId: number, text: string): Promise<void> {
+  async retryFrom(rowId: number, text: string): Promise<void> {
     const scope = currentGatewayScope()
-    const sessionId = $chat.get().runtimeSessionId
+    const snapshot = $chat.get()
+    const sessionId = snapshot.runtimeSessionId
     if (!sessionId) return
     if (!Number.isInteger(rowId) || rowId <= 0) throw new Error('A durable message row is required to edit history safely.')
-    if (!Number.isInteger(userOrdinal) || userOrdinal < 0) throw new Error('A valid user-message position is required to edit history safely.')
+    const target = snapshot.transcript.entries.find(entry => entry.rowId === rowId && 'editTarget' in entry && entry.editTarget)
+    const userOrdinal = target && 'editTarget' in target ? target.editTarget?.userOrdinal : undefined
+    if (userOrdinal === undefined) throw new Error('The selected message is no longer editable.')
     const content = text.trim()
     if (!content) return
     try {
@@ -319,7 +314,7 @@ export class Conversation {
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
     if (!sessionId) return
-    let page: TranscriptPage
+    let page: SessionHistoryPage
     if (snapshot.storedSessionId) {
       try {
         page = await this.runtime.historyPage(snapshot.storedSessionId, scope.profile)
@@ -330,22 +325,22 @@ export class Conversation {
         // state.db row, and older gateways may not expose its durable identity
         // consistently. Keep the resumed runtime and hydrate over JSON-RPC
         // rather than misreporting this transcript 404 as an old gateway.
-        page = transcriptPage(await this.runtime.history(sessionId))
+        page = historyPage(await this.runtime.history(sessionId))
       }
     } else {
-      page = transcriptPage(await this.runtime.history(sessionId))
+      page = historyPage(await this.runtime.history(sessionId))
     }
     if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return
     const current = $chat.get()
-    const messages = current.historyBackfilled
-      ? graftLatestTranscript(page.messages, current.messages)
-      : page.messages
+    const transcript = current.historyBackfilled
+      ? updateTranscript(current.transcript, { kind: 'reconcile-history', rows: page.rows })
+      : createTranscript(current.transcript.context, page.rows)
     $chat.set({
       ...current,
       historyHasMore: page.hasMore,
       historyNextOffset: page.nextOffset,
-      messages,
-      running: Boolean(current.info?.running)
+      running: Boolean(current.info?.running),
+      transcript
     })
   }
 
@@ -367,7 +362,11 @@ export class Conversation {
         historyHasMore: page.hasMore,
         historyLoadingOlder: false,
         historyNextOffset: page.nextOffset,
-        messages: prependOlderTranscript(page.messages, current.messages)
+        transcript: updateTranscript(current.transcript, {
+          kind: 'prepend-history',
+          fallbackOffset: page.offset,
+          rows: page.rows
+        })
       })
     } catch (error) {
       const current = $chat.get()

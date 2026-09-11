@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ChatInteraction } from '~/features/chat/chat-interaction'
 import type { GatewayPort } from '~/gateway/gateway-port'
 import type { ChatState } from '~/lib/types'
-import { SessionRuntime, toTranscript } from '~/gateway/session-runtime'
+import { SessionRuntime } from '~/gateway/session-runtime'
 import { MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $chat, Conversation, emptyChatState, reduceGatewayEvent } from '~/state/conversation'
 import { $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
+import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
 function subject(gateway: GatewayPort) {
   const runtime = new SessionRuntime(gateway, { minimumContract: MINIMUM_CONTRACT, retryDelays: [0] })
@@ -32,7 +34,7 @@ describe('reduceGatewayEvent', () => {
 
     expect(state.contractVersion).toBe(3)
     expect(state.storedSessionId).toBe('durable-1')
-    expect(state.messages[0]).toMatchObject({ content: 'Hello', reasoning: 'Think', streaming: false })
+    expect(state.transcript.entries[0]).toMatchObject({ content: 'Hello', reasoning: 'Think', streaming: false })
     expect(state.tools[0]).toMatchObject({ detail: 'ok', status: 'complete' })
     expect(state.running).toBe(false)
   })
@@ -45,6 +47,21 @@ describe('reduceGatewayEvent', () => {
     expect(reduceGatewayEvent(current, { type: 'session.info', session_id: 'current', payload: { desktop_contract: null } }).contractVersion).toBe(6)
   })
 
+  it('preserves provenance for the same durable id and clears it when session info changes the id', () => {
+    const transcript = createTranscript({ source: 'cron', storedSessionId: 'stored-1' })
+    const state = { ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1', transcript }
+
+    const same = reduceGatewayEvent(state, {
+      type: 'session.info', session_id: 'runtime-1', payload: { stored_session_id: 'stored-1' }
+    })
+    expect(same.transcript.context).toEqual({ source: 'cron', storedSessionId: 'stored-1' })
+
+    const changed = reduceGatewayEvent(same, {
+      type: 'session.info', session_id: 'runtime-1', payload: { stored_session_id: 'stored-2' }
+    })
+    expect(changed.transcript.context).toEqual({ source: null, storedSessionId: 'stored-2' })
+  })
+
   it.each(['clarify', 'approval', 'sudo', 'secret'] as const)('maps %s requests without persisting answers', kind => {
     const state = reduceGatewayEvent(emptyChatState(), { type: `${kind}.request`, payload: { request_id: 'request-1', question: 'value?' } })
     expect(state.pendingPrompt).toMatchObject({ kind, requestId: 'request-1' })
@@ -55,49 +72,6 @@ describe('reduceGatewayEvent', () => {
     const state = { ...emptyChatState(), runtimeSessionId: 'active' }
     expect(reduceGatewayEvent(state, { type: 'message.delta', session_id: 'other', payload: { delta: 'leak' } })).toBe(state)
     expect(reduceGatewayEvent(state, { type: 'gateway.future-event', payload: { anything: true } })).toBe(state)
-  })
-})
-
-describe('session identity and history mapping', () => {
-  it('maps backend history without conflating message, runtime, and durable identities', () => {
-    const messages = toTranscript([
-      { role: 'user', content: 'hello' },
-      { role: 'assistant', content: 'hi', reasoning: 'briefly' }
-    ] as never)
-    expect(messages).toEqual([
-      { content: 'hello', id: 'history-0', reasoning: undefined, role: 'user', streaming: false },
-      { content: 'hi', id: 'history-1', reasoning: 'briefly', role: 'assistant', streaming: false }
-    ])
-  })
-
-  it('projects internal timeline rows as compact activity instead of user messages', () => {
-    const messages = toTranscript([
-      { role: 'user', content: '[ASYNC DELEGATION COMPLETE — deleg_typed]\nagent result', display_kind: 'async_delegation_complete', display_metadata: { task_count: 1 }, row_id: 39 },
-      { role: 'user', content: '[ASYNC DELEGATION BATCH COMPLETE — deleg_legacy]\nA background fan-out of 3 subagent(s) you dispatched earlier has finished. All ran in parallel and waited on each other; their consolidated results are below.', row_id: 40 },
-      { role: 'user', content: 'internal handoff', display_kind: 'hidden', row_id: 41 },
-      { role: 'user', content: 'switch payload', display_kind: 'model_switch', row_id: 42 }
-    ] as never)
-
-    expect(messages).toEqual([
-      { content: '1 background agent finished', displayKind: 'async_delegation_complete', id: 'history-row-39', reasoning: undefined, role: 'system', rowId: 39, streaming: false },
-      { content: '3 background agents finished', displayKind: 'async_delegation_complete', id: 'history-row-40', reasoning: undefined, role: 'system', rowId: 40, streaming: false },
-      { content: 'model changed', displayKind: 'model_switch', id: 'history-row-42', reasoning: undefined, role: 'system', rowId: 42, streaming: false }
-    ])
-  })
-
-  it('hydrates the current gateway projection and keeps durable row identity separate', () => {
-    const messages = toTranscript([
-      { role: 'user', content: 'model-only', display_content: 'visible', row_id: 41, text: 'fallback' },
-      { role: 'assistant', content: null, reasoning_content: 'carefully', text: 'answer' },
-      { role: 'tool', content: null, context: 'terminal output', id: 43 },
-      { role: 'assistant', content: { type: 'image' }, text: 'must not stringify malformed content' }
-    ] as never)
-
-    expect(messages).toEqual([
-      { content: 'visible', id: 'history-row-41', reasoning: undefined, role: 'user', rowId: 41, streaming: false },
-      { content: 'answer', id: 'history-1', reasoning: 'carefully', role: 'assistant', streaming: false },
-      { content: 'terminal output', id: 'history-row-43', reasoning: undefined, role: 'tool', rowId: 43, streaming: false }
-    ])
   })
 })
 
@@ -129,11 +103,15 @@ describe('prompt submission safety', () => {
   })
 
   it('confirms a durable first-turn rewind by both ordinal and row id', async () => {
-    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    $chat.set({
+      ...emptyChatState(),
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ role: 'user', content: 'hello', row_id: 41 }])
+    })
     const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
     const { conversation, dispose } = subject(gateway)
 
-    await conversation.retryFrom(0, 41, 'edited hello')
+    await conversation.retryFrom(41, 'edited hello')
 
     expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: {
       confirm_empty_truncate: true,
@@ -143,6 +121,58 @@ describe('prompt submission safety', () => {
       truncate_before_row_id: 41,
       truncate_before_user_ordinal: 0
     } })
+    dispose()
+  })
+
+  it('resolves the current ordinal by row id after older history prepends', async () => {
+    let transcript = createTranscript({ source: null, storedSessionId: 'stored-1' }, [
+      { role: 'user', content: 'recent', row_id: 41 }
+    ])
+    transcript = updateTranscript(transcript, {
+      kind: 'prepend-history', fallbackOffset: 80,
+      rows: [{ role: 'user', content: 'older', row_id: 40 }]
+    })
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1', transcript })
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
+    const { conversation, dispose } = subject(gateway)
+
+    await conversation.retryFrom(41, 'edited recent')
+
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: {
+      confirm_truncate: true,
+      session_id: 'runtime-1',
+      text: 'edited recent',
+      truncate_before_row_id: 41,
+      truncate_before_user_ordinal: 1
+    } })
+    dispose()
+  })
+
+  it('uses the fresh ordinal through an open edit draft after history prepends', async () => {
+    let transcript = createTranscript({ source: null, storedSessionId: 'stored-1' }, [
+      { role: 'user', content: 'recent', row_id: 41 }
+    ])
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1', transcript })
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
+    const { conversation, dispose } = subject(gateway)
+    const interaction = new ChatInteraction({
+      attach: vi.fn(), request: vi.fn(), retryFrom: conversation.retryFrom.bind(conversation), send: vi.fn()
+    }, { request: vi.fn(), upload: vi.fn() })
+    interaction.beginEdit({ content: 'recent', rowId: 41 })
+    interaction.updateDraft('edited recent')
+
+    transcript = updateTranscript($chat.get().transcript, {
+      kind: 'prepend-history', fallbackOffset: 80,
+      rows: [{ role: 'user', content: 'older', row_id: 40 }]
+    })
+    $chat.set({ ...$chat.get(), transcript })
+    await interaction.submit()
+
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'prompt.submit', value: expect.objectContaining({
+      truncate_before_row_id: 41,
+      truncate_before_user_ordinal: 1
+    }) })
+    interaction.dispose()
     dispose()
   })
 
@@ -178,7 +208,7 @@ describe('prompt submission safety', () => {
     const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
     const { conversation, dispose } = subject(gateway)
 
-    await expect(conversation.retryFrom(1, undefined as never, 'unsafe')).rejects.toThrow(/durable message row/i)
+    await expect(conversation.retryFrom(undefined as never, 'unsafe')).rejects.toThrow(/durable message row/i)
     expect(gateway.calls).not.toContainEqual(expect.objectContaining({ method: 'prompt.submit' }))
     dispose()
   })
@@ -227,12 +257,29 @@ describe('incremental session loading', () => {
     await conversation.reconcileHistory()
 
     expect($chat.get()).toMatchObject({ historyHasMore: true, historyNextOffset: 2 })
-    expect($chat.get().messages.map(message => message.content)).toEqual(['recent question', 'recent answer'])
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['recent question', 'recent answer'])
 
     await conversation.loadOlderMessages()
 
     expect($chat.get()).toMatchObject({ historyHasMore: false, historyLoadingOlder: false, historyNextOffset: 3 })
-    expect($chat.get().messages.map(message => message.content)).toEqual(['older answer', 'recent question', 'recent answer'])
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['older answer', 'recent question', 'recent answer'])
+    dispose()
+  })
+
+  it('does not reconcile history for another session completion', async () => {
+    $chat.set({
+      ...emptyChatState(),
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1',
+      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' })
+    })
+    const gateway = new MemoryGateway()
+    const { conversation, dispose } = subject(gateway)
+
+    conversation.onGatewayEvent({ type: 'message.complete', session_id: 'runtime-other', payload: {} })
+    await Promise.resolve()
+
+    expect(gateway.calls).toEqual([])
     dispose()
   })
 
@@ -251,7 +298,7 @@ describe('incremental session loading', () => {
     conversation.adopt(await runtime.resumeSession(null, 'stored-1'))
     await conversation.reconcileHistory()
 
-    expect($chat.get().messages.map(message => message.content)).toEqual(['live answer'])
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['live answer'])
     dispose()
   })
 
@@ -278,15 +325,15 @@ describe('incremental session loading', () => {
     $chat.set({
       ...$chat.get(),
       historyBackfilled: true,
-      messages: [
-        { content: 'older answer', id: 'history-row-80', role: 'assistant', rowId: 80, streaming: false },
-        { content: 'recent answer', id: 'history-row-82', role: 'assistant', rowId: 82, streaming: false }
-      ]
+      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [
+        { content: 'older answer', role: 'assistant', row_id: 80 },
+        { content: 'recent answer', role: 'assistant', row_id: 82 }
+      ])
     })
 
     conversation.onGatewayEvent({ type: 'message.complete', session_id: 'runtime-1', payload: {} })
 
-    await vi.waitFor(() => expect($chat.get().messages.map(message => message.content)).toEqual(['older answer', 'recent answer', 'final answer']))
+    await vi.waitFor(() => expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['older answer', 'recent answer', 'final answer']))
     expect(fetches).toBe(1)
     expect($chat.get()).toMatchObject({ historyHasMore: false, historyNextOffset: 2, running: false })
     dispose()

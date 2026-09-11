@@ -4,7 +4,8 @@ import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
 import { abortError, combineSignals, throwIfAborted } from './abort'
 import { profileKey, profilePath } from './profile-path'
 import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from '~/gateway/gateway-port'
-import type { ChatState, SessionMessage, TranscriptMessage } from '~/lib/types'
+import type { SessionMessage } from '~/compat/hermes-types'
+import type { ChatState } from '~/lib/types'
 
 interface SessionRPCResponse {
   info?: Record<string, unknown>
@@ -28,10 +29,11 @@ interface SessionHistoryPageResponse {
   }
 }
 
-export interface TranscriptPage {
+export interface SessionHistoryPage {
   hasMore: boolean
-  messages: TranscriptMessage[]
   nextOffset: number
+  offset: number
+  rows: SessionMessage[]
 }
 
 export const TRANSCRIPT_PAGE_SIZE = 80
@@ -39,7 +41,7 @@ export const TRANSCRIPT_PAGE_SIZE = 80
 export interface RuntimeSession {
   contractVersion: number | null
   info: ChatState['info']
-  messages: TranscriptMessage[]
+  rows: SessionMessage[]
   runtimeSessionId: string
   storedSessionId: null | string
 }
@@ -156,12 +158,12 @@ export class SessionRuntime implements GatewayPort {
     return this.sessionFromResponse(await this.rpc<SessionRPCResponse>('session.branch', { session_id: runtimeSessionId }))
   }
 
-  async history(runtimeSessionId: string): Promise<TranscriptMessage[]> {
+  async history(runtimeSessionId: string): Promise<SessionMessage[]> {
     const response = await this.rpc<SessionHistoryResponse>('session.history', { session_id: runtimeSessionId })
-    return toTranscript(response.messages)
+    return response.messages ?? []
   }
 
-  async historyPage(storedSessionId: string, profile: null | string, offset = 0): Promise<TranscriptPage> {
+  async historyPage(storedSessionId: string, profile: null | string, offset = 0): Promise<SessionHistoryPage> {
     const query = new URLSearchParams({
       include_compacted: 'true',
       limit: String(TRANSCRIPT_PAGE_SIZE),
@@ -177,8 +179,9 @@ export class SessionRuntime implements GatewayPort {
     const pageOffset = pagination?.offset ?? offset
     return {
       hasMore: Boolean(pagination) && returned >= limit,
-      messages: toTranscript(pagination ? rawMessages : rawMessages.slice(-TRANSCRIPT_PAGE_SIZE)),
-      nextOffset: pageOffset + returned
+      nextOffset: pageOffset + returned,
+      offset: pageOffset,
+      rows: pagination ? rawMessages : rawMessages.slice(-TRANSCRIPT_PAGE_SIZE)
     }
   }
 
@@ -313,85 +316,11 @@ export class SessionRuntime implements GatewayPort {
     return {
       contractVersion: hasVersion ? rawVersion as number : null,
       info: info as ChatState['info'],
-      messages: toTranscript(response.messages?.slice(-TRANSCRIPT_PAGE_SIZE)),
+      rows: response.messages?.slice(-TRANSCRIPT_PAGE_SIZE) ?? [],
       runtimeSessionId: response.session_id,
       storedSessionId
     }
   }
-}
-
-export function toTranscript(messages: SessionMessage[] = []): TranscriptMessage[] {
-  return messages.flatMap((message, index) => {
-    const projected = message as SessionMessage & {
-      context?: unknown
-      display_content?: unknown
-      id?: unknown
-      name?: unknown
-      reasoning?: unknown
-      reasoning_content?: unknown
-      row_id?: unknown
-      text?: unknown
-    }
-    const storedRole = (['assistant', 'system', 'tool', 'user'].includes(message.role) ? message.role : 'assistant') as TranscriptMessage['role']
-    const contentValue = projected.display_content !== undefined
-      ? projected.display_content
-      : projected.content ?? projected.text ?? (storedRole === 'tool' ? projected.context ?? projected.name : undefined)
-    const rawContent = typeof contentValue === 'string' ? contentValue : ''
-    const displayKind = typeof projected.display_kind === 'string'
-      ? projected.display_kind
-      : inferLegacyDisplayKind(storedRole, rawContent)
-    if (displayKind === 'hidden') return []
-
-    const rowIdValue = projected.row_id ?? projected.id
-    const rowId = typeof rowIdValue === 'number' && Number.isInteger(rowIdValue) ? rowIdValue : undefined
-    const reasoningValue = projected.reasoning ?? projected.reasoning_content
-    const reasoning = typeof reasoningValue === 'string' ? reasoningValue : undefined
-    const timelineContent = timelineDisplayContent(displayKind, projected.display_metadata, rawContent)
-    if (storedRole === 'assistant' && timelineContent === null && !rawContent.trim() && !reasoning?.trim()) return []
-
-    return [{
-      content: timelineContent ?? rawContent,
-      ...(timelineContent === null ? {} : { displayKind }),
-      id: rowId === undefined ? `history-${index}` : `history-row-${rowId}`,
-      reasoning,
-      role: timelineContent === null ? storedRole : 'system',
-      ...(rowId === undefined ? {} : { rowId }),
-      streaming: false
-    }]
-  })
-}
-
-function inferLegacyDisplayKind(role: TranscriptMessage['role'], content: string): string | undefined {
-  if (role !== 'user') return undefined
-  if (/^\[ASYNC DELEGATION (?:BATCH )?COMPLETE\s+[—-]\s+deleg_[^\]\n]+\]\s*\nA background (?:fan-out|subagent)\b/.test(content)) {
-    return 'async_delegation_complete'
-  }
-  return undefined
-}
-
-function timelineDisplayContent(displayKind: string | undefined, metadata: SessionMessage['display_metadata'], content = ''): string | null {
-  if (displayKind === 'model_switch') return 'model changed'
-  if (displayKind === 'auto_continue') return 'resumed interrupted turn'
-  if (displayKind === 'personality_switch') return 'personality changed'
-  if (displayKind !== 'async_delegation_complete') return null
-
-  const parsed = parseDisplayMetadata(metadata)
-  const countFromMetadata = parsed && typeof parsed.task_count === 'number' ? parsed.task_count : undefined
-  const countFromLegacyText = content.match(/A background fan-out of (\d+) subagent\(s\)/)?.[1]
-  const count = countFromMetadata ?? (countFromLegacyText ? Number(countFromLegacyText) : content.startsWith('[ASYNC DELEGATION COMPLETE ') ? 1 : undefined)
-  return count === undefined ? 'background agent work finished' : `${count} background agent${count === 1 ? '' : 's'} finished`
-}
-
-function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): Record<string, unknown> | null {
-  let parsed: unknown = metadata
-  if (typeof parsed === 'string') {
-    try {
-      parsed = JSON.parse(parsed)
-    } catch {
-      return null
-    }
-  }
-  return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
 }
 
 export function isConfirmedMissingSession(error: GatewayError): boolean {

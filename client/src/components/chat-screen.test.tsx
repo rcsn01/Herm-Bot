@@ -13,7 +13,8 @@ import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection, $sessions } from '~/state/store'
+import { $connection } from '~/state/store'
+import { createTranscript } from '~/transcript/transcript'
 
 const mediaConnectionStub = () => ({
   request: vi.fn(),
@@ -52,7 +53,6 @@ beforeEach(() => {
   })
   $chat.set(emptyChatState())
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
-  $sessions.set([])
 })
 
 afterEach(() => {
@@ -65,7 +65,7 @@ describe('chat interaction wiring', () => {
   it('routes speech through the supplied media adapter', async () => {
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: 'Read this', id: 'assistant-1', role: 'assistant' }]
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Read this', role: 'assistant' }])
     })
     const connection = mediaConnectionStub()
     vi.mocked(connection.request).mockResolvedValue({ body: { data_url: 'data:audio/wav;base64,AA==' }, headers: {}, status: 200 })
@@ -130,9 +130,9 @@ describe('transcript rendering and durable edits', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: 'latest answer', id: 'history-row-42', role: 'assistant', rowId: 42 }],
       runtimeSessionId: 'runtime-1',
-      storedSessionId: 'stored-1'
+      storedSessionId: 'stored-1',
+      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [{ content: 'latest answer', role: 'assistant', row_id: 42 }])
     })
 
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
@@ -144,9 +144,9 @@ describe('transcript rendering and durable edits', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: 'latest answer', id: 'history-row-42', role: 'assistant', rowId: 42 }],
       runtimeSessionId: 'runtime-1',
-      storedSessionId: 'stored-1'
+      storedSessionId: 'stored-1',
+      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [{ content: 'latest answer', role: 'assistant', row_id: 42 }])
     })
     const controller = controllerStub()
     const conversation = conversationStub()
@@ -158,28 +158,36 @@ describe('transcript rendering and durable edits', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
   })
 
-  it('loads earlier messages on demand when the current page is truncated', () => {
+  it('loads earlier messages and compensates the scroll height', async () => {
     $chat.set({
       ...emptyChatState(),
       historyHasMore: true,
       historyNextOffset: 80,
-      messages: [{ content: 'latest answer', id: 'history-row-82', role: 'assistant', rowId: 82 }],
       runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [{ content: 'latest answer', role: 'assistant', row_id: 82 }]),
       storedSessionId: 'stored-1'
     })
     const conversation = conversationStub()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1 })
+    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversation} /></div>)
+    const scroller = document.querySelector<HTMLElement>('.view-container')!
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 100 })
+    scroller.scrollTop = 20
+    vi.mocked(conversation.loadOlderMessages).mockImplementation(async () => {
+      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 160 })
+    })
 
-    render(<ChatScreen controller={controllerStub()} conversation={conversation} />)
     fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
 
-    expect(conversation.loadOlderMessages).toHaveBeenCalledOnce()
+    await waitFor(() => expect(conversation.loadOlderMessages).toHaveBeenCalledOnce())
+    await waitFor(() => expect(scroller.scrollTop).toBe(80))
   })
 
   it('keeps external Markdown links secure and renders context usage below the composer', () => {
     $chat.set({
       ...emptyChatState(),
       info: { usage: { context_limit: 100, total: 25 } } as never,
-      messages: [{ content: '[Hermes](https://example.com)', id: 'assistant-1', role: 'assistant' }]
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: '<script>unsafe()</script>\n\n[Hermes](https://example.com)', role: 'assistant' }])
     })
 
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
@@ -187,6 +195,8 @@ describe('transcript rendering and durable edits', () => {
     const link = screen.getByRole<HTMLAnchorElement>('link', { name: 'Hermes' })
     expect(link.target).toBe('_blank')
     expect(link.rel).toContain('noopener')
+    expect(document.querySelector('script')).toBeNull()
+    expect(screen.queryByText('unsafe()')).toBeNull()
     const contextUsage = screen.getByText('25 / 100').closest('.context-usage')
     expect(contextUsage).not.toBeNull()
     expect(contextUsage?.closest('.composer-meta')?.previousElementSibling?.classList.contains('composer')).toBe(true)
@@ -209,7 +219,7 @@ describe('transcript rendering and durable edits', () => {
   it('collapses stored tool output until requested', () => {
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: '{"output":"a long result"}', id: 'tool-1', role: 'tool' }]
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: '{"output":"a long result"}', role: 'tool' }])
     })
 
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
@@ -225,19 +235,21 @@ describe('transcript rendering and durable edits', () => {
 
   it('collapses the generated instruction block only for cron sessions', () => {
     const instructions = '[IMPORTANT: You are running as a scheduled cron job. DELIVERY: send the final result.]'
-    $sessions.set([{ id: 'scheduled-1', message_count: 2, preview: instructions, source: 'cron', started_at: 1, title: 'Daily job' }])
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: instructions, id: 'prompt-1', role: 'user' }],
-      storedSessionId: 'scheduled-1'
+      storedSessionId: 'scheduled-1',
+      transcript: createTranscript({ source: 'cron', storedSessionId: 'scheduled-1' }, [{ content: instructions, role: 'user' }])
     })
 
     const { rerender } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     expect(screen.getByText('Cron job instructions').closest('details')?.open).toBe(false)
 
-    $sessions.set([{ id: 'ordinary-1', message_count: 1, preview: instructions, source: 'mobile', started_at: 1, title: 'Ordinary chat' }])
-    $chat.set({ ...$chat.get(), storedSessionId: 'ordinary-1' })
+    $chat.set({
+      ...$chat.get(),
+      storedSessionId: 'ordinary-1',
+      transcript: createTranscript({ source: 'mobile', storedSessionId: 'ordinary-1' }, [{ content: instructions, role: 'user' }])
+    })
     rerender(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     expect(screen.queryByText('Cron job instructions')).toBeNull()
@@ -247,7 +259,7 @@ describe('transcript rendering and durable edits', () => {
   it('labels internal timeline events as activity rather than user messages', () => {
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: '3 background agents finished', displayKind: 'async_delegation_complete', id: 'event-1', role: 'system' }]
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'payload', display_kind: 'async_delegation_complete', display_metadata: { task_count: 3 } as never, role: 'user' }])
     })
 
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
@@ -258,11 +270,33 @@ describe('transcript rendering and durable edits', () => {
     expect(event.textContent).not.toContain('User')
   })
 
+  it('preserves reasoning, streaming, and author actions for unknown activity kinds', () => {
+    $chat.set({
+      ...emptyChatState(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{
+        content: 'future event', display_kind: 'future_kind', reasoning: 'because', role: 'assistant', row_id: 10
+      }])
+    })
+    $chat.set({
+      ...$chat.get(),
+      transcript: {
+        ...$chat.get().transcript,
+        entries: $chat.get().transcript.entries.map(entry => entry.kind === 'activity' ? { ...entry, streaming: true } : entry)
+      }
+    })
+
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    expect(screen.getByText('because')).not.toBeNull()
+    expect(screen.getByText('Streaming')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Read aloud' })).not.toBeNull()
+  })
+
   it('disables destructive edits for optimistic messages and while running', () => {
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: 'optimistic', id: 'local-1', role: 'user' }],
-      runtimeSessionId: 'runtime-1'
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'optimistic', role: 'user' }])
     })
     const controller = controllerStub()
     const conversation = conversationStub()
@@ -272,8 +306,8 @@ describe('transcript rendering and durable edits', () => {
 
     $chat.set({
       ...$chat.get(),
-      messages: [{ content: 'durable', id: 'history-row-41', role: 'user', rowId: 41 }],
-      running: true
+      running: true,
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'durable', role: 'user', row_id: 41 }])
     })
     rerender(<ChatScreen controller={controller} conversation={conversation} />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Edit & retry' }).disabled).toBe(true)
@@ -282,8 +316,8 @@ describe('transcript rendering and durable edits', () => {
   it('forwards edit and cancel intent to the interaction module', () => {
     $chat.set({
       ...emptyChatState(),
-      messages: [{ content: 'original', id: 'history-row-41', role: 'user', rowId: 41 }],
-      runtimeSessionId: 'runtime-1'
+      runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'original', role: 'user', row_id: 41 }])
     })
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 

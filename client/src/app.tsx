@@ -3,6 +3,7 @@ import { IconMenu2 } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Badge, Button } from '~/compat/primitives'
+import { BrandMark } from '~/components/brand-mark'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
@@ -59,6 +60,9 @@ export function App() {
 
   if (connection.phase === 'unsupported') {
     return <main className="blocking-screen"><div className="brand-mark letter">!</div><h1>Update remote Hermes</h1><p>{connection.error}</p><Button onClick={() => void controller.connect().catch(() => undefined)}>Check again</Button></main>
+  }
+  if (connection.phase === 'connecting' || (connection.phase === 'reconnecting' && !reconnecting)) {
+    return <main aria-label="Connecting to Hermes" className="blocking-screen startup-screen"><BrandMark small /><p role="status">Connecting…</p></main>
   }
   if (connection.phase !== 'connected' && !reconnecting) return <ConnectScreen controller={controller} />
 

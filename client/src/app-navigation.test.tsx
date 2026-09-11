@@ -148,14 +148,25 @@ describe('App navigation', () => {
     expect(view.container.querySelector('.mobile-shell')?.getAttribute('aria-busy')).toBe('false')
   })
 
-  it('keeps the connection screen for reconnecting without a cached session', () => {
+  it('shows a neutral startup screen while connecting instead of flashing login', () => {
+    $connection.set({ ...$connection.get(), phase: 'connecting' })
+
+    render(<App />)
+
+    expect(screen.queryByTestId('chat-instance')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Hermes Mobile' })).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('Connecting…')
+  })
+
+  it('shows the startup screen while reconnecting without a cached session', () => {
     $connection.set({ ...$connection.get(), phase: 'reconnecting' })
     $chat.set(emptyChatState())
 
     render(<App />)
 
     expect(screen.queryByTestId('chat-instance')).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Hermes Mobile' })).not.toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Hermes Mobile' })).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('Connecting…')
   })
 
   it('does not show cached chat after an unexpected disconnect', () => {

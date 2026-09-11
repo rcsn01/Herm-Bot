@@ -73,6 +73,8 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .queue-banner { border-color: var(--line); color: var(--muted-foreground); background: var(--panel); }
 .blocking-screen { align-content: center; text-align: center; }
 .blocking-screen p { max-width: 420px; color: var(--muted-foreground); line-height: 1.5; }
+.startup-screen { gap: 12px; }
+.startup-screen p { margin: 0; }
 
 .mobile-shell { position: fixed; inset: 0; height: 100dvh; min-height: 0; display: grid; grid-template-rows: calc(var(--safe-top) + 58px) minmax(0, 1fr); overflow: hidden; }
 .mobile-shell.reconnecting { pointer-events: none; }
