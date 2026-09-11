@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-async function durableWrite(filePath, value) {
+export async function durableWrite(filePath, value) {
   const directory = path.dirname(filePath);
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   const contents = `${JSON.stringify(value)}\n`;

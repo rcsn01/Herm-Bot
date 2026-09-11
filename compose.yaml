@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     image: hermes-mobile-pwa:local
     ports:
-      - "8080:8080"
+      - "${HERMES_MOBILE_PORT:-8080}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Point at your Hermes HTTP backend (host:port). Compose also reads .env.
@@ -36,9 +36,18 @@ services:
       context: ./web-push-relay
     image: hermes-mobile-web-push-relay:local
     environment:
-      HERMES_WEB_PUSH_TOKEN: ${HERMES_WEB_PUSH_TOKEN:?set HERMES_WEB_PUSH_TOKEN}
       HERMES_WEB_PUSH_APP_URL: ${WEBPUSH_PWA_URL:?set WEBPUSH_PWA_URL}
       HERMES_WEB_PUSH_SUBJECT: ${HERMES_WEB_PUSH_SUBJECT:-}
+      HERMES_COMPLETION_BRIDGE_ENABLED: ${HERMES_COMPLETION_BRIDGE_ENABLED:-true}
+      HERMES_GATEWAY: ${HERMES_GATEWAY:-}
+      HERMES_URL: ${HERMES_URL:-}
+      HERMES_BRIDGE_TOKEN: ${HERMES_BRIDGE_TOKEN:-}
+      HERMES_BRIDGE_USERNAME: ${HERMES_BRIDGE_USERNAME:-}
+      HERMES_BRIDGE_PASSWORD: ${HERMES_BRIDGE_PASSWORD:-}
+      HERMES_BRIDGE_AUTH_PROVIDER: ${HERMES_BRIDGE_AUTH_PROVIDER:-password}
+      HERMES_BRIDGE_POLL_INTERVAL_MS: ${HERMES_BRIDGE_POLL_INTERVAL_MS:-1000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - web-push-data:/data
     read_only: true

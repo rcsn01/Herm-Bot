@@ -68,10 +68,10 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
           <h1>Hermes Mobile</h1>
           <p>{native
             ? 'Enter your Hermes gateway URL to connect this iOS app.'
-            : "Leave this page's origin to use the Docker proxy, or paste your Hermes Tailscale URL to talk to that instance directly."}</p>
+            : 'This PWA uses its Docker reverse proxy for the configured Hermes gateway.'}</p>
         </div>
 
-        <label>
+        {native ? <label>
           Remote gateway
           <Input
             autoCapitalize="none"
@@ -81,7 +81,7 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
             placeholder="http://machine.tailnet.ts.net:9119"
             value={remoteURL}
           />
-        </label>
+        </label> : <p className="muted"><strong>Docker gateway proxy</strong><br />{window.location.origin}<br /><small>Set HERMES_GATEWAY in the Docker .env to choose the Hermes instance.</small></p>}
         <label>
           Gateway token <span className="muted">(self-hosted only)</span>
           <Input
@@ -92,7 +92,7 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
             value={token}
           />
         </label>
-        <Button className="touch-button" disabled={busy || !remoteURL.trim()} onClick={() => void prepare()}>
+        <Button className="touch-button" disabled={busy || (native && !remoteURL.trim())} onClick={() => void prepare()}>
           {busy ? 'Connecting…' : 'Continue'}
         </Button>
 
@@ -111,7 +111,7 @@ export function ConnectScreen({ controller }: { controller: GatewayController })
         {(error || connection.error) && <div className="error-banner" role="alert">{error || connection.error}</div>}
         <p className="security-note">{native
           ? 'Tokens stay in Keychain; browser sessions stay in the native cookie jar.'
-          : "Direct Tailscale URLs are fetched by this browser. On that Hermes instance, set dashboard.cors_origins to this page's origin. A gateway token always works; cookie sign-in works when both hosts are on the same tailnet MagicDNS."}</p>
+          : 'Browser requests, OAuth, WebSockets, and Web Push stay on this PWA origin; nginx routes gateway traffic to HERMES_GATEWAY.'}</p>
       </section>
     </main>
   )

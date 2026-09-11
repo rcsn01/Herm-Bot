@@ -54,25 +54,15 @@ docker compose up -d
 To supply a raw nginx `upstream` block instead, mount it over
 `/tmp/hermes-gateway.conf`.
 
-Configure Hermes `dashboard.public_url` to the external HTTPS origin of the
-dashboard itself when OAuth/Host checks need it (for example the Tailscale
-Serve URL of Hermes). That is **not** the PWA origin.
+Configure Hermes `dashboard.public_url` to the external HTTPS origin users
+open for this PWA and configure the gateway's trusted proxy peers. OAuth and
+Host checks must see the PWA origin because nginx presents that origin to the
+browser.
 
-If the PWA will type a Hermes Tailscale URL and talk to it directly from the
-phone browser, add this PWA origin to `dashboard.cors_origins` on that Hermes
-instance:
-
-```yaml
-dashboard:
-  cors_origins:
-    - http://mac.tail3ce9b9.ts.net:8080
-    - http://192.168.1.10:8080
-```
-
-Exact origins only. Cookie/OAuth sign-in from the PWA works when both hosts
-share a tailnet MagicDNS site (`*.<tailnet>.ts.net`). A gateway token works
-from any allowlisted origin. The Docker proxy still uses `HERMES_GATEWAY` when
-the PWA stays on this site; it never takes a request-supplied upstream.
+The browser PWA always stays on this origin, so it needs no CORS allowlist for
+Hermes. The Docker proxy uses only `HERMES_GATEWAY`/`HERMES_URL`; it never takes
+a request-supplied upstream. The native iOS app may still connect directly to a
+Tailscale or LAN URL.
 
 When the PWA is reached through Cloudflare or another TLS reverse proxy,
 configure the gateway's trusted proxy settings for that hop, and ensure the
@@ -113,73 +103,58 @@ This never deletes gateway sessions.
 
 ## Web Push notifications
 
-Compose includes a private Web Push relay with persistent VAPID keys and
-subscriptions. It is reached through `/push` on the existing PWA origin, so it
-does not need another hostname or published port.
+Compose includes a private Web Push relay with persistent VAPID keys,
+subscriptions, and completion-event state. nginx exposes only registration and
+the public VAPID key under `/push`. The relay has no published host port and
+needs no shared Web Push token.
 
-Generate the relay bearer secret once in `.env`, then deploy:
+The relay's completion bridge connects to the existing `HERMES_GATEWAY`. Give
+it one existing Hermes credential in `.env`:
 
 ```sh
-umask 077
-printf '\nHERMES_WEB_PUSH_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
+# Preferred when the dashboard already uses password authentication.
+HERMES_BRIDGE_USERNAME=your-existing-username
+HERMES_BRIDGE_PASSWORD=your-existing-password
+
+# Or use an existing static Hermes session token instead.
+# HERMES_BRIDGE_TOKEN=your-existing-token
+```
+
+The bridge signs in through `/auth/password-login`, requests one-use WebSocket
+tickets, polls `session.active_list`, and attaches observer sockets with
+`session.activate`. It sends pushes for `message.complete` events. It neither
+creates nor resumes sessions. No plugin, outbound hook, delivery channel, or
+Web Push secret is installed in Hermes.
+
+For reconnect recovery, the bridge stores session sequence watermarks and
+notification IDs in the `web-push-data` volume. It calls
+`session.events.since` before resuming live observation and deduplicates
+replayed completion events. Hermes keeps that replay history in a bounded
+in-memory ring. Delivery is at least once: a crash after the push provider
+accepts a message but before the relay saves its delivery ID can repeat a push.
+The relay uses a stable notification tag so browsers can replace that retry.
+A turn can still be missed if the bridge never observed its runtime session
+and the whole turn began and ended while the bridge was down. Keep the relay
+running whenever Hermes is in use. Set
+`HERMES_COMPLETION_BRIDGE_ENABLED=false` only when completion pushes are not
+wanted; bridge credentials are then optional.
+
+Deploy, open the installed PWA, sign in, then choose
+**Settings → Notifications → Enable notifications**:
+
+```sh
 docker compose up -d --build
 ```
 
-Do not repeat the append command if the variable already exists. Set the
-`WEBPUSH_*` deployment values shown in `.env.example`. For a remote Docker
-gateway, install the profile-scoped delivery extension:
-
-```sh
-./configure-web-push-docker.sh
-```
-
-The script securely copies the extension and relay secret into the remote
-`HERMES_HOME`, removes the unreliable process-scoped outbound target if
-present, registers `webpush` as a normal delivery channel, and restarts only
-the Hermes service:
-
-```yaml
-plugins:
-  enabled:
-    - mobile-push-delivery
-  entries:
-    mobile-push-delivery:
-      enabled: true
-      allow_tool_override: false
-platforms:
-  webpush:
-    enabled: true
-    gateway_restart_notification: false
-    home_channel:
-      platform: webpush
-      chat_id: all
-      name: All subscribed devices
-    extra:
-      relay_url: https://mobile.example/push/v1/notify
-```
-
-This extension is loaded through Hermes' supported user-plugin layer; it does
-not change `/opt/hermes` or the container image and survives image updates
-because it lives under the mounted `HERMES_HOME`. The `webpush` home channel
-means all devices subscribed to this Mobile deployment. Select `webpush` as a
-cron delivery target, use `webpush:all` explicitly, or send directly:
-
-```sh
-hermes send --to webpush "The deployment finished."
-```
-
-Ordinary unscheduled Hermes turns do not send Web Push notifications.
-
-Open the installed PWA after deploying its update, sign in, then choose
-**Settings → Notifications → Enable notifications**. Registration mutations
-are accepted only when the PWA's Hermes cookie or session token authenticates
-against the fixed `HERMES_GATEWAY`; `/api/status` is deliberately not used
-because it is a public liveness endpoint. Test end-to-end with `hermes send` or
-a cron job configured to deliver to `webpush`.
+Registration mutations require the PWA's Hermes cookie or session token
+against the fixed `HERMES_GATEWAY`; `/api/status` is not used because it is a
+public liveness endpoint. Start a normal Hermes turn, put the PWA in the
+background, and verify that the completion notification opens the stored
+session.
 
 The relay removes expired browser subscriptions automatically. Back up the
-`web-push-data` volume if retaining subscriptions across a host migration
-matters; ordinary container rebuilds preserve it.
+`web-push-data` volume if subscriptions and replay watermarks must survive a
+host migration. Container rebuilds preserve the volume.
 
 ## Build context and inputs
 

@@ -58,10 +58,9 @@ self.addEventListener('notificationclick', event => {
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
     const existing = windows.find(client => new URL(client.url).origin === self.location.origin)
-    if (existing) {
-      await existing.navigate(target)
-      return existing.focus()
-    }
-    return self.clients.openWindow(target)
+    if (existing) existing.postMessage({ type: 'HERMES_DEEP_LINK', url: target })
+    const opened = await self.clients.openWindow(target)
+    if (opened) return opened.focus()
+    return existing?.focus()
   })())
 })

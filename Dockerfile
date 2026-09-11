@@ -6,6 +6,7 @@ WORKDIR /workspace/client
 # Keep dependency installation cacheable. The standalone repository owns the
 # compatibility modules used by the client, so no Hermes checkout is needed.
 COPY client/package.json client/package-lock.json ./
+COPY client/vendor ./vendor
 RUN npm ci
 
 COPY client/index.html client/tsconfig.json client/vite.config.ts client/capacitor.config.ts ./

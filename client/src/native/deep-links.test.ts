@@ -47,6 +47,29 @@ describe('observeHermesDeepLinks', () => {
     expect(mocks.getLaunchUrl).not.toHaveBeenCalled()
   })
 
+  it('forwards notification clicks from the service worker to an open PWA', () => {
+    mocks.state.native = false
+    history.replaceState(null, '', '/')
+    const serviceWorker = new EventTarget()
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: serviceWorker })
+    const handler = vi.fn()
+    const unsubscribe = observeHermesDeepLinks(handler)
+
+    const target = `${window.location.origin}/session/from-push?profile=work`
+    serviceWorker.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'HERMES_DEEP_LINK', url: target }
+    }))
+    expect(handler).toHaveBeenCalledExactlyOnceWith(target)
+    expect(window.location.pathname).toBe('/session/from-push')
+    expect(window.location.search).toBe('?profile=work')
+
+    unsubscribe()
+    serviceWorker.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'HERMES_DEEP_LINK', url: `${window.location.origin}/session/ignored` }
+    }))
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
   it('rejects foreign and unsupported browser URLs', () => {
     mocks.state.native = false
     history.replaceState(null, '', '/settings')

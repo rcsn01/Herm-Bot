@@ -13,6 +13,8 @@
 !client/src/**
 !client/public/
 !client/public/**
+!client/vendor/
+!client/vendor/**
 !deploy/
 !deploy/nginx.conf
 !deploy/gateway.conf

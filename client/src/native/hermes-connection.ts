@@ -85,7 +85,13 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
   }
 
   async configure(options: ConfigureOptions) {
-    const remoteURL = normalizeRemoteURL(options.remoteURL, true)
+    // A browser PWA has one public origin. Keep the Hermes URL server-side so
+    // REST, WebSocket, OAuth, and Web Push all use the same reverse proxy.
+    const requestedURL = normalizeRemoteURL(options.remoteURL, true)
+    if (!Capacitor.isNativePlatform() && !usesBrowserGatewayProxy(requestedURL)) {
+      throw new Error('The browser PWA must use this site\'s Docker proxy. Configure HERMES_GATEWAY in the container environment.')
+    }
+    const remoteURL = Capacitor.isNativePlatform() ? requestedURL : browserGatewayURL()
     this.remoteURL = remoteURL
     this.token = options.token?.trim() ?? ''
     localStorage.setItem('hermes.remoteURL', this.remoteURL)
@@ -243,10 +249,14 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
     if (!path.startsWith('/') || path.startsWith('//')) {
       throw new Error('Gateway requests require a same-origin path.')
     }
-    const url = new URL(absoluteGatewayURL(this.remoteURL, path))
-    const root = new URL(this.remoteURL)
+    const throughBrowserProxy = !Capacitor.isNativePlatform()
+    const base = throughBrowserProxy ? window.location.origin : this.remoteURL
+    const url = new URL(absoluteGatewayURL(base, path))
+    const root = new URL(base)
     if (url.origin !== root.origin || url.username || url.password) {
-      throw new Error('Gateway requests must stay on the configured gateway origin.')
+      throw new Error(throughBrowserProxy
+        ? 'Gateway requests must stay on this app origin.'
+        : 'Gateway requests must stay on the configured gateway origin.')
     }
     return url.toString()
   }
@@ -272,9 +282,22 @@ export function usesBrowserGatewayProxy(remoteURL: string): boolean {
 
 export function defaultRemoteURL(): string {
   const stored = localStorage.getItem('hermes.remoteURL') ?? ''
-  if (stored) return stored
-  if (Capacitor.isNativePlatform()) return ''
-  return browserGatewayURL()
+  if (Capacitor.isNativePlatform()) return stored
+
+  const proxyURL = browserGatewayURL()
+  if (!stored) return proxyURL
+  try {
+    const normalized = normalizeRemoteURL(stored, true)
+    if (usesBrowserGatewayProxy(normalized)) return normalized
+  } catch {
+    // Drop malformed browser state below and use the app origin.
+  }
+
+  // A browser token belongs to the remote gateway URL it was entered for. Do
+  // not let a stale direct URL silently send that token to the fixed proxy.
+  localStorage.removeItem('hermes.remoteURL')
+  sessionStorage.removeItem('hermes.token')
+  return proxyURL
 }
 
 async function jsonResponse<T>(response: Response): Promise<NativeResponse<T>> {

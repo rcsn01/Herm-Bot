@@ -28,6 +28,7 @@
     "@capacitor/haptics": ">=8.0.0 <9",
     "@capacitor/ios": ">=8.0.0 <9",
     "@capacitor/preferences": ">=8.0.0 <9",
+    "@moirasia/ui-react": "file:vendor/moirasia-ui-react-0.1.0.tgz",
     "@nanostores/react": ">=1.1.0 <2",
     "@tabler/icons-react": ">=3.41.1 <4",
     "@tanstack/react-query": ">=5.101.2 <6",

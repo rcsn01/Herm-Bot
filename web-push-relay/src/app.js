@@ -1,28 +1,6 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { validateEndpoint, validateNotification, validateSubscription } from "./validation.js";
+import { validateEndpoint, validateSubscription } from "./validation.js";
 
 export const MAX_BODY_BYTES = 32 * 1024;
-
-function tokenDigest(value) {
-  return createHash("sha256").update(value, "utf8").digest();
-}
-
-export function hasValidBearer(authorization, expectedToken) {
-  if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) {
-    return false;
-  }
-  const suppliedToken = authorization.slice("Bearer ".length);
-  return timingSafeEqual(tokenDigest(suppliedToken), tokenDigest(expectedToken));
-}
-
-export function hasValidSignature(signature, secret, body) {
-  if (typeof signature !== "string" || !/^sha256=[a-f0-9]{64}$/.test(signature)) {
-    return false;
-  }
-  const expected = createHmac("sha256", secret).update(body).digest();
-  const supplied = Buffer.from(signature.slice("sha256=".length), "hex");
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
-}
 
 function sendJson(response, statusCode, value) {
   const body = `${JSON.stringify(value)}\n`;
@@ -117,7 +95,7 @@ export async function notifyAll({ state, push, notification }) {
   return errors.length > 0 ? { ...summary, errors } : summary;
 }
 
-export function createHandler({ state, push, token, hermesEvents }) {
+export function createHandler({ state, push }) {
   return async function handler(request, response) {
     const pathname = new URL(request.url, "http://relay.invalid").pathname;
 
@@ -142,38 +120,6 @@ export function createHandler({ state, push, token, hermesEvents }) {
         sendJson(response, 200, { ok: true, removed });
         return;
       }
-      if (request.method === "POST" && pathname === "/v1/notify") {
-        if (!hasValidBearer(request.headers.authorization, token)) {
-          sendJson(response, 401, { error: "unauthorized" });
-          return;
-        }
-        const notification = validateNotification(await readJson(request));
-        const result = await notifyAll({ state, push, notification });
-        sendJson(response, 200, result);
-        return;
-      }
-      if (request.method === "POST" && pathname === "/v1/hermes-events") {
-        const body = await readBody(request);
-        if (!hasValidSignature(
-          request.headers["x-hermes-signature-256"],
-          token,
-          body,
-        )) {
-          sendJson(response, 401, { error: "unauthorized" });
-          return;
-        }
-        let payload;
-        try {
-          payload = JSON.parse(body.toString("utf8"));
-        } catch {
-          throw Object.assign(new Error("invalid JSON"), { statusCode: 400 });
-        }
-        if (!hermesEvents) throw new Error("Hermes event receiver unavailable");
-        const result = hermesEvents.accept(payload);
-        sendJson(response, 202, result);
-        return;
-      }
-
       sendJson(response, 404, { error: "not found" });
     } catch (error) {
       if (response.headersSent || response.destroyed) {

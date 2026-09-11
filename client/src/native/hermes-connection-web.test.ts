@@ -30,9 +30,14 @@ describe('browser gateway connection', () => {
     expect(fetchMock).toHaveBeenCalledWith(`${origin}/api/status`, expect.objectContaining({ credentials: 'include', redirect: 'error' }))
   })
 
-  it('keeps tokens session-only and can send them to a Tailscale Hermes URL', async () => {
-    fetchMock.mockImplementation(async () => json({ ok: true }))
+  it('rejects a direct browser gateway URL instead of forwarding its token', async () => {
     const connection = new HermesConnectionWeb()
+    await expect(connection.configure({ remoteURL: 'http://h-lap02.tail3ce9b9.ts.net:9119', token: 'test-token' }))
+      .rejects.toThrow('Docker proxy')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('hermes.token')).toBeNull()
+
+    fetchMock.mockImplementation(async () => json({ ok: true }))
     await connection.configure({ remoteURL: origin, token: ' test-token ' })
     await connection.request({ path: '/api/config', profile: 'client work' })
     expect(fetchMock).toHaveBeenCalledWith(`${origin}/api/config?profile=client+work`, expect.objectContaining({
@@ -40,14 +45,6 @@ describe('browser gateway connection', () => {
     }))
     expect(sessionStorage.getItem('hermes.token')).toBe('test-token')
     expect(localStorage.getItem('hermes.token')).toBeNull()
-    fetchMock.mockClear()
-    await connection.configure({ remoteURL: 'http://h-lap02.tail3ce9b9.ts.net:9119', token: 'tailscale-token' })
-    await connection.request({ path: '/api/status' })
-    expect(fetchMock).toHaveBeenCalledWith('http://h-lap02.tail3ce9b9.ts.net:9119/api/status', expect.objectContaining({
-      credentials: 'include',
-      headers: { 'X-Hermes-Session-Token': 'tailscale-token' }
-    }))
-    expect(sessionStorage.getItem('hermes.token')).toBe('tailscale-token')
   })
 
   it.each(['//other.example/api/status', 'https://other.example/api/status', '/\\other.example/api/status'])(
@@ -58,21 +55,25 @@ describe('browser gateway connection', () => {
     }
   )
 
-  it('restores a stored Tailscale gateway URL in the browser', async () => {
+  it('discards a stored direct gateway URL instead of bypassing the browser proxy', async () => {
     localStorage.setItem('hermes.remoteURL', 'http://h-lap02.tail3ce9b9.ts.net:9119')
     sessionStorage.setItem('hermes.token', 'saved-token')
-    fetchMock.mockResolvedValue(json({ auth_required: false }))
-    await new HermesConnectionWeb().probe()
-    expect(fetchMock).toHaveBeenCalledWith('http://h-lap02.tail3ce9b9.ts.net:9119/api/status', expect.objectContaining({
-      headers: { 'X-Hermes-Session-Token': 'saved-token' }
+    fetchMock.mockResolvedValue(json({ auth_required: true }))
+    const connection = new HermesConnectionWeb()
+    await connection.probe()
+    expect(fetchMock).toHaveBeenCalledWith(`${origin}/api/status`, expect.objectContaining({
+      credentials: 'include',
+      headers: {}
     }))
+    expect(localStorage.getItem('hermes.remoteURL')).toBeNull()
+    expect(sessionStorage.getItem('hermes.token')).toBeNull()
   })
 
-  it('opens a WebSocket on the configured Tailscale origin', async () => {
+  it('opens a WebSocket through the same-origin proxy', async () => {
     const connection = new HermesConnectionWeb()
-    await connection.configure({ remoteURL: 'http://h-lap02.tail3ce9b9.ts.net:9119', token: 'ws-token' })
+    await connection.configure({ remoteURL: origin, token: 'ws-token' })
     const url = new URL((await connection.getWebSocketURL({ profile: 'work' })).url)
-    expect(url.origin).toBe('ws://h-lap02.tail3ce9b9.ts.net:9119')
+    expect(url.origin).toBe(origin.replace(/^http/, 'ws'))
     expect(url.pathname).toBe('/api/ws')
     expect(url.searchParams.get('token')).toBe('ws-token')
     expect(url.searchParams.get('profile')).toBe('work')

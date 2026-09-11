@@ -16,11 +16,19 @@ export function observeHermesDeepLinks(handler: (rawURL: string) => void): () =>
       const rawURL = window.location.href
       if (active && parseHermesDeepLink(rawURL)) handler(rawURL)
     }
+    const forwardServiceWorkerURL = (event: MessageEvent) => {
+      if (event.data?.type !== 'HERMES_DEEP_LINK' || typeof event.data.url !== 'string') return
+      if (!active || !parseHermesDeepLink(event.data.url)) return
+      history.replaceState(null, '', event.data.url)
+      handler(event.data.url)
+    }
     window.addEventListener('popstate', forwardCurrentURL)
+    navigator.serviceWorker?.addEventListener('message', forwardServiceWorkerURL)
     forwardCurrentURL()
     return () => {
       active = false
       window.removeEventListener('popstate', forwardCurrentURL)
+      navigator.serviceWorker?.removeEventListener('message', forwardServiceWorkerURL)
     }
   }
 

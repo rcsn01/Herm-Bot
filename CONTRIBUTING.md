@@ -26,14 +26,12 @@ npx playwright install chromium webkit
 npm run test:e2e
 ```
 
-The `mobile-push-delivery` tests exercise Hermes plugin discovery. Set
-`HERMES_AGENT_ROOT` to a checkout of Hermes Agent and add that checkout to
-`PYTHONPATH` before running them:
+The optional native push plugin tests need a Hermes Agent checkout. Set
+`HERMES_AGENT_ROOT` and add that checkout to `PYTHONPATH` before running them:
 
 ```bash
 HERMES_AGENT_ROOT=/path/to/hermes-agent \
 PYTHONPATH=/path/to/hermes-agent \
-python3 -m unittest discover -s mobile-push-delivery -p 'test_*.py'
 python3 -m unittest discover -s push-notification -p 'test_*.py'
 ```
 
