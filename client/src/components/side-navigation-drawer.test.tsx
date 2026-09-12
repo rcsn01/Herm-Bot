@@ -67,6 +67,18 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('offers agent capabilities and cron jobs next to the sessions search', () => {
+    const { onClose, onNavigate } = renderDrawer()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    expect(onNavigate).toHaveBeenCalledWith('capabilities')
+    expect(onClose).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    expect(onNavigate).toHaveBeenCalledWith('cron')
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps only session rows and pagination inside the session-list scroll region', () => {
     $sessionsHasMore.set(true)
     renderDrawer()
@@ -77,6 +89,8 @@ describe('SideNavigationDrawer', () => {
     expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search sessions' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot profile' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Recent sessions' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Cron Jobs' }))).toBe(false)
   })
 
   it('filters session titles only and keeps the query while closed', () => {

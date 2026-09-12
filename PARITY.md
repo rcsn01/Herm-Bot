@@ -60,11 +60,14 @@ selected connection.
 The main screen is the agent roster: one row per gateway profile with its
 latest-conversation preview when the gateway provides it. Opening an agent
 enters that profile's latest conversation, starting a fresh one when none
-exists. A header gear opens **Settings** from any screen. **Capabilities** and
-**Cron Jobs** live behind the bot profile screen: one bot per gateway profile,
-matching Hermes bot mode where a Bot is a profile that owns its capabilities
-and cron routines (see [RESEARCH.md](RESEARCH.md)). Inside a profile the drawer
-holds the bot identity and recent sessions; the roster itself has no side
+exists. A header gear on the roster opens **Settings**; profile surfaces have
+no settings entry point apart from the bot's model row. **Capabilities** and
+**Cron Jobs** are agent-specific: one bot per gateway profile owns its
+capabilities and cron routines, matching Hermes bot mode where a Bot is a
+profile (see [RESEARCH.md](RESEARCH.md)). They are reachable from the bot
+profile screen and as shortcuts in the profile drawer. Inside a profile the
+drawer holds the bot identity, the agent shortcuts, and recent sessions; the
+roster itself has no side
 navigation. The former generic Operations
 and More surfaces are not separate tabs; their supported workflows are placed
 in Cron, Capabilities, Projects, or Settings. The generic authenticated request

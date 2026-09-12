@@ -1,5 +1,7 @@
 import { useStore } from '@nanostores/react'
 import {
+  IconBolt,
+  IconCalendarClock,
   IconPlus,
   IconSearch,
   IconTrash
@@ -160,6 +162,10 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
             <strong>{preferences.profile || 'default'}</strong>
           </button>
           <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
+          <nav aria-label="Bot sections" className="drawer-sections">
+            <button aria-current={activeTab === 'capabilities' ? 'page' : undefined} onClick={() => navigate('capabilities')}><IconBolt aria-hidden="true" size={17} />Capabilities</button>
+            <button aria-current={activeTab === 'cron' ? 'page' : undefined} onClick={() => navigate('cron')}><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</button>
+          </nav>
         </header>
 
         {error && <div className="error-banner drawer-error" role="alert">{error}</div>}

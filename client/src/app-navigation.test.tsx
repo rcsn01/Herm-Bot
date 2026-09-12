@@ -128,9 +128,12 @@ describe('App navigation', () => {
     openDrawer()
 
     expect(screen.getByRole('dialog', { name: 'Navigation' })).not.toBeNull()
-    expect(screen.queryByRole('button', { name: 'Capabilities' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Cron Jobs' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Cron Jobs' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    expect(screen.getByText('Capabilities screen')).not.toBeNull()
   })
 
   it('opens Settings from the main screen header button and returns to the roster', () => {
@@ -144,16 +147,20 @@ describe('App navigation', () => {
     expect(screen.getByText('Roster screen')).not.toBeNull()
   })
 
-  it('returns to the chat after settings opened inside a profile', async () => {
+  it('keeps settings reachable only from the main screen', async () => {
     render(<App />)
+    expect(screen.getByRole('button', { name: 'Open settings' })).not.toBeNull()
 
     await enterAgent()
+    expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
     expect(screen.getByText('Settings screen')).not.toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
-    expect(screen.getByTestId('chat-instance')).not.toBeNull()
-    expect(screen.queryByText('Roster screen')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
 
   it('reaches Capabilities and Cron Jobs behind the bot profile', async () => {

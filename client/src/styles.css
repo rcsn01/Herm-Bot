@@ -128,6 +128,9 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .drawer-identity strong { font-size: var(--font-title); font-weight: var(--weight-bold); letter-spacing: -.035em; }
 .drawer-search { min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--muted-foreground); }
 .drawer-search input { width: 100%; min-width: 0; min-height: 42px; padding-inline: 0; border: 0; background: transparent; box-shadow: none; color: var(--text); }
+.drawer-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.drawer-sections button { min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--text); font-size: var(--font-control); font-weight: var(--weight-semibold); }
+.drawer-sections button[aria-current='page'] { border-color: color-mix(in srgb, var(--primary) 55%, var(--line)); color: var(--primary); }
 .drawer-error { flex: none; margin-block: 9px 0; }
 .drawer-sessions { min-height: 0; flex: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .drawer-sessions-header { min-height: 51px; padding: 5px 9px 5px 16px; display: flex; flex: none; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }

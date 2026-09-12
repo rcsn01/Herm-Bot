@@ -99,7 +99,7 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={setTab} open={drawerOpen} /> : null}
+        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={openDestination} open={drawerOpen} /> : null}
         drawerOpen={drawerOpen}
         header={<header className="app-header">
           {navigation.activeTab === 'roster' ? (
@@ -121,7 +121,9 @@ export function App() {
           {inProfile && (
             <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
           )}
-          <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom(navigation.activeTab)} variant="ghost"><IconSettings className="size-6" /></Button>
+          {navigation.activeTab === 'roster' && (
+            <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom('roster')} variant="ghost"><IconSettings className="size-6" /></Button>
+          )}
         </header>}
         onSwipeBack={() => { if (inProfile) backToRoster() }}
         onRefresh={refresh}
@@ -153,19 +155,21 @@ function routeForSettings(route: ReturnType<typeof $activeRoute.get>): SettingsR
   return route.tab === 'settings' ? route : ROOT_ROUTES.settings
 }
 
+function openDestination(tab: MobileTab) {
+  resetTabRoutes(tab)
+  setTab(tab)
+}
+
 function openBotProfile() {
-  resetTabRoutes('bot')
-  setTab('bot')
+  openDestination('bot')
 }
 
 function openCapabilities() {
-  resetTabRoutes('capabilities')
-  setTab('capabilities')
+  openDestination('capabilities')
 }
 
 function openCronJobs() {
-  resetTabRoutes('cron')
-  setTab('cron')
+  openDestination('cron')
 }
 
 function openModelSettings() {
