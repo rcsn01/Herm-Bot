@@ -4,9 +4,12 @@
 :root {
   color-scheme: light;
   --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   /* The composer metadata row already supplies 30px beneath its controls. */
   --composer-safe-lift: max(0px, calc(var(--safe-bottom) - 30px));
+  --latest-composer-gap: 18px;
   --bg: var(--background);
   --panel: var(--card);
   --panel-2: var(--muted);
@@ -77,6 +80,11 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .startup-screen p { margin: 0; }
 
 .mobile-shell { position: fixed; inset: 0; height: 100dvh; min-height: 0; display: grid; grid-template-rows: calc(var(--safe-top) + 58px) minmax(0, 1fr); overflow: hidden; }
+/* iOS Home Screen can subtract its bottom system strip from 100dvh while
+   black-translucent still places the viewport at the physical top edge. */
+@media (display-mode: standalone) {
+  html, body, #root, .mobile-shell { height: 100vh; }
+}
 .mobile-shell.reconnecting { pointer-events: none; }
 .app-header { position: relative; z-index: 30; height: 100%; padding: var(--safe-top) 10px 0; display: flex; align-items: center; justify-content: space-between; gap: 5px; background: color-mix(in srgb, var(--bg) 88%, transparent); border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); }
 .drawer-icon-button { min-width: 40px; min-height: 40px; flex: none; }
@@ -90,6 +98,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .connection-dot, .status-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--success); }
 .connection-dot.busy, .connection-dot.reconnecting, .status-dot.running, .status-dot.progress, .status-dot.generating { background: var(--primary); box-shadow: 0 0 0 4px var(--accent); }
 .view-container { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
+.view-container:has(.chat-screen) { scroll-padding-bottom: calc(var(--composer-occlusion, 94px) + var(--latest-composer-gap)); }
 .mobile-shell.drawer-open .view-container { overflow-y: hidden; overscroll-behavior: none; touch-action: none; }
 .refresh-indicator { position: fixed; z-index: 40; top: calc(var(--safe-top) + 64px); left: 50%; transform: translateX(-50%); margin: 0; color: var(--primary); white-space: nowrap; }
 
@@ -117,7 +126,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .session-row.active-session { border-color: color-mix(in srgb, var(--primary) 65%, var(--line)); }
 .session-main[aria-current="page"] { background: var(--accent); }
 .chat-screen { min-height: inherit; display: flex; flex-direction: column; }
-.transcript { min-width: 0; flex: 1; padding: 18px 14px 112px; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 14px; }
+.transcript { min-width: 0; flex: 1; padding: 18px 14px calc(var(--composer-occlusion, 94px) + var(--latest-composer-gap)); display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 14px; }
 .load-earlier { justify-self: center; }
 .session-management { justify-self: end; display: grid; justify-items: end; gap: 6px; }
 .session-management-actions { padding: 5px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); }
@@ -159,7 +168,8 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .composer-wrap { position: fixed; z-index: 25; inset: auto 0 0; padding: 8px 10px 0; background: linear-gradient(transparent, var(--bg) 28%); }
 .composer { min-height: 54px; padding: 7px; display: grid; grid-template-columns: auto auto 1fr auto; align-items: end; gap: 3px; border: 1px solid var(--line); border-radius: var(--radius-bubble); background: var(--panel); box-shadow: 0 8px 25px #0002; }
 .composer textarea { max-height: 130px; min-height: 38px; resize: none; border: 0; background: transparent; color: var(--text); box-shadow: none; font-size: 16px; }
-.composer-meta { min-height: 24px; padding: 5px 5px 0; display: flex; align-items: center; gap: 12px; }
+.composer-meta { min-height: 24px; padding: 5px max(18px, calc(var(--safe-right) + 5px)) 0 max(18px, calc(var(--safe-left) + 5px)); display: flex; align-items: center; gap: 12px; }
+.composer-wrap:has(textarea:focus) .composer-meta { padding-inline: 5px; }
 .composer-meta .context-usage { min-width: 0; flex: 1; }
 .session-activity { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--muted-foreground); font-size: var(--font-caption); }
 .session-activity.working { color: var(--primary); }

@@ -29,6 +29,7 @@ export interface ChatViewportOptions {
 
 export interface ChatViewportBinding {
   bottomRef: RefObject<HTMLDivElement | null>
+  composerRef: RefObject<HTMLDivElement | null>
   hasNewMessages: boolean
   jumpToLatest(): void
   loadOlderMessages(): Promise<void>
@@ -73,6 +74,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
 
   const transcriptRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const composerRef = useRef<HTMLDivElement | null>(null)
   const olderMessagesRef = useRef<HTMLButtonElement | null>(null)
 
   const [hasNewMessages, setHasNewMessages] = useState(false)
@@ -583,6 +585,62 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
   }, [active, findScroller, runtimeSessionId, scrollerRevision, storedSessionId])
 
   useEffect(() => {
+    if (!active) return
+    const scroller = findScroller()
+    const composer = composerRef.current
+    if (!scroller || !composer || typeof ResizeObserver === 'undefined') return
+
+    let frame: number | null = null
+    const updateComposerOcclusion = (fallbackHeight = 0) => {
+      const composerRect = composer.getBoundingClientRect()
+      const composerHeight = composerRect.height || fallbackHeight
+      const viewportBottom = scroller.getBoundingClientRect().bottom
+      const occlusion = Math.ceil(Math.max(composerHeight, viewportBottom - composerRect.top))
+      if (occlusion > 0) scroller.style.setProperty('--composer-occlusion', `${occlusion}px`)
+      return composerRect
+    }
+    const anchorLatest = () => {
+      if (!mountedRef.current || !latestActiveRef.current || !followingLatestRef.current) return
+      if (frame !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+      const alignToComposer = () => {
+        const bottom = bottomRef.current
+        if (!bottom || !mountedRef.current || !latestActiveRef.current || !followingLatestRef.current) return
+        const composerRect = updateComposerOcclusion()
+        const clearance = Number.parseFloat(getComputedStyle(scroller).getPropertyValue('--latest-composer-gap')) || 18
+        const targetBottom = composerRect.top - clearance
+        const adjustment = bottom.getBoundingClientRect().top - targetBottom
+        if (Number.isFinite(adjustment) && Math.abs(adjustment) >= 0.5) scroller.scrollTop += adjustment
+      }
+      if (typeof requestAnimationFrame !== 'function') {
+        alignToComposer()
+        return
+      }
+      frame = requestAnimationFrame(() => {
+        frame = null
+        alignToComposer()
+      })
+    }
+    const observer = new ResizeObserver(entries => {
+      const composerEntry = entries.find(entry => entry.target === composer)
+      updateComposerOcclusion(composerEntry?.contentRect.height)
+      anchorLatest()
+    })
+    updateComposerOcclusion()
+    observer.observe(composer)
+    observer.observe(scroller)
+    window.addEventListener('resize', anchorLatest)
+    window.visualViewport?.addEventListener('resize', anchorLatest)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', anchorLatest)
+      window.visualViewport?.removeEventListener('resize', anchorLatest)
+      if (frame !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame)
+      scroller.style.removeProperty('--composer-occlusion')
+    }
+  }, [active, findScroller, scrollerRevision])
+
+  useEffect(() => {
     const target = olderMessagesRef.current
     if (observerTargetRef.current !== target) {
       observerTargetRef.current = target
@@ -633,6 +691,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
 
   return {
     bottomRef,
+    composerRef,
     hasNewMessages,
     jumpToLatest,
     loadOlderMessages,

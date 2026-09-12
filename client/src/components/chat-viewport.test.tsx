@@ -27,7 +27,33 @@ interface ObserverRecord {
   options?: IntersectionObserverInit
 }
 
+interface ResizeObserverRecord {
+  callback: ResizeObserverCallback
+  disconnect: ReturnType<typeof vi.fn<() => void>>
+  observed: Element[]
+}
+
 const observers: ObserverRecord[] = []
+const resizeObservers: ResizeObserverRecord[] = []
+
+class TestResizeObserver implements ResizeObserver {
+  private readonly record: ResizeObserverRecord
+
+  constructor(callback: ResizeObserverCallback) {
+    this.record = { callback, disconnect: vi.fn<() => void>(), observed: [] }
+    resizeObservers.push(this.record)
+  }
+
+  disconnect = () => {
+    this.record.disconnect()
+  }
+
+  observe = (target: Element) => {
+    this.record.observed.push(target)
+  }
+
+  unobserve = () => undefined
+}
 
 class TestIntersectionObserver implements IntersectionObserver {
   readonly root: Element | Document | null = null
@@ -93,6 +119,7 @@ function Harness({
   return (
     <>
       {withScroller ? <div className="view-container" data-testid="scroller" key={scrollerKey}>{transcript}</div> : transcript}
+      <div data-testid="composer" ref={viewport.composerRef} />
       <button data-testid="load-trigger" onClick={() => void viewport.loadOlderMessages()}>Trigger older load</button>
       {viewport.hasNewMessages && <button onClick={viewport.jumpToLatest}>New messages. Jump to latest</button>}
     </>
@@ -126,6 +153,12 @@ function notify(record: ObserverRecord, isIntersecting: boolean) {
   })
 }
 
+function notifyResize(record: ResizeObserverRecord, target: Element, height: number) {
+  act(() => {
+    record.callback([{ contentRect: { height }, target } as ResizeObserverEntry], record as unknown as ResizeObserver)
+  })
+}
+
 let frameId = 0
 const frames = new Map<number, FrameRequestCallback>()
 
@@ -139,9 +172,11 @@ function flushFrames() {
 
 beforeEach(() => {
   observers.length = 0
+  resizeObservers.length = 0
   frames.clear()
   frameId = 0
   vi.stubGlobal('IntersectionObserver', TestIntersectionObserver)
+  vi.stubGlobal('ResizeObserver', TestResizeObserver)
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
     const id = ++frameId
     frames.set(id, callback)
@@ -203,6 +238,31 @@ describe('initial positioning and following', () => {
     rerender(<Harness entries={[entry('more', 'entry-2')]} onLoadOlder={onLoadOlder} onLoadOlderError={onLoadOlderError} />)
 
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
+  })
+
+  it('keeps the latest message anchored across composer and viewport resizes only while following', () => {
+    renderHarness()
+    const scroller = setScrollerMetrics()
+    const composer = screen.getByTestId('composer')
+    const bottom = screen.getByTestId('bottom')
+    const resizeObserver = resizeObservers[0]!
+    vi.spyOn(composer, 'getBoundingClientRect').mockReturnValue({ height: 126, top: 420 } as DOMRect)
+    vi.spyOn(bottom, 'getBoundingClientRect').mockReturnValue({ top: 582 } as DOMRect)
+
+    notifyResize(resizeObserver, composer, 126)
+    flushFrames()
+
+    expect(scroller.style.getPropertyValue('--composer-occlusion')).toBe('126px')
+    expect(scroller.scrollTop).toBe(680)
+
+    fireEvent.touchStart(scroller, { touches: [{ clientY: 300 }] })
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 400 }] })
+    fireEvent.touchEnd(scroller)
+    vi.mocked(composer.getBoundingClientRect).mockReturnValue({ height: 126, top: 300 } as DOMRect)
+    notifyResize(resizeObserver, scroller, 420)
+    flushFrames()
+
+    expect(scroller.scrollTop).toBe(680)
   })
 
   it('does not treat composer-style viewport movement without touchmove as scroll intent', () => {

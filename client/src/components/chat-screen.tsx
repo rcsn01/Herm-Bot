@@ -194,7 +194,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           {attachmentRefs.map((ref, index) => <button key={`${ref}-${index}`} onClick={() => interaction.removeAttachment(index)}>{ref}</button>)}
         </div>
       )}
-      <div className="composer-wrap">
+      <div className="composer-wrap" ref={viewport.composerRef}>
         {slashItems.length > 0 && (
           <div className="slash-popover">
             {slashItems.slice(0, 8).map((item, index) => (

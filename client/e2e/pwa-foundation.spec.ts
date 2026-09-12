@@ -37,6 +37,52 @@ test('ships an installable manifest, icons, and a controlling service worker', a
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
 })
 
+test('keeps the bottom status row clear of screen corners until the keyboard opens', async ({ page }) => {
+  await login(page)
+  const metadata = page.locator('.composer-meta')
+  await page.getByLabel('Message Hermes').blur()
+
+  await expect.poll(() => metadata.evaluate(element => getComputedStyle(element).paddingLeft)).toBe('18px')
+  await expect.poll(() => metadata.evaluate(element => getComputedStyle(element).paddingRight)).toBe('18px')
+
+  await page.getByLabel('Message Hermes').focus()
+  await expect.poll(() => metadata.evaluate(element => getComputedStyle(element).paddingLeft)).toBe('5px')
+  await expect.poll(() => metadata.evaluate(element => getComputedStyle(element).paddingRight)).toBe('5px')
+})
+
+test('keeps the latest message at the same distance from a keyboard-shifted composer while following', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('measure the following gap')
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect(page.getByText('Fixture answer: measure the following gap')).toBeVisible()
+
+  const gap = () => page.evaluate(() => {
+    const composer = document.querySelector<HTMLElement>('.composer-wrap')!
+    const messages = document.querySelectorAll<HTMLElement>('.message')
+    return composer.getBoundingClientRect().top - messages[messages.length - 1]!.getBoundingClientRect().bottom
+  })
+  const afterLayout = () => page.evaluate(() => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+
+  await page.evaluate(() => {
+    const spacer = document.createElement('div')
+    spacer.style.height = '900px'
+    document.querySelector('.transcript')!.prepend(spacer)
+    window.dispatchEvent(new Event('resize'))
+  })
+  await afterLayout()
+  const closedGap = await gap()
+
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>('.composer-wrap')!.style.transform = 'translateY(-180px)'
+    window.dispatchEvent(new Event('resize'))
+  })
+  await afterLayout()
+
+  expect(await gap()).toBeCloseTo(closedGap, 0)
+})
+
 test('password cookie authenticates a real WebSocket chat session', async ({ page, context }) => {
   await login(page)
   const cookies = await context.cookies()
