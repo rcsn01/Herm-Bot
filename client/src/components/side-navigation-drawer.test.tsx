@@ -31,8 +31,9 @@ function deferred() {
 function renderDrawer(controller = controllerStub(), open = true) {
   const onClose = vi.fn()
   const onNavigate = vi.fn()
-  const result = render(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={onClose} onNavigate={onNavigate} open={open} />)
-  return { controller, onClose, onNavigate, ...result }
+  const onOpenModel = vi.fn()
+  const result = render(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={onClose} onNavigate={onNavigate} onOpenModel={onOpenModel} open={open} />)
+  return { controller, onClose, onNavigate, onOpenModel, ...result }
 }
 
 afterEach(cleanup)
@@ -50,11 +51,11 @@ beforeEach(() => {
 })
 
 describe('SideNavigationDrawer', () => {
-  it('shows the profile name without brand chrome above sessions', () => {
+  it('shows the bot identity without brand chrome above sessions', () => {
     const { container, onClose, onNavigate } = renderDrawer()
 
-    const identity = screen.getByRole('button', { name: 'Open bot profile' })
-    expect(identity.textContent).toBe('work')
+    const identity = screen.getByRole('button', { name: 'Open bot chat' })
+    expect(identity.textContent).toBe('Work')
     expect(container.querySelector('.drawer-identity .brand-mark')).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
@@ -62,8 +63,8 @@ describe('SideNavigationDrawer', () => {
     expect(screen.getByRole('button', { name: 'Recent sessions' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'New session' })).not.toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    expect(onNavigate).toHaveBeenCalledWith('bot')
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
+    expect(onNavigate).toHaveBeenCalledWith('sessions')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
@@ -79,6 +80,14 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 
+  it('opens the model settings from the sections list', () => {
+    const { onClose, onOpenModel } = renderDrawer()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    expect(onOpenModel).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('keeps only session rows and pagination inside the session-list scroll region', () => {
     $sessionsHasMore.set(true)
     renderDrawer()
@@ -87,7 +96,7 @@ describe('SideNavigationDrawer', () => {
     expect(sessionList.contains(screen.getByRole('button', { name: /Planning session/ }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Load more sessions' }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search sessions' }))).toBe(false)
-    expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot profile' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot chat' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Recent sessions' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Cron Jobs' }))).toBe(false)
@@ -103,8 +112,8 @@ describe('SideNavigationDrawer', () => {
     expect(screen.getByText('Release notes')).not.toBeNull()
     expect(screen.queryByText('Other hidden body')).toBeNull()
 
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open={false} />)
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open={false} />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open />)
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
   })
 
@@ -117,7 +126,7 @@ describe('SideNavigationDrawer', () => {
     expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
 
     $sessionsLoadingMore.set(true)
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
   })
 
@@ -232,15 +241,15 @@ describe('SideNavigationDrawer', () => {
     const opener = document.createElement('button')
     document.body.append(opener)
     opener.focus()
-    const { container, rerender } = render(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open={false} />)
+    const { container, rerender } = render(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open={false} />)
     const backdrop = container.querySelector<HTMLElement>('.side-drawer-backdrop')!
     expect(backdrop.getAttribute('aria-hidden')).toBe('true')
     expect(backdrop.hasAttribute('inert')).toBe(true)
 
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open />)
     expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Navigation' }))
     expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} open={false} />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()
   })

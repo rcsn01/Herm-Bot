@@ -9,7 +9,7 @@ async function login(page: Page, path = '/') {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   if (path === '/') {
     // The main screen is the agent roster; opening the default bot enters its latest conversation.
-    await page.getByRole('button', { name: 'default' }).click()
+    await page.getByRole('button', { name: 'Hermes' }).click()
   }
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
 }
@@ -122,6 +122,43 @@ test('cold deep link switches profile, resumes, and reloads durable history', as
   expect(calls).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: 'http', path: '/api/sessions/saved-work/messages', query: expect.objectContaining({ include_compacted: 'true', order: 'latest' }) })
   ]))
+})
+
+test('screens mirror into the URL and browser back undoes navigation', async ({ page }) => {
+  await login(page)
+  await expect(page).toHaveURL(/\/sessions$/)
+
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'Capabilities' }).click()
+  await expect(page).toHaveURL(/\/capabilities$/)
+
+  // The system back gesture rides the mirrored history entries.
+  await page.goBack()
+  await expect(page).toHaveURL(/\/sessions$/)
+  await expect(page.getByLabel('Message Hermes')).toBeVisible()
+})
+
+test('reloading keeps the current screen', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'Cron Jobs' }).click()
+  await expect(page).toHaveURL(/\/cron$/)
+
+  await page.reload()
+  await expect(page).toHaveURL(/\/cron$/)
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible()
+})
+
+test('a screen URL survives a cold start', async ({ page }) => {
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await page.getByRole('button', { name: 'Use password for Test account' }).click()
+  await page.getByPlaceholder('Username').fill('browser-e2e')
+  await page.getByPlaceholder('Password').fill('fixture-password')
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+
+  await expect(page.getByText('Profile defaults, mobile preferences, and gateway administration.')).toBeVisible()
+  await expect(page).toHaveURL(/\/settings$/)
 })
 
 test('offline shell works without caching private API responses', async ({ page, context, browserName }) => {

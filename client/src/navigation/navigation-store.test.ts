@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   $activeRoute,
   $navigation,
+  applyPathState,
   isMobileTab,
   popRoute,
   pushRoute,
@@ -17,7 +18,7 @@ beforeEach(() => resetNavigation())
 
 describe('mobile navigation store', () => {
   it('keeps the exact tab order while launching on the agent roster', () => {
-    expect(MOBILE_TABS).toEqual(['roster', 'bot', 'capabilities', 'cron', 'settings', 'sessions'])
+    expect(MOBILE_TABS).toEqual(['roster', 'capabilities', 'cron', 'settings', 'sessions'])
     expect($navigation.get()).toMatchObject({ activeTab: 'roster' })
     expect($activeRoute.get()).toEqual(ROOT_ROUTES.roster)
     expect(isMobileTab('roster')).toBe(true)
@@ -68,7 +69,6 @@ describe('mobile navigation store', () => {
     expect($navigation.get().activeTab).toBe('settings')
     expect($navigation.get().stacks).toEqual({
       roster: [ROOT_ROUTES.roster],
-      bot: [ROOT_ROUTES.bot],
       capabilities: [ROOT_ROUTES.capabilities],
       cron: [ROOT_ROUTES.cron],
       settings: [ROOT_ROUTES.settings],
@@ -78,5 +78,20 @@ describe('mobile navigation store', () => {
 
   it('rejects routes pushed onto the wrong stack at runtime', () => {
     expect(() => pushRoute('sessions', ROOT_ROUTES.cron as never)).toThrow(/cron route.*sessions stack/)
+  })
+
+  it('reconciles a tab wholesale when a screen path is restored', () => {
+    setTab('settings')
+    applyPathState('capabilities', [
+      ROOT_ROUTES.capabilities,
+      { section: 'mcp', tab: 'capabilities', type: 'capabilities-section' },
+      { capabilityId: 'Server One', section: 'mcp', tab: 'capabilities', type: 'capability-detail' }
+    ])
+    expect($navigation.get().activeTab).toBe('capabilities')
+    expect($navigation.get().stacks.capabilities).toHaveLength(3)
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings])
+
+    expect(() => applyPathState('roster', [ROOT_ROUTES.cron as never])).toThrow(/foreign routes/)
+    expect(() => applyPathState('roster', [])).toThrow(/foreign routes/)
   })
 })

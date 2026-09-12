@@ -9,5 +9,12 @@ export interface NavigationRequestPolicyInput {
 export function isAppShellNavigation(input: NavigationRequestPolicyInput): boolean {
   if (input.method !== 'GET' || input.mode !== 'navigate' || !input.sameOrigin) return false
   if (/^\/(?:api|auth|login)(?:\/|$)/.test(input.pathname)) return false
-  return input.pathname === '/' || /^\/session\/[^/]+\/?$/.test(input.pathname)
+  if (input.pathname === '/') return true
+  return /^\/session\/[^/]+\/?$/.test(input.pathname) || isScreenPath(input.pathname)
+}
+
+/** Screen mirrors (roster, bot, sessions, capabilities, cron, settings) —
+ *  every one is a pure client route, so the shell serves them offline too. */
+function isScreenPath(pathname: string): boolean {
+  return /^\/(?:bot|sessions|capabilities|cron|settings)(?:\/|$)/.test(pathname)
 }

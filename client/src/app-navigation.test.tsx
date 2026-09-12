@@ -45,16 +45,6 @@ vi.mock('~/features/settings/settings-screen', () => ({
 }))
 vi.mock('~/features/capabilities/capabilities-screen', () => ({ CapabilitiesScreen: () => <div>Capabilities screen</div> }))
 vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: { onOpenSession?(sessionId: string): Promise<void> }) => <div>Cron screen{onOpenSession && <button onClick={() => void onOpenSession('cron-session-1')}>Open run session</button>}</div> }))
-vi.mock('~/features/bots/bot-screen', () => ({
-  BotScreen: ({ onBack, onOpenCapabilities, onOpenCronJobs, onOpenModel }: { onBack(): void; onOpenCapabilities(): void; onOpenCronJobs(): void; onOpenModel(): void }) => (
-    <div>Bot screen
-      <button onClick={onBack}>Back to chat</button>
-      <button onClick={onOpenCapabilities}>Bot capabilities</button>
-      <button onClick={onOpenCronJobs}>Bot cron</button>
-      <button onClick={onOpenModel}>Bot model</button>
-    </div>
-  )
-}))
 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
@@ -65,6 +55,8 @@ afterEach(cleanup)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The URL is an input now: App restores the screen it describes on mount.
+  window.history.replaceState(null, '', '/')
   resetNavigation()
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
@@ -113,6 +105,8 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Back to bots' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
+    // In-app back rides history.back(); the popstate lands in a later task.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
 
     expect(screen.getByText('Roster screen')).not.toBeNull()
     expect(screen.getByRole('searchbox', { name: 'Search bots' })).not.toBeNull()
@@ -154,50 +148,44 @@ describe('App navigation', () => {
     await enterAgent()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    openDrawer()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
 
-  it('reaches Capabilities and Cron Jobs behind the bot profile', async () => {
+  it('reaches Capabilities and Cron Jobs from the side navigation', async () => {
     render(<App />)
 
     await enterAgent()
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    expect(screen.getByText('Bot screen')).not.toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Bot capabilities' }))
+    openDrawer()
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
 
     openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Bot cron' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
     expect(screen.getByText('Cron screen')).not.toBeNull()
   })
 
-  it('opens model settings from the bot profile and returns to the bot', async () => {
+  it('opens model settings from the side navigation and returns to the chat', async () => {
     render(<App />)
 
     await enterAgent()
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Bot model' }))
-
+    openDrawer()
+    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     expect(screen.getByText('Settings screen')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
-    expect(screen.getByText('Bot screen')).not.toBeNull()
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
   it('resumes a cron run session and returns to chat', async () => {
     render(<App />)
 
     await enterAgent()
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Bot cron' }))
+    openDrawer()
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
 
@@ -216,11 +204,10 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Bot cron' }))
     openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    openDrawer()
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
   })
 

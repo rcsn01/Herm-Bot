@@ -1,17 +1,14 @@
-export const MOBILE_TABS = ['roster', 'bot', 'capabilities', 'cron', 'settings', 'sessions'] as const
+export const MOBILE_TABS = ['roster', 'capabilities', 'cron', 'settings', 'sessions'] as const
 
 export type MobileTab = (typeof MOBILE_TABS)[number]
 
 export type CapabilitySection = 'mcp' | 'skills' | 'tools'
 
+export const CAPABILITY_SECTIONS = ['mcp', 'skills', 'tools'] as const satisfies readonly CapabilitySection[]
+
 export interface RosterRootRoute {
   type: 'roster-root'
   tab: 'roster'
-}
-
-export interface BotRootRoute {
-  type: 'bot-root'
-  tab: 'bot'
 }
 
 export interface SessionsRootRoute {
@@ -77,6 +74,21 @@ export type SettingsCategory =
   | 'voice'
   | 'workspace'
 
+export const SETTINGS_CATEGORIES = [
+  'about',
+  'advanced',
+  'appearance',
+  'browser',
+  'chat',
+  'memory',
+  'model',
+  'notifications',
+  'keyboard-shortcuts',
+  'safety',
+  'voice',
+  'workspace'
+] as const satisfies readonly SettingsCategory[]
+
 export type SettingsAdministrationPage =
   | 'agents'
   | 'archived-chats'
@@ -94,6 +106,25 @@ export type SettingsAdministrationPage =
   | 'tools-keys'
   | 'usage'
   | 'webhooks'
+
+export const SETTINGS_ADMINISTRATION_PAGES = [
+  'agents',
+  'archived-chats',
+  'billing',
+  'gateway',
+  'learning',
+  'logs',
+  'messaging',
+  'pairing',
+  'plugins',
+  'profiles',
+  'projects',
+  'providers',
+  'system',
+  'tools-keys',
+  'usage',
+  'webhooks'
+] as const satisfies readonly SettingsAdministrationPage[]
 
 export interface SettingsRootRoute {
   type: 'settings-root'
@@ -116,7 +147,6 @@ export type SettingsRoute = SettingsRootRoute | SettingsCategoryRoute | Settings
 
 export interface RoutesByTab {
   roster: RosterRootRoute
-  bot: BotRootRoute
   capabilities: CapabilitiesRoute
   cron: CronRoute
   settings: SettingsRoute
@@ -128,7 +158,6 @@ export type RouteForTab<Tab extends MobileTab> = RoutesByTab[Tab]
 
 export const ROOT_ROUTES = {
   roster: { type: 'roster-root', tab: 'roster' },
-  bot: { type: 'bot-root', tab: 'bot' },
   capabilities: { type: 'capabilities-root', tab: 'capabilities' },
   cron: { type: 'cron-root', tab: 'cron' },
   settings: { type: 'settings-root', tab: 'settings' },

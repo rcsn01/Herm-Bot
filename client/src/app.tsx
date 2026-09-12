@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { IconChevronLeft, IconMenu2, IconSearch, IconSettings } from '@tabler/icons-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
@@ -12,12 +12,12 @@ import { applyTheme } from '~/features/settings/settings-screen'
 import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { CronScreen } from '~/features/cron/cron-screen'
-import { BotScreen } from '~/features/bots/bot-screen'
 import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
 import type { CapabilitiesRoute, CronRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator } from '~/navigation/deep-links'
 import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
+import { installScreenHistory, type ScreenHistory } from '~/navigation/screen-history'
 import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
@@ -28,7 +28,6 @@ const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
 
 const DESTINATION_TITLES = {
-  bot: 'Bot profile',
   capabilities: 'Capabilities',
   cron: 'Cron Jobs',
   roster: 'Hermes',
@@ -46,10 +45,22 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
   const [settingsOrigin, setSettingsOrigin] = useState<MobileTab>('roster')
+  const screenHistoryRef = useRef<ScreenHistory | null>(null)
 
   useEffect(() => {
     applyTheme(preferences.theme)
   }, [preferences.theme])
+
+  // Mirror every screen into browser history so reloads, the Android system
+  // back button and shared URLs all resolve to the screen the user was on.
+  useEffect(() => {
+    const app = installScreenHistory()
+    screenHistoryRef.current = app
+    return () => {
+      app.dispose()
+      screenHistoryRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     void controller.initialize()
@@ -83,6 +94,17 @@ export function App() {
   const openAgent = (profile: null | string) => {
     void controller.openProfile(profile).finally(() => setTab('sessions'))
   }
+  /** In-app back rides browser history while an app entry sits behind it
+   *  (so the system back gesture stays in sync); at the boundary the caller's
+   *  action runs instead. */
+  const goBackOr = (fallback: () => void) => {
+    const app = screenHistoryRef.current
+    if (app) app.goBack(fallback)
+    else fallback()
+  }
+  /** The header chevron is a labeled destination ("Back to bots"), so it
+   *  navigates explicitly — pushing "/" keeps the system back able to undo
+   *  it. True back gestures use goBackOr instead. */
   const backToRoster = () => {
     setDrawerOpen(false)
     setTab('roster')
@@ -99,7 +121,7 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={openDestination} open={drawerOpen} /> : null}
+        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={openDestination} onOpenModel={() => { setSettingsOrigin(navigation.activeTab); openModelSettings() }} open={drawerOpen} /> : null}
         drawerOpen={drawerOpen}
         header={<header className="app-header">
           {navigation.activeTab === 'roster' ? (
@@ -111,10 +133,10 @@ export function App() {
             <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
           )}
           {navigation.activeTab === 'sessions' ? (
-            <button aria-label="Open bot profile" className="header-bot-button" onClick={openBotProfile}>
+            <div className="header-bot-button">
               <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
               <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : `${preferences.profile || 'default'} profile`}</small></div>
-            </button>
+            </div>
           ) : inProfile ? (
             <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
           ) : null}
@@ -125,8 +147,7 @@ export function App() {
             <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom('roster')} variant="ghost"><IconSettings className="size-6" /></Button>
           )}
         </header>}
-        onSwipeBack={() => { if (inProfile) backToRoster() }}
-        onRefresh={refresh}
+        onSwipeBack={() => { if (inProfile) goBackOr(() => setTab('roster')) }}        onRefresh={refresh}
         reconnecting={reconnecting}
         refreshing={refreshing}
       >
@@ -134,10 +155,9 @@ export function App() {
           <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
         </div>
         {navigation.activeTab === 'roster' && <RosterScreen onOpenAgent={openAgent} query={rosterQuery} />}
-        {navigation.activeTab === 'bot' && <BotScreen onBack={() => setTab('sessions')} onOpenCapabilities={openCapabilities} onOpenCronJobs={openCronJobs} onOpenModel={() => { setSettingsOrigin('bot'); openModelSettings() }} />}
-        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onExit={() => setTab('bot')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-        {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onExit={() => setTab('bot')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => popRoute('settings')} onExit={() => setTab(settingsOrigin)} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
+        {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onExit={() => setTab(settingsOrigin)} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
       </MobileShell>
     </GatewayProvider>
   )
@@ -158,18 +178,6 @@ function routeForSettings(route: ReturnType<typeof $activeRoute.get>): SettingsR
 function openDestination(tab: MobileTab) {
   resetTabRoutes(tab)
   setTab(tab)
-}
-
-function openBotProfile() {
-  openDestination('bot')
-}
-
-function openCapabilities() {
-  openDestination('capabilities')
-}
-
-function openCronJobs() {
-  openDestination('cron')
 }
 
 function openModelSettings() {

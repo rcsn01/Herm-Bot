@@ -13,7 +13,6 @@ export interface NavigationState {
 function initialStacks(): NavigationStacks {
   return {
     roster: [ROOT_ROUTES.roster],
-    bot: [ROOT_ROUTES.bot],
     capabilities: [ROOT_ROUTES.capabilities],
     cron: [ROOT_ROUTES.cron],
     settings: [ROOT_ROUTES.settings],
@@ -64,6 +63,16 @@ export function popRoute(tab: MobileTab = $navigation.get().activeTab): MobileRo
 export function resetRoutes(): void {
   const { activeTab } = $navigation.get()
   $navigation.set(initialNavigationState(activeTab))
+}
+
+/** Reconcile one tab's stack wholesale (popstate restore): select the tab and
+ *  replace its stack with the URL-derived one. Routes must belong to the tab. */
+export function applyPathState(tab: MobileTab, stack: readonly MobileRoute[]): void {
+  if (!stack.length || stack.some(route => route.tab !== tab)) {
+    throw new Error(`Cannot apply a path state for the ${tab} tab with foreign routes`)
+  }
+  const current = $navigation.get()
+  $navigation.set({ activeTab: tab, stacks: { ...current.stacks, [tab]: [...stack] } as NavigationStacks })
 }
 
 /** Reset one stack while preserving the selected tab and all other stacks. */

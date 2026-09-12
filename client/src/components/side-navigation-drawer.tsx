@@ -3,6 +3,7 @@ import {
   IconBolt,
   IconCalendarClock,
   IconPlus,
+  IconRobot,
   IconSearch,
   IconTrash
 } from '@tabler/icons-react'
@@ -10,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { displayNameFor } from '~/features/agents/agent-labels'
 import type { MobileTab } from '~/navigation/routes'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
@@ -23,6 +25,7 @@ interface SideNavigationDrawerProps {
   open: boolean
   onClose(): void
   onNavigate(tab: MobileTab): void
+  onOpenModel(): void
 }
 
 interface SwipeStart {
@@ -33,7 +36,7 @@ interface SwipeStart {
 
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
 
-export function SideNavigationDrawer({ activeTab, controller, open, onClose, onNavigate }: SideNavigationDrawerProps) {
+export function SideNavigationDrawer({ activeTab, controller, open, onClose, onNavigate, onOpenModel }: SideNavigationDrawerProps) {
   const chat = useStore($chat)
   const preferences = useStore($preferences)
   const sessions = useStore($sessions)
@@ -119,6 +122,12 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     onClose()
   }
 
+  const navigateModel = () => {
+    if (actionPendingRef.current) return
+    onOpenModel()
+    onClose()
+  }
+
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -158,13 +167,14 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
         tabIndex={-1}
       >
         <header className="side-drawer-top">
-          <button aria-label="Open bot profile" className="drawer-identity" onClick={() => navigate('bot')}>
-            <strong>{preferences.profile || 'default'}</strong>
+          <button aria-label="Open bot chat" className="drawer-identity" onClick={() => navigate('sessions')}>
+            <strong>{displayNameFor({ name: preferences.profile || 'default' })}</strong>
           </button>
           <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
           <nav aria-label="Bot sections" className="drawer-sections">
             <button aria-current={activeTab === 'capabilities' ? 'page' : undefined} onClick={() => navigate('capabilities')}><IconBolt aria-hidden="true" size={17} />Capabilities</button>
             <button aria-current={activeTab === 'cron' ? 'page' : undefined} onClick={() => navigate('cron')}><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</button>
+            <button onClick={navigateModel}><IconRobot aria-hidden="true" size={17} />Model</button>
           </nav>
         </header>
 

@@ -58,11 +58,32 @@ returned, while authorization and any profile filters still come from the
 selected connection.
 
 The main screen is the agent roster: one row per gateway profile with its
-latest-conversation preview when the gateway provides it. Opening an agent
+latest-conversation preview when the gateway provides it. Rows render the
+bot's custom avatar image when the gateway supplies one, else the desktop's
+new blobatar faces: the `blobatar` library (pinned to 2.0.0, the version the
+desktop pins) draws the whole soft-body face — silhouette, eyes and its own
+name-derived contrast-guaranteed palette — from the bot's name, exactly as
+the desktop does for new agents. The desktop's classic geometric faces
+(seven name-derived shapes with the per-profile hsl color, violet squircle
+for the primary `default` profile) remain as the fallback for stored classic
+picks. Rows read the desktop's presentation labels: the primary `default`
+profile reads "Hermes"; a CLI display name from the roster row wins when the
+row carries one; otherwise slug names are word-capitalized (`codex` reads
+"Codex"). Every screen also owns a URI — `/`, `/sessions`,
+`/capabilities[/section[/id]]`, `/cron[/blueprints|/<job>[/edit]|/new]`,
+`/settings/<category|page>` — mirrored into browser history: forward
+navigation pushes an entry, the system back gesture and browser back
+reconcile the app's navigation stacks through popstate, reloads and cold
+starts restore the screen after sign-in, and the offline app shell serves
+all of these paths. Session deep links (`/session/<id>?profile=<p>`) keep
+their canonical URL for the sessions view; screen paths don't carry the
+active profile (it is global persisted state). Opening an agent
 enters that profile's latest conversation, starting a fresh one when none
-exists. A header gear on the roster opens **Settings**; profile surfaces have
-no settings entry point apart from the bot's model row. **Capabilities** and
-**Cron Jobs** are agent-specific: one bot per gateway profile owns its
+exists — the conversation is the bot's home surface; there is no separate
+bot hub page. A header gear on the roster opens **Settings**; profile
+surfaces reach the model settings from the side navigation. **Capabilities**,
+**Cron Jobs** and **Model** are agent-specific shortcuts in the side
+navigation: one bot per gateway profile owns its
 capabilities and cron routines, matching Hermes bot mode where a Bot is a
 profile (see [RESEARCH.md](RESEARCH.md)). They are reachable from the bot
 profile screen and as shortcuts in the profile drawer. Inside a profile the

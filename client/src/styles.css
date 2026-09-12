@@ -106,7 +106,9 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .roster-list { display: grid; }
 .agent-row { min-height: 76px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; padding: 10px 2px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; }
 .agent-row:active { background: color-mix(in srgb, var(--panel) 60%, transparent); }
-.agent-avatar { width: 52px; height: 52px; flex: none; display: grid; place-items: center; border-radius: 50%; color: #fff; font-size: 1.375rem; font-weight: var(--weight-bold); }
+.agent-avatar { width: 52px; height: 52px; flex: none; }
+.agent-avatar img, .agent-avatar svg { width: 100%; height: 100%; display: block; }
+.agent-avatar img { border-radius: 22%; object-fit: cover; }
 .agent-row-main { min-width: 0; display: grid; gap: 3px; }
 .agent-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .agent-row-top strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-body); font-weight: var(--weight-bold); }
@@ -201,8 +203,6 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 .page-screen { padding: 20px 14px 30px; }
 .page-heading { min-height: 44px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.bot-identity { margin-bottom: 18px; display: flex; align-items: center; gap: 14px; }
-.bot-identity h2 { margin: 0; }
 .page-heading h2 { margin: 0; }
 .search-box { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--muted-foreground); }
 .search-box input { min-height: 44px; border: 0; background: transparent; box-shadow: none; }
