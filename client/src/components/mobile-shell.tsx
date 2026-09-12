@@ -5,8 +5,8 @@ interface MobileShellProps {
   drawer: ReactNode
   drawerOpen: boolean
   header: ReactNode
-  onOpenDrawer(): void
   onRefresh(): unknown
+  onSwipeBack(): void
   reconnecting?: boolean
   refreshing?: boolean
 }
@@ -17,7 +17,7 @@ interface GestureStart {
   y: number
 }
 
-export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer, onRefresh, reconnecting = false, refreshing = false }: MobileShellProps) {
+export function MobileShell({ children, drawer, drawerOpen, header, onRefresh, onSwipeBack, reconnecting = false, refreshing = false }: MobileShellProps) {
   const scroller = useRef<HTMLElement>(null)
   const gestureStart = useRef<GestureStart | null>(null)
 
@@ -53,8 +53,8 @@ export function MobileShell({ children, drawer, drawerOpen, header, onOpenDrawer
     const dy = touch.clientY - start.y
     const absX = Math.abs(dx)
     const absY = Math.abs(dy)
-    if (dx >= 72 && absX > 1.2 * absY) {
-      onOpenDrawer()
+    if (dx <= -72 && absX > 1.2 * absY) {
+      onSwipeBack()
     } else if (start.atTop && dy >= 90 && absY > 1.2 * absX) {
       void onRefresh()
     }

@@ -104,6 +104,20 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Open navigation' })).not.toBeNull()
   })
 
+  it('returns to the roster from the header back button', async () => {
+    render(<App />)
+    expect(screen.queryByRole('button', { name: 'Back to bots' })).toBeNull()
+
+    await enterAgent()
+    expect(screen.getByRole('button', { name: 'Back to bots' })).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
+
+    expect(screen.getByText('Roster screen')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Back to bots' })).toBeNull()
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+  })
+
   it('opens the drawer only inside a profile', async () => {
     render(<App />)
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()

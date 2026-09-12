@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { IconMenu2, IconSettings } from '@tabler/icons-react'
+import { IconChevronLeft, IconMenu2, IconSettings } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '~/compat/primitives'
@@ -82,6 +82,10 @@ export function App() {
   const openAgent = (profile: null | string) => {
     void controller.openProfile(profile).finally(() => setTab('sessions'))
   }
+  const backToRoster = () => {
+    setDrawerOpen(false)
+    setTab('roster')
+  }
   const openSettingsFrom = (origin: MobileTab) => {
     setSettingsOrigin(origin)
     resetTabRoutes('settings')
@@ -100,7 +104,7 @@ export function App() {
           {navigation.activeTab === 'roster' ? (
             <div className="header-identity"><BrandMark small /><strong>Hermes</strong></div>
           ) : (
-            <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
+            <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
           )}
           {navigation.activeTab === 'sessions' ? (
             <button aria-label="Open bot profile" className="header-bot-button" onClick={openBotProfile}>
@@ -110,9 +114,12 @@ export function App() {
           ) : inProfile ? (
             <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
           ) : null}
+          {inProfile && (
+            <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
+          )}
           <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom(navigation.activeTab)} variant="ghost"><IconSettings className="size-6" /></Button>
         </header>}
-        onOpenDrawer={() => { if (inProfile) setDrawerOpen(true) }}
+        onSwipeBack={() => { if (inProfile) backToRoster() }}
         onRefresh={refresh}
         reconnecting={reconnecting}
         refreshing={refreshing}
