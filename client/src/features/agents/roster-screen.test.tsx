@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { relativeDay, RosterScreen } from './roster-screen'
@@ -23,14 +23,14 @@ afterEach(cleanup)
 function renderRoster(gateway: MemoryGateway, query = '') {
   const onOpenAgent = vi.fn()
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(
+  const { container } = render(
     <QueryClientProvider client={client}>
       <GatewayProvider gateway={gateway}>
         <RosterScreen onOpenAgent={onOpenAgent} query={query} />
       </GatewayProvider>
     </QueryClientProvider>
   )
-  return onOpenAgent
+  return { container, onOpenAgent }
 }
 
 describe('agent roster screen', () => {
@@ -44,15 +44,15 @@ describe('agent roster screen', () => {
 
     expect(await screen.findByText('Morning briefing sent')).not.toBeNull()
     expect(screen.getByText('One new Fujitsu stream')).not.toBeNull()
-    expect(screen.getByRole('button', { name: /default/ })).not.toBeNull()
-    expect(screen.getByRole('button', { name: /work/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Hermes/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Work/ })).not.toBeNull()
   })
 
   it('falls back to status profile names when the gateway has no roster data', async () => {
     renderRoster(new MemoryGateway().handle('profiles.list', () => ({})))
 
-    expect(await screen.findByRole('button', { name: /default/ })).not.toBeNull()
-    expect(screen.getByRole('button', { name: /work/ })).not.toBeNull()
+    expect(await screen.findByRole('button', { name: /Hermes/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Work/ })).not.toBeNull()
     expect(screen.queryByText('Morning briefing sent')).toBeNull()
   })
 
@@ -61,17 +61,33 @@ describe('agent roster screen', () => {
       throw new Error('roster unavailable')
     }))
 
-    expect(await screen.findByRole('button', { name: /default/ })).not.toBeNull()
-    expect(screen.getByRole('button', { name: /work/ })).not.toBeNull()
+    expect(await screen.findByRole('button', { name: /Hermes/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /Work/ })).not.toBeNull()
+  })
+
+  it('renders a deterministic blob face for bots without a custom avatar', async () => {
+    const { container } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({})))
+
+    expect(await screen.findByRole('button', { name: /Hermes/ })).not.toBeNull()
+    expect(container.querySelectorAll('.agent-avatar svg').length).toBe(2)
+  })
+
+  it('renders the bot custom avatar image when the gateway provides one', async () => {
+    const { container } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({
+      profiles: [{ name: 'work', avatar: 'data:image/png;base64,AAA' }]
+    })))
+
+    expect(await screen.findByRole('button', { name: /Work/ })).not.toBeNull()
+    await waitFor(() => expect(container.querySelector('img.agent-avatar-img')).not.toBeNull())
   })
 
   it('opens the default profile unnamed and named profiles by name', async () => {
-    const onOpenAgent = renderRoster(new MemoryGateway().handle('profiles.list', () => ({})))
+    const { onOpenAgent } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({})))
 
-    fireEvent.click(await screen.findByRole('button', { name: /default/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Hermes/ }))
     expect(onOpenAgent).toHaveBeenCalledWith(null)
 
-    fireEvent.click(screen.getByRole('button', { name: /work/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Work/ }))
     expect(onOpenAgent).toHaveBeenCalledWith('work')
   })
 
@@ -85,15 +101,15 @@ describe('agent roster screen', () => {
   it('filters the roster by the search query', async () => {
     renderRoster(new MemoryGateway().handle('profiles.list', () => ({})), 'work')
 
-    expect(await screen.findByRole('button', { name: /work/ })).not.toBeNull()
-    expect(screen.queryByRole('button', { name: /default/ })).toBeNull()
+    expect(await screen.findByRole('button', { name: /Work/ })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /Hermes/ })).toBeNull()
   })
 
   it('shows a no-match state when the search has no hits', async () => {
     renderRoster(new MemoryGateway().handle('profiles.list', () => ({})), 'missing')
 
     expect(await screen.findByText('No bots match this search.')).not.toBeNull()
-    expect(screen.queryByRole('button', { name: /work/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Work/ })).toBeNull()
   })
 
   it('labels rows with relative day stamps', () => {

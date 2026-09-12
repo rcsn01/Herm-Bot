@@ -5,15 +5,15 @@ import { mergeAgentRoster, parseAgentRoster } from '~/features/agents/agents-api
 describe('agent roster parsing', () => {
   it('normalizes rich profiles.list items from an array body', () => {
     expect(parseAgentRoster([
-      { name: 'work', preview: 'One new Fujitsu stream', last_active: 1_700_000_000, session_id: 'bot-chat' },
+      { name: 'work', display_name: '  Ops Bot  ', preview: 'One new Fujitsu stream', last_active: 1_700_000_000, session_id: 'bot-chat' },
       'default',
       { title: 'Searcher', last_active: '2026-09-10T09:30:00Z' },
       null,
       7
     ])).toEqual([
-      { isDefault: false, name: 'work', preview: 'One new Fujitsu stream', sessionId: 'bot-chat', startedAt: 1_700_000_000, title: undefined },
-      { isDefault: true, name: 'default', preview: undefined, sessionId: undefined, startedAt: undefined, title: undefined },
-      { isDefault: false, name: 'Searcher', preview: undefined, sessionId: undefined, startedAt: Math.floor(Date.parse('2026-09-10T09:30:00Z') / 1000), title: 'Searcher' }
+      { displayName: 'Ops Bot', isDefault: false, name: 'work', preview: 'One new Fujitsu stream', sessionId: 'bot-chat', startedAt: 1_700_000_000, title: undefined },
+      { displayName: undefined, isDefault: true, name: 'default', preview: undefined, sessionId: undefined, startedAt: undefined, title: undefined },
+      { displayName: undefined, isDefault: false, name: 'Searcher', preview: undefined, sessionId: undefined, startedAt: Math.floor(Date.parse('2026-09-10T09:30:00Z') / 1000), title: 'Searcher' }
     ])
   })
 
@@ -23,6 +23,20 @@ describe('agent roster parsing', () => {
     ])
     expect(parseAgentRoster({})).toEqual([])
     expect(parseAgentRoster(null)).toEqual([])
+  })
+
+  it('keeps usable avatar references and drops unusable ones', () => {
+    const entries = parseAgentRoster([
+      { name: 'a', avatar: 'data:image/png;base64,AAA' },
+      { name: 'b', avatar: 'https://gateway.example/avatar.png' },
+      { name: 'c', avatar: 'javascript:alert(1)' },
+      { name: 'd', avatar: 42 }
+    ])
+
+    expect(entries[0]?.avatar).toBe('data:image/png;base64,AAA')
+    expect(entries[1]?.avatar).toBe('https://gateway.example/avatar.png')
+    expect(entries[2]?.avatar).toBeUndefined()
+    expect(entries[3]?.avatar).toBeUndefined()
   })
 
   it('normalizes millisecond and ISO last-active stamps into epoch seconds', () => {

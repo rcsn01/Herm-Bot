@@ -2,6 +2,8 @@ import type { GatewayApi } from '~/gateway/gateway-api'
 
 /** One agent row on the main screen: a gateway profile plus its latest-conversation data when known. */
 export interface AgentRosterEntry {
+  avatar?: string
+  displayName?: string
   isDefault: boolean
   name: string
   preview?: string
@@ -35,6 +37,10 @@ export function normalizeAgentEntry(item: unknown): AgentRosterEntry | null {
     : typeof record.title === 'string' && record.title ? record.title : null
   if (!name) return null
   return {
+    avatar: typeof record.avatar === 'string' && /^(data:image\/|https?:\/\/)/i.test(record.avatar) ? record.avatar : undefined,
+    displayName: typeof record.display_name === 'string' && record.display_name.trim()
+      ? record.display_name.trim()
+      : undefined,
     isDefault: record.is_default === true || (record.is_default === undefined && name === 'default'),
     name,
     preview: typeof record.preview === 'string' && record.preview ? record.preview : undefined,
@@ -74,6 +80,8 @@ export function mergeAgentRoster(
     seen.add(name)
     const entry = enriched.get(name)
     merged.push({
+      avatar: entry?.avatar,
+      displayName: entry?.displayName,
       isDefault: (typeof profile !== 'string' && profile.is_default === true) || name === 'default' || (entry?.isDefault ?? false),
       name,
       preview: entry?.preview,

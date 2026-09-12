@@ -5,13 +5,8 @@ import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 import { $connection } from '~/state/store'
 
 import { createAgentsApi, mergeAgentRoster } from './agents-api'
-
-/** Deterministic avatar hue so every profile keeps the same color across visits. */
-function agentHue(name: string): number {
-  let hash = 0
-  for (let index = 0; index < name.length; index += 1) hash = (hash * 31 + name.charCodeAt(index)) % 360
-  return hash
-}
+import { displayNameFor } from './agent-labels'
+import { BotFace } from './bot-face'
 
 /** Grok-style relative stamp: Today, Yesterday, weekday within a week, else a short date. */
 export function relativeDay(seconds: number): string {
@@ -39,7 +34,7 @@ export function RosterScreen({ onOpenAgent, query = '' }: { onOpenAgent(profile:
   const agents = mergeAgentRoster(connection.status?.profiles, roster.data)
   const needle = query.trim().toLowerCase()
   const visible = needle
-    ? agents.filter(agent => `${agent.title || agent.name} ${agent.preview ?? ''}`.toLowerCase().includes(needle))
+    ? agents.filter(agent => `${displayNameFor(agent)} ${agent.preview ?? ''}`.toLowerCase().includes(needle))
     : agents
 
   if (visible.length === 0) {
@@ -59,12 +54,12 @@ export function RosterScreen({ onOpenAgent, query = '' }: { onOpenAgent(profile:
       <div className="roster-list">
         {visible.map(agent => (
           <button className="agent-row" key={agent.name} onClick={() => onOpenAgent(agent.isDefault ? null : agent.name)}>
-            <span aria-hidden className="agent-avatar" style={{ background: `oklch(0.62 0.14 ${agentHue(agent.name)})` }}>
-              {agent.name.slice(0, 1).toUpperCase()}
+            <span aria-hidden className="agent-avatar">
+              {agent.avatar ? <img alt="" className="agent-avatar-img" src={agent.avatar} /> : <BotFace name={agent.name} />}
             </span>
             <span className="agent-row-main">
               <span className="agent-row-top">
-                <strong>{agent.title || agent.name}</strong>
+                <strong>{displayNameFor(agent)}</strong>
                 {agent.startedAt !== undefined && <time>{relativeDay(agent.startedAt)}</time>}
               </span>
               {agent.preview && <small>{agent.preview}</small>}
