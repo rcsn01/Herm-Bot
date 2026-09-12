@@ -7,7 +7,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
-import { BrandMark } from '~/components/brand-mark'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
 import { useScopedTask } from '~/gateway/scope-guard'
@@ -158,8 +157,7 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
       >
         <header className="side-drawer-top">
           <button aria-label="Open bot profile" className="drawer-identity" onClick={() => navigate('bot')}>
-            <BrandMark small />
-            <span><strong>Hermes</strong><small>{preferences.profile || 'default'} profile</small></span>
+            <strong>{preferences.profile || 'default'}</strong>
           </button>
           <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
         </header>

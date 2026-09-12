@@ -9,7 +9,7 @@ vi.mock('~/compat/primitives', () => ({
 import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
 import { $chat, emptyChatState } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 function controllerStub() {
   return {
@@ -39,6 +39,7 @@ afterEach(cleanup)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  $preferences.set({ authMode: 'token', profile: 'work', remoteURL: 'https://gateway.test', theme: 'system' })
   $chat.set({ ...emptyChatState(), storedSessionId: 'session-1' })
   $sessionsHasMore.set(false)
   $sessionsLoadingMore.set(false)
@@ -49,10 +50,12 @@ beforeEach(() => {
 })
 
 describe('SideNavigationDrawer', () => {
-  it('keeps the bot identity above sessions and drops the primary navigation', () => {
-    const { onClose, onNavigate } = renderDrawer()
+  it('shows the profile name without brand chrome above sessions', () => {
+    const { container, onClose, onNavigate } = renderDrawer()
 
-    expect(screen.getByRole('button', { name: 'Open bot profile' })).not.toBeNull()
+    const identity = screen.getByRole('button', { name: 'Open bot profile' })
+    expect(identity.textContent).toBe('work')
+    expect(container.querySelector('.drawer-identity .brand-mark')).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
