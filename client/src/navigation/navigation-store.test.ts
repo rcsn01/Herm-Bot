@@ -16,10 +16,11 @@ import { MOBILE_TABS, ROOT_ROUTES } from '~/navigation/routes'
 beforeEach(() => resetNavigation())
 
 describe('mobile navigation store', () => {
-  it('keeps the exact drawer order while launching on Sessions', () => {
-    expect(MOBILE_TABS).toEqual(['capabilities', 'cron', 'settings', 'sessions'])
-    expect($navigation.get()).toMatchObject({ activeTab: 'sessions' })
-    expect($activeRoute.get()).toEqual(ROOT_ROUTES.sessions)
+  it('keeps the exact tab order while launching on the agent roster', () => {
+    expect(MOBILE_TABS).toEqual(['roster', 'bot', 'capabilities', 'cron', 'settings', 'sessions'])
+    expect($navigation.get()).toMatchObject({ activeTab: 'roster' })
+    expect($activeRoute.get()).toEqual(ROOT_ROUTES.roster)
+    expect(isMobileTab('roster')).toBe(true)
     expect(isMobileTab('sessions')).toBe(true)
     expect(isMobileTab('operations')).toBe(false)
   })
@@ -66,6 +67,8 @@ describe('mobile navigation store', () => {
     resetRoutes()
     expect($navigation.get().activeTab).toBe('settings')
     expect($navigation.get().stacks).toEqual({
+      roster: [ROOT_ROUTES.roster],
+      bot: [ROOT_ROUTES.bot],
       capabilities: [ROOT_ROUTES.capabilities],
       cron: [ROOT_ROUTES.cron],
       settings: [ROOT_ROUTES.settings],

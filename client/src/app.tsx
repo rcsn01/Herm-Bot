@@ -1,18 +1,20 @@
 import { useStore } from '@nanostores/react'
-import { IconMenu2 } from '@tabler/icons-react'
+import { IconMenu2, IconSettings } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
-import { Badge, Button } from '~/compat/primitives'
+import { Button } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
 import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
 import { applyTheme } from '~/features/settings/settings-screen'
+import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { CronScreen } from '~/features/cron/cron-screen'
+import { BotScreen } from '~/features/bots/bot-screen'
 import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
-import type { CapabilitiesRoute, CronRoute, SettingsRoute } from '~/navigation/routes'
+import type { CapabilitiesRoute, CronRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator } from '~/navigation/deep-links'
 import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
@@ -26,8 +28,10 @@ const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
 
 const DESTINATION_TITLES = {
+  bot: 'Bot profile',
   capabilities: 'Capabilities',
   cron: 'Cron Jobs',
+  roster: 'Hermes',
   settings: 'Settings',
   sessions: 'Sessions'
 } as const
@@ -40,6 +44,7 @@ export function App() {
   const chat = useStore($chat)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [settingsOrigin, setSettingsOrigin] = useState<MobileTab>('roster')
 
   useEffect(() => {
     applyTheme(preferences.theme)
@@ -57,6 +62,9 @@ export function App() {
   }, [connection.phase])
 
   const reconnecting = connection.phase === 'reconnecting' && Boolean(chat.runtimeSessionId)
+  // The side navigation belongs to profile surfaces only; the main screen is
+  // the roster, so it has no menu button or drawer.
+  const inProfile = navigation.activeTab !== 'roster'
 
   if (connection.phase === 'unsupported') {
     return <main className="blocking-screen"><div className="brand-mark letter">!</div><h1>Update remote Hermes</h1><p>{connection.error}</p><Button onClick={() => void controller.connect().catch(() => undefined)}>Check again</Button></main>
@@ -71,6 +79,14 @@ export function App() {
     await Promise.allSettled([controller.conversation.reconcileHistory(), controller.refreshSessions()])
     setRefreshing(false)
   }
+  const openAgent = (profile: null | string) => {
+    void controller.openProfile(profile).finally(() => setTab('sessions'))
+  }
+  const openSettingsFrom = (origin: MobileTab) => {
+    setSettingsOrigin(origin)
+    resetTabRoutes('settings')
+    setTab('settings')
+  }
   const headerTitle = navigation.activeTab === 'sessions'
     ? ((chat.info as { title?: string } | null)?.title || 'New conversation')
     : DESTINATION_TITLES[navigation.activeTab]
@@ -78,14 +94,25 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        drawer={<SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={setTab} open={drawerOpen} />}
+        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={setTab} open={drawerOpen} /> : null}
         drawerOpen={drawerOpen}
         header={<header className="app-header">
-          <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
-          <div className="header-title"><span className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} /><div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : `${preferences.profile || 'default'} profile`}</small></div></div>
-          <Button className="model-badge-button" onClick={openModelSettings} size="sm" variant="ghost" aria-label="Open model settings"><Badge variant="muted">{chat.info?.model?.split('/').at(-1) || 'Hermes'}</Badge></Button>
+          {navigation.activeTab === 'roster' ? (
+            <div className="header-identity"><BrandMark small /><strong>Hermes</strong></div>
+          ) : (
+            <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
+          )}
+          {navigation.activeTab === 'sessions' ? (
+            <button aria-label="Open bot profile" className="header-bot-button" onClick={openBotProfile}>
+              <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
+              <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : `${preferences.profile || 'default'} profile`}</small></div>
+            </button>
+          ) : inProfile ? (
+            <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
+          ) : null}
+          <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom(navigation.activeTab)} variant="ghost"><IconSettings className="size-6" /></Button>
         </header>}
-        onOpenDrawer={() => setDrawerOpen(true)}
+        onOpenDrawer={() => { if (inProfile) setDrawerOpen(true) }}
         onRefresh={refresh}
         reconnecting={reconnecting}
         refreshing={refreshing}
@@ -93,9 +120,11 @@ export function App() {
         <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
           <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
         </div>
-        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-        {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => popRoute('settings')} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+        {navigation.activeTab === 'roster' && <RosterScreen onOpenAgent={openAgent} />}
+        {navigation.activeTab === 'bot' && <BotScreen onBack={() => setTab('sessions')} onOpenCapabilities={openCapabilities} onOpenCronJobs={openCronJobs} onOpenModel={() => { setSettingsOrigin('bot'); openModelSettings() }} />}
+        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onExit={() => setTab('bot')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
+        {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onExit={() => setTab('bot')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => popRoute('settings')} onExit={() => setTab(settingsOrigin)} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
       </MobileShell>
     </GatewayProvider>
   )
@@ -111,6 +140,21 @@ function routeForCron(route: ReturnType<typeof $activeRoute.get>): CronRoute {
 
 function routeForSettings(route: ReturnType<typeof $activeRoute.get>): SettingsRoute {
   return route.tab === 'settings' ? route : ROOT_ROUTES.settings
+}
+
+function openBotProfile() {
+  resetTabRoutes('bot')
+  setTab('bot')
+}
+
+function openCapabilities() {
+  resetTabRoutes('capabilities')
+  setTab('capabilities')
+}
+
+function openCronJobs() {
+  resetTabRoutes('cron')
+  setTab('cron')
 }
 
 function openModelSettings() {

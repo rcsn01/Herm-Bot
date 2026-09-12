@@ -141,6 +141,68 @@ describe('profile switching', () => {
   })
 })
 
+describe('roster tap flow', () => {
+  it('switches to the tapped profile and resumes its newest session', async () => {
+    const controller = new GatewayController({} as never)
+    const switchProfile = vi.spyOn(controller, 'switchProfile').mockResolvedValue()
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
+    $sessions.set([
+      { id: 'older', message_count: 1, preview: '', source: 'ios', started_at: 100, title: 'Older' },
+      { id: 'newest', message_count: 2, preview: '', source: 'ios', started_at: 300, title: 'Newest' },
+      { id: 'middle', message_count: 1, preview: '', source: 'ios', started_at: 200, title: 'Middle' }
+    ])
+
+    await controller.openProfile('work')
+
+    expect(switchProfile).toHaveBeenCalledWith('work')
+    expect(resumeSession).toHaveBeenCalledWith('newest')
+    expect(newSession).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('starts a fresh session when the profile has no conversations yet', async () => {
+    const controller = new GatewayController({} as never)
+    vi.spyOn(controller, 'switchProfile').mockResolvedValue()
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
+    $sessions.set([])
+
+    await controller.openProfile('work')
+
+    expect(newSession).toHaveBeenCalledOnce()
+    expect(resumeSession).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('falls back to a fresh session when resuming the newest conversation fails', async () => {
+    const controller = new GatewayController({} as never)
+    vi.spyOn(controller, 'switchProfile').mockResolvedValue()
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockRejectedValue(new Error('conversation gone'))
+    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
+    $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 300, title: 'Newest' }])
+
+    await controller.openProfile('work')
+
+    expect(newSession).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('keeps the current profile connected without a redundant switch', async () => {
+    $preferences.set({ authMode: 'token', profile: 'work', remoteURL: '', theme: 'system' })
+    const controller = new GatewayController({} as never)
+    const switchProfile = vi.spyOn(controller, 'switchProfile').mockResolvedValue()
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Newest' }])
+
+    await controller.openProfile('work')
+
+    expect(switchProfile).not.toHaveBeenCalled()
+    expect(resumeSession).toHaveBeenCalledWith('newest')
+    controller.dispose()
+  })
+})
+
 describe('connection restoration', () => {
   it('waits on the sign-in screen instead of opening a WebSocket for a fresh interactive browser', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: window.location.origin })

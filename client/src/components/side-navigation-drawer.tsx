@@ -1,8 +1,5 @@
 import { useStore } from '@nanostores/react'
 import {
-  IconAdjustments,
-  IconBolt,
-  IconCalendarClock,
   IconPlus,
   IconSearch,
   IconTrash
@@ -10,11 +7,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
+import { BrandMark } from '~/components/brand-mark'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { MobileTab } from '~/navigation/routes'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
+import { $preferences } from '~/state/store'
 import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 interface SideNavigationDrawerProps {
@@ -31,16 +30,11 @@ interface SwipeStart {
   y: number
 }
 
-export const PRIMARY_NAVIGATION = [
-  { icon: IconBolt, label: 'Capabilities', tab: 'capabilities' },
-  { icon: IconCalendarClock, label: 'Cron Jobs', tab: 'cron' },
-  { icon: IconAdjustments, label: 'Settings', tab: 'settings' }
-] as const
-
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
 
 export function SideNavigationDrawer({ activeTab, controller, open, onClose, onNavigate }: SideNavigationDrawerProps) {
   const chat = useStore($chat)
+  const preferences = useStore($preferences)
   const sessions = useStore($sessions)
   const sessionsHaveMore = useStore($sessionsHasMore)
   const sessionsLoadingMore = useStore($sessionsLoadingMore)
@@ -163,22 +157,12 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
         tabIndex={-1}
       >
         <header className="side-drawer-top">
-          <strong>Hermes</strong>
+          <button aria-label="Open bot profile" className="drawer-identity" onClick={() => navigate('bot')}>
+            <BrandMark small />
+            <span><strong>Hermes</strong><small>{preferences.profile || 'default'} profile</small></span>
+          </button>
           <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
         </header>
-
-        <nav aria-label="Primary navigation" className="drawer-primary-navigation">
-          {PRIMARY_NAVIGATION.map(item => (
-            <button
-              aria-current={activeTab === item.tab ? 'page' : undefined}
-              disabled={pendingSessionAction}
-              key={item.tab}
-              onClick={() => navigate(item.tab)}
-            >
-              <item.icon size={20} /><span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
 
         {error && <div className="error-banner drawer-error" role="alert">{error}</div>}
 

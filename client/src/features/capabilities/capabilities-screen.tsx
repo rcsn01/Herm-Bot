@@ -1,4 +1,4 @@
-import { IconBrain, IconChevronRight, IconServer, IconSparkles, IconTools } from '@tabler/icons-react'
+import { IconBrain, IconChevronLeft, IconChevronRight, IconServer, IconSparkles, IconTools } from '@tabler/icons-react'
 
 import { Badge, Button } from '~/compat/primitives'
 import type { CapabilitiesRoute, CapabilitySection } from '~/navigation/routes'
@@ -20,13 +20,14 @@ const sections: ReadonlyArray<{ description: string; icon: typeof IconBrain; id:
 
 interface CapabilitiesScreenProps {
   onBack(): void
+  onExit?(): void
   onNavigate(route: CapabilitiesRoute): void
   route: CapabilitiesRoute
 }
 
-export function CapabilitiesScreen({ onBack, onNavigate, route }: CapabilitiesScreenProps) {
+export function CapabilitiesScreen({ onBack, onExit, onNavigate, route }: CapabilitiesScreenProps) {
   if (route.type === 'capabilities-root') {
-    return <section className="screen page-screen"><header className="page-heading"><div><p className="eyebrow">New sessions</p><h2>Capabilities</h2></div><Badge variant="muted">Profile scoped</Badge></header><p className="muted">Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation.</p><div className="settings-list capability-list">{sections.map(section => <button key={section.id} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })}><section.icon size={20} /><span><strong>{section.title}</strong><small>{section.description}</small></span><IconChevronRight size={18} /></button>)}</div></section>
+    return <section className="screen page-screen"><header className="page-heading">{onExit && <Button aria-label="Back to bot" onClick={onExit} size="icon-sm" variant="ghost"><IconChevronLeft size={20} /></Button>}<div><p className="eyebrow">New sessions</p><h2>Capabilities</h2></div><Badge variant="muted">Profile scoped</Badge></header><p className="muted">Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation.</p><div className="settings-list capability-list">{sections.map(section => <button key={section.id} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })}><section.icon size={20} /><span><strong>{section.title}</strong><small>{section.description}</small></span><IconChevronRight size={18} /></button>)}</div></section>
   }
 
   const section = route.section

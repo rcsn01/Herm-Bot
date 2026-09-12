@@ -49,19 +49,18 @@ beforeEach(() => {
 })
 
 describe('SideNavigationDrawer', () => {
-  it('shows the exact primary order and keeps recent sessions below it', () => {
+  it('keeps the bot identity above sessions and drops the primary navigation', () => {
     const { onClose, onNavigate } = renderDrawer()
 
-    expect(screen.getByText('Hermes')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Open bot profile' })).not.toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
-    const primary = screen.getByRole('navigation', { name: 'Primary navigation' })
-    expect([...primary.querySelectorAll('button')].map(button => button.textContent?.trim())).toEqual(['Capabilities', 'Cron Jobs', 'Settings'])
+    expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Recent sessions' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'New session' })).not.toBeNull()
-    expect(screen.queryByRole('button', { name: 'More' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(onNavigate).toHaveBeenCalledWith('settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    expect(onNavigate).toHaveBeenCalledWith('bot')
     expect(onClose).toHaveBeenCalledOnce()
   })
 
@@ -73,7 +72,7 @@ describe('SideNavigationDrawer', () => {
     expect(sessionList.contains(screen.getByRole('button', { name: /Planning session/ }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Load more sessions' }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search sessions' }))).toBe(false)
-    expect(sessionList.contains(screen.getByRole('navigation', { name: 'Primary navigation' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot profile' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Recent sessions' }))).toBe(false)
   })
 

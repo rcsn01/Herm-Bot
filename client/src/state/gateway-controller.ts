@@ -202,6 +202,27 @@ export class GatewayController {
     await this.conversation.reconcileHistory()
   }
 
+  /**
+   * Roster tap: enter a profile's latest conversation. Switches profiles when
+   * needed, resumes the newest session from the refreshed list, and starts a
+   * fresh session when none exist or the newest one is gone.
+   */
+  async openProfile(profile: null | string) {
+    if (profile !== $preferences.get().profile) await this.switchProfile(profile)
+    const sessions = $sessions.get()
+    const latest = sessions.reduce<null | (typeof sessions)[number]>((newest, session) =>
+      !newest || session.started_at > newest.started_at ? session : newest, null)
+    if (latest) {
+      try {
+        await this.resumeSession(latest.id)
+        return
+      } catch {
+        // The stored conversation may no longer exist; start a fresh one instead.
+      }
+    }
+    await this.newSession()
+  }
+
   async refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()) {
     const limit = this.sessionListLimit
     const response = await queryClient.fetchQuery({

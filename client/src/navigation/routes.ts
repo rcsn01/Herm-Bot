@@ -1,8 +1,18 @@
-export const MOBILE_TABS = ['capabilities', 'cron', 'settings', 'sessions'] as const
+export const MOBILE_TABS = ['roster', 'bot', 'capabilities', 'cron', 'settings', 'sessions'] as const
 
 export type MobileTab = (typeof MOBILE_TABS)[number]
 
 export type CapabilitySection = 'mcp' | 'skills' | 'tools'
+
+export interface RosterRootRoute {
+  type: 'roster-root'
+  tab: 'roster'
+}
+
+export interface BotRootRoute {
+  type: 'bot-root'
+  tab: 'bot'
+}
 
 export interface SessionsRootRoute {
   type: 'sessions-root'
@@ -105,6 +115,8 @@ export interface SettingsAdministrationRoute {
 export type SettingsRoute = SettingsRootRoute | SettingsCategoryRoute | SettingsAdministrationRoute
 
 export interface RoutesByTab {
+  roster: RosterRootRoute
+  bot: BotRootRoute
   capabilities: CapabilitiesRoute
   cron: CronRoute
   settings: SettingsRoute
@@ -115,6 +127,8 @@ export type MobileRoute = RoutesByTab[MobileTab]
 export type RouteForTab<Tab extends MobileTab> = RoutesByTab[Tab]
 
 export const ROOT_ROUTES = {
+  roster: { type: 'roster-root', tab: 'roster' },
+  bot: { type: 'bot-root', tab: 'bot' },
   capabilities: { type: 'capabilities-root', tab: 'capabilities' },
   cron: { type: 'cron-root', tab: 'cron' },
   settings: { type: 'settings-root', tab: 'settings' },

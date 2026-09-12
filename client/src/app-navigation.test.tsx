@@ -10,6 +10,7 @@ const controller = vi.hoisted(() => ({
   gateway: {},
   initialize: vi.fn().mockResolvedValue(undefined),
   newSession: vi.fn().mockResolvedValue(undefined),
+  openProfile: vi.fn().mockResolvedValue(undefined),
   refreshSessions: vi.fn().mockResolvedValue(undefined),
   resumeSession: vi.fn().mockResolvedValue(undefined),
   switchProfile: vi.fn().mockResolvedValue(undefined)
@@ -30,9 +31,30 @@ vi.mock('~/components/chat-screen', async () => {
   let nextId = 0
   return { ChatScreen: () => { const id = useRef(++nextId); return <div data-testid="chat-instance">Chat {id.current}</div> } }
 })
-vi.mock('~/features/settings/settings-screen', () => ({ applyTheme: vi.fn(), SettingsScreen: () => <div>Settings screen</div> }))
+vi.mock('~/features/agents/roster-screen', () => ({
+  RosterScreen: ({ onOpenAgent }: { onOpenAgent(profile: null | string): void }) => (
+    <div>Roster screen
+      <button onClick={() => onOpenAgent('work')}>Open agent work</button>
+      <button onClick={() => onOpenAgent(null)}>Open agent default</button>
+    </div>
+  )
+}))
+vi.mock('~/features/settings/settings-screen', () => ({
+  applyTheme: vi.fn(),
+  SettingsScreen: ({ onExit }: { onExit?(): void }) => <div>Settings screen{onExit && <button onClick={onExit}>Settings back</button>}</div>
+}))
 vi.mock('~/features/capabilities/capabilities-screen', () => ({ CapabilitiesScreen: () => <div>Capabilities screen</div> }))
 vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: { onOpenSession?(sessionId: string): Promise<void> }) => <div>Cron screen{onOpenSession && <button onClick={() => void onOpenSession('cron-session-1')}>Open run session</button>}</div> }))
+vi.mock('~/features/bots/bot-screen', () => ({
+  BotScreen: ({ onBack, onOpenCapabilities, onOpenCronJobs, onOpenModel }: { onBack(): void; onOpenCapabilities(): void; onOpenCronJobs(): void; onOpenModel(): void }) => (
+    <div>Bot screen
+      <button onClick={onBack}>Back to chat</button>
+      <button onClick={onOpenCapabilities}>Bot capabilities</button>
+      <button onClick={onOpenCronJobs}>Bot cron</button>
+      <button onClick={onOpenModel}>Bot model</button>
+    </div>
+  )
+}))
 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
@@ -54,42 +76,105 @@ function openDrawer() {
   fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
 }
 
-describe('App navigation', () => {
-  it('opens the drawer from the menu button and has no bottom navigation', () => {
-    render(<App />)
-    const menu = screen.getByRole('button', { name: 'Open navigation' })
-    expect(menu.getAttribute('aria-expanded')).toBe('false')
+async function enterAgent(buttonName: 'Open agent work' | 'Open agent default' = 'Open agent default') {
+  fireEvent.click(screen.getByRole('button', { name: buttonName }))
+  await act(async () => undefined)
+}
 
-    fireEvent.click(menu)
-    expect(menu.getAttribute('aria-expanded')).toBe('true')
+describe('App navigation', () => {
+  it('launches on the agent roster with settings access and no side navigation', () => {
+    render(<App />)
+
+    expect(screen.getByText('Roster screen')).not.toBeNull()
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open bot profile' })).toBeNull()
+    expect(screen.queryByTestId('side-navigation-backdrop')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Open settings' })).not.toBeNull()
+  })
+
+  it('enters the tapped agent latest conversation', async () => {
+    render(<App />)
+
+    await enterAgent('Open agent work')
+
+    expect(controller.openProfile).toHaveBeenCalledWith('work')
+    expect(screen.queryByText('Roster screen')).toBeNull()
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Open navigation' })).not.toBeNull()
+  })
+
+  it('opens the drawer only inside a profile', async () => {
+    render(<App />)
+    expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
+
+    await enterAgent()
+    openDrawer()
+
     expect(screen.getByRole('dialog', { name: 'Navigation' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Capabilities' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Cron Jobs' })).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
   })
 
-  it('switches primary destinations and closes the drawer', () => {
+  it('opens Settings from the main screen header button and returns to the roster', () => {
     render(<App />)
-    openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
 
-    expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
+    expect(screen.getByText('Roster screen')).not.toBeNull()
   })
 
-  it('opens Cron and Settings directly from the primary navigation', () => {
+  it('returns to the chat after settings opened inside a profile', async () => {
     render(<App />)
-    openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    expect(screen.getByText('Cron screen')).not.toBeNull()
+
+    await enterAgent()
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
+    expect(screen.getByText('Settings screen')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.queryByText('Roster screen')).toBeNull()
+  })
+
+  it('reaches Capabilities and Cron Jobs behind the bot profile', async () => {
+    render(<App />)
+
+    await enterAgent()
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    expect(screen.getByText('Bot screen')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bot capabilities' }))
+    expect(screen.getByText('Capabilities screen')).not.toBeNull()
 
     openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bot cron' }))
+    expect(screen.getByText('Cron screen')).not.toBeNull()
+  })
+
+  it('opens model settings from the bot profile and returns to the bot', async () => {
+    render(<App />)
+
+    await enterAgent()
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bot model' }))
+
     expect(screen.getByText('Settings screen')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
+    expect(screen.getByText('Bot screen')).not.toBeNull()
   })
 
   it('resumes a cron run session and returns to chat', async () => {
     render(<App />)
-    openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+
+    await enterAgent()
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bot cron' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
 
@@ -99,29 +184,21 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
-  it('keeps the active ChatScreen instance through drawer toggles and destination round trips', () => {
+  it('keeps the active ChatScreen instance through drawer toggles and destination round trips', async () => {
     render(<App />)
+    await enterAgent()
     const chat = screen.getByTestId('chat-instance')
-    expect(chat.textContent).toContain('Chat')
 
     openDrawer()
     fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bot cron' }))
     openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    openDrawer()
-    fireEvent.click(screen.getByRole('button', { name: 'Recent sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot profile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
-  })
-
-  it('shows the connected active chat immediately and keeps the model badge Settings shortcut', () => {
-    render(<App />)
-    expect(screen.getByTestId('chat-instance')).not.toBeNull()
-    expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open model settings' }))
-    expect(screen.getByText('Settings screen')).not.toBeNull()
   })
 
   it('keeps the cached chat shell mounted while reconnecting an existing session', () => {

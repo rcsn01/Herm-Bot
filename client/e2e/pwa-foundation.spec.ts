@@ -7,6 +7,10 @@ async function login(page: Page, path = '/') {
   await page.getByPlaceholder('Username').fill('browser-e2e')
   await page.getByPlaceholder('Password').fill('fixture-password')
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  if (path === '/') {
+    // The main screen is the agent roster; opening the default bot enters its latest conversation.
+    await page.getByRole('button', { name: 'default' }).click()
+  }
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
 }
 
@@ -96,7 +100,7 @@ test('password cookie authenticates a real WebSocket chat session', async ({ pag
   const { calls } = await fixtureCalls(page)
   expect(calls).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: 'ws-connect', profile: 'default' }),
-    expect.objectContaining({ kind: 'rpc', method: 'session.create', params: expect.objectContaining({ profile: 'default', source: 'mobile' }) }),
+    expect.objectContaining({ kind: 'rpc', method: 'session.resume', params: expect.objectContaining({ profile: 'default', session_id: 'saved-default', source: 'mobile' }) }),
     expect.objectContaining({ kind: 'rpc', method: 'prompt.submit' })
   ]))
 })

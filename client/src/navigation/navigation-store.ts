@@ -12,6 +12,8 @@ export interface NavigationState {
 
 function initialStacks(): NavigationStacks {
   return {
+    roster: [ROOT_ROUTES.roster],
+    bot: [ROOT_ROUTES.bot],
     capabilities: [ROOT_ROUTES.capabilities],
     cron: [ROOT_ROUTES.cron],
     settings: [ROOT_ROUTES.settings],
@@ -19,7 +21,7 @@ function initialStacks(): NavigationStacks {
   }
 }
 
-export function initialNavigationState(activeTab: MobileTab = 'sessions'): NavigationState {
+export function initialNavigationState(activeTab: MobileTab = 'roster'): NavigationState {
   return { activeTab, stacks: initialStacks() }
 }
 
@@ -73,7 +75,7 @@ export function resetTabRoutes(tab: MobileTab): void {
   })
 }
 
-export function resetNavigation(activeTab: MobileTab = 'sessions'): void {
+export function resetNavigation(activeTab: MobileTab = 'roster'): void {
   $navigation.set(initialNavigationState(activeTab))
 }
 
