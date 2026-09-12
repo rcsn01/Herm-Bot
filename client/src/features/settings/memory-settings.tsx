@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -6,8 +6,8 @@ import { useStore } from '@nanostores/react'
 import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedMutation, useScopedTask } from '~/gateway/scope-guard'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
+import { beginScopedTask, useScopeKey, useScopedMutation, useScopedQuery, useScopeReset, useScopedTask } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import { runRemoteAction } from '~/gateway/remote-action'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
@@ -26,12 +26,10 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   const profile = preferences.profile
   const queryClient = useQueryClient()
   const profileSupportsMemoryManagement = profileKey(profile) === 'default'
-  const scope = { connectionKey: preferences.remoteURL, profile }
-  const statusKey = useMemo(() => gatewayScopeKey(scope, 'settings', 'memory'), [preferences.remoteURL, profile])
-  const status = useQuery({
+  const statusKey = useScopeKey('settings', ['memory'])
+  const status = useScopedQuery(statusKey, {
     enabled: profileSupportsMemoryManagement,
-    queryFn: ({ signal }) => settings.memoryStatus(signal),
-    queryKey: statusKey
+    queryFn: signal => settings.memoryStatus(signal)
   })
   const [selectedProvider, setSelectedProvider] = useState('')
   const [oauthPending, setOAuthPending] = useState(false)
@@ -43,25 +41,23 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   const providers = status.data?.providers ?? []
   const providerKey = profileSupportsMemoryManagement ? selectedProvider || status.data?.active || providers[0]?.name || '' : ''
   const selectedStatus = providers.find(provider => provider.name === providerKey)
-  const config = useQuery({
+  const config = useScopedQuery(useScopeKey('settings', ['memory', 'provider', providerKey]), {
     enabled: Boolean(providerKey),
-    queryFn: ({ signal }) => settings.memoryProviderConfig(providerKey, signal),
-    queryKey: [...statusKey, 'provider', providerKey]
+    queryFn: signal => settings.memoryProviderConfig(providerKey, signal)
   })
-  const oauth = useQuery({
+  const oauth = useScopedQuery(useScopeKey('settings', ['memory', 'oauth', providerKey]), {
     enabled: Boolean(providerKey),
-    queryFn: ({ signal }) => settings.memoryOAuthStatus(providerKey, signal),
-    queryKey: [...statusKey, 'oauth', providerKey],
+    queryFn: signal => settings.memoryOAuthStatus(providerKey, signal),
     retry: false
   })
 
-  useEffect(() => {
+  useScopeReset(() => {
     setSelectedProvider('')
     setOAuthPending(false)
     setOAuthError(null)
     setError(null)
     setResetTarget(null)
-  }, [preferences.remoteURL, profile])
+  })
 
   useEffect(() => {
     if (!selectedProvider && status.data?.active) setSelectedProvider(status.data.active)
@@ -135,7 +131,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       setOAuthError(classifyGatewayError(caught).message)
     })
     return () => controller.abort()
-  }, [api, oauth.data, oauthPending, providerKey, queryClient, settings, statusKey])
+  }, [api, oauth.data, oauthPending, preferences, providerKey, queryClient, settings])
 
   const chooseProvider = (name: string) => {
     setSelectedProvider(name)
@@ -164,7 +160,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     <Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
     {error && <div className="error-banner" role="alert">{error}</div>}
     {!profileSupportsMemoryManagement && <section className="unsupported-card" role="alert"><strong>Memory management is unavailable for this profile.</strong><p>This gateway's memory status, provider selection, reset, and dependency setup routes are process-scoped. Use the default profile or connect to a gateway dedicated to this profile.</p></section>}
-    {profileSupportsMemoryManagement && status.error && <MemoryError error={status.error} />}
+    {profileSupportsMemoryManagement && status.error && <GatewayErrorBanner error={status.error} unsupportedText="Memory management is unavailable on this gateway." />}
     {profileSupportsMemoryManagement && status.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-14 w-full" /></div>}
     {profileSupportsMemoryManagement && status.data && <>
       <section className="settings-section">
@@ -202,7 +198,7 @@ function MemoryProviderEditor({ config, error, loading, onSave, onSetup, provide
   }, [config, provider, savedFor])
   const fields = useMemo(() => config?.fields.filter(field => fieldVisible(field, values)) ?? [], [config, values])
   if (loading) return <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-14 w-full" /></div>
-  if (error) return <div className="unsupported-card">Provider settings unavailable: {classifyGatewayError(error).message}</div>
+  if (error) return <GatewayErrorBanner error={error} unavailablePhrase="Provider settings unavailable" />
   if (!config) return null
   const needsSetup = providerStatus?.status === 'unavailable' || (providerStatus?.status === 'needs_config' && !providerStatus.configured)
   const saveValues = () => {
@@ -231,11 +227,6 @@ function MemoryField({ field, onChange, value }: { field: MemoryProviderField; o
 function MemoryOAuthCard({ error, onStart, pending, status }: { error: string | null; onStart(): void; pending: boolean; status?: MemoryProviderOAuthStatus }) {
   if (!status && !error) return null
   return <section className="data-card memory-oauth"><header className="page-heading"><h3>Provider connection</h3>{status?.connected && <Badge>Connected</Badge>}</header><p className="muted">{pending ? 'The gateway is waiting for provider authorization.' : status?.detail || error || 'Connect this provider through its supported OAuth flow.'}</p>{error && <div className="error-banner" role="alert">{error}</div>}<Button disabled={pending} onClick={onStart} variant="secondary"><IconExternalLink size={16} /> {status?.connected ? 'Reconnect' : 'Connect with OAuth'}</Button></section>
-}
-
-function MemoryError({ error }: { error: unknown }) {
-  const classified = classifyGatewayError(error)
-  return <div className={classified.kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="alert">{classified.kind === 'unsupported' ? 'Memory management is unavailable on this gateway.' : classified.message}</div>
 }
 
 function fieldVisible(field: MemoryProviderField, values: MemoryValues): boolean {

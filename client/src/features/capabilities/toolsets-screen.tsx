@@ -1,13 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
 import { IconChevronRight, IconRefresh, IconSearch, IconTools } from '@tabler/icons-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { useScopedMutation, useScopedTask } from '~/gateway/scope-guard'
+import { useScopeKey, useScopeReset, useScopedMutation, useScopedQuery, useScopedTask } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { ToolsetInfo } from '~/lib/types'
@@ -18,8 +17,8 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
   const toolsetsApi = useApi(createToolsetsApi)
   const preferences = useStore($preferences)
   const profile = preferences.profile
-  const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'tools', 'list')
-  const toolsets = useQuery({ queryFn: ({ signal }) => toolsetsApi.list(signal), queryKey })
+  const queryKey = useScopeKey('tools', ['list'])
+  const toolsets = useScopedQuery(queryKey, { queryFn: signal => toolsetsApi.list(signal) })
   const [search, setSearch] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -38,11 +37,11 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
   })
   const action = useScopedTask()
 
-  useEffect(() => {
+  useScopeReset(() => {
     setSearch('')
     setConfirmClear(false)
     setError(null)
-  }, [preferences.remoteURL, profile])
+  })
   const clearAll = async () => {
     setConfirmClear(false)
     const enabled = toolsets.data?.filter(toolset => toolset.enabled) ?? []
@@ -68,7 +67,7 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
       <div className="search-box"><IconSearch size={17} aria-hidden="true" /><Input aria-label="Search toolsets" onChange={event => setSearch(event.target.value)} placeholder="Search toolsets" value={search} /></div>
       <div className="button-row tool-actions"><Badge variant="muted">{toolsets.data?.filter(toolset => toolset.enabled).length ?? 0} enabled</Badge><Button disabled={!toolsets.data?.some(toolset => toolset.enabled) || toggle.isPending} onClick={() => setConfirmClear(true)} size="sm" variant="destructive">Clear enabled toolsets</Button></div>
       {toolsets.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-14 w-full" /><Skeleton className="mt-2 h-14 w-full" /></div>}
-      {toolsets.error && <div className={classifyGatewayError(toolsets.error).kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="alert">{classifyGatewayError(toolsets.error).kind === 'unsupported' ? 'Toolsets are unavailable on this gateway.' : classifyGatewayError(toolsets.error).message}</div>}
+      {toolsets.error && <GatewayErrorBanner error={toolsets.error} unsupportedText="Toolsets are unavailable on this gateway." />}
       <div className="settings-list capability-list">{filtered.map(toolset => <article className="capability-row" key={toolset.name}><button onClick={() => onSelect?.(toolset)}><IconTools size={20} /><span><strong>{toolset.label || toolset.name}</strong><small>{toolset.description || 'No description'}</small><small>{toolset.tools.length} tools · {toolset.configured ? 'Configured' : 'Setup needed'}</small></span><IconChevronRight size={18} /></button><label className="row-switch"><span className="sr-only">Enable {toolset.label || toolset.name}</span><input checked={toolset.enabled} onChange={event => toggle.mutate({ enabled: event.target.checked, name: toolset.name })} type="checkbox" /></label></article>)}{toolsets.data && filtered.length === 0 && <div className="empty-panel">No toolsets match this search.</div>}</div>
       {confirmClear && <ConfirmDialog confirmLabel="Clear all" description="Disable every enabled toolset for this profile? The change affects new sessions only." onCancel={() => setConfirmClear(false)} onConfirm={() => void clearAll()} title="Clear enabled toolsets" />}
     </section>

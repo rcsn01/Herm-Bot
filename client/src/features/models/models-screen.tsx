@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '@nanostores/react'
@@ -20,10 +20,10 @@ import {
 } from '~/features/models/model-editing'
 import { MoaEditor } from '~/features/models/moa-editor'
 import { ModelSelect, ensureOption, modelOptions, providerOptions } from '~/features/models/select'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopeKey, useScopedQuery, useScopeReset } from '~/gateway/scope-guard'
 import { $preferences } from '~/state/store'
 import type { ModelOptionProvider, StaleAuxAssignment } from '~/lib/types'
 
@@ -68,13 +68,17 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const queryClient = useQueryClient()
   const preferences = useStore($preferences)
   const profile = preferences.profile
-  const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'models')
-  const keyFor = (domain: string) => [...scopeKey, domain]
-  const info = useQuery({ queryFn: ({ signal }) => models.getInfo(signal), queryKey: keyFor('info') })
-  const options = useQuery({ queryFn: ({ signal }) => models.getOptions(signal), queryKey: keyFor('options') })
-  const auxiliary = useQuery({ queryFn: ({ signal }) => models.getAuxiliary(signal), queryKey: keyFor('auxiliary') })
-  const config = useQuery({ queryFn: ({ signal }) => models.getConfig(signal), queryKey: keyFor('config') })
-  const moa = useQuery({ queryFn: ({ signal }) => models.getMoa(signal), queryKey: keyFor('moa') })
+  const scopeKey = useScopeKey('models')
+  const infoKey = useScopeKey('models', ['info'])
+  const optionsKey = useScopeKey('models', ['options'])
+  const auxiliaryKey = useScopeKey('models', ['auxiliary'])
+  const configKey = useScopeKey('models', ['config'])
+  const moaKey = useScopeKey('models', ['moa'])
+  const info = useScopedQuery(infoKey, { queryFn: signal => models.getInfo(signal) })
+  const options = useScopedQuery(optionsKey, { queryFn: signal => models.getOptions(signal) })
+  const auxiliary = useScopedQuery(auxiliaryKey, { queryFn: signal => models.getAuxiliary(signal) })
+  const config = useScopedQuery(configKey, { queryFn: signal => models.getConfig(signal) })
+  const moa = useScopedQuery(moaKey, { queryFn: signal => models.getMoa(signal) })
 
   const providers = useMemo<ModelOptionProvider[]>(() => options.data?.providers ?? [], [options.data])
   const mainModel = useMemo(
@@ -95,13 +99,13 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
     setSelectedModel(prev => prev || info.data.model)
   }, [info.data])
 
-  useEffect(() => {
+  useScopeReset(() => {
     setSelectedProvider('')
     setSelectedModel('')
     setEditingTask(null)
     setAuxDraft({ model: '', provider: '' })
     setMoaError(null)
-  }, [preferences.remoteURL, profile])
+  })
 
   const selectedProviderRow = useMemo(() => providers.find(provider => provider.slug === selectedProvider), [providers, selectedProvider])
   const selectedProviderModels = selectedProviderRow?.models ?? []
@@ -186,7 +190,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
       <p className="muted">Current model, assignments, and model capabilities for the {profile || 'default'} profile.</p>
 
       {loading && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-3 h-32 w-full" /></div>}
-      {loadError && <div className="error-banner" role="alert"><strong>Could not load models</strong><p>{classifyGatewayError(loadError).message}</p></div>}
+      {loadError && <GatewayErrorBanner error={loadError} subject="Models" />}
 
       <section className="models-section" aria-label="Main model">
         <h3>Main model</h3>
@@ -324,7 +328,7 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
         <MoaEditor
           connectionKey={preferences.remoteURL}
           moa={moa.data}
-          onMoaChange={next => { const task = beginScopedTask(); if (task.isCurrent()) queryClient.setQueryData(keyFor('moa'), next) }}
+          onMoaChange={next => { const task = beginScopedTask(); if (task.isCurrent()) queryClient.setQueryData(moaKey, next) }}
           onError={error => {
             const task = beginScopedTask()
             if (!task.isCurrent()) return
@@ -336,21 +340,13 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
           }}
           onSaved={(saved, savedProfile) => {
             const task = beginScopedTask()
-            if (savedProfile === profile && task.isCurrent()) queryClient.setQueryData(keyFor('moa'), saved)
+            if (savedProfile === profile && task.isCurrent()) queryClient.setQueryData(moaKey, saved)
           }}
           profile={profile}
           providers={providers}
         />
       )}
-      {moa.error && (() => {
-        const error = classifyGatewayError(moa.error)
-        return (
-          <div className={error.kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="status">
-            <strong>{error.kind === 'unsupported' ? 'Mixture of Agents unavailable' : 'Could not load Mixture of Agents'}</strong>
-            <p>{error.kind === 'unsupported' ? 'This gateway does not provide the MoA endpoint. The rest of Models still works.' : error.message}</p>
-          </div>
-        )
-      })()}
+      {moa.error && <GatewayErrorBanner error={moa.error} subject="Mixture of Agents" unsupportedText="This gateway does not provide the MoA endpoint. The rest of Models still works." role="status" />}
 
       {configData && (
         <section className="models-section" aria-label="Context and fallbacks">

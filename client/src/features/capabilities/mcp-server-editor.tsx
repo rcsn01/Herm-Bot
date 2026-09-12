@@ -1,16 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { Button, Input, Textarea } from '~/compat/primitives'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { useScopedTask } from '~/gateway/scope-guard'
-import { useStore } from '@nanostores/react'
-import { $preferences } from '~/state/store'
+import { useScopeReset, useScopedTask } from '~/gateway/scope-guard'
 import { createMcpApi, type McpServerConfig, type McpServerSummary } from './mcp-api'
 
 export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): void; onSaved(): void; server?: McpServerSummary }) {
   const mcpApi = useApi(createMcpApi)
-  const preferences = useStore($preferences)
-  const profile = preferences.profile
   const [name, setName] = useState(server?.name ?? '')
   const [transport, setTransport] = useState<'stdio' | 'url'>(server?.url ? 'url' : 'stdio')
   const [url, setUrl] = useState(server?.url ?? '')
@@ -32,7 +28,7 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
     ...(Object.keys(parseEnv()).length > 0 ? { env: parseEnv() } : {})
   })
 
-  useEffect(() => {
+  useScopeReset(() => {
     setName(server?.name ?? '')
     setTransport(server?.url ? 'url' : 'stdio')
     setUrl(server?.url ?? '')
@@ -42,7 +38,7 @@ export function McpServerEditor({ server, onCancel, onSaved }: { onCancel(): voi
     setEnvText('')
     setError(null)
     setSaving(false)
-  }, [preferences.remoteURL, profile, server?.name])
+  }, server?.name)
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault()

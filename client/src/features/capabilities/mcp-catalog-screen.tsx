@@ -1,14 +1,14 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { runGatewayAction, type GatewayActionState } from '~/gateway/remote-action'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopeKey, useScopeReset, useScopedMutation, useScopedQuery } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createMcpApi, type McpCatalogEntry } from './mcp-api'
@@ -19,8 +19,8 @@ export function McpCatalogScreen({ onBack }: { onBack(): void }) {
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
-  const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'mcp', 'catalog')
-  const catalog = useQuery({ queryFn: ({ signal }) => mcpApi.catalog(signal), queryKey: scopeKey })
+  const scopeKey = useScopeKey('mcp', ['catalog'])
+  const catalog = useScopedQuery(scopeKey, { queryFn: signal => mcpApi.catalog(signal) })
   const [pending, setPending] = useState<McpCatalogEntry | null>(null)
   const [env, setEnv] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
@@ -41,11 +41,11 @@ export function McpCatalogScreen({ onBack }: { onBack(): void }) {
     }
   })
 
-  useEffect(() => {
+  useScopeReset(() => {
     setPending(null)
     setEnv({})
     setError(null)
-  }, [preferences.remoteURL, profile])
+  })
 
   const confirmInstall = () => {
     if (!pending) return
@@ -59,5 +59,5 @@ export function McpCatalogScreen({ onBack }: { onBack(): void }) {
     install.mutate({ entry: pending, env: values })
   }
 
-  return <section className="screen page-screen"><header className="page-heading"><Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><Button aria-label="Refresh MCP catalog" onClick={() => void catalog.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header><p className="eyebrow">MCP</p><h2>Catalog</h2><p className="muted">Install approved MCP servers into the {profile || 'default'} profile. Credentials stay in the gateway.</p>{error && <div className="error-banner" role="alert">{error}</div>}{catalog.isPending && <Skeleton className="h-24 w-full" />}{catalog.error && <div className="error-banner" role="alert">{classifyGatewayError(catalog.error).message}</div>}<div className="settings-list capability-list">{catalog.data?.entries.map(entry => <article className="hub-result" key={entry.name}><div><strong>{entry.name}</strong><small>{entry.description}</small><small>{entry.transport} · {entry.installed ? entry.enabled ? 'Enabled' : 'Installed' : 'Not installed'}</small></div><Button disabled={entry.installed || install.isPending} onClick={() => setPending(entry)} size="sm">{entry.installed ? 'Installed' : 'Install'}</Button></article>)}{catalog.data?.entries.length === 0 && <div className="empty-panel">The MCP catalog is empty.</div>}</div>{pending && <ConfirmDialog confirmLabel="Install" description={`Install ${pending.name}? Inspect the ${pending.transport} command and provide only the requested credentials.`} onCancel={() => { setPending(null); setEnv({}) }} onConfirm={confirmInstall} title="Install MCP server" />}{pending && pending.required_env.length > 0 && <section className="data-card"><h3>Required credentials</h3>{pending.required_env.map(variable => <label className="config-field" key={variable.name}><span>{variable.prompt || variable.name}{variable.required ? ' (required)' : ''}</span><Input autoComplete="off" onChange={event => setEnv(current => ({ ...current, [variable.name]: event.target.value }))} type="password" value={env[variable.name] ?? ''} /></label>)}</section>}</section>
+  return <section className="screen page-screen"><header className="page-heading"><Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><Button aria-label="Refresh MCP catalog" onClick={() => void catalog.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header><p className="eyebrow">MCP</p><h2>Catalog</h2><p className="muted">Install approved MCP servers into the {profile || 'default'} profile. Credentials stay in the gateway.</p>{error && <div className="error-banner" role="alert">{error}</div>}{catalog.isPending && <Skeleton className="h-24 w-full" />}{catalog.error && <GatewayErrorBanner error={catalog.error} />}<div className="settings-list capability-list">{catalog.data?.entries.map(entry => <article className="hub-result" key={entry.name}><div><strong>{entry.name}</strong><small>{entry.description}</small><small>{entry.transport} · {entry.installed ? entry.enabled ? 'Enabled' : 'Installed' : 'Not installed'}</small></div><Button disabled={entry.installed || install.isPending} onClick={() => setPending(entry)} size="sm">{entry.installed ? 'Installed' : 'Install'}</Button></article>)}{catalog.data?.entries.length === 0 && <div className="empty-panel">The MCP catalog is empty.</div>}</div>{pending && <ConfirmDialog confirmLabel="Install" description={`Install ${pending.name}? Inspect the ${pending.transport} command and provide only the requested credentials.`} onCancel={() => { setPending(null); setEnv({}) }} onConfirm={confirmInstall} title="Install MCP server" />}{pending && pending.required_env.length > 0 && <section className="data-card"><h3>Required credentials</h3>{pending.required_env.map(variable => <label className="config-field" key={variable.name}><span>{variable.prompt || variable.name}{variable.required ? ' (required)' : ''}</span><Input autoComplete="off" onChange={event => setEnv(current => ({ ...current, [variable.name]: event.target.value }))} type="password" value={env[variable.name] ?? ''} /></label>)}</section>}</section>
 }

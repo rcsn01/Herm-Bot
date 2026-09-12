@@ -1,12 +1,12 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconBook, IconChevronRight, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopeKey, useScopeReset, useScopedMutation, useScopedQuery } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import type { SkillInfo } from '~/lib/types'
@@ -26,8 +26,8 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
-  const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'list')
-  const skills = useQuery({ queryFn: ({ signal }) => skillsApi.list(signal), queryKey })
+  const queryKey = useScopeKey('skills', ['list'])
+  const skills = useScopedQuery(queryKey, { queryFn: signal => skillsApi.list(signal) })
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
   const [activation, setActivation] = useState<'all' | 'disabled' | 'enabled'>('all')
@@ -51,12 +51,12 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
     onSuccess: () => setError(null)
   })
 
-  useEffect(() => {
+  useScopeReset(() => {
     setSearch('')
     setCategory('all')
     setActivation('all')
     setError(null)
-  }, [preferences.remoteURL, profile])
+  })
 
 
   const selectedSkill = selected ? skills.data?.find(skill => skill.name === selected) : undefined
@@ -71,7 +71,7 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
       <div className="search-box"><IconSearch size={17} aria-hidden="true" /><Input aria-label="Search installed skills" onChange={event => setSearch(event.target.value)} placeholder="Search installed skills" value={search} /></div>
       <div className="filter-row"><label>Category<select aria-label="Skill category" onChange={event => setCategory(event.target.value)} value={category}><option value="all">All categories</option>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></label><label>Activation<select aria-label="Skill activation" onChange={event => setActivation(event.target.value as typeof activation)} value={activation}><option value="all">All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label></div>
       {skills.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-14 w-full" /><Skeleton className="mt-2 h-14 w-full" /></div>}
-      {skills.error && <div className={classifyGatewayError(skills.error).kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="alert">{classifyGatewayError(skills.error).kind === 'unsupported' ? 'Skills are unavailable on this gateway.' : classifyGatewayError(skills.error).message}</div>}
+      {skills.error && <GatewayErrorBanner error={skills.error} unsupportedText="Skills are unavailable on this gateway." />}
       <div className="settings-list capability-list">
         {filtered.map(skill => <article className="capability-row" key={skill.name}><button onClick={() => onSelect?.(skill)}><IconBook size={20} /><span><strong>{skill.name}</strong><small>{skill.description || skill.category || 'No description'}</small><small>{skill.category || 'Uncategorized'} · {skill.provenance || 'unknown'}{skill.usage === undefined ? '' : ` · ${skill.usage} uses`}</small></span><IconChevronRight size={18} /></button><label className="row-switch"><span className="sr-only">Enable {skill.name}</span><input checked={skill.enabled} onChange={event => toggle.mutate({ enabled: event.target.checked, name: skill.name })} type="checkbox" /></label></article>)}
         {skills.data && filtered.length === 0 && <div className="empty-panel">No installed skills match these filters.</div>}

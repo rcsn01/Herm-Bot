@@ -1,14 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
 import { IconCalendarClock, IconPlus, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
-import { classifyGatewayError } from '~/gateway/gateway-error'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { useApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { useScopeKey, useScopedQuery, useScopeReset } from '~/gateway/scope-guard'
 import type { CronRoute } from '~/navigation/routes'
-import { useStore } from '@nanostores/react'
-import { $preferences } from '~/state/store'
 import { CronBlueprintsScreen } from './cron-blueprints-screen'
 import { CronJobDetail } from './cron-job-detail'
 import { CronJobEditor } from './cron-job-editor'
@@ -16,18 +13,16 @@ import { createCronApi, type CronJob } from './api'
 
 export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBack?: () => void; onNavigate?: (route: CronRoute) => void; onOpenSession?: (sessionId: string) => Promise<void>; route?: CronRoute }) {
   const cron = useApi(createCronApi)
-  const preferences = useStore($preferences)
-  const profile = preferences.profile
-  const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'cron', 'jobs')
-  const jobs = useQuery({ queryFn: ({ signal }) => cron.list(signal), queryKey: scopeKey })
+  const scopeKey = useScopeKey('cron', ['jobs'])
+  const jobs = useScopedQuery(scopeKey, { queryFn: signal => cron.list(signal) })
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<'all' | 'active' | 'paused' | 'error'>('all')
   const activeRoute = route ?? { tab: 'cron', type: 'cron-root' as const }
   const navigate = onNavigate ?? (() => undefined)
-  useEffect(() => {
+  useScopeReset(() => {
     setSearch('')
     setStatus('all')
-  }, [preferences.remoteURL, profile])
+  })
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -45,7 +40,7 @@ export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBac
   }
   if (activeRoute.type === 'cron-blueprints') return <CronBlueprintsScreen onBack={() => navigate({ tab: 'cron', type: 'cron-root' })} onCreated={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />
 
-  return <section className="screen page-screen"><header className="page-heading"><div><h2>Cron Jobs</h2></div><div className="button-row"><Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-blueprints' })} size="sm" variant="secondary">Blueprints</Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-job-editor' })} size="sm"><IconPlus size={16} /> New</Button></div></header><div className="search-box"><IconCalendarClock size={17} aria-hidden="true" /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div><div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label><Badge variant="muted">{filtered.length} jobs</Badge></div>{jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}{jobs.isStale && jobs.data && !jobs.isFetching && <p className="muted" role="status">Showing cached jobs. Pull to refresh.</p>}{jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}{jobs.error && <div className={classifyGatewayError(jobs.error).kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="alert">{classifyGatewayError(jobs.error).kind === 'unsupported' ? 'Cron Jobs are unavailable on this gateway.' : classifyGatewayError(jobs.error).message}</div>}{jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}<div className="cron-job-list">{filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}</div></section>
+  return <section className="screen page-screen"><header className="page-heading"><div><h2>Cron Jobs</h2></div><div className="button-row"><Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-blueprints' })} size="sm" variant="secondary">Blueprints</Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-job-editor' })} size="sm"><IconPlus size={16} /> New</Button></div></header><div className="search-box"><IconCalendarClock size={17} aria-hidden="true" /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div><div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label><Badge variant="muted">{filtered.length} jobs</Badge></div>{jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}{jobs.isStale && jobs.data && !jobs.isFetching && <p className="muted" role="status">Showing cached jobs. Pull to refresh.</p>}{jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}{jobs.error && <GatewayErrorBanner error={jobs.error} unsupportedText="Cron Jobs are unavailable on this gateway." />}{jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}<div className="cron-job-list">{filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}</div></section>
 }
 
 function CronJobCard({ job, onOpen }: { job: CronJob; onOpen(): void }) {

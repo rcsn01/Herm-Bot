@@ -1,15 +1,15 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import type { BillingStateResponse, SubscriptionPreviewResponse, SubscriptionStateResponse } from '~/compat/hermes-shared/billing'
 import { IconChevronLeft, IconChevronRight, IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { FilesScreen } from '~/components/files-screen'
 import { RemoteResourceScreen, type RemoteResourceDefinition } from '~/features/shared/remote-resource'
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { beginScopedTask, useScopedTask, type ScopedTask } from '~/gateway/scope-guard'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
+import { beginScopedTask, useScopeKey, useScopedQuery, useScopeReset, useScopedTask, type ScopedTask } from '~/gateway/scope-guard'
 import { runRemoteAction } from '~/gateway/remote-action'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { profileKey } from '~/gateway/profile-path'
@@ -56,20 +56,21 @@ export function SettingsAdministrationScreen({ controller, onBack, page }: { con
 function BillingSettings({ onBack }: { onBack(): void }) {
   const api = useGatewayApi()
   const settings = useApi(createSettingsApi)
-  const preferences = useStore($preferences)
   const queryClient = useQueryClient()
   // Billing belongs to the gateway/account, not the selected Hermes profile.
   // Keep one cache entry and use the process-scoped RPC contract rather than
   // suggesting that an account balance is profile-local.
-  const billingKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'billing')
+  const billingKey = useScopeKey('settings', ['billing'], { unscoped: true })
+  const billingStateKey = useScopeKey('settings', ['billing', 'state'], { unscoped: true })
+  const subscriptionKey = useScopeKey('settings', ['billing', 'subscription'], { unscoped: true })
   const action = useScopedTask()
-  const billing = useQuery({ queryFn: ({ signal }) => settings.billingState(signal), queryKey: [...billingKey, 'state'] })
-  const subscription = useQuery({ queryFn: ({ signal }) => settings.subscriptionState(signal), queryKey: [...billingKey, 'subscription'] })
+  const billing = useScopedQuery(billingStateKey, { queryFn: signal => settings.billingState(signal) })
+  const subscription = useScopedQuery(subscriptionKey, { queryFn: signal => settings.subscriptionState(signal) })
   const [preview, setPreview] = useState<{ response: SubscriptionPreviewResponse; tierId: string } | null>(null)
   const [busyTier, setBusyTier] = useState<string | null>(null)
   const idempotencyKeys = useRef(new Map<string, string>())
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { setPreview(null); setBusyTier(null); setError(null); idempotencyKeys.current.clear() }, [preferences.profile, preferences.remoteURL])
+  useScopeReset(() => { setPreview(null); setBusyTier(null); setError(null); idempotencyKeys.current.clear() })
   const state = billing.data
   const portalURL = state?.portal_url || subscription.data?.portal_url
   const refresh = () => { void billing.refetch(); void subscription.refetch() }
@@ -109,7 +110,7 @@ function BillingSettings({ onBack }: { onBack(): void }) {
       }
     }, { onBusy: busy => setBusyTier(busy ? pending.tierId : null), onError: error => setError(error.message) })
   }
-  return <SettingsPageShell title="Billing" subtitle="Billing state and plan changes belong to this gateway account. Hermes Mobile never infers entitlements across profiles."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><header className="page-heading"><h3>Account</h3><Button aria-label="Refresh billing" onClick={refresh} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header>{billing.isPending || subscription.isPending ? <Skeleton className="h-20 w-full" /> : <BillingOverview billing={state} subscription={subscription.data} onOpenPortal={() => void openPortal()} portalURL={portalURL} />}{(billing.error || subscription.error) && <div className="unsupported-card" role="alert">Billing is unavailable: {classifyGatewayError(billing.error || subscription.error).message}</div>}{error && <div className="error-banner" role="alert">{error}</div>}{state?.logged_in && subscription.data?.tiers?.length ? <section className="settings-section"><h3>Plans</h3>{!(subscription.data.can_change_plan ?? state.can_change_plan ?? false) && <p className="muted">Plan changes require billing permissions. Use the official portal for account administration.</p>}<div className="settings-list static">{subscription.data.tiers.filter(tier => !tier.is_current && tier.is_enabled).map(tier => <div key={tier.tier_id}><span><strong>{tier.name}</strong><small>{tier.dollars_per_month_display}{tier.monthly_credits ? ` · ${tier.monthly_credits} credits` : ''}</small></span><Button disabled={busyTier !== null || !(subscription.data?.can_change_plan ?? state.can_change_plan ?? false)} onClick={() => void requestPlanChange(tier.tier_id)} size="sm">{busyTier === tier.tier_id ? 'Checking…' : 'Review'}</Button></div>)}</div></section> : null}{preview && <ConfirmDialog confirmLabel="Confirm plan change" description={planChangeDescription(preview.response)} onCancel={() => setPreview(null)} onConfirm={() => void applyPlanChange()} title="Confirm billing change" />}</SettingsPageShell>
+  return <SettingsPageShell title="Billing" subtitle="Billing state and plan changes belong to this gateway account. Hermes Mobile never infers entitlements across profiles."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><header className="page-heading"><h3>Account</h3><Button aria-label="Refresh billing" onClick={refresh} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header>{billing.isPending || subscription.isPending ? <Skeleton className="h-20 w-full" /> : <BillingOverview billing={state} subscription={subscription.data} onOpenPortal={() => void openPortal()} portalURL={portalURL} />}{(billing.error || subscription.error) && <GatewayErrorBanner error={billing.error ?? subscription.error} unavailablePhrase="Billing is unavailable" />}{error && <div className="error-banner" role="alert">{error}</div>}{state?.logged_in && subscription.data?.tiers?.length ? <section className="settings-section"><h3>Plans</h3>{!(subscription.data.can_change_plan ?? state.can_change_plan ?? false) && <p className="muted">Plan changes require billing permissions. Use the official portal for account administration.</p>}<div className="settings-list static">{subscription.data.tiers.filter(tier => !tier.is_current && tier.is_enabled).map(tier => <div key={tier.tier_id}><span><strong>{tier.name}</strong><small>{tier.dollars_per_month_display}{tier.monthly_credits ? ` · ${tier.monthly_credits} credits` : ''}</small></span><Button disabled={busyTier !== null || !(subscription.data?.can_change_plan ?? state.can_change_plan ?? false)} onClick={() => void requestPlanChange(tier.tier_id)} size="sm">{busyTier === tier.tier_id ? 'Checking…' : 'Review'}</Button></div>)}</div></section> : null}{preview && <ConfirmDialog confirmLabel="Confirm plan change" description={planChangeDescription(preview.response)} onCancel={() => setPreview(null)} onConfirm={() => void applyPlanChange()} title="Confirm billing change" />}</SettingsPageShell>
 }
 
 function BillingOverview({ billing, onOpenPortal, portalURL, subscription }: { billing?: BillingStateResponse; onOpenPortal(): void; portalURL?: string | null; subscription?: SubscriptionStateResponse }) {
@@ -129,19 +130,19 @@ function GatewaySettings({ controller, onBack }: { controller: GatewayController
   const preferences = useStore($preferences)
   const connection = useStore($connection)
   const native = isNativeIOS()
-  const status = useQuery({ queryFn: ({ signal }) => settings.status(signal), queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'gateway') })
+  const status = useScopedQuery(useScopeKey('settings', ['gateway'], { unscoped: true }), { queryFn: signal => settings.status(signal) })
   const [subpage, setSubpage] = useState<keyof typeof ADMIN_RESOURCES | null>(null)
   const [remoteURL, setRemoteURL] = useState(preferences.remoteURL)
   const [token, setToken] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  useEffect(() => {
+  useScopeReset(() => {
     setRemoteURL(preferences.remoteURL)
     setToken('')
     setSubpage(null)
     setError(null)
     setBusy(false)
-  }, [preferences.profile, preferences.remoteURL])
+  })
   if (subpage) return <RemoteResourceScreen definition={ADMIN_RESOURCES[subpage]} onBack={() => setSubpage(null)} />
   const adminLinks: Array<{ id: keyof typeof ADMIN_RESOURCES; label: string }> = [{ id: 'profiles', label: 'Profiles' }, { id: 'messaging', label: 'Messaging' }, { id: 'pairing', label: 'Pairing' }, { id: 'webhooks', label: 'Webhooks' }, { id: 'agents', label: 'Agents' }, { id: 'learning', label: 'Learning' }, { id: 'system', label: 'System' }, { id: 'logs', label: 'Logs' }, { id: 'usage', label: 'Usage' }]
   const action = useScopedTask()
@@ -167,11 +168,12 @@ function GatewaySettings({ controller, onBack }: { controller: GatewayController
 
 function ProvidersSettings({ onBack }: { onBack(): void }) {
   const settings = useApi(createSettingsApi)
-  const preferences = useStore($preferences)
   const queryClient = useQueryClient()
-  const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'providers')
-  const providers = useQuery({ queryFn: ({ signal }) => settings.oauthProviders(signal), queryKey: [...key, 'oauth'] })
-  const endpoints = useQuery({ queryFn: ({ signal }) => settings.customEndpoints(signal), queryKey: [...key, 'endpoints'] })
+  const key = useScopeKey('settings', ['providers'])
+  const oauthKey = useScopeKey('settings', ['providers', 'oauth'])
+  const endpointsKey = useScopeKey('settings', ['providers', 'endpoints'])
+  const providers = useScopedQuery(oauthKey, { queryFn: signal => settings.oauthProviders(signal) })
+  const endpoints = useScopedQuery(endpointsKey, { queryFn: signal => settings.customEndpoints(signal) })
   const [oauth, setOAuth] = useState<{ provider: OAuthProvider; response: OAuthStartResponse } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [endpoint, setEndpoint] = useState<CustomEndpoint | null>(null)
@@ -180,7 +182,7 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
   const [oauthBusy, setOAuthBusy] = useState(false)
   const [oauthCode, setOAuthCode] = useState('')
   const action = useScopedTask()
-  useEffect(() => {
+  useScopeReset(() => {
     // OAuth sessions and endpoint drafts belong to one gateway/profile.
     setOAuth(null)
     setOAuthCode('')
@@ -189,7 +191,7 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     setShowForm(false)
     setOAuthBusy(false)
     setError(null)
-  }, [preferences.profile, preferences.remoteURL])
+  })
   const startOAuth = async (provider: OAuthProvider) => {
     await action.run(async task => {
       setError(null)
@@ -220,7 +222,7 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     await action.run(async task => {
       await settings.activateCustomEndpoint(id)
       if (!task.isCurrent()) return
-      await queryClient.invalidateQueries({ queryKey: [...key, 'endpoints'] })
+      await queryClient.invalidateQueries({ queryKey: endpointsKey })
       if (task.isCurrent()) setError(null)
     }, { onError: error => setError(error.message) })
   }
@@ -238,7 +240,7 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     setOAuthCode('')
     void providers.refetch()
   }
-  return <SettingsPageShell title="Providers" subtitle="Provider accounts and custom endpoints are stored by the selected gateway profile. Secrets stay in component-local drafts."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{error && <div className="error-banner" role="alert">{error}</div>}<section className="settings-section"><h3>OAuth accounts</h3>{providers.isPending && <Skeleton className="h-16 w-full" />}{providers.error && <div className="unsupported-card">OAuth providers are unavailable: {classifyGatewayError(providers.error).message}</div>}<div className="settings-list static">{providers.data?.providers.map(provider => <div key={provider.id}><span><strong>{provider.name}</strong><small>{provider.status.logged_in ? provider.status.token_preview || 'Connected' : provider.flow === 'device_code' ? 'Device code' : 'Not connected'}</small></span>{provider.status.logged_in ? <Badge>Connected</Badge> : <Button disabled={oauthBusy} onClick={() => void startOAuth(provider)} size="sm">Connect</Button>}</div>)}</div></section>{oauth && <ProviderOAuthFlow code={oauthCode} onCancel={() => void cancelOAuth()} onCode={setOAuthCode} onDone={finishOAuth} provider={oauth.provider} response={oauth.response} setError={setError} />}<section className="settings-section"><header className="page-heading"><h3>Custom endpoints</h3><Button onClick={() => { setEndpoint(null); setShowForm(true) }} size="sm">Add</Button></header>{endpoints.error && <div className="error-banner" role="alert">{classifyGatewayError(endpoints.error).message}</div>}<div className="settings-list static">{endpoints.data?.endpoints.map(item => <div key={item.id}><span><strong>{item.name}</strong><small>{item.base_url} · {item.model} {item.is_current ? '· Active' : ''}</small></span><div className="button-row">{!item.is_current && <Button onClick={() => void activateEndpoint(item.id)} size="sm">Use</Button>}<Button onClick={() => { setEndpoint(item); setShowForm(true) }} size="sm" variant="secondary">Edit</Button><Button onClick={() => setRemoveEndpoint(item.id)} size="sm" variant="destructive">Delete</Button></div></div>)}{endpoints.data?.endpoints.length === 0 && <p className="muted">No custom endpoints.</p>}</div></section>{showForm && <CustomEndpointForm endpoint={endpoint} onCancel={() => setShowForm(false)} onSaved={() => { setShowForm(false); void endpoints.refetch() }} setError={setError} />}{removeEndpoint && <ConfirmDialog confirmLabel="Delete endpoint" description="Remove this custom endpoint and detach it from the profile if it is active?" onCancel={() => setRemoveEndpoint(null)} onConfirm={() => void remove()} title="Delete custom endpoint" />}</SettingsPageShell>
+  return <SettingsPageShell title="Providers" subtitle="Provider accounts and custom endpoints are stored by the selected gateway profile. Secrets stay in component-local drafts."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{error && <div className="error-banner" role="alert">{error}</div>}<section className="settings-section"><h3>OAuth accounts</h3>{providers.isPending && <Skeleton className="h-16 w-full" />}{providers.error && <GatewayErrorBanner error={providers.error} unavailablePhrase="OAuth providers are unavailable" />}<div className="settings-list static">{providers.data?.providers.map(provider => <div key={provider.id}><span><strong>{provider.name}</strong><small>{provider.status.logged_in ? provider.status.token_preview || 'Connected' : provider.flow === 'device_code' ? 'Device code' : 'Not connected'}</small></span>{provider.status.logged_in ? <Badge>Connected</Badge> : <Button disabled={oauthBusy} onClick={() => void startOAuth(provider)} size="sm">Connect</Button>}</div>)}</div></section>{oauth && <ProviderOAuthFlow code={oauthCode} onCancel={() => void cancelOAuth()} onCode={setOAuthCode} onDone={finishOAuth} provider={oauth.provider} response={oauth.response} setError={setError} />}<section className="settings-section"><header className="page-heading"><h3>Custom endpoints</h3><Button onClick={() => { setEndpoint(null); setShowForm(true) }} size="sm">Add</Button></header>{endpoints.error && <GatewayErrorBanner error={endpoints.error} />}<div className="settings-list static">{endpoints.data?.endpoints.map(item => <div key={item.id}><span><strong>{item.name}</strong><small>{item.base_url} · {item.model} {item.is_current ? '· Active' : ''}</small></span><div className="button-row">{!item.is_current && <Button onClick={() => void activateEndpoint(item.id)} size="sm">Use</Button>}<Button onClick={() => { setEndpoint(item); setShowForm(true) }} size="sm" variant="secondary">Edit</Button><Button onClick={() => setRemoveEndpoint(item.id)} size="sm" variant="destructive">Delete</Button></div></div>)}{endpoints.data?.endpoints.length === 0 && <p className="muted">No custom endpoints.</p>}</div></section>{showForm && <CustomEndpointForm endpoint={endpoint} onCancel={() => setShowForm(false)} onSaved={() => { setShowForm(false); void endpoints.refetch() }} setError={setError} />}{removeEndpoint && <ConfirmDialog confirmLabel="Delete endpoint" description="Remove this custom endpoint and detach it from the profile if it is active?" onCancel={() => setRemoveEndpoint(null)} onConfirm={() => void remove()} title="Delete custom endpoint" />}</SettingsPageShell>
 }
 
 function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response, setError }: { code: string; onCancel(): void; onCode(value: string): void; onDone(): void; provider: OAuthProvider; response: OAuthStartResponse; setError(value: string | null): void }) {
@@ -319,7 +321,6 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
 
 function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoint: CustomEndpoint | null; onCancel(): void; onSaved(): void; setError(value: string | null): void }) {
   const settings = useApi(createSettingsApi)
-  const preferences = useStore($preferences)
   const [name, setName] = useState(endpoint?.name ?? '')
   const [baseURL, setBaseURL] = useState(endpoint?.base_url ?? '')
   const [model, setModel] = useState(endpoint?.model ?? '')
@@ -328,7 +329,7 @@ function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoin
   const [validating, setValidating] = useState(false)
   const [validation, setValidation] = useState<string | null>(null)
   const action = useScopedTask()
-  useEffect(() => {
+  useScopeReset(() => {
     setName(endpoint?.name ?? '')
     setBaseURL(endpoint?.base_url ?? '')
     setModel(endpoint?.model ?? '')
@@ -336,7 +337,7 @@ function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoin
     setValidation(null)
     setSaving(false)
     setValidating(false)
-  }, [endpoint?.id, preferences.profile, preferences.remoteURL])
+  }, endpoint?.id)
   const validate = async () => {
     setValidation(null)
     await action.run(async task => {
@@ -364,11 +365,10 @@ function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoin
 
 function ToolsKeysSettings({ onBack }: { onBack(): void }) {
   const settings = useApi(createSettingsApi)
-  const preferences = useStore($preferences)
   const connection = useStore($connection)
   const queryClient = useQueryClient()
-  const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'env')
-  const variables = useQuery({ queryFn: ({ signal }) => settings.env(signal), queryKey: key })
+  const key = useScopeKey('settings', ['env'])
+  const variables = useScopedQuery(key, { queryFn: signal => settings.env(signal) })
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [remove, setRemove] = useState<{ name: string; variable: EnvVarInfo } | null>(null)
@@ -376,7 +376,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
   const revealTimers = useRef(new Map<string, number>())
   const draftRevisions = useRef(new Map<string, number>())
   const action = useScopedTask()
-  useEffect(() => {
+  useScopeReset(() => {
     setDrafts({})
     draftRevisions.current.clear()
     setRevealed({})
@@ -386,7 +386,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
       revealTimers.current.forEach(timer => window.clearTimeout(timer))
       revealTimers.current.clear()
     }
-  }, [connection.phase, preferences.profile, preferences.remoteURL])
+  }, connection.phase)
   const updateDraft = (name: string, value: string) => {
     draftRevisions.current.set(name, (draftRevisions.current.get(name) ?? 0) + 1)
     setDrafts(current => ({ ...current, [name]: value }))
@@ -453,7 +453,7 @@ function ToolsKeysSettings({ onBack }: { onBack(): void }) {
     }, { onError: error => setError(error.message) })
   }
   const rows = Object.entries(variables.data ?? {}).filter(([, value]) => !value.channel_managed)
-  return <SettingsPageShell title="Tools & Keys" subtitle="Only redacted status is fetched. Secret drafts never enter stores, persistence, or logs."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{error && <div className="error-banner" role="alert">{error}</div>}{variables.isPending && <Skeleton className="h-20 w-full" />}{variables.error && <div className="unsupported-card">Credential management is unavailable: {classifyGatewayError(variables.error).message}</div>}<div className="settings-list static">{rows.map(([keyName, variable]) => <CredentialRow key={keyName} name={keyName} onDelete={() => setRemove({ name: keyName, variable })} onDraft={value => updateDraft(keyName, value)} onReveal={() => void reveal(keyName)} onSave={() => void save(keyName)} onValidate={variable.category === 'provider' ? () => void validate(keyName) : undefined} revealed={revealed[keyName]} value={drafts[keyName] ?? ''} variable={variable} />)}</div>{rows.length === 0 && variables.data && <div className="empty-panel">No non-channel credentials are exposed by this gateway.</div>}{remove && <ConfirmDialog confirmLabel="Delete" description={`Delete the ${remove.name} credential from this profile?`} onCancel={() => setRemove(null)} onConfirm={() => void removeVariable()} title="Delete credential" />}</SettingsPageShell>
+  return <SettingsPageShell title="Tools & Keys" subtitle="Only redacted status is fetched. Secret drafts never enter stores, persistence, or logs."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{error && <div className="error-banner" role="alert">{error}</div>}{variables.isPending && <Skeleton className="h-20 w-full" />}{variables.error && <GatewayErrorBanner error={variables.error} unavailablePhrase="Credential management is unavailable" />}<div className="settings-list static">{rows.map(([keyName, variable]) => <CredentialRow key={keyName} name={keyName} onDelete={() => setRemove({ name: keyName, variable })} onDraft={value => updateDraft(keyName, value)} onReveal={() => void reveal(keyName)} onSave={() => void save(keyName)} onValidate={variable.category === 'provider' ? () => void validate(keyName) : undefined} revealed={revealed[keyName]} value={drafts[keyName] ?? ''} variable={variable} />)}</div>{rows.length === 0 && variables.data && <div className="empty-panel">No non-channel credentials are exposed by this gateway.</div>}{remove && <ConfirmDialog confirmLabel="Delete" description={`Delete the ${remove.name} credential from this profile?`} onCancel={() => setRemove(null)} onConfirm={() => void removeVariable()} title="Delete credential" />}</SettingsPageShell>
 }
 
 function CredentialRow({ name, onDelete, onDraft, onReveal, onSave, onValidate, revealed, value, variable }: { name: string; onDelete(): void; onDraft(value: string): void; onReveal(): void; onSave(): void; onValidate?: () => void; revealed?: string; value: string; variable: EnvVarInfo }) {
@@ -463,14 +463,13 @@ function CredentialRow({ name, onDelete, onDraft, onReveal, onSave, onValidate, 
 
 function ArchivedChatsSettings({ onBack }: { onBack(): void }) {
   const settings = useApi(createSettingsApi)
-  const preferences = useStore($preferences)
   const queryClient = useQueryClient()
-  const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: preferences.profile }, 'settings', 'archived-chats')
-  const sessions = useQuery({ queryFn: ({ signal }) => settings.sessions(signal), queryKey: key })
+  const key = useScopeKey('settings', ['archived-chats'])
+  const sessions = useScopedQuery(key, { queryFn: signal => settings.sessions(signal) })
   const [remove, setRemove] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const action = useScopedTask()
-  useEffect(() => { setRemove(null); setError(null) }, [preferences.profile, preferences.remoteURL])
+  useScopeReset(() => { setRemove(null); setError(null) })
   const restore = async (id: string) => {
     await action.run(async task => {
       await settings.restoreSession(id)
@@ -486,20 +485,20 @@ function ArchivedChatsSettings({ onBack }: { onBack(): void }) {
       void queryClient.invalidateQueries({ queryKey: key })
     }, { onError: error => setError(error.message) })
   }
-  return <SettingsPageShell title="Archived Chats" subtitle="Only archived sessions from the selected profile are listed."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{error && <div className="error-banner" role="alert">{error}</div>}{sessions.error && <div className="error-banner" role="alert">{classifyGatewayError(sessions.error).message}</div>}{sessions.isPending && <Skeleton className="h-20 w-full" />}<div className="settings-list static">{sessions.data?.sessions.map(session => <div key={session.id}><span><strong>{session.title || 'Untitled chat'}</strong><small>{session.preview || 'No preview'} · {session.message_count ?? 0} messages</small></span><div className="button-row"><Button onClick={() => void restore(session.id)} size="sm">Restore</Button><Button onClick={() => setRemove(session.id)} size="sm" variant="destructive"><IconTrash size={14} /></Button></div></div>)}</div>{sessions.data?.sessions.length === 0 && <div className="empty-panel">No archived chats.</div>}{remove && <ConfirmDialog confirmLabel="Delete permanently" description="Permanently delete this archived chat? This cannot be undone." onCancel={() => setRemove(null)} onConfirm={() => void destroy()} title="Delete archived chat" />}</SettingsPageShell>
+  return <SettingsPageShell title="Archived Chats" subtitle="Only archived sessions from the selected profile are listed."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{error && <div className="error-banner" role="alert">{error}</div>}{sessions.error && <GatewayErrorBanner error={sessions.error} />}{sessions.isPending && <Skeleton className="h-20 w-full" />}<div className="settings-list static">{sessions.data?.sessions.map(session => <div key={session.id}><span><strong>{session.title || 'Untitled chat'}</strong><small>{session.preview || 'No preview'} · {session.message_count ?? 0} messages</small></span><div className="button-row"><Button onClick={() => void restore(session.id)} size="sm">Restore</Button><Button onClick={() => setRemove(session.id)} size="sm" variant="destructive"><IconTrash size={14} /></Button></div></div>)}</div>{sessions.data?.sessions.length === 0 && <div className="empty-panel">No archived chats.</div>}{remove && <ConfirmDialog confirmLabel="Delete permanently" description="Permanently delete this archived chat? This cannot be undone." onCancel={() => setRemove(null)} onConfirm={() => void destroy()} title="Delete archived chat" />}</SettingsPageShell>
 }
 
 function PluginsSettings({ onBack }: { onBack(): void }) {
   const settings = useApi(createSettingsApi)
   const preferences = useStore($preferences)
   const queryClient = useQueryClient()
-  const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: null }, 'settings', 'plugins')
+  const key = useScopeKey('settings', ['plugins'], { unscoped: true })
   const supportsPluginManagement = profileKey(preferences.profile) === 'default'
-  const plugins = useQuery({ enabled: supportsPluginManagement, queryFn: ({ signal }) => settings.pluginsHub(signal), queryKey: key })
+  const plugins = useScopedQuery(key, { enabled: supportsPluginManagement, queryFn: signal => settings.pluginsHub(signal) })
   const [remove, setRemove] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const action = useScopedTask()
-  useEffect(() => { setRemove(null); setError(null) }, [preferences.profile, preferences.remoteURL])
+  useScopeReset(() => { setRemove(null); setError(null) })
   const toggle = async (name: string, next: 'disable' | 'enable') => {
     await action.run(async task => {
       await settings.pluginAction(name, next)
@@ -515,5 +514,5 @@ function PluginsSettings({ onBack }: { onBack(): void }) {
       void queryClient.invalidateQueries({ queryKey: key })
     }, { onError: error => setError(error.message) })
   }
-  return <SettingsPageShell title="Plugins" subtitle="Only official plugin inventory and supported enable, disable, and removal actions are exposed on mobile."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{!supportsPluginManagement && <div className="unsupported-card" role="alert"><strong>Plugin management is unavailable for this profile.</strong><p>Plugin discovery and mutations are process-scoped on this gateway. Switch to the default profile or connect to a gateway dedicated to this profile.</p></div>}{supportsPluginManagement && error && <div className="error-banner" role="alert">{error}</div>}{supportsPluginManagement && plugins.error && <div className="unsupported-card">Plugin management is unavailable: {classifyGatewayError(plugins.error).message}</div>}{supportsPluginManagement && plugins.isPending && <Skeleton className="h-20 w-full" />}<div className="settings-list static">{supportsPluginManagement && plugins.data?.plugins.map(plugin => { const enabled = plugin.runtime_status === 'enabled'; return <div key={plugin.name}><span><strong>{plugin.name}</strong><small>{plugin.description || 'No description'} · {plugin.source || 'unknown'} {plugin.version || ''}</small></span><div className="button-row"><Button onClick={() => void toggle(plugin.name, enabled ? 'disable' : 'enable')} size="sm">{enabled ? 'Disable' : 'Enable'}</Button>{plugin.can_remove && <Button onClick={() => setRemove(plugin.name)} size="sm" variant="destructive"><IconTrash size={14} /></Button>}</div></div>})}</div>{supportsPluginManagement && plugins.data?.plugins.length === 0 && <div className="empty-panel">No plugins are available.</div>}{remove && supportsPluginManagement && <ConfirmDialog confirmLabel="Remove" description={`Remove plugin ${remove}? This only removes user-installed plugins.`} onCancel={() => setRemove(null)} onConfirm={() => void destroy()} title="Remove plugin" />}</SettingsPageShell>
+  return <SettingsPageShell title="Plugins" subtitle="Only official plugin inventory and supported enable, disable, and removal actions are exposed on mobile."><Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>{!supportsPluginManagement && <div className="unsupported-card" role="alert"><strong>Plugin management is unavailable for this profile.</strong><p>Plugin discovery and mutations are process-scoped on this gateway. Switch to the default profile or connect to a gateway dedicated to this profile.</p></div>}{supportsPluginManagement && error && <div className="error-banner" role="alert">{error}</div>}{supportsPluginManagement && plugins.error && <GatewayErrorBanner error={plugins.error} unavailablePhrase="Plugin management is unavailable" />}{supportsPluginManagement && plugins.isPending && <Skeleton className="h-20 w-full" />}<div className="settings-list static">{supportsPluginManagement && plugins.data?.plugins.map(plugin => { const enabled = plugin.runtime_status === 'enabled'; return <div key={plugin.name}><span><strong>{plugin.name}</strong><small>{plugin.description || 'No description'} · {plugin.source || 'unknown'} {plugin.version || ''}</small></span><div className="button-row"><Button onClick={() => void toggle(plugin.name, enabled ? 'disable' : 'enable')} size="sm">{enabled ? 'Disable' : 'Enable'}</Button>{plugin.can_remove && <Button onClick={() => setRemove(plugin.name)} size="sm" variant="destructive"><IconTrash size={14} /></Button>}</div></div>})}</div>{supportsPluginManagement && plugins.data?.plugins.length === 0 && <div className="empty-panel">No plugins are available.</div>}{remove && supportsPluginManagement && <ConfirmDialog confirmLabel="Remove" description={`Remove plugin ${remove}? This only removes user-installed plugins.`} onCancel={() => setRemove(null)} onConfirm={() => void destroy()} title="Remove plugin" />}</SettingsPageShell>
 }

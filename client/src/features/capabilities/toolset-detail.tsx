@@ -1,26 +1,23 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { runGatewayAction, type GatewayActionState } from '~/gateway/remote-action'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
-import { useStore } from '@nanostores/react'
-import { $preferences } from '~/state/store'
+import { beginScopedTask, useScopeKey, useScopeReset, useScopedMutation, useScopedQuery } from '~/gateway/scope-guard'
 import type { ToolsetInfo } from '~/lib/types'
 import { createToolsetsApi } from './toolsets-api'
 
 export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: ToolsetInfo }) {
   const api = useGatewayApi()
   const toolsetsApi = useApi(createToolsetsApi)
-  const preferences = useStore($preferences)
-  const profile = preferences.profile
   const queryClient = useQueryClient()
-  const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'tools', toolset.name)
-  const config = useQuery({ queryFn: ({ signal }) => toolsetsApi.config(toolset.name, signal), queryKey: [...scopeKey, 'config'] })
+  const scopeKey = useScopeKey('tools')
+  const configKey = useScopeKey('tools', [toolset.name, 'config'])
+  const config = useScopedQuery(configKey, { queryFn: signal => toolsetsApi.config(toolset.name, signal) })
   const [env, setEnv] = useState<Record<string, string>>({})
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
@@ -28,10 +25,10 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
   const [setupMessage, setSetupMessage] = useState<string | null>(null)
   const providers = config.data?.providers ?? []
   const activeProvider = providers.find(provider => provider.is_active)
-  const models = useQuery({
+  const modelsKey = useScopeKey('tools', [toolset.name, 'models', selectedProvider])
+  const models = useScopedQuery(modelsKey, {
     enabled: Boolean(selectedProvider),
-    queryFn: ({ signal }) => toolsetsApi.models(toolset.name, selectedProvider, signal),
-    queryKey: [...scopeKey, 'models', selectedProvider]
+    queryFn: signal => toolsetsApi.models(toolset.name, selectedProvider, signal)
   })
 
   useEffect(() => {
@@ -43,7 +40,7 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: () => {
       setError(null)
-      void queryClient.invalidateQueries({ queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'tools') })
+      void queryClient.invalidateQueries({ queryKey: scopeKey })
     }
   })
   const selectProvider = useScopedMutation<Awaited<ReturnType<typeof toolsetsApi.selectProvider>>, string>({
@@ -92,13 +89,13 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
     saveEnv.mutate(values)
   }
 
-  useEffect(() => {
+  useScopeReset(() => {
     setEnv({})
     setSelectedProvider('')
     setSelectedModel('')
     setError(null)
     setSetupMessage(null)
-  }, [preferences.remoteURL, profile, toolset.name])
+  }, toolset.name)
 
   return (
     <section className="screen page-screen">
@@ -109,7 +106,7 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
       {setupMessage && <div className="success-banner" role="status">{setupMessage}</div>}
       <div className="button-row"><Button disabled={toggle.isPending} onClick={() => toggle.mutate(!toolset.enabled)}>{toolset.enabled ? 'Disable toolset' : 'Enable toolset'}</Button></div>
       {config.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-24 w-full" /></div>}
-      {config.error && <div className={classifyGatewayError(config.error).kind === 'unsupported' ? 'unsupported-card' : 'error-banner'} role="alert">{classifyGatewayError(config.error).kind === 'unsupported' ? 'Toolset setup is unavailable on this gateway.' : classifyGatewayError(config.error).message}</div>}
+      {config.error && <GatewayErrorBanner error={config.error} unsupportedText="Toolset setup is unavailable on this gateway." />}
       {config.data?.has_category && <section className="data-card"><h3>Providers</h3><div className="provider-list">{providers.map(provider => <article className="provider-card" key={provider.name}><div><strong>{provider.name}</strong><small>{provider.badge || provider.tag || provider.status || 'Provider'}</small><small>{provider.status === 'ready' ? 'Ready' : provider.status === 'needs_auth' ? 'Authentication required' : provider.status === 'needs_keys' ? 'Credentials required' : provider.status === 'needs_setup' ? 'Setup required' : 'Status unavailable'}</small></div><Button disabled={selectProvider.isPending} onClick={() => selectProvider.mutate(provider.name)} size="sm" variant={provider.is_active ? 'default' : 'secondary'}>{provider.is_active ? 'Selected' : 'Select'}</Button></article>)}</div></section>}
       {selectedProvider && <section className="data-card"><h3>Provider model</h3><select aria-label="Toolset model" disabled={!models.data?.has_models || selectModel.isPending} onChange={event => { if (event.target.value) selectModel.mutate({ model: event.target.value, previous: selectedModel }) }} value={selectedModel || models.data?.current || ''}><option value="">Provider default</option>{models.data?.models.map(model => <option key={model.id} value={model.id}>{model.display || model.id}</option>)}</select>{models.error && <p className="muted">Model selection is unavailable: {classifyGatewayError(models.error).message}</p>}</section>}
       {providers.some(provider => provider.env_vars.length > 0) && <section className="data-card"><h3>Credentials</h3><p className="muted">Values are sent directly to the gateway and are cleared after saving.</p>{providers.flatMap(provider => provider.env_vars).filter((item, index, rows) => rows.findIndex(candidate => candidate.key === item.key) === index).map(item => <label className="config-field" key={item.key}><span>{item.prompt || item.key}{item.is_set ? ' · configured' : ''}</span><Input autoComplete="off" onChange={event => setEnv(current => ({ ...current, [item.key]: event.target.value }))} placeholder={item.is_set ? 'Replace saved credential' : 'Enter credential'} type="password" value={env[item.key] ?? ''} /></label>)}<Button disabled={saveEnv.isPending || Object.values(env).every(value => !value.trim())} onClick={() => saveCredentials(Object.fromEntries(Object.entries(env).filter(([, value]) => value.trim())))}>Save credentials</Button></section>}

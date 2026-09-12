@@ -1,26 +1,23 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Badge, Button, Skeleton, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { useScopedMutation } from '~/gateway/scope-guard'
+import { useScopeKey, useScopeReset, useScopedMutation, useScopedQuery } from '~/gateway/scope-guard'
 import { profileKey } from '~/gateway/profile-path'
 import type { SkillInfo } from '~/lib/types'
-import { useStore } from '@nanostores/react'
-import { $preferences } from '~/state/store'
 import { createSkillsApi } from './skills-api'
 
 export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; onArchived(): void; onBack(): void }) {
   const skillsApi = useApi(createSkillsApi)
-  const preferences = useStore($preferences)
-  const profile = preferences.profile
   const queryClient = useQueryClient()
-  const queryKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'content', skill.name)
-  const content = useQuery({ queryFn: ({ signal }) => skillsApi.content(skill.name, signal), queryKey })
+  const queryKey = useScopeKey('skills', ['content', skill.name])
+  const content = useScopedQuery(queryKey, { queryFn: signal => skillsApi.content(skill.name, signal) })
   const [draft, setDraft] = useState('')
   const [remove, setRemove] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -29,11 +26,11 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
     if (content.data) setDraft(content.data.content)
   }, [content.data])
 
-  useEffect(() => {
+  useScopeReset(() => {
     setDraft('')
     setRemove(false)
     setError(null)
-  }, [preferences.remoteURL, profile, skill.name])
+  }, skill.name)
 
   const save = useScopedMutation<void, string>({
     mutationFn: nextDraft => skillsApi.updateContent(skill.name, nextDraft).then(() => undefined),
@@ -63,7 +60,7 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
       <p className="muted">{skill.description || 'No description provided.'}</p>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {content.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-56 w-full" /></div>}
-      {content.error && <div className="error-banner" role="alert">{classifyGatewayError(content.error).message}</div>}
+      {content.error && <GatewayErrorBanner error={content.error} />}
       {content.data && (
         <div className="panel-stack">
           {canEdit ? <Textarea aria-label="SKILL.md" onChange={event => setDraft(event.target.value)} value={draft} /> : <pre className="file-content">{draft}</pre>}

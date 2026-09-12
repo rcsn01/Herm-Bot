@@ -1,12 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 
 import { Badge, Button, Skeleton } from '~/compat/primitives'
-import { GatewayError, classifyGatewayError } from '~/gateway/gateway-error'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { useGatewayApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
-import { useStore } from '@nanostores/react'
-import { $preferences } from '~/state/store'
+import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 
 export type RemoteResourcePresentation = 'credentials' | 'models' | 'providers' | 'summary'
 
@@ -23,17 +20,13 @@ export interface RemoteResourceDefinition {
 
 export function RemoteResourceScreen({ definition, onBack }: { definition: RemoteResourceDefinition; onBack(): void }) {
   const api = useGatewayApi()
-  const preferences = useStore($preferences)
-  const profile = preferences.profile
   const isProfileScoped = definition.profileScoped !== false
   const isDefaultProfileOnly = definition.defaultProfileOnly === true
   const isUnavailableForProfile = isDefaultProfileOnly && !api.isDefaultProfile
-  const query = useQuery({
+  const query = useScopedQuery(useScopeKey(definition.id, undefined, { unscoped: !isProfileScoped }), {
     enabled: !isUnavailableForProfile,
-    queryFn: ({ signal }) => (isProfileScoped ? api.request(definition.path, { signal }) : api.unscoped(definition.path, { signal })),
-    queryKey: gatewayScopeKey({ connectionKey: preferences.remoteURL, profile: isProfileScoped ? profile : null }, definition.id)
+    queryFn: signal => isProfileScoped ? api.request(definition.path, { signal }) : api.unscoped(definition.path, { signal })
   })
-  const error = query.error ? classifyGatewayError(query.error) : null
 
   return (
     <section className="screen page-screen">
@@ -46,15 +39,10 @@ export function RemoteResourceScreen({ definition, onBack }: { definition: Remot
       <p className="muted">{definition.description}</p>
       {isUnavailableForProfile && <div className="unsupported-card" role="alert"><strong>Unavailable for this profile</strong><p>{definition.unavailableMessage ?? 'This gateway resource is process-scoped and is only available from the default profile.'}</p></div>}
       {!isUnavailableForProfile && query.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /></div>}
-      {!isUnavailableForProfile && error && <ResourceError error={error} title={definition.title} />}
+      {!isUnavailableForProfile && query.error && <GatewayErrorBanner error={query.error} subject={definition.title} />}
       {!isUnavailableForProfile && query.data !== undefined && <ResourceOverview presentation={definition.presentation ?? 'summary'} value={query.data} />}
     </section>
   )
-}
-
-function ResourceError({ error, title }: { error: GatewayError; title: string }) {
-  const unsupported = error.kind === 'unsupported'
-  return <div className={unsupported ? 'unsupported-card' : 'error-banner'} role="alert"><strong>{unsupported ? 'Unavailable' : `Could not load ${title}`}</strong><p>{unsupported ? 'This gateway does not provide this optional capability.' : error.message}</p></div>
 }
 
 function ResourceOverview({ presentation, value }: { presentation: RemoteResourcePresentation; value: unknown }) {

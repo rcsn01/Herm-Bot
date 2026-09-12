@@ -1,8 +1,9 @@
-import { useCallback, useMemo } from 'react'
-import { useMutation, useQueryClient, type QueryKey, type UseMutationResult } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo } from 'react'
+import { useStore } from '@nanostores/react'
+import { useMutation, useQuery, useQueryClient, type QueryKey, type UseMutationResult, type UseQueryResult } from '@tanstack/react-query'
 
 import { classifyGatewayError, type GatewayError } from './gateway-error'
-import { gatewayScopeSnapshot, sameGatewayScope, type GatewayScopeSnapshot } from './gateway-scope'
+import { gatewayScopeKey, gatewayScopeSnapshot, sameGatewayScope, type GatewayScopeKey, type GatewayScopeSnapshot } from './gateway-scope'
 import { $preferences } from '~/state/store'
 
 export interface CurrentGatewayScope extends GatewayScopeSnapshot {
@@ -101,6 +102,57 @@ export function useScopedTask(): ScopedTaskRunner {
   )
   // Stable across renders too, so effect dependency arrays can include the runner.
   return useMemo(() => ({ run }), [run])
+}
+
+/** Derive the scope-keyed cache key for one domain of route vocabulary. */
+export function useScopeKey(
+  domain: string,
+  parts?: readonly unknown[],
+  opts?: { unscoped?: boolean }
+): GatewayScopeKey {
+  const preferences = useStore($preferences)
+  return gatewayScopeKey(
+    { connectionKey: preferences.remoteURL, profile: opts?.unscoped ? null : preferences.profile },
+    domain,
+    ...(parts ?? [])
+  )
+}
+
+export interface ScopedQueryOptions<TData> {
+  queryFn: (signal: AbortSignal) => Promise<TData>
+  enabled?: boolean
+  retry?: boolean | number
+}
+
+export type ScopedQueryResult<TData> = UseQueryResult<TData, GatewayError>
+
+/** Run one scope-keyed query; failures are classified before they reach the caller. */
+export function useScopedQuery<TData>(
+  key: QueryKey,
+  options: ScopedQueryOptions<TData>
+): ScopedQueryResult<TData> {
+  return useQuery<TData, GatewayError>({
+    ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
+    queryKey: key,
+    queryFn: async ({ signal }) => {
+      try {
+        return await options.queryFn(signal)
+      } catch (caught) {
+        throw classifyGatewayError(caught)
+      }
+    },
+    ...(options.retry === undefined ? {} : { retry: options.retry })
+  })
+}
+
+/** Reset call-site local state whenever the gateway connection or profile changes. */
+export function useScopeReset(
+  reset: () => void | (() => void),
+  ...extraDeps: readonly unknown[]
+): void {
+  const preferences = useStore($preferences)
+  // The dependency list contains the Scope fields plus caller-owned reset triggers.
+  useEffect(() => reset(), [preferences.remoteURL, preferences.profile, ...extraDeps])
 }
 
 export interface ScopedMutationOptimistic<TQueryData, TVariables> {

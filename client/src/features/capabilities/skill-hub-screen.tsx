@@ -1,14 +1,14 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconSearch, IconShieldCheck } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { runGatewayAction, type GatewayActionState } from '~/gateway/remote-action'
-import { beginScopedTask, useScopedMutation } from '~/gateway/scope-guard'
+import { beginScopedTask, useScopeKey, useScopeReset, useScopedMutation, useScopedQuery } from '~/gateway/scope-guard'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { createSkillsApi, type SkillHubPreview, type SkillHubScanResult } from './skills-api'
@@ -19,8 +19,9 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
   const preferences = useStore($preferences)
   const profile = preferences.profile
   const queryClient = useQueryClient()
-  const scopeKey = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'skills', 'hub')
-  const sources = useQuery({ queryFn: ({ signal }) => skillsApi.hubSources(signal), queryKey: [...scopeKey, 'sources'] })
+  const scopeKey = useScopeKey('skills', ['hub'])
+  const sourcesKey = useScopeKey('skills', ['hub', 'sources'])
+  const sources = useScopedQuery(sourcesKey, { queryFn: signal => skillsApi.hubSources(signal) })
   const [term, setTerm] = useState('')
   const [source, setSource] = useState('all')
   const [submitted, setSubmitted] = useState('')
@@ -30,10 +31,10 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
   const previewTarget = useRef<string | null>(null)
   const scanTarget = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const search = useQuery({
+  const searchKey = useScopeKey('skills', ['hub', 'search', submitted, source])
+  const search = useScopedQuery(searchKey, {
     enabled: submitted.trim().length > 0,
-    queryFn: ({ signal }) => skillsApi.hubSearch(submitted, source, 20, signal),
-    queryKey: [...scopeKey, 'search', submitted, source]
+    queryFn: signal => skillsApi.hubSearch(submitted, source, 20, signal)
   })
   const previewMutation = useScopedMutation<SkillHubPreview, string>({
     mutationFn: identifier => skillsApi.hubPreview(identifier),
@@ -72,7 +73,7 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
     }
   })
 
-  useEffect(() => {
+  useScopeReset(() => {
     setTerm('')
     setSource('all')
     setSubmitted('')
@@ -83,7 +84,7 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
     scanTarget.current = null
     setInstall(null)
     setError(null)
-  }, [preferences.remoteURL, profile])
+  })
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -102,7 +103,7 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
       <label className="inline-field">Source<select aria-label="Skill hub source" onChange={event => setSource(event.target.value)} value={source}><option value="all">All sources</option>{sources.data?.sources.filter(item => item.searchable !== false).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
       {sources.isPending && <Skeleton className="mt-3 h-20 w-full" />}
       {search.isFetching && <Skeleton className="mt-3 h-20 w-full" />}
-      {search.error && <div className="error-banner" role="alert">{classifyGatewayError(search.error).message}</div>}
+      {search.error && <GatewayErrorBanner error={search.error} />}
       <div className="settings-list capability-list">
         {search.data?.results.map(result => (
           <article className="hub-result" key={result.identifier}>

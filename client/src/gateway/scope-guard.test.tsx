@@ -4,7 +4,7 @@ import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $preferences } from '~/state/store'
-import { beginScopedTask, currentGatewayScope, useScopedMutation, useScopedTask, type ScopedTask } from './scope-guard'
+import { beginScopedTask, currentGatewayScope, useScopedMutation, useScopedQuery, useScopeKey, useScopeReset, useScopedTask, type ScopedTask } from './scope-guard'
 import { GatewayError } from './gateway-error'
 
 const originalPreferences = $preferences.get()
@@ -237,6 +237,91 @@ describe('scoped operation toolkit', () => {
 
     bumpProfile('task-stale')
     expect(task.isCurrent()).toBe(false)
+  })
+})
+
+describe('scoped query scaffold', () => {
+  it('derives keys from the active scope and updates them on profile changes', () => {
+    const hook = renderHook(() => useScopeKey('settings', ['providers']))
+    expect(hook.result.current).toEqual(['gateway', 'https://gateway.example', 'default', 'settings', 'providers'])
+
+    act(() => bumpProfile('work'))
+    expect(hook.result.current).toEqual(['gateway', 'https://gateway.example', 'work', 'settings', 'providers'])
+  })
+
+  it('pins unscoped keys to the default profile', () => {
+    const hook = renderHook(() => useScopeKey('settings', ['billing'], { unscoped: true }))
+    const initial = hook.result.current
+    act(() => bumpProfile('work'))
+    expect(hook.result.current).toEqual(['gateway', 'https://gateway.example', 'default', 'settings', 'billing'])
+    expect(hook.result.current).toEqual(initial)
+  })
+
+  it('resolves data and classifies failures', async () => {
+    const client = createClient()
+    const success = renderHook(() => useScopedQuery(['success'], { queryFn: async () => 'ok' }), { wrapper: wrapperFor(client) })
+    await waitFor(() => expect(success.result.current.data).toBe('ok'))
+
+    const failure = renderHook(() => useScopedQuery(['failure'], {
+      queryFn: async () => { throw new TypeError('Failed to fetch') }
+    }), { wrapper: wrapperFor(client) })
+    await waitFor(() => expect(failure.result.current.isError).toBe(true))
+    expect(failure.result.current.error).toBeInstanceOf(GatewayError)
+    expect(failure.result.current.error).toMatchObject({ kind: 'network', retryable: true })
+  })
+
+  it('does not call a disabled query', async () => {
+    const client = createClient()
+    const queryFn = vi.fn(async () => 'unused')
+    const hook = renderHook(() => useScopedQuery(['disabled'], { enabled: false, queryFn }), { wrapper: wrapperFor(client) })
+    await act(async () => Promise.resolve())
+    expect(hook.result.current.fetchStatus).toBe('idle')
+    expect(queryFn).not.toHaveBeenCalled()
+  })
+
+  it('keeps separate cache entries for each scope', async () => {
+    const client = createClient()
+    let calls = 0
+    const hook = renderHook(() => {
+      const key = useScopeKey('profiles')
+      const query = useScopedQuery(key, { queryFn: async () => `value-${++calls}` })
+      return { key, query }
+    }, { wrapper: wrapperFor(client) })
+    await waitFor(() => expect(hook.result.current.query.data).toBe('value-1'))
+    const defaultKey = [...hook.result.current.key]
+
+    act(() => bumpProfile('work'))
+    await waitFor(() => expect(hook.result.current.query.data).toBe('value-2'))
+    expect(client.getQueryData(defaultKey)).toBe('value-1')
+    expect(client.getQueryData(hook.result.current.key)).toBe('value-2')
+  })
+
+  it('resets on mount and scope changes, not unrelated rerenders', () => {
+    const reset = vi.fn()
+    const hook = renderHook(() => useScopeReset(reset))
+    expect(reset).toHaveBeenCalledTimes(1)
+    hook.rerender()
+    expect(reset).toHaveBeenCalledTimes(1)
+    act(() => bumpProfile('work'))
+    expect(reset).toHaveBeenCalledTimes(2)
+    act(() => $preferences.set({ ...$preferences.get(), remoteURL: 'https://other.example' }))
+    expect(reset).toHaveBeenCalledTimes(3)
+  })
+
+  it('resets for extra dependencies and cleans up on changes and unmount', () => {
+    const cleanupEffect = vi.fn()
+    const reset = vi.fn(() => cleanupEffect)
+    const hook = renderHook(({ value }) => useScopeReset(reset, value), { initialProps: { value: 'a' } })
+    expect(reset).toHaveBeenCalledTimes(1)
+
+    hook.rerender({ value: 'b' })
+    expect(cleanupEffect).toHaveBeenCalledTimes(1)
+    expect(reset).toHaveBeenCalledTimes(2)
+    act(() => bumpProfile('work'))
+    expect(cleanupEffect).toHaveBeenCalledTimes(2)
+    expect(reset).toHaveBeenCalledTimes(3)
+    hook.unmount()
+    expect(cleanupEffect).toHaveBeenCalledTimes(3)
   })
 })
 
