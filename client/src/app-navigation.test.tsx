@@ -86,6 +86,7 @@ describe('App navigation', () => {
     render(<App />)
 
     expect(screen.getByText('Roster screen')).not.toBeNull()
+    expect(screen.getByRole('searchbox', { name: 'Search bots' })).not.toBeNull()
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Open bot profile' })).toBeNull()
@@ -114,6 +115,7 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
 
     expect(screen.getByText('Roster screen')).not.toBeNull()
+    expect(screen.getByRole('searchbox', { name: 'Search bots' })).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Back to bots' })).toBeNull()
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })

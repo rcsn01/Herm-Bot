@@ -31,17 +31,25 @@ export function relativeDay(seconds: number): string {
  * from the unscoped profiles.list RPC and degrades to bare profile names from
  * /api/status when the gateway has no roster data.
  */
-export function RosterScreen({ onOpenAgent }: { onOpenAgent(profile: null | string): void }) {
+export function RosterScreen({ onOpenAgent, query = '' }: { onOpenAgent(profile: null | string): void; query?: string }) {
   const connection = useStore($connection)
   const api = useApi(createAgentsApi)
   const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
   const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
   const agents = mergeAgentRoster(connection.status?.profiles, roster.data)
+  const needle = query.trim().toLowerCase()
+  const visible = needle
+    ? agents.filter(agent => `${agent.title || agent.name} ${agent.preview ?? ''}`.toLowerCase().includes(needle))
+    : agents
 
-  if (agents.length === 0) {
+  if (visible.length === 0) {
     return (
       <section aria-label="Bots" className="screen roster-screen">
-        <p className="muted" role="status">{roster.isPending ? 'Loading bots…' : 'No bot profiles exist on this gateway yet.'}</p>
+        <p className="muted" role="status">
+          {agents.length > 0
+            ? 'No bots match this search.'
+            : roster.isPending ? 'Loading bots…' : 'No bot profiles exist on this gateway yet.'}
+        </p>
       </section>
     )
   }
@@ -49,7 +57,7 @@ export function RosterScreen({ onOpenAgent }: { onOpenAgent(profile: null | stri
   return (
     <section aria-label="Bots" className="screen roster-screen">
       <div className="roster-list">
-        {agents.map(agent => (
+        {visible.map(agent => (
           <button className="agent-row" key={agent.name} onClick={() => onOpenAgent(agent.isDefault ? null : agent.name)}>
             <span aria-hidden className="agent-avatar" style={{ background: `oklch(0.62 0.14 ${agentHue(agent.name)})` }}>
               {agent.name.slice(0, 1).toUpperCase()}

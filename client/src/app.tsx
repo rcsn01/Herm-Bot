@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { IconChevronLeft, IconMenu2, IconSettings } from '@tabler/icons-react'
+import { IconChevronLeft, IconMenu2, IconSearch, IconSettings } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
-import { Button } from '~/compat/primitives'
+import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
@@ -44,6 +44,7 @@ export function App() {
   const chat = useStore($chat)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [rosterQuery, setRosterQuery] = useState('')
   const [settingsOrigin, setSettingsOrigin] = useState<MobileTab>('roster')
 
   useEffect(() => {
@@ -102,7 +103,10 @@ export function App() {
         drawerOpen={drawerOpen}
         header={<header className="app-header">
           {navigation.activeTab === 'roster' ? (
-            <div className="header-identity"><BrandMark small /><strong>Hermes</strong></div>
+            <div className="header-search">
+              <IconSearch aria-hidden size={17} />
+              <Input aria-label="Search bots" onChange={event => setRosterQuery(event.target.value)} placeholder="Search bots" type="search" value={rosterQuery} />
+            </div>
           ) : (
             <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
           )}
@@ -127,7 +131,7 @@ export function App() {
         <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
           <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
         </div>
-        {navigation.activeTab === 'roster' && <RosterScreen onOpenAgent={openAgent} />}
+        {navigation.activeTab === 'roster' && <RosterScreen onOpenAgent={openAgent} query={rosterQuery} />}
         {navigation.activeTab === 'bot' && <BotScreen onBack={() => setTab('sessions')} onOpenCapabilities={openCapabilities} onOpenCronJobs={openCronJobs} onOpenModel={() => { setSettingsOrigin('bot'); openModelSettings() }} />}
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onExit={() => setTab('bot')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
         {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onExit={() => setTab('bot')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}

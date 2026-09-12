@@ -20,13 +20,13 @@ beforeEach(() => {
 
 afterEach(cleanup)
 
-function renderRoster(gateway: MemoryGateway) {
+function renderRoster(gateway: MemoryGateway, query = '') {
   const onOpenAgent = vi.fn()
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={client}>
       <GatewayProvider gateway={gateway}>
-        <RosterScreen onOpenAgent={onOpenAgent} />
+        <RosterScreen onOpenAgent={onOpenAgent} query={query} />
       </GatewayProvider>
     </QueryClientProvider>
   )
@@ -80,6 +80,20 @@ describe('agent roster screen', () => {
     renderRoster(new MemoryGateway().handle('profiles.list', () => ({})))
 
     expect(await screen.findByText('No bot profiles exist on this gateway yet.')).not.toBeNull()
+  })
+
+  it('filters the roster by the search query', async () => {
+    renderRoster(new MemoryGateway().handle('profiles.list', () => ({})), 'work')
+
+    expect(await screen.findByRole('button', { name: /work/ })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /default/ })).toBeNull()
+  })
+
+  it('shows a no-match state when the search has no hits', async () => {
+    renderRoster(new MemoryGateway().handle('profiles.list', () => ({})), 'missing')
+
+    expect(await screen.findByText('No bots match this search.')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /work/ })).toBeNull()
   })
 
   it('labels rows with relative day stamps', () => {
