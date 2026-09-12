@@ -31,7 +31,7 @@ const controllerStub = () => ({
 const conversationStub = () => ({
   attach: vi.fn(),
   interrupt: vi.fn(),
-  loadOlderMessages: vi.fn().mockResolvedValue(undefined),
+  loadOlderMessages: vi.fn().mockResolvedValue(true),
   reconcileHistory: vi.fn().mockResolvedValue(undefined),
   respond: vi.fn(),
   retryFrom: vi.fn(),
@@ -126,206 +126,6 @@ describe('chat interaction wiring', () => {
 })
 
 describe('transcript rendering and durable edits', () => {
-  it('opens a resumed session at its latest message without scrolling down from the top', () => {
-    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
-    $chat.set({
-      ...emptyChatState(),
-      runtimeSessionId: 'runtime-1',
-      storedSessionId: 'stored-1',
-      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [{ content: 'latest answer', role: 'assistant', row_id: 42 }])
-    })
-
-    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
-
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
-  })
-
-  it('keeps following when new content moves the bottom away without user scroll intent', async () => {
-    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
-    $chat.set({
-      ...emptyChatState(),
-      running: true,
-      runtimeSessionId: 'runtime-1',
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
-    })
-
-    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
-    const scroller = document.querySelector<HTMLElement>('.view-container')!
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 500 },
-      scrollHeight: { configurable: true, value: 1_000 }
-    })
-    scroller.scrollTop = 500
-    fireEvent.scroll(scroller)
-    scrollIntoView.mockClear()
-
-    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 1_100 })
-    fireEvent.scroll(scroller)
-    $chat.set({
-      ...$chat.get(),
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
-    })
-
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
-    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
-  })
-
-  it('does not treat an iOS composer tap followed by viewport movement as scroll intent', async () => {
-    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
-    $chat.set({
-      ...emptyChatState(),
-      running: true,
-      runtimeSessionId: 'runtime-1',
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
-    })
-
-    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
-    const scroller = document.querySelector<HTMLElement>('.view-container')!
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 500 },
-      scrollHeight: { configurable: true, value: 1_000 }
-    })
-    scroller.scrollTop = 500
-    fireEvent.scroll(scroller)
-    scrollIntoView.mockClear()
-
-    fireEvent.touchStart(scroller, { touches: [{ clientY: 400 }] })
-    scroller.scrollTop = 400
-    fireEvent.scroll(scroller)
-    fireEvent.touchEnd(scroller)
-    $chat.set({
-      ...$chat.get(),
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
-    })
-
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
-    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
-  })
-
-  it('ignores a small upward touch while following streamed output', async () => {
-    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
-    $chat.set({
-      ...emptyChatState(),
-      running: true,
-      runtimeSessionId: 'runtime-1',
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
-    })
-
-    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
-    const scroller = document.querySelector<HTMLElement>('.view-container')!
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 500 },
-      scrollHeight: { configurable: true, value: 1_000 }
-    })
-    scroller.scrollTop = 500
-    fireEvent.scroll(scroller)
-    scrollIntoView.mockClear()
-
-    fireEvent.touchStart(scroller, { touches: [{ clientY: 300 }] })
-    fireEvent.touchMove(scroller, { touches: [{ clientY: 330 }] })
-    scroller.scrollTop = 470
-    fireEvent.scroll(scroller)
-    fireEvent.touchEnd(scroller)
-    $chat.set({
-      ...$chat.get(),
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
-    })
-
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
-    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
-  })
-
-  it('stops following streamed output after the user scrolls up and offers a jump to the latest message', async () => {
-    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
-    $chat.set({
-      ...emptyChatState(),
-      running: true,
-      runtimeSessionId: 'runtime-1',
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response', role: 'assistant' }])
-    })
-
-    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversationStub()} /></div>)
-    const scroller = document.querySelector<HTMLElement>('.view-container')!
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 500 },
-      scrollHeight: { configurable: true, value: 1_000 }
-    })
-    scroller.scrollTop = 500
-    fireEvent.scroll(scroller)
-    scrollIntoView.mockClear()
-    fireEvent.touchStart(scroller, { touches: [{ clientY: 300 }] })
-    fireEvent.touchMove(scroller, { touches: [{ clientY: 400 }] })
-    scroller.scrollTop = 400
-    fireEvent.scroll(scroller)
-    fireEvent.touchEnd(scroller)
-
-    $chat.set({
-      ...$chat.get(),
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with more output', role: 'assistant' }])
-    })
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'New messages. Jump to latest' })).not.toBeNull())
-    expect(scrollIntoView).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: 'New messages. Jump to latest' }))
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'end' })
-    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
-
-    scroller.scrollTop = 500
-    fireEvent.scroll(scroller)
-    scrollIntoView.mockClear()
-    $chat.set({
-      ...$chat.get(),
-      transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'Starting response with the latest output', role: 'assistant' }])
-    })
-
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' }))
-    expect(screen.queryByRole('button', { name: 'New messages. Jump to latest' })).toBeNull()
-  })
-
-  it('waits to position a hidden resumed chat until the chat becomes visible', () => {
-    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
-    $chat.set({
-      ...emptyChatState(),
-      runtimeSessionId: 'runtime-1',
-      storedSessionId: 'stored-1',
-      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [{ content: 'latest answer', role: 'assistant', row_id: 42 }])
-    })
-    const controller = controllerStub()
-    const conversation = conversationStub()
-    const { rerender } = render(<ChatScreen active={false} controller={controller} conversation={conversation} />)
-
-    expect(scrollIntoView).not.toHaveBeenCalled()
-    rerender(<ChatScreen active controller={controller} conversation={conversation} />)
-
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' })
-  })
-
-  it('loads earlier messages and compensates the scroll height', async () => {
-    $chat.set({
-      ...emptyChatState(),
-      historyHasMore: true,
-      historyNextOffset: 80,
-      runtimeSessionId: 'runtime-1',
-      transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [{ content: 'latest answer', role: 'assistant', row_id: 82 }]),
-      storedSessionId: 'stored-1'
-    })
-    const conversation = conversationStub()
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1 })
-    render(<div className="view-container"><ChatScreen controller={controllerStub()} conversation={conversation} /></div>)
-    const scroller = document.querySelector<HTMLElement>('.view-container')!
-    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 100 })
-    scroller.scrollTop = 20
-    vi.mocked(conversation.loadOlderMessages).mockImplementation(async () => {
-      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 160 })
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
-
-    await waitFor(() => expect(conversation.loadOlderMessages).toHaveBeenCalledOnce())
-    await waitFor(() => expect(scroller.scrollTop).toBe(80))
-  })
-
   it('keeps external Markdown links secure and renders context usage below the composer', () => {
     $chat.set({
       ...emptyChatState(),
@@ -471,6 +271,40 @@ describe('transcript rendering and durable edits', () => {
   })
 })
 
+describe('viewport wiring', () => {
+  it('invokes the supplied older-history action from the visible button', async () => {
+    const conversation = conversationStub()
+    $chat.set({
+      ...emptyChatState(),
+      historyHasMore: true,
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    render(<ChatScreen controller={controllerStub()} conversation={conversation} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+
+    await waitFor(() => expect(conversation.loadOlderMessages).toHaveBeenCalledOnce())
+  })
+
+  it('shows the older-history error in the screen error banner', async () => {
+    const error = new Error('history unavailable')
+    const conversation = conversationStub()
+    vi.mocked(conversation.loadOlderMessages).mockRejectedValue(error)
+    $chat.set({
+      ...emptyChatState(),
+      historyHasMore: true,
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    render(<ChatScreen controller={controllerStub()} conversation={conversation} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('history unavailable'))
+  })
+})
+
 describe('session management and prompts', () => {
   it('offers stored-session actions and forwards rename intent', async () => {
     $chat.set({
@@ -492,12 +326,21 @@ describe('session management and prompts', () => {
     await waitFor(() => expect(controller.renameSession).toHaveBeenCalledWith('session-1', 'Renamed session'))
   })
 
-  it('clears session dialogs and their errors when the runtime session changes', async () => {
+  it('clears session dialogs and their errors when either session identity changes', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'session-1' })
     const controller = controllerStub()
     const conversation = conversationStub()
     vi.mocked(controller.branchSession).mockRejectedValue(new Error('branch failed'))
     const { rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Session options' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('branch failed')
+
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'session-2' })
+    rerender(<ChatScreen controller={controller} conversation={conversation} />)
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Branch' })).toBeNull()
+
     fireEvent.click(screen.getByRole('button', { name: 'Session options' }))
     fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
     expect((await screen.findByRole('alert')).textContent).toContain('branch failed')

@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
+import { useChatViewport } from '~/components/chat-viewport'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask } from '~/gateway/scope-guard'
@@ -14,10 +15,6 @@ import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection } from '~/state/store'
-
-const LATEST_DISTANCE_THRESHOLD = 64
-const USER_SCROLL_PAUSE_THRESHOLD = 48
-const USER_SCROLL_IDLE_MS = 200
 
 interface ChatScreenProps {
   active?: boolean
@@ -45,20 +42,26 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const [showSessionActions, setShowSessionActions] = useState(false)
   const [renameSession, setRenameSession] = useState(false)
   const [archiveSession, setArchiveSession] = useState(false)
-  const [hasNewMessages, setHasNewMessages] = useState(false)
+  const onLoadOlder = useCallback(() => conversation.loadOlderMessages(), [conversation])
+  const onLoadOlderError = useCallback((error: unknown) => {
+    setSessionActionError(errorMessage(error))
+  }, [])
+  const viewport = useChatViewport({
+    active,
+    content: { entries, tools: chat.tools },
+    history: {
+      hasMore: chat.historyHasMore,
+      loadingOlder: chat.historyLoadingOlder,
+      nextOffset: chat.historyNextOffset
+    },
+    onLoadOlder,
+    onLoadOlderError,
+    session: {
+      runtimeSessionId: chat.runtimeSessionId,
+      storedSessionId: chat.storedSessionId
+    }
+  })
   const action = useScopedTask()
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const olderMessagesRef = useRef<HTMLButtonElement>(null)
-  const transcriptRef = useRef<HTMLDivElement>(null)
-  const previousSessionRef = useRef<null | string>(null)
-  const previousHistoryOffsetRef = useRef(0)
-  const previousEntriesRef = useRef(entries)
-  const previousToolsRef = useRef(chat.tools)
-  const awaitingInitialHistoryRef = useRef(false)
-  const followingLatestRef = useRef(true)
-  const touchStartYRef = useRef<number | null>(null)
-  const mouseScrollStartTopRef = useRef<number | null>(null)
-  const discreteScrollDistanceRef = useRef(0)
   const pendingDisposals = useRef(new Map<ChatInteraction, symbol>())
 
   useEffect(() => {
@@ -74,190 +77,24 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
       })
     }
   }, [interaction])
-  useLayoutEffect(() => {
-    if (!active) return
-    const sessionChanged = previousSessionRef.current !== chat.runtimeSessionId
-    const contentChanged = previousEntriesRef.current !== entries || previousToolsRef.current !== chat.tools
-    const loadedOlder = !sessionChanged && previousHistoryOffsetRef.current > 0 && chat.historyNextOffset > previousHistoryOffsetRef.current
-    previousHistoryOffsetRef.current = chat.historyNextOffset
-    previousEntriesRef.current = entries
-    previousToolsRef.current = chat.tools
-    if (sessionChanged) {
-      previousSessionRef.current = chat.runtimeSessionId
-      awaitingInitialHistoryRef.current = Boolean(chat.runtimeSessionId && chat.storedSessionId && entries.length === 0)
-      followingLatestRef.current = true
-      touchStartYRef.current = null
-      mouseScrollStartTopRef.current = null
-      discreteScrollDistanceRef.current = 0
-      setHasNewMessages(false)
-    }
-    const initialHistoryArrived = awaitingInitialHistoryRef.current && entries.length > 0
-    if (!chat.runtimeSessionId || loadedOlder || (!sessionChanged && !initialHistoryArrived && chat.historyLoadingOlder)) return
-    if (sessionChanged || initialHistoryArrived) {
-      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-      followingLatestRef.current = true
-      setHasNewMessages(false)
-      if (initialHistoryArrived) awaitingInitialHistoryRef.current = false
-      return
-    }
-    if (!contentChanged) return
-    if (followingLatestRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
-    } else {
-      setHasNewMessages(true)
-    }
-  }, [active, chat.historyLoadingOlder, chat.historyNextOffset, entries, chat.runtimeSessionId, chat.storedSessionId, chat.tools])
-  useEffect(() => {
-    if (!active) return
-    const scroller = transcriptRef.current?.closest<HTMLElement>('.view-container')
-    const bottom = bottomRef.current
-    if (!scroller) return
-    let intentTimer: ReturnType<typeof setTimeout> | undefined
-    const pauseFollowing = () => {
-      followingLatestRef.current = false
-    }
-    const resetDiscreteIntentSoon = () => {
-      clearTimeout(intentTimer)
-      intentTimer = setTimeout(() => { discreteScrollDistanceRef.current = 0 }, USER_SCROLL_IDLE_MS)
-    }
-    const trackWheel = (event: WheelEvent) => {
-      if (event.deltaY >= 0) {
-        discreteScrollDistanceRef.current = 0
-        return
-      }
-      const scale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
-        ? 16
-        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientHeight : 1
-      discreteScrollDistanceRef.current += Math.abs(event.deltaY) * scale
-      if (discreteScrollDistanceRef.current >= USER_SCROLL_PAUSE_THRESHOLD) pauseFollowing()
-      resetDiscreteIntentSoon()
-    }
-    const trackKey = (event: KeyboardEvent) => {
-      if (event.key === 'Home' || event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
-        pauseFollowing()
-      } else if (event.key === 'ArrowUp') {
-        discreteScrollDistanceRef.current += 16
-        if (discreteScrollDistanceRef.current >= USER_SCROLL_PAUSE_THRESHOLD) pauseFollowing()
-      } else {
-        return
-      }
-      resetDiscreteIntentSoon()
-    }
-    const startTouch = (event: TouchEvent) => {
-      touchStartYRef.current = event.touches.length === 1 ? event.touches[0]?.clientY ?? null : null
-    }
-    const trackTouch = (event: TouchEvent) => {
-      const currentY = event.touches.length === 1 ? event.touches[0]?.clientY : undefined
-      const startY = touchStartYRef.current
-      if (currentY === undefined || startY === null) return
-      if (currentY < startY) {
-        touchStartYRef.current = currentY
-      } else if (currentY - startY >= USER_SCROLL_PAUSE_THRESHOLD) {
-        pauseFollowing()
-      }
-    }
-    const finishTouch = () => { touchStartYRef.current = null }
-    const startPointer = (event: PointerEvent) => {
-      if (event.pointerType === 'mouse') mouseScrollStartTopRef.current = scroller.scrollTop
-    }
-    const trackPointer = (event: PointerEvent) => {
-      const startTop = mouseScrollStartTopRef.current
-      if (event.pointerType === 'mouse' && startTop !== null && startTop - scroller.scrollTop >= USER_SCROLL_PAUSE_THRESHOLD) pauseFollowing()
-    }
-    const finishPointer = () => { mouseScrollStartTopRef.current = null }
-    const resumeFollowing = () => {
-      followingLatestRef.current = true
-      setHasNewMessages(false)
-    }
-    const trackScrollPosition = () => {
-      const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-      if (distanceFromBottom <= LATEST_DISTANCE_THRESHOLD) resumeFollowing()
-    }
-    let bottomObserver: IntersectionObserver | undefined
-    if (bottom && typeof IntersectionObserver !== 'undefined') {
-      bottomObserver = new IntersectionObserver(entries => {
-        if (entries.some(entry => entry.isIntersecting)) resumeFollowing()
-      }, { root: scroller })
-      bottomObserver.observe(bottom)
-    }
-    scroller.addEventListener('keydown', trackKey)
-    scroller.addEventListener('pointerdown', startPointer, { passive: true })
-    scroller.addEventListener('pointermove', trackPointer, { passive: true })
-    scroller.addEventListener('pointercancel', finishPointer, { passive: true })
-    scroller.addEventListener('pointerup', finishPointer, { passive: true })
-    scroller.addEventListener('scroll', trackScrollPosition, { passive: true })
-    scroller.addEventListener('touchstart', startTouch, { passive: true })
-    scroller.addEventListener('touchmove', trackTouch, { passive: true })
-    scroller.addEventListener('touchcancel', finishTouch, { passive: true })
-    scroller.addEventListener('touchend', finishTouch, { passive: true })
-    scroller.addEventListener('wheel', trackWheel, { passive: true })
-    return () => {
-      clearTimeout(intentTimer)
-      bottomObserver?.disconnect()
-      scroller.removeEventListener('keydown', trackKey)
-      scroller.removeEventListener('pointerdown', startPointer)
-      scroller.removeEventListener('pointermove', trackPointer)
-      scroller.removeEventListener('pointercancel', finishPointer)
-      scroller.removeEventListener('pointerup', finishPointer)
-      scroller.removeEventListener('scroll', trackScrollPosition)
-      scroller.removeEventListener('touchstart', startTouch)
-      scroller.removeEventListener('touchmove', trackTouch)
-      scroller.removeEventListener('touchcancel', finishTouch)
-      scroller.removeEventListener('touchend', finishTouch)
-      scroller.removeEventListener('wheel', trackWheel)
-    }
-  }, [active, chat.runtimeSessionId])
 
-  const jumpToLatest = useCallback(() => {
-    followingLatestRef.current = true
-    setHasNewMessages(false)
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [])
   useEffect(() => {
     interaction.setSession(chat.runtimeSessionId)
     setSessionActionError(null)
     setShowSessionActions(false)
     setRenameSession(false)
     setArchiveSession(false)
-  }, [chat.runtimeSessionId, interaction])
+  }, [chat.runtimeSessionId, chat.storedSessionId, interaction])
 
   const reportSessionAction = (perform: () => Promise<unknown>) => {
     void action.run(perform, { onError: error => setSessionActionError(error.message) })
   }
 
-  const loadOlderMessages = useCallback(async () => {
-    const sessionId = $chat.get().runtimeSessionId
-    const scroller = transcriptRef.current?.closest<HTMLElement>('.view-container')
-    const previousHeight = scroller?.scrollHeight ?? 0
-    const previousTop = scroller?.scrollTop ?? 0
-    try {
-      await conversation.loadOlderMessages()
-      if (scroller && $chat.get().runtimeSessionId === sessionId) {
-        requestAnimationFrame(() => {
-          if ($chat.get().runtimeSessionId !== sessionId) return
-          scroller.scrollTop = previousTop + scroller.scrollHeight - previousHeight
-        })
-      }
-    } catch (caught) {
-      setSessionActionError(errorMessage(caught))
-    }
-  }, [conversation])
-
-  useEffect(() => {
-    const target = olderMessagesRef.current
-    if (!active || !target || !chat.historyHasMore || chat.historyLoadingOlder || typeof IntersectionObserver === 'undefined') return
-    const observer = new IntersectionObserver(entries => {
-      if (entries.some(entry => entry.isIntersecting)) void loadOlderMessages()
-    }, { root: transcriptRef.current?.closest('.view-container') })
-    observer.observe(target)
-    return () => observer.disconnect()
-  }, [active, chat.historyHasMore, chat.historyLoadingOlder, chat.runtimeSessionId, loadOlderMessages])
-
   return (
     <section className="chat-screen">
-      <div className="transcript" aria-live="polite" ref={transcriptRef}>
+      <div className="transcript" aria-live="polite" ref={viewport.transcriptRef}>
         {chat.historyHasMore && (
-          <Button className="load-earlier" disabled={chat.historyLoadingOlder} onClick={() => void loadOlderMessages()} ref={olderMessagesRef} size="sm" variant="secondary">
+          <Button className="load-earlier" disabled={chat.historyLoadingOlder} onClick={() => void viewport.loadOlderMessages()} ref={viewport.olderMessagesRef} size="sm" variant="secondary">
             {chat.historyLoadingOlder ? 'Loading earlier messages…' : 'Load earlier messages'}
           </Button>
         )}
@@ -331,10 +168,10 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             ))}
           </section>
         )}
-        <div ref={bottomRef} />
+        <div ref={viewport.bottomRef} />
       </div>
 
-      {hasNewMessages && <Button aria-label="New messages. Jump to latest" className="new-messages-button" onClick={jumpToLatest} size="sm" variant="secondary">New messages <IconArrowDown size={16} /></Button>}
+      {viewport.hasNewMessages && <Button aria-label="New messages. Jump to latest" className="new-messages-button" onClick={viewport.jumpToLatest} size="sm" variant="secondary">New messages <IconArrowDown size={16} /></Button>}
       {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
       {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard conversation={conversation} />}

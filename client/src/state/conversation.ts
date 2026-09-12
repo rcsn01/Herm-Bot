@@ -138,10 +138,13 @@ function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): Sess
 }
 
 export class Conversation {
+  private historyLoadRequest = 0
+
   constructor(private readonly runtime: SessionRuntime) {}
 
   /** Install a newly selected runtime session as the open conversation. */
   adopt(session: RuntimeSession, source: null | string = null): void {
+    this.historyLoadRequest += 1
     $chat.set({
       ...emptyChatState(),
       contractVersion: session.contractVersion,
@@ -175,6 +178,7 @@ export class Conversation {
 
   /** Clear the conversation (profile switch, logout, dispose). */
   reset(): void {
+    this.historyLoadRequest += 1
     $chat.set(emptyChatState())
   }
 
@@ -344,23 +348,23 @@ export class Conversation {
     })
   }
 
-  async loadOlderMessages(): Promise<void> {
+  async loadOlderMessages(): Promise<boolean> {
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
     const storedSessionId = snapshot.storedSessionId
-    if (!sessionId || !storedSessionId || !snapshot.historyHasMore || snapshot.historyLoadingOlder) return
+    if (!sessionId || !storedSessionId || !snapshot.historyHasMore || snapshot.historyLoadingOlder) return false
     const scope = currentGatewayScope()
+    const request = ++this.historyLoadRequest
     $chat.set({ ...snapshot, historyLoadingOlder: true })
     try {
       const page = await this.runtime.historyPage(storedSessionId, scope.profile, snapshot.historyNextOffset)
-      if (!isCurrentGatewayScope(scope)) return
+      if (!isCurrentGatewayScope(scope) || request !== this.historyLoadRequest) return false
       const current = $chat.get()
-      if (current.runtimeSessionId !== sessionId || current.storedSessionId !== storedSessionId) return
+      if (current.runtimeSessionId !== sessionId || current.storedSessionId !== storedSessionId) return false
       $chat.set({
         ...current,
         historyBackfilled: true,
         historyHasMore: page.hasMore,
-        historyLoadingOlder: false,
         historyNextOffset: page.nextOffset,
         transcript: updateTranscript(current.transcript, {
           kind: 'prepend-history',
@@ -368,12 +372,18 @@ export class Conversation {
           rows: page.rows
         })
       })
+      return true
     } catch (error) {
+      const classified = classifyGatewayError(error)
       const current = $chat.get()
-      if (isCurrentGatewayScope(scope) && current.runtimeSessionId === sessionId) {
-        $chat.set({ ...current, historyLoadingOlder: false })
+      const currentIdentity = current.runtimeSessionId === sessionId && current.storedSessionId === storedSessionId
+      if (!isCurrentGatewayScope(scope) || request !== this.historyLoadRequest || !currentIdentity || classified.kind === 'aborted') return false
+      throw classified
+    } finally {
+      if (request === this.historyLoadRequest) {
+        const current = $chat.get()
+        if (current.historyLoadingOlder) $chat.set({ ...current, historyLoadingOlder: false })
       }
-      throw error
     }
   }
 }

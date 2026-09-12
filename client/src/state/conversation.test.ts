@@ -259,10 +259,109 @@ describe('incremental session loading', () => {
     expect($chat.get()).toMatchObject({ historyHasMore: true, historyNextOffset: 2 })
     expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['recent question', 'recent answer'])
 
-    await conversation.loadOlderMessages()
+    await expect(conversation.loadOlderMessages()).resolves.toBe(true)
 
     expect($chat.get()).toMatchObject({ historyHasMore: false, historyLoadingOlder: false, historyNextOffset: 3 })
     expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['older answer', 'recent question', 'recent answer'])
+    dispose()
+  })
+
+  it('returns false for guarded older-history preconditions', async () => {
+    const gateway = new MemoryGateway()
+    const { conversation, dispose } = subject(gateway)
+
+    await expect(conversation.loadOlderMessages()).resolves.toBe(false)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.loadOlderMessages()).resolves.toBe(false)
+    $chat.set({ ...$chat.get(), storedSessionId: 'stored-1' })
+    await expect(conversation.loadOlderMessages()).resolves.toBe(false)
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyLoadingOlder: true })
+    await expect(conversation.loadOlderMessages()).resolves.toBe(false)
+    expect(gateway.calls).toEqual([])
+    dispose()
+  })
+
+  it('rethrows current non-aborted failures after clearing the busy flag', async () => {
+    const path = '/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=80&order=latest&profile=default'
+    const gateway = new MemoryGateway().handle(path, () => {
+      throw Object.assign(new Error('history unavailable'), { status: 503 })
+    })
+    const { conversation, dispose } = subject(gateway)
+    conversation.adopt({ contractVersion: null, info: null, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+
+    await expect(conversation.loadOlderMessages()).rejects.toMatchObject({ kind: 'server', message: 'history unavailable' })
+    expect($chat.get().historyLoadingOlder).toBe(false)
+    dispose()
+  })
+
+  it('returns false and clears the busy flag when Scope or runtime abort makes a load stale', async () => {
+    const path = '/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=80&order=latest&profile=default'
+    let resolvePage!: (value: unknown) => void
+    const gateway = new MemoryGateway().handle(path, () => new Promise(resolve => { resolvePage = resolve }))
+    const { conversation, dispose } = subject(gateway)
+    conversation.adopt({ contractVersion: null, info: null, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+
+    const staleScope = conversation.loadOlderMessages()
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    resolvePage({ messages: [{ content: 'stale', role: 'assistant', row_id: 81 }], pagination: { limit: 80, offset: 80, returned: 1 } })
+    await expect(staleScope).resolves.toBe(false)
+    expect($chat.get()).toMatchObject({ historyLoadingOlder: false, historyNextOffset: 80 })
+    expect($chat.get().transcript.entries).toHaveLength(0)
+
+    $preferences.set({ ...$preferences.get(), profile: null })
+    gateway.handle(path, () => { throw new DOMException('runtime closed', 'AbortError') })
+    $chat.set({ ...$chat.get(), historyHasMore: true })
+    await expect(conversation.loadOlderMessages()).resolves.toBe(false)
+    expect($chat.get().historyLoadingOlder).toBe(false)
+    dispose()
+  })
+
+  it('keeps replacement request ownership across same-id reconnects and A-to-B-to-A sessions', async () => {
+    const path = '/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=80&order=latest&profile=default'
+    const releases: Array<(value: unknown) => void> = []
+    const gateway = new MemoryGateway().handle(path, () => new Promise(resolve => { releases.push(resolve) }))
+    const { conversation, dispose } = subject(gateway)
+    const sessionA = { contractVersion: null, info: null, rows: [{ content: 'latest A', role: 'assistant' as const, row_id: 82 }], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' }
+    conversation.adopt(sessionA)
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    const oldSameIds = conversation.loadOlderMessages()
+
+    conversation.adopt(sessionA)
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    const replacement = conversation.loadOlderMessages()
+    expect(releases).toHaveLength(2)
+    releases[0]!({ messages: [{ content: 'old page', role: 'assistant', row_id: 81 }], pagination: { limit: 80, offset: 80, returned: 1 } })
+    await expect(oldSameIds).resolves.toBe(false)
+    expect($chat.get().historyLoadingOlder).toBe(true)
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['latest A'])
+    releases[1]!({ messages: [{ content: 'replacement page', role: 'assistant', row_id: 80 }], pagination: { limit: 80, offset: 80, returned: 1 } })
+    await expect(replacement).resolves.toBe(true)
+    expect($chat.get()).toMatchObject({ historyLoadingOlder: false, historyNextOffset: 81 })
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['replacement page', 'latest A'])
+
+    let rejectOld!: (error: unknown) => void
+    const rejectPath = '/api/sessions/stored-2/messages?include_compacted=true&limit=80&offset=80&order=latest&profile=default'
+    gateway.handle(rejectPath, () => new Promise((_resolve, reject) => { rejectOld = reject }))
+    const sessionB = { contractVersion: null, info: null, rows: [{ content: 'latest B', role: 'assistant' as const, row_id: 92 }], runtimeSessionId: 'runtime-2', storedSessionId: 'stored-2' }
+    conversation.adopt(sessionB)
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    const oldA = conversation.loadOlderMessages()
+    conversation.adopt(sessionA)
+    rejectOld(new Error('old A failure'))
+    await expect(oldA).resolves.toBe(false)
+    expect($chat.get()).toMatchObject({ historyLoadingOlder: false, runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+
+    let resolveReset!: (value: unknown) => void
+    gateway.handle(path, () => new Promise(resolve => { resolveReset = resolve }))
+    conversation.adopt(sessionA)
+    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    const resetLoad = conversation.loadOlderMessages()
+    conversation.reset()
+    resolveReset({ messages: [{ content: 'reset stale', role: 'assistant', row_id: 90 }], pagination: { limit: 80, offset: 80, returned: 1 } })
+    await expect(resetLoad).resolves.toBe(false)
+    expect($chat.get()).toEqual(emptyChatState())
     dispose()
   })
 
