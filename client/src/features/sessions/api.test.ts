@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
-import { createSessionsApi } from './api'
+import { createSessionsApi, humanSessions } from './api'
 import { createGatewayApi } from '~/gateway/gateway-api'
 import { MemoryGateway } from '~/test/memory-gateway'
+
+describe('humanSessions', () => {
+  it('drops automation sessions while keeping every human surface', () => {
+    const sessions = [
+      { id: 'cron-1', message_count: 3, preview: '', source: 'cron', started_at: 400, title: 'Nightly digest' },
+      { id: 'tool-1', message_count: 1, preview: '', source: 'tool', started_at: 350, title: 'Sub-agent run' },
+      { id: 'kanban-1', message_count: 1, preview: '', source: 'kanban', started_at: 320, title: 'Worker row' },
+      { id: 'cron-2', message_count: 2, preview: '', source: ' Cron ', started_at: 310, title: 'Cushioned cron' },
+      { id: 'human-1', message_count: 4, preview: '', source: 'ios', started_at: 300, title: 'Planning session' },
+      { id: 'human-2', message_count: 2, preview: '', source: 'web', started_at: 200, title: 'Release notes' },
+      { id: 'human-3', message_count: 1, preview: '', source: '', started_at: 100, title: 'Legacy session' }
+    ]
+
+    expect(humanSessions(sessions).map(session => session.id)).toEqual(['human-1', 'human-2', 'human-3'])
+  })
+})
 
 describe('sessionsApi', () => {
   it('renames with the profile in the PATCH body and the query', async () => {

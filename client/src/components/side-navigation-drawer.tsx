@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { displayNameFor } from '~/features/agents/agent-labels'
+import { humanSessions } from '~/features/sessions/api'
 import type { MobileTab } from '~/navigation/routes'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
@@ -55,8 +56,9 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   const refreshGeneration = useRef(0)
   const action = useScopedTask()
   const filtered = useMemo(() => {
+    const visible = humanSessions(sessions)
     const needle = query.trim().toLowerCase()
-    return needle ? sessions.filter(session => session.title.toLowerCase().includes(needle)) : sessions
+    return needle ? visible.filter(session => session.title.toLowerCase().includes(needle)) : visible
   }, [query, sessions])
   const loadMoreSessions = useCallback(async () => {
     await action.run(() => controller.loadMoreSessions(), { onError: error => setError(error.message) })

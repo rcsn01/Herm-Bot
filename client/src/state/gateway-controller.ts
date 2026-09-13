@@ -8,7 +8,7 @@ import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { createGatewayApi } from '~/gateway/gateway-api'
 import { SessionRuntime, type RuntimeSession } from '~/gateway/session-runtime'
-import { createSessionsApi, type SessionsApi } from '~/features/sessions/api'
+import { createSessionsApi, humanSessions, type SessionsApi } from '~/features/sessions/api'
 import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetRoutes } from '~/navigation/navigation-store'
 import { $chat, Conversation } from '~/state/conversation'
@@ -209,7 +209,7 @@ export class GatewayController {
    */
   async openProfile(profile: null | string) {
     if (profile !== $preferences.get().profile) await this.switchProfile(profile)
-    const sessions = $sessions.get()
+    const sessions = humanSessions($sessions.get())
     const latest = sessions.reduce<null | (typeof sessions)[number]>((newest, session) =>
       !newest || session.started_at > newest.started_at ? session : newest, null)
     if (latest) {

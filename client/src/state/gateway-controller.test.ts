@@ -161,6 +161,23 @@ describe('roster tap flow', () => {
     controller.dispose()
   })
 
+  it("skips cron-run sessions when resuming the profile's newest conversation", async () => {
+    const controller = new GatewayController({} as never)
+    vi.spyOn(controller, 'switchProfile').mockResolvedValue()
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
+    $sessions.set([
+      { id: 'cron-newest', message_count: 9, preview: '', source: 'cron', started_at: 400, title: 'Nightly digest' },
+      { id: 'human-newest', message_count: 2, preview: '', source: 'ios', started_at: 300, title: 'Human' }
+    ])
+
+    await controller.openProfile('work')
+
+    expect(resumeSession).toHaveBeenCalledWith('human-newest')
+    expect(newSession).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
   it('starts a fresh session when the profile has no conversations yet', async () => {
     const controller = new GatewayController({} as never)
     vi.spyOn(controller, 'switchProfile').mockResolvedValue()

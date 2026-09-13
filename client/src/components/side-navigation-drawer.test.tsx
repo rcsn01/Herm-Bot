@@ -68,6 +68,17 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('hides cron-run sessions from the recent sessions list', () => {
+    $sessions.set([
+      { id: 'session-1', message_count: 4, preview: 'Hidden body', source: 'ios', started_at: 1_777_374_000, title: 'Planning session' },
+      { id: 'cron-1', message_count: 9, preview: 'Cron body', source: 'cron', started_at: 1_777_500_000, title: 'Nightly digest' }
+    ])
+    const { container } = renderDrawer()
+
+    expect(container.querySelector('.session-list')?.textContent).not.toContain('Nightly digest')
+    expect(screen.getByRole('button', { name: /Planning session/ })).not.toBeNull()
+  })
+
   it('offers agent capabilities and cron jobs next to the sessions search', () => {
     const { onClose, onNavigate } = renderDrawer()
 

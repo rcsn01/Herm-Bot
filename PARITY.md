@@ -83,9 +83,11 @@ have no stored id yet, and reconciling back to it never re-pushes the
 session URL. Session deep links (`/session/<id>?profile=<p>`) keep
 their canonical URL for the sessions view; other screen paths don't
 carry the active profile (it is global persisted state). Opening an agent
-enters that profile's latest conversation, starting a fresh one when none
-exists — the conversation is the bot's home surface; there is no separate
-bot hub page. A header gear on the roster opens **Settings**; profile
+enters that profile's latest human conversation — cron-run sessions stay
+out of the recent-sessions list and the newest-conversation pick, like
+the desktop's recents — starting a fresh one when none exists — the
+conversation is the bot's home surface; there is no separate bot hub
+page. A header gear on the roster opens **Settings**; profile
 surfaces reach the model settings from the side navigation. **Capabilities**,
 **Cron Jobs** and **Model** are agent-specific shortcuts in the side
 navigation: one bot per gateway profile owns its
