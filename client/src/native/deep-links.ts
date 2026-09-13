@@ -3,6 +3,12 @@ import { Capacitor } from '@capacitor/core'
 
 import { parseHermesDeepLink } from '~/navigation/deep-links'
 
+function isDrawerGuardState(state: unknown): boolean {
+  if (typeof state !== 'object' || state === null) return false
+  const record = state as { hermesDrawer?: unknown; hermesDrawerBase?: unknown }
+  return record.hermesDrawer === true || record.hermesDrawerBase === true
+}
+
 /**
  * Bridge iOS deep links (`hermes://` URLs opened via the app's URL scheme)
  * into a handler. Covers both cold start (`getLaunchUrl`) and warm taps
@@ -12,7 +18,10 @@ import { parseHermesDeepLink } from '~/navigation/deep-links'
 export function observeHermesDeepLinks(handler: (rawURL: string) => void): () => void {
   if (!Capacitor.isNativePlatform()) {
     let active = true
-    const forwardCurrentURL = () => {
+    const forwardCurrentURL = (event?: PopStateEvent) => {
+      // The drawer guard also uses popstate. Its marked traversal is an
+      // internal close, not a new external session deep link.
+      if (event && isDrawerGuardState(event.state)) return
       const rawURL = window.location.href
       if (active && parseHermesDeepLink(rawURL)) handler(rawURL)
     }

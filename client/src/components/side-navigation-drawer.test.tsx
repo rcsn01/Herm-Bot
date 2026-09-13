@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('~/compat/primitives', () => ({
@@ -32,8 +32,22 @@ function renderDrawer(controller = controllerStub(), open = true) {
   const onClose = vi.fn()
   const onNavigate = vi.fn()
   const onOpenModel = vi.fn()
-  const result = render(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={onClose} onNavigate={onNavigate} onOpenModel={onOpenModel} open={open} />)
-  return { controller, onClose, onNavigate, onOpenModel, ...result }
+  const onDismissRequest = vi.fn((intent = { type: 'close' as const }) => {
+    onClose()
+    if (intent.type === 'model') onOpenModel()
+    else if (intent.type === 'tab') onNavigate(intent.tab)
+  })
+  const onDismissed = vi.fn()
+  const result = render(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={onDismissRequest} onDismissed={onDismissed} open={open} />)
+  return { controller, onClose, onDismissRequest, onDismissed, onNavigate, onOpenModel, ...result }
+}
+
+function pointer(node: HTMLElement, type: 'pointerDown' | 'pointerMove' | 'pointerUp' | 'pointerCancel', values: Record<string, unknown>) {
+  fireEvent[type](node, { isPrimary: true, pointerId: 1, pointerType: 'touch', ...values })
+}
+
+async function settle() {
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 250)) })
 }
 
 afterEach(cleanup)
@@ -66,6 +80,71 @@ describe('SideNavigationDrawer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     expect(onNavigate).toHaveBeenCalledWith('sessions')
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('tracks and commits a rightward drawer swipe without navigating', async () => {
+    vi.useFakeTimers()
+    const { onDismissed, onNavigate } = renderDrawer()
+    const backdrop = screen.getByTestId('side-navigation-backdrop')
+    const panel = screen.getByRole('dialog', { name: 'Navigation' })
+
+    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
+    pointer(panel, 'pointerMove', { clientX: 600, clientY: 208 })
+    expect(Number(backdrop.style.getPropertyValue('--swipe-progress'))).toBeGreaterThan(0)
+    pointer(panel, 'pointerUp', { clientX: 600, clientY: 208 })
+    act(() => { vi.runAllTimers() })
+
+    expect(onDismissed).toHaveBeenCalledOnce()
+    expect(onNavigate).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  it('does not close on short, vertical, or multi-pointer swipes', () => {
+    const { onClose } = renderDrawer()
+    const panel = screen.getByRole('dialog', { name: 'Navigation' })
+
+    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
+    pointer(panel, 'pointerMove', { clientX: 160, clientY: 205 })
+    pointer(panel, 'pointerUp', { clientX: 160, clientY: 205 })
+    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
+    pointer(panel, 'pointerMove', { clientX: 126, clientY: 300 })
+    pointer(panel, 'pointerUp', { clientX: 220, clientY: 300 })
+    fireEvent.pointerDown(panel, { isPrimary: false, pointerId: 2, pointerType: 'touch', clientX: 120, clientY: 200 })
+    fireEvent.pointerMove(panel, { isPrimary: false, pointerId: 2, pointerType: 'touch', clientX: 220, clientY: 200 })
+
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('settles a cancelled pointer and accepts the next swipe', () => {
+    vi.useFakeTimers()
+    const { onDismissed } = renderDrawer()
+    const panel = screen.getByRole('dialog', { name: 'Navigation' })
+
+    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
+    pointer(panel, 'pointerMove', { clientX: 180, clientY: 205 })
+    pointer(panel, 'pointerCancel', { clientX: 180, clientY: 205 })
+    act(() => { vi.runAllTimers() })
+    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
+    pointer(panel, 'pointerMove', { clientX: 600, clientY: 208 })
+    pointer(panel, 'pointerUp', { clientX: 600, clientY: 208 })
+    act(() => { vi.runAllTimers() })
+
+    expect(onDismissed).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
+
+  it('lets a session-row swipe reveal its delete action without closing the drawer', () => {
+    vi.useFakeTimers()
+    const { container, onClose } = renderDrawer()
+    const row = container.querySelector('.session-row') as HTMLElement
+    const surface = row.querySelector('.session-main') as HTMLElement
+    pointer(surface, 'pointerDown', { clientX: 300, clientY: 200 })
+    pointer(surface, 'pointerMove', { clientX: 180, clientY: 200 })
+    pointer(surface, 'pointerUp', { clientX: 180, clientY: 200 })
+    act(() => { vi.runAllTimers() })
+    expect(row.classList.contains('delete-revealed')).toBe(true)
+    expect(onClose).not.toHaveBeenCalled()
+    vi.useRealTimers()
   })
 
   it('hides cron-run sessions from the recent sessions list', () => {
@@ -123,8 +202,8 @@ describe('SideNavigationDrawer', () => {
     expect(screen.getByText('Release notes')).not.toBeNull()
     expect(screen.queryByText('Other hidden body')).toBeNull()
 
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open={false} />)
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open={false} />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open />)
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
   })
 
@@ -137,7 +216,7 @@ describe('SideNavigationDrawer', () => {
     expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
 
     $sessionsLoadingMore.set(true)
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
   })
 
@@ -225,10 +304,14 @@ describe('SideNavigationDrawer', () => {
     const { onClose } = renderDrawer(controller)
     const row = screen.getByText('Release notes').closest('article')!
     const remove = row.querySelector<HTMLButtonElement>('[aria-label="Delete Release notes"]')!
+    const surface = row.querySelector<HTMLElement>('.session-main')!
 
-    fireEvent.touchStart(row, { touches: [{ clientX: 200, clientY: 20 }] })
-    fireEvent.touchEnd(row, { changedTouches: [{ clientX: 100, clientY: 24 }] })
+    pointer(surface, 'pointerDown', { clientX: 300, clientY: 20 })
+    pointer(surface, 'pointerMove', { clientX: 100, clientY: 20 })
+    pointer(surface, 'pointerUp', { clientX: 100, clientY: 20 })
+    await settle()
     expect(remove.getAttribute('aria-hidden')).toBe('false')
+    fireEvent.click(remove)
     fireEvent.click(remove)
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
@@ -252,15 +335,15 @@ describe('SideNavigationDrawer', () => {
     const opener = document.createElement('button')
     document.body.append(opener)
     opener.focus()
-    const { container, rerender } = render(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open={false} />)
+    const { container, rerender } = render(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open={false} />)
     const backdrop = container.querySelector<HTMLElement>('.side-drawer-backdrop')!
     expect(backdrop.getAttribute('aria-hidden')).toBe('true')
     expect(backdrop.hasAttribute('inert')).toBe(true)
 
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open />)
     expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Navigation' }))
     expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} onClose={() => undefined} onNavigate={() => undefined} onOpenModel={() => undefined} open={false} />)
+    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()
   })

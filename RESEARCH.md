@@ -167,3 +167,72 @@ gateway" when no gateway runs, fencing ticks against running gateways via `profi
 - Whether cron also has JSON-RPC methods in tui_gateway (vs. HTTP-only dashboard routes) is unresolved.
 - Platform adapters were taken from the gateway-internals file table (e.g. bluebubbles.py for iMessage);
   individual adapter files were not fetched.
+
+---
+
+# Research note: preventing browser back/forward gestures in a PWA
+
+## Bottom line
+
+A web page cannot universally disable browser- or operating-system-owned back/forward edge gestures. A
+standalone PWA hides browser chrome, but it remains a browser context and does not gain a manifest switch for
+blocking navigation gestures. The app can prevent horizontal overscroll navigation where the browser treats the
+gesture as a scroll-boundary action, and it can reconcile history after traversal, but it cannot reliably veto a
+user's Back/Forward traversal across browsers.
+
+## Findings
+
+1. **Use `overscroll-behavior-x` for browser overscroll navigation.** MDN says `overscroll-behavior-x: contain`
+   disables native horizontal swipe navigation and stops scroll chaining; `none` additionally suppresses the
+   local overscroll effect. This applies to scroll-boundary behavior, not every browser/OS edge gesture.
+   Source: [MDN `overscroll-behavior-x`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/overscroll-behavior-x).
+
+2. **`touch-action` reserves touch panning, not history traversal.** `touch-action: none` disables browser
+   handling of panning and zooming for the touch region; `pan-y` reserves vertical panning while allowing a
+   custom horizontal pointer handler to own the gesture. It can affect zoom accessibility, so it should be
+   scoped to the gesture owner rather than applied globally.
+   Sources: [MDN `touch-action`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/touch-action),
+   [W3C Pointer Events](https://www.w3.org/TR/pointerevents3/#the-touch-action-css-property).
+
+3. **`popstate` is observation/reconciliation, not cancellation.** MDN documents that `popstate` fires after
+   the history entry has changed. Calling `preventDefault()` on it cannot undo the traversal; an SPA can restore
+   its own view or push/replace another entry afterward.
+   Source: [MDN `popstate`](https://developer.mozilla.org/en-US/docs/Web/API/Window/popstate_event).
+
+4. **The Navigation API does not let an app trap Back/Forward.** Chrome's official Navigation API guidance says
+   `preventDefault()` cannot cancel a navigation when the user presses Back or Forward. MDN likewise says
+   cancellation of traverse navigations is not implemented. `intercept()` is useful for same-document SPA
+   rendering, not for blocking the browser's history traversal.
+   Sources: [Chrome Navigation API](https://developer.chrome.com/docs/web-platform/navigation-api/),
+   [MDN Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API),
+   [MDN `NavigateEvent.intercept()`](https://developer.mozilla.org/en-US/docs/Web/API/NavigateEvent/intercept).
+
+5. **`beforeunload` is only a conditional data-loss warning.** It may show a browser-controlled generic dialog
+   for an unload, requires prior user activation, is unreliable on mobile, and is not a same-document SPA
+   traversal guard. It should only be installed for genuine unsaved changes.
+   Source: [MDN `beforeunload`](https://developer.mozilla.org/en-US/docs/Web/API/Window/beforeunload_event).
+
+6. **Standalone mode does not change these rules.** The manifest `display: standalone` removes UI such as the
+   URL bar but does not make the app a native navigation container. The browser may choose a fallback display
+   mode, and no manifest member disables OS back/forward gestures.
+   Source: [MDN manifest `display`](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/display).
+
+7. **Some mobile gestures may never reach JavaScript.** Apple's Safari Web Content Guide states that some
+   one-finger gestures do not generate DOM events. Therefore, a page cannot depend on `pointercancel`,
+   `touchend`, or `popstate` as a complete interception layer for every iOS edge gesture.
+   Source: [Apple Safari Web Content Guide: Handling Events](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/HandlingEvents/HandlingEvents.html).
+
+## Practical conclusion for this PWA
+
+- Treat an app-level drawer/chat swipe and a browser/OS edge-back gesture as separate ownership domains.
+- Set `overscroll-behavior-x: contain` or `none` on the relevant root/scroll containers if horizontal
+  overscroll navigation is the problem; keep `touch-action` scoped to the drawer or custom gesture owner.
+- Use `popstate`/history state to reconcile the drawer and route after traversal, not to block it.
+- Do not use `beforeunload` to trap ordinary navigation.
+- If the requirement is an absolute “never go back or forward” rule, a web PWA cannot guarantee it; a native
+  wrapper or platform-specific browser/container control is required.
+
+## Source set
+
+Primary sources consulted: MDN Web Docs, Chrome Developers, W3C Pointer Events/CSS specifications, and Apple's
+Safari Web Content Guide. Secondary tutorials and Stack Overflow answers were not used.

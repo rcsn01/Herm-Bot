@@ -204,6 +204,16 @@ export class GatewayController {
     const session = await this.runtime.createSession(scope.profile)
     if (selection !== this.sessionSelectionGeneration || !isCurrentGatewayScope(scope)) return
     this.selectSession(session)
+    // Every other session mutation (branch/rename/archive/delete) refreshes
+    // the list; a create must too — the roster tap picks the newest session
+    // from this store, so a stale list sends the next tap into an older
+    // conversation. Best-effort: the create already succeeded, and a failed
+    // listing must not fail the new chat.
+    try {
+      await this.refreshSessions(scope)
+    } catch {
+      /* store stays stale; the next connect/tap re-lists */
+    }
   }
 
   async resumeSession(storedSessionId: string) {

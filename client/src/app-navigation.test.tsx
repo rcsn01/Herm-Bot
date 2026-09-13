@@ -81,6 +81,10 @@ async function enterAgent(buttonName: 'Open agent work' | 'Open agent default' =
   await act(async () => undefined)
 }
 
+async function settleHistory(): Promise<void> {
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+}
+
 describe('App navigation', () => {
   it('launches on the agent roster with settings access and no side navigation', () => {
     render(<App />)
@@ -100,7 +104,7 @@ describe('App navigation', () => {
     await enterAgent('Open agent work')
 
     expect(controller.openProfile).toHaveBeenCalledWith('work')
-    expect(screen.queryByText('Roster screen')).toBeNull()
+    expect(screen.getByText('Roster screen').closest('.roster-layer')?.getAttribute('aria-hidden')).toBe('true')
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Open navigation' })).not.toBeNull()
   })
@@ -172,6 +176,7 @@ describe('App navigation', () => {
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await settleHistory()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
   })
 
@@ -197,6 +202,7 @@ describe('App navigation', () => {
     openDrawer()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    await settleHistory()
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
@@ -207,10 +213,12 @@ describe('App navigation', () => {
     await enterAgent()
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await settleHistory()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
 
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    await settleHistory()
     expect(screen.getByText('Cron screen')).not.toBeNull()
   })
 
@@ -220,11 +228,13 @@ describe('App navigation', () => {
     await enterAgent()
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    await settleHistory()
     expect(screen.getByText('Settings screen')).not.toBeNull()
 
     // With no in-page exit left, the drawer's bot identity returns to the chat.
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
+    await settleHistory()
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
@@ -234,6 +244,7 @@ describe('App navigation', () => {
     await enterAgent()
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    await settleHistory()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
 
@@ -288,6 +299,37 @@ describe('App navigation', () => {
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     expect(screen.getByTestId('chat-instance')).toBe(chat)
+  })
+
+  it('pushes a guard entry when the drawer opens so system back closes it', async () => {
+    render(<App />)
+    await enterAgent()
+
+    openDrawer()
+    expect((window.history.state as { hermesDrawer?: boolean }).hermesDrawer).toBe(true)
+
+    // The OS back gesture (iOS/Android edge swipe, hardware back) rides popstate.
+    window.history.back()
+    await settleHistory()
+    expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
+    expect((window.history.state as { hermesDrawer?: boolean; hermesDrawerBase?: boolean }).hermesDrawer).toBeUndefined()
+    // The gesture closed only the drawer — the conversation stays underneath.
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+  })
+
+  it('consumes the guard entry when the drawer closes without a back gesture', async () => {
+    const back = vi.spyOn(window.history, 'back')
+    render(<App />)
+    await enterAgent()
+
+    openDrawer()
+    fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
+    await settleHistory()
+
+    expect(back).toHaveBeenCalledOnce()
+    expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
+    back.mockRestore()
   })
 
   it('keeps the cached chat shell mounted while reconnecting an existing session', () => {

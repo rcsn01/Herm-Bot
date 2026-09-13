@@ -193,6 +193,32 @@ describe('roster tap flow', () => {
     controller.dispose()
   })
 
+  it('lands in a freshly created session on the next roster tap', async () => {
+    // The "create a session, send, leave, tap the agent again" flow: the pick
+    // reads $sessions, so a created session must land in the store immediately
+    // (newSession is the only session mutation that used to skip the refresh).
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => ({ session_id: 'runtime-created', stored_session_id: 'created-1', info: {} }))
+      .handle('session.list', () => ({
+        sessions: [
+          { id: 'old', message_count: 1, preview: '', source: 'ios', started_at: 100, title: 'Old' },
+          { id: 'created-1', message_count: 0, preview: '', source: 'ios', started_at: 500, title: 'created-1' }
+        ]
+      }))
+    const controller = new GatewayController({} as never, gateway)
+    const reconcile = vi.spyOn(controller.conversation, 'reconcileHistory').mockResolvedValue()
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    $sessions.set([{ id: 'old', message_count: 1, preview: '', source: 'ios', started_at: 100, title: 'Old' }])
+
+    await controller.newSession()
+    await controller.openProfile(null) // same profile: the warm-tap path
+
+    expect($chat.get().storedSessionId).toBe('created-1')
+    expect(resumeSession).not.toHaveBeenCalled() // already inside the newest
+    expect(reconcile).toHaveBeenCalled()
+    controller.dispose()
+  })
+
   it('falls back to a fresh session when resuming the newest conversation fails', async () => {
     const controller = new GatewayController({} as never)
     vi.spyOn(controller, 'switchProfile').mockResolvedValue()

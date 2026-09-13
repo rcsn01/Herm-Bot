@@ -1,63 +1,82 @@
 import { useRef, type ReactNode, type SyntheticEvent, type TouchEvent } from 'react'
 
+import { useSwipeMotion } from '~/gestures/use-swipe-motion'
+
 interface MobileShellProps {
-  children: ReactNode
   drawer: ReactNode
   drawerOpen: boolean
-  header: ReactNode
+  foreground: ReactNode
+  foregroundDismissible?: boolean
+  foregroundHeader: ReactNode
+  foregroundVisible: boolean
+  onDismissForeground?(): void
   onRefresh(): unknown
-  onSwipeBack(): void
   reconnecting?: boolean
   refreshing?: boolean
+  roster: ReactNode
+  rosterHeader: ReactNode
 }
 
-interface GestureStart {
+interface RefreshGestureStart {
   atTop: boolean
   x: number
   y: number
 }
 
-export function MobileShell({ children, drawer, drawerOpen, header, onRefresh, onSwipeBack, reconnecting = false, refreshing = false }: MobileShellProps) {
-  const scroller = useRef<HTMLElement>(null)
-  const gestureStart = useRef<GestureStart | null>(null)
+function gestureOwnedByControl(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return Boolean(target.closest('button, input, textarea, select, [contenteditable="true"], .session-row'))
+}
 
-  const startGesture = (event: TouchEvent<HTMLElement>) => {
-    gestureStart.current = null
+export function MobileShell({
+  drawer,
+  drawerOpen,
+  foreground,
+  foregroundDismissible = false,
+  foregroundHeader,
+  foregroundVisible,
+  onDismissForeground,
+  onRefresh,
+  reconnecting = false,
+  refreshing = false,
+  roster,
+  rosterHeader
+}: MobileShellProps) {
+  const refreshStart = useRef<RefreshGestureStart | null>(null)
+  const foregroundMotion = useSwipeMotion({
+    canStart: target => !gestureOwnedByControl(target),
+    direction: 'right',
+    enabled: foregroundVisible && foregroundDismissible && !drawerOpen && !reconnecting,
+    extentPx: () => window.innerWidth,
+    initialProgress: 0,
+    onCommit: endpoint => { if (endpoint === 1) onDismissForeground?.() },
+    restingEndpoint: 0
+  })
+
+  const startRefreshGesture = (event: TouchEvent<HTMLElement>) => {
+    refreshStart.current = null
     if (drawerOpen || reconnecting || event.touches.length !== 1) return
-    const touch = event.touches[0]
-    if (!touch) return
-    gestureStart.current = {
-      atTop: (scroller.current?.scrollTop ?? 0) <= 0,
-      x: touch.clientX,
-      y: touch.clientY
+    refreshStart.current = {
+      atTop: event.currentTarget.scrollTop <= 0,
+      x: event.touches[0]?.clientX ?? 0,
+      y: event.touches[0]?.clientY ?? 0
     }
   }
 
-  const trackGesture = (event: TouchEvent<HTMLElement>) => {
-    if (event.touches.length !== 1) gestureStart.current = null
+  const finishRefreshGesture = (event: TouchEvent<HTMLElement>) => {
+    const start = refreshStart.current
+    refreshStart.current = null
+    if (!start || drawerOpen || reconnecting || event.changedTouches.length !== 1) return
+    const touch = event.changedTouches[0]
+    if (!touch) return
+    const dy = touch.clientY - start.y
+    if (start.atTop && dy >= 90 && Math.abs(dy) > 1.2 * Math.abs(touch.clientX - start.x)) void onRefresh()
   }
 
   const blockInteraction = (event: SyntheticEvent) => {
     if (!reconnecting) return
     event.preventDefault()
     event.stopPropagation()
-  }
-
-  const finishGesture = (event: TouchEvent<HTMLElement>) => {
-    const start = gestureStart.current
-    gestureStart.current = null
-    if (!start || drawerOpen || reconnecting || event.changedTouches.length !== 1) return
-    const touch = event.changedTouches[0]
-    if (!touch) return
-    const dx = touch.clientX - start.x
-    const dy = touch.clientY - start.y
-    const absX = Math.abs(dx)
-    const absY = Math.abs(dy)
-    if (dx <= -72 && absX > 1.2 * absY) {
-      onSwipeBack()
-    } else if (start.atTop && dy >= 90 && absY > 1.2 * absX) {
-      void onRefresh()
-    }
   }
 
   return (
@@ -70,12 +89,36 @@ export function MobileShell({ children, drawer, drawerOpen, header, onRefresh, o
         onKeyDownCapture={blockInteraction}
         onSubmitCapture={blockInteraction}
       >
-        {header}
+        <div className="screen-stack" inert={drawerOpen ? true : undefined}>
+          <section aria-hidden={foregroundVisible} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible ? true : undefined}>
+            {rosterHeader}
+            <main
+              className="view-container"
+              onTouchEnd={finishRefreshGesture}
+              onTouchStart={startRefreshGesture}
+            >
+              {roster}
+            </main>
+          </section>
+          <section
+            aria-hidden={!foregroundVisible}
+            className={`foreground-layer${foregroundVisible ? ' active' : ''}${foregroundDismissible ? ' dismissible' : ''}`}
+            inert={!foregroundVisible ? true : undefined}
+            ref={foregroundMotion.ref}
+            {...foregroundMotion.bind}
+          >
+            {foregroundHeader}
+            <main
+              className="view-container"
+              onTouchEnd={finishRefreshGesture}
+              onTouchStart={startRefreshGesture}
+            >
+              {foreground}
+            </main>
+          </section>
+        </div>
         {drawer}
         {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
-        <main className="view-container" inert={drawerOpen ? true : undefined} onTouchEnd={finishGesture} onTouchMove={trackGesture} onTouchStart={startGesture} ref={scroller}>
-          {children}
-        </main>
       </div>
       {reconnecting && <div aria-live="polite" className="connection-status" role="status">Reconnecting to Hermes…</div>}
     </>

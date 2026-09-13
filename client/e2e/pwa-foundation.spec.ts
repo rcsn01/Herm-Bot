@@ -24,6 +24,26 @@ async function fixtureCalls(page: Page) {
   return page.evaluate(async () => (await fetch('/api/fixture-calls')).json()) as Promise<{ calls: Array<Record<string, any>> }>
 }
 
+async function touchDrag(page: Page, start: { x: number; y: number }, end: { x: number; y: number }, steps = 4, onMove?: () => Promise<void>) {
+  const client = await page.context().newCDPSession(page)
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 1, x: start.x, y: start.y }] })
+  for (let step = 1; step <= steps; step += 1) {
+    const fraction = step / steps
+    await client.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ id: 1, x: start.x + (end.x - start.x) * fraction, y: start.y + (end.y - start.y) * fraction }]
+    })
+    await onMove?.()
+  }
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await client.detach()
+}
+
+async function waitForSwipeIdle(page: Page, selector: string) {
+  await expect.poll(() => page.locator(selector).evaluate(element => element.getAttribute('data-swipe-phase'))).toBe('idle')
+}
+
 test('ships an installable manifest, icons, and a controlling service worker', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', 'Service worker control is validated in Chromium; WebKit still runs the wire tests.')
   await page.goto('/')
@@ -149,7 +169,7 @@ test('desktop group chats list on the main screen and open with sending', async 
 
   await row.click()
   await expect(page).toHaveURL(/\/group\/id%3Ar-crew$/)
-  await expect(page.getByText('Two candidates so far')).toBeVisible()
+  await expect(page.getByText('Two candidates so far', { exact: true })).toBeVisible()
 
   // Sending runs the desktop round engine locally: the user bubble lands
   // immediately, member turns fire against the gateway in the background.
@@ -168,6 +188,15 @@ test('screens mirror into the URL and browser back undoes navigation', async ({ 
   // mirrors the open conversation, not the generic sessions root.
   await expect(page).toHaveURL(/\/session\/saved-default$/)
 
+  // Browser back/OS edge-back while the drawer is open dismisses the drawer,
+  // rather than popping the conversation back to the roster.
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await expect(page.getByTestId('side-navigation-backdrop')).toHaveClass(/open/)
+  await page.goBack()
+  await expect(page).toHaveURL(/\/session\/saved-default$/)
+  await expect(page.getByLabel('Message Hermes')).toBeVisible()
+  await expect(page.getByTestId('side-navigation-backdrop')).not.toHaveClass(/open/)
+
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name: 'Capabilities' }).click()
   await expect(page).toHaveURL(/\/capabilities$/)
@@ -176,6 +205,129 @@ test('screens mirror into the URL and browser back undoes navigation', async ({ 
   await page.goBack()
   await expect(page).toHaveURL(/\/session\/saved-default$/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
+})
+
+test('drawer touch motion moves only the panel and commits after the visual endpoint', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  const backdrop = page.getByTestId('side-navigation-backdrop')
+  const panel = page.locator('.side-drawer-panel')
+  await expect(backdrop).toHaveClass(/open/)
+  await expect.poll(() => backdrop.evaluate(element => element.style.getPropertyValue('--swipe-progress'))).toBe('0')
+  await expect(page.locator('.screen-stack')).toHaveCSS('pointer-events', 'none')
+
+  const box = await panel.boundingBox()
+  expect(box).toBeTruthy()
+  // Start at the viewport edge, outside the panel, to cover the full-screen
+  // backdrop path that must not wake the foreground gesture.
+  const start = { x: 0, y: box!.y + 180 }
+  const partial = { x: start.x + box!.width * .2, y: start.y + 4 }
+  const foreground = page.locator('.foreground-layer.active')
+  const mainTransform = await foreground.evaluate(element => getComputedStyle(element).transform)
+  await touchDrag(page, start, partial, 2, async () => {
+    await page.waitForTimeout(180)
+    await expect.poll(() => backdrop.evaluate(element => Number(element.style.getPropertyValue('--swipe-progress')))).toBeGreaterThan(0)
+    expect(await foreground.evaluate(element => getComputedStyle(element).transform)).toBe(mainTransform)
+  })
+  await waitForSwipeIdle(page, '[data-testid="side-navigation-backdrop"]')
+  await expect.poll(() => backdrop.evaluate(element => Number(element.style.getPropertyValue('--swipe-progress')))).toBe(0)
+
+  const reopenedBox = await panel.boundingBox()
+  expect(reopenedBox).toBeTruthy()
+  const commitStart = { x: 10, y: reopenedBox!.y + 180 }
+  await touchDrag(page, commitStart, { x: commitStart.x + reopenedBox!.width * .75, y: commitStart.y + 2 })
+  await expect(backdrop).not.toHaveClass(/open/)
+  await expect(page.getByLabel('Message Hermes')).toBeVisible()
+})
+
+test('right-edge touch opening moves only the drawer over the session', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
+  await login(page)
+  const backdrop = page.getByTestId('side-navigation-backdrop')
+  const foreground = page.locator('.foreground-layer.active')
+  await expect(backdrop).not.toHaveClass(/open/)
+  const mainTransform = await foreground.evaluate(element => getComputedStyle(element).transform)
+
+  await touchDrag(page, { x: 388, y: 220 }, { x: 240, y: 224 }, 2, async () => {
+    expect(await foreground.evaluate(element => getComputedStyle(element).transform)).toBe(mainTransform)
+  })
+  await waitForSwipeIdle(page, '[data-testid="side-navigation-backdrop"]')
+  await expect(backdrop).toHaveClass(/open/)
+  await expect(foreground).toHaveCSS('transform', mainTransform)
+})
+
+test('single-chat touch dismissal moves the foreground over a fixed roster', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
+  await login(page)
+  const foreground = page.locator('.foreground-layer.active')
+  const roster = page.locator('.roster-layer')
+  const box = await foreground.boundingBox()
+  expect(box).toBeTruthy()
+  expect(await foreground.locator('.app-header').count()).toBe(1)
+  expect(await foreground.locator('.composer-wrap').count()).toBe(1)
+  const rosterTransform = await roster.evaluate(element => getComputedStyle(element).transform)
+
+  await touchDrag(page, { x: box!.x + 30, y: box!.y + 220 }, { x: box!.x + box!.width * .45, y: box!.y + 224 }, 2, async () => {
+    await expect.poll(() => foreground.evaluate(element => Number(element.style.getPropertyValue('--swipe-progress')))).toBeGreaterThan(0)
+    expect(await roster.evaluate(element => getComputedStyle(element).transform)).toBe(rosterTransform)
+  })
+  await waitForSwipeIdle(page, '.foreground-layer')
+  await expect(page.locator('.foreground-layer.active')).toHaveCount(0)
+  await expect(page.locator('.roster-layer')).toBeVisible()
+})
+
+test('group touch dismissal uses the same right-only foreground motion', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
+  await login(page)
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  const group = page.getByRole('button', { name: /Research crew/ })
+  await group.click()
+  await expect(page.getByText('Two candidates so far', { exact: true })).toBeVisible()
+  const foreground = page.locator('.foreground-layer.active')
+  const box = await foreground.boundingBox()
+  expect(box).toBeTruthy()
+  const url = page.url()
+
+  await touchDrag(page, { x: box!.x + box!.width - 30, y: box!.y + 220 }, { x: box!.x + box!.width * .45, y: box!.y + 224 }, 2)
+  await waitForSwipeIdle(page, '.foreground-layer')
+  await expect(page).toHaveURL(url)
+  await expect(page.getByText('Two candidates so far', { exact: true })).toBeVisible()
+
+  await touchDrag(page, { x: box!.x + 30, y: box!.y + 220 }, { x: box!.x + box!.width * .55, y: box!.y + 224 }, 2)
+  await expect(page.locator('.foreground-layer.active')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Research crew/ })).toBeVisible()
+})
+
+test('session-row touch motion reveals and conceals without dismissing the drawer', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await waitForSwipeIdle(page, '[data-testid="side-navigation-backdrop"]')
+  const row = page.locator('.session-row').filter({ hasText: 'Saved default' })
+  await expect(row).toBeVisible()
+  const main = row.locator('.session-main')
+  const box = await main.boundingBox()
+  expect(box).toBeTruthy()
+  await touchDrag(page, { x: box!.x + box!.width - 30, y: box!.y + 20 }, { x: box!.x + 30, y: box!.y + 22 })
+  await expect(row.locator('.session-delete-action button')).toHaveAttribute('aria-hidden', 'false')
+  await touchDrag(page, { x: box!.x + 30, y: box!.y + 20 }, { x: box!.x + box!.width - 30, y: box!.y + 22 })
+  await expect(row.locator('.session-delete-action button')).toHaveAttribute('aria-hidden', 'true')
+  await expect(page.getByTestId('side-navigation-backdrop')).toHaveClass(/open/)
+})
+
+test('reduced motion still reaches drawer endpoints immediately', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  const backdrop = page.getByTestId('side-navigation-backdrop')
+  await expect.poll(() => backdrop.evaluate(element => element.style.getPropertyValue('--swipe-progress'))).toBe('0')
+  const panel = page.locator('.side-drawer-panel')
+  const box = await panel.boundingBox()
+  expect(box).toBeTruthy()
+  await touchDrag(page, { x: 10, y: box!.y + 160 }, { x: 10 + box!.width * .75, y: box!.y + 162 })
+  await expect(backdrop).not.toHaveClass(/open/)
 })
 
 test('reloading keeps the current screen', async ({ page }) => {

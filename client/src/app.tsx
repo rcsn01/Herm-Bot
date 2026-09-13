@@ -21,6 +21,7 @@ import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator } from '~/navigation/deep-links'
 import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
 import { installScreenHistory, type ScreenHistory } from '~/navigation/screen-history'
+import { useDrawerController } from '~/navigation/use-drawer-controller'
 import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
@@ -48,10 +49,16 @@ export function App() {
   const groups = useStore($groups)
   const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
   const chat = useStore($chat)
-  const [drawerOpen, setDrawerOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
   const screenHistoryRef = useRef<ScreenHistory | null>(null)
+  const drawer = useDrawerController({
+    onDismissed: intent => {
+      if (intent.type === 'tab') openDestination(intent.tab)
+      else if (intent.type === 'model') openModelSettings()
+    }
+  })
+  const drawerOpen = drawer.isOpen
 
   useEffect(() => {
     applyTheme(preferences.theme)
@@ -119,7 +126,6 @@ export function App() {
    *  navigates explicitly — pushing "/" keeps the system back able to undo
    *  it. True back gestures use goBackOr instead. */
   const backToRoster = () => {
-    setDrawerOpen(false)
     setTab('roster')
   }
   const openSettingsFrom = () => {
@@ -132,57 +138,74 @@ export function App() {
   /** The messaging header leads with the bot's identity (matching the roster
    *  and drawer labels) and carries the open session's name beneath it. */
   const headerSession = (chat.info as { title?: string } | null)?.title || 'New conversation'
+  const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
+  const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
+  const rosterHeader = (
+    <header className="app-header">
+      <div className="header-search">
+        <IconSearch aria-hidden size={17} />
+        <Input aria-label="Search bots" onChange={event => setRosterQuery(event.target.value)} placeholder="Search bots" type="search" value={rosterQuery} />
+      </div>
+      <Button aria-label="Open settings" className="header-gear-button" onClick={openSettingsFrom} variant="ghost"><IconSettings className="size-6" /></Button>
+    </header>
+  )
+  const foregroundHeader = foregroundVisible ? (
+    <header className="app-header">
+      {activeGroupId ? (
+        <>
+          <Button aria-label="Back to bots" className="header-back-button" onClick={() => goBackOr(() => popRoute('roster'))} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+          <div className="header-title"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
+        </>
+      ) : (
+        <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+      )}
+      {navigation.activeTab === 'sessions' ? (
+        <div className="header-bot-button">
+          <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
+          <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : headerSession}</small></div>
+        </div>
+      ) : inProfile ? (
+        <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
+      ) : null}
+      {inProfile && (
+        <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={drawer.openDrawer} variant="ghost"><IconMenu2 className="size-6" /></Button>
+      )}
+    </header>
+  ) : null
+  const foregroundContent = (
+    <>
+      <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
+        <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
+      </div>
+      {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
+      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
+      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+    </>
+  )
 
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={openDestination} onOpenModel={() => openModelSettings()} open={drawerOpen} /> : null}
+        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} dismissRequest={drawer.dismissRequest} onDismissRequest={drawer.requestDismiss} onDismissed={() => drawer.completeDismiss()} onEdgeOpen={drawer.openDrawer} open={drawerOpen} /> : null}
         drawerOpen={drawerOpen}
-        header={<header className="app-header">
-          {navigation.activeTab === 'roster' ? (
-          activeGroupId ? (
-            <>
-              <Button aria-label="Back to bots" className="header-back-button" onClick={() => goBackOr(() => popRoute('roster'))} variant="ghost"><IconChevronLeft className="size-6" /></Button>
-              <div className="header-title"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
-            </>
-          ) : (
-            <div className="header-search">
-              <IconSearch aria-hidden size={17} />
-              <Input aria-label="Search bots" onChange={event => setRosterQuery(event.target.value)} placeholder="Search bots" type="search" value={rosterQuery} />
-            </div>
-          )
-        ) : (
-          <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
-        )}
-          {navigation.activeTab === 'sessions' ? (
-            <div className="header-bot-button">
-              <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
-              <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : headerSession}</small></div>
-            </div>
-          ) : inProfile ? (
-            <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
-          ) : null}
-          {inProfile && (
-            <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
-          )}
-          {navigation.activeTab === 'roster' && !activeGroupId && (
-            <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom()} variant="ghost"><IconSettings className="size-6" /></Button>
-          )}
-        </header>}
-        onSwipeBack={() => { if (inProfile) goBackOr(() => setTab('roster')) }}        onRefresh={refresh}
+        foreground={foregroundContent}
+        foregroundDismissible={foregroundDismissible}
+        foregroundHeader={foregroundHeader}
+        foregroundVisible={foregroundVisible}
+        onDismissForeground={() => {
+          // A committed swipe always dismisses the whole foreground to the
+          // fixed roster. Unlike a header back, it must not land on another
+          // canonical session URL in the browser history.
+          if (activeGroupId) resetTabRoutes('roster')
+          if (navigation.activeTab === 'sessions' || activeGroupId) setTab('roster')
+        }}
+        onRefresh={refresh}
         reconnecting={reconnecting}
         refreshing={refreshing}
-      >
-        <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
-          <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
-        </div>
-        {navigation.activeTab === 'roster' && (activeGroupId
-          ? <GroupChatScreen roomId={activeGroupId} />
-          : <RosterScreen onOpenAgent={openAgent} onOpenGroup={roomId => pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })} query={rosterQuery} />)}
-        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-        {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
-      </MobileShell>
+        roster={<RosterScreen onOpenAgent={openAgent} onOpenGroup={roomId => pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })} query={rosterQuery} />}
+        rosterHeader={rosterHeader}
+      />
     </GatewayProvider>
   )
 }

@@ -9,7 +9,8 @@ import { MemoryGateway } from '~/test/memory-gateway'
 vi.mock('~/compat/primitives', () => ({
   Badge: ({ children }: React.ComponentProps<'span'>) => <span>{children}</span>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => <button {...props}>{children}</button>,
-  Input: (props: React.ComponentProps<'input'>) => <input {...props} />
+  Input: (props: React.ComponentProps<'input'>) => <input {...props} />,
+  Textarea: (props: React.ComponentProps<'textarea'>) => <textarea {...props} />
 }))
 
 const snapshot = {

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { IconPlayerStop, IconSend } from '@tabler/icons-react'
 import { useStore } from '@nanostores/react'
 
+import { Button, Textarea } from '~/compat/primitives'
 import { createAgentsApi } from '~/features/agents/agents-api'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
@@ -156,46 +158,60 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
           <GroupPromptCard key={`${prompt.memberKey}-${prompt.requestId}`} members={engineRoom.members} prompt={prompt} />
         ))}
       </div>
-      {engineRoom.running && (
-        <button className="group-stop" onClick={() => void stopGroupThread(room.name, targetThread, room.members)}>
-          Stop
-        </button>
-      )}
-      <form
-        className="group-composer"
-        onSubmit={event => {
-          event.preventDefault()
-          send()
-        }}
-      >
-        <textarea
-          aria-label={`Message ${room.name}`}
-          placeholder={newThreadNext ? 'New thread…' : 'Message the group…'}
-          rows={2}
-          value={draft}
-          onChange={event => setDraft(event.target.value)}
-          onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              send()
-            }
-          }}
-        />
-        <div className="group-composer-actions">
-          <button
-            className={newThreadNext ? 'group-new-thread active' : 'group-new-thread'}
-            onClick={event => {
-              event.preventDefault()
-              setNewThreadNext(value => !value)
+      <div className="composer-wrap">
+        <div className="composer group-composer">
+          <Textarea
+            aria-label={`Message ${room.name}`}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                send()
+              }
             }}
-            title="Start a new thread with the next send"
-          >
-            + thread
-          </button>
-          <button className="group-send" disabled={!draft.trim() || room.members.length === 0}>Send</button>
+            placeholder={
+              engineRoom.running ? 'Queue another prompt…' : newThreadNext ? 'New thread…' : 'Message the group…'
+            }
+            rows={1}
+            value={draft}
+          />
+          {engineRoom.running ? (
+        <Button
+          aria-label="Interrupt"
+          onClick={() => void stopGroupThread(room.name, targetThread, room.members)}
+          size="icon"
+          variant="destructive"
+        >
+          <IconPlayerStop size={19} />
+        </Button>
+      ) : (
+        <Button aria-label="Send" disabled={!draft.trim() || room.members.length === 0} onClick={send} size="icon">
+          <IconSend size={19} />
+        </Button>
+      )}
+      </div>
+      <div className="composer-meta">
+        <button
+          className={newThreadNext ? 'group-thread-toggle active' : 'group-thread-toggle'}
+          onClick={event => {
+            event.preventDefault()
+            setNewThreadNext(value => !value)
+          }}
+        >
+          {newThreadNext ? 'Next send starts a thread' : '+ Thread'}
+        </button>
+        <div className={`session-activity ${engineRoom.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
+          <span aria-hidden className="status-dot" />
+          <span>
+            {engineRoom.running
+              ? engineRoom.turn
+                ? `${engineRoom.turn} is thinking…`
+                : 'Bots are working'
+              : 'Ready'}
+          </span>
         </div>
-      </form>
-      <p className="muted group-send-note">Sending runs the same round engine as Desktop — members reply in their own group sessions.</p>
+      </div>
+    </div>
     </section>
   )
 }

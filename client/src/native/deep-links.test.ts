@@ -47,6 +47,23 @@ describe('observeHermesDeepLinks', () => {
     expect(mocks.getLaunchUrl).not.toHaveBeenCalled()
   })
 
+  it('ignores drawer-guard popstates but forwards normal internal session history', () => {
+    mocks.state.native = false
+    history.replaceState(null, '', '/')
+    const handler = vi.fn()
+    const unsubscribe = observeHermesDeepLinks(handler)
+
+    history.pushState({ hermesScreen: 2, hermesDrawerBase: true }, '', '/session/internal')
+    window.dispatchEvent(new PopStateEvent('popstate', { state: { hermesScreen: 2, hermesDrawerBase: true } }))
+    expect(handler).not.toHaveBeenCalled()
+
+    history.pushState({ hermesScreen: 3 }, '', '/session/normal')
+    window.dispatchEvent(new PopStateEvent('popstate', { state: { hermesScreen: 3 } }))
+    expect(handler).toHaveBeenCalledExactlyOnceWith(`${window.location.origin}/session/normal`)
+
+    unsubscribe()
+  })
+
   it('forwards notification clicks from the service worker to an open PWA', () => {
     mocks.state.native = false
     history.replaceState(null, '', '/')

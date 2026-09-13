@@ -1,110 +1,117 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MobileShell } from '~/components/mobile-shell'
 
 afterEach(cleanup)
 
-function renderShell(drawerOpen = false, reconnecting = false) {
+function renderShell({ drawerOpen = false, foregroundVisible = true, reconnecting = false } = {}) {
   const onAction = vi.fn()
+  const onDismissForeground = vi.fn()
   const onRefresh = vi.fn()
-  const onSwipeBack = vi.fn()
-  render(
+  const view = render(
     <MobileShell
       drawer={<aside>Drawer</aside>}
       drawerOpen={drawerOpen}
-      header={<header>Header</header>}
+      foreground={<div><button onClick={onAction}>Action</button>Foreground content</div>}
+      foregroundDismissible
+      foregroundHeader={<header>Foreground header</header>}
+      foregroundVisible={foregroundVisible}
+      onDismissForeground={onDismissForeground}
       onRefresh={onRefresh}
-      onSwipeBack={onSwipeBack}
       reconnecting={reconnecting}
-    >
-      <div><button onClick={onAction}>Action</button>Scrollable content</div>
-    </MobileShell>
+      roster={<div>Roster content</div>}
+      rosterHeader={<header>Roster header</header>}
+    />
   )
-  return { onAction, onRefresh, onSwipeBack, scroller: screen.getByRole('main') }
+  return {
+    foreground: view.container.querySelector<HTMLElement>('.foreground-layer')!,
+    onAction,
+    onDismissForeground,
+    onRefresh,
+    roster: view.container.querySelector<HTMLElement>('.roster-layer')!,
+    view
+  }
 }
 
-function gesture(scroller: HTMLElement, start: readonly [number, number], end: readonly [number, number], touches = 1) {
-  const startTouches = Array.from({ length: touches }, (_, index) => ({ clientX: start[0] + index, clientY: start[1] }))
-  fireEvent.touchStart(scroller, { touches: startTouches })
-  fireEvent.touchEnd(scroller, { changedTouches: [{ clientX: end[0], clientY: end[1] }] })
+function pointer(node: HTMLElement, type: 'pointerDown' | 'pointerMove' | 'pointerUp', values: Record<string, unknown>) {
+  fireEvent[type](node, { isPrimary: true, pointerId: 1, pointerType: 'touch', ...values })
 }
 
 describe('MobileShell', () => {
-  it('keeps the header and drawer outside the content scroller without bottom navigation', () => {
-    const { scroller } = renderShell()
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
 
-    expect(scroller.contains(screen.getByText('Scrollable content'))).toBe(true)
-    expect(scroller.contains(screen.getByText('Header'))).toBe(false)
-    expect(scroller.contains(screen.getByText('Drawer'))).toBe(false)
-    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
+  it('keeps the roster fixed underneath a complete foreground layer', () => {
+    const { foreground, roster } = renderShell()
+
+    expect(foreground.contains(screen.getByText('Foreground header'))).toBe(true)
+    expect(roster.contains(screen.getByText('Roster header'))).toBe(true)
+    expect(roster.contains(screen.getByText('Roster content'))).toBe(true)
+    expect(roster.getAttribute('aria-hidden')).toBe('true')
+    expect(roster.hasAttribute('inert')).toBe(true)
   })
 
-  it('goes back for a qualifying left swipe without refreshing', () => {
-    const { onRefresh, onSwipeBack, scroller } = renderShell()
-    gesture(scroller, [100, 100], [20, 110])
+  it('tracks a rightward foreground drag and commits only after settling', () => {
+    const { foreground, onDismissForeground } = renderShell()
 
-    expect(onSwipeBack).toHaveBeenCalledOnce()
-    expect(onRefresh).not.toHaveBeenCalled()
+    pointer(foreground, 'pointerDown', { clientX: 20, clientY: 100 })
+    pointer(foreground, 'pointerMove', { clientX: 420, clientY: 108 })
+    expect(foreground.style.getPropertyValue('--swipe-progress')).toBe('0.390625')
+    expect(onDismissForeground).not.toHaveBeenCalled()
+
+    pointer(foreground, 'pointerUp', { clientX: 420, clientY: 108 })
+    act(() => { vi.runAllTimers() })
+    expect(onDismissForeground).toHaveBeenCalledOnce()
   })
 
-  it('refreshes for a vertical pull from the top without going back', () => {
-    const { onRefresh, onSwipeBack, scroller } = renderShell()
+  it('does not navigate on a leftward screen swipe', () => {
+    const { foreground, onDismissForeground } = renderShell()
+
+    pointer(foreground, 'pointerDown', { clientX: 420, clientY: 100 })
+    pointer(foreground, 'pointerMove', { clientX: 20, clientY: 108 })
+    pointer(foreground, 'pointerUp', { clientX: 20, clientY: 108 })
+    act(() => { vi.runAllTimers() })
+
+    expect(foreground.style.getPropertyValue('--swipe-progress')).toBe('0')
+    expect(onDismissForeground).not.toHaveBeenCalled()
+  })
+
+  it('keeps vertical pull-to-refresh separate from horizontal motion', () => {
+    const { onDismissForeground, onRefresh, foreground } = renderShell()
+    const scroller = foreground.querySelector<HTMLElement>('.view-container')!
     Object.defineProperty(scroller, 'scrollTop', { configurable: true, value: 0 })
-    gesture(scroller, [40, 10], [45, 105])
+
+    fireEvent.touchStart(scroller, { touches: [{ clientX: 40, clientY: 10 }] })
+    fireEvent.touchEnd(scroller, { changedTouches: [{ clientX: 45, clientY: 105 }] })
 
     expect(onRefresh).toHaveBeenCalledOnce()
-    expect(onSwipeBack).not.toHaveBeenCalled()
+    expect(onDismissForeground).not.toHaveBeenCalled()
   })
 
-  it('ignores vertical pulls that start away from the scroll top', () => {
-    const { onRefresh, onSwipeBack, scroller } = renderShell()
-    Object.defineProperty(scroller, 'scrollTop', { configurable: true, value: 20 })
-    gesture(scroller, [40, 10], [45, 120])
+  it('disables foreground motion while the drawer is open or reconnecting', () => {
+    const drawer = renderShell({ drawerOpen: true })
+    pointer(drawer.foreground, 'pointerDown', { clientX: 20, clientY: 100 })
+    pointer(drawer.foreground, 'pointerMove', { clientX: 420, clientY: 108 })
+    expect(drawer.foreground.style.getPropertyValue('--swipe-progress')).toBe('0')
+    drawer.view.unmount()
 
-    expect(onRefresh).not.toHaveBeenCalled()
-    expect(onSwipeBack).not.toHaveBeenCalled()
+    const reconnecting = renderShell({ reconnecting: true })
+    pointer(reconnecting.foreground, 'pointerDown', { clientX: 20, clientY: 100 })
+    pointer(reconnecting.foreground, 'pointerMove', { clientX: 420, clientY: 108 })
+    expect(reconnecting.foreground.style.getPropertyValue('--swipe-progress')).toBe('0')
   })
 
-  it.each([
-    ['rightward', [10, 50], [100, 52], 1],
-    ['short', [10, 50], [70, 52], 1],
-    ['diagonal', [10, 10], [100, 100], 1],
-    ['multi-touch', [10, 50], [100, 52], 2]
-  ] as const)('ignores %s gestures', (_label, start, end, touches) => {
-    const { onRefresh, onSwipeBack, scroller } = renderShell()
-    gesture(scroller, start, end, touches)
+  it('makes the shell inert while reconnecting', () => {
+    const { onAction, onRefresh, foreground } = renderShell({ reconnecting: true })
+    const shell = foreground.closest('.mobile-shell')!
 
-    expect(onSwipeBack).not.toHaveBeenCalled()
-    expect(onRefresh).not.toHaveBeenCalled()
-  })
-
-  it('locks the main screen and does not process gestures while the drawer is open', () => {
-    const { onRefresh, onSwipeBack, scroller } = renderShell(true)
-    expect(scroller.hasAttribute('inert')).toBe(true)
-    expect(scroller.closest('.mobile-shell')?.classList.contains('drawer-open')).toBe(true)
-
-    gesture(scroller, [10, 50], [100, 52])
-    gesture(scroller, [40, 10], [42, 120])
-
-    expect(onSwipeBack).not.toHaveBeenCalled()
-    expect(onRefresh).not.toHaveBeenCalled()
-  })
-
-  it('announces reconnecting state, makes the shell inert, and ignores interactions', () => {
-    const { onAction, onRefresh, onSwipeBack, scroller } = renderShell(false, true)
-    const shell = screen.getByText('Header').closest('.mobile-shell')
-
-    expect(shell?.getAttribute('aria-busy')).toBe('true')
-    expect(shell?.hasAttribute('inert')).toBe(true)
+    expect(shell.getAttribute('aria-busy')).toBe('true')
+    expect(shell.hasAttribute('inert')).toBe(true)
     expect(screen.getByRole('status').textContent).toContain('Reconnecting')
 
     fireEvent.click(screen.getByRole('button', { name: 'Action' }))
-    gesture(scroller, [10, 50], [100, 52])
-    gesture(scroller, [40, 10], [42, 120])
-
     expect(onAction).not.toHaveBeenCalled()
-    expect(onSwipeBack).not.toHaveBeenCalled()
     expect(onRefresh).not.toHaveBeenCalled()
   })
 })

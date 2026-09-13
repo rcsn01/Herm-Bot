@@ -9,11 +9,15 @@ import {
 } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
+import { useSwipeMotion } from '~/gestures/use-swipe-motion'
+
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { displayNameFor } from '~/features/agents/agent-labels'
 import { humanSessions } from '~/features/sessions/api'
+import type { StoredSession } from '~/lib/types'
 import type { MobileTab } from '~/navigation/routes'
+import type { DrawerDismissIntent, DrawerDismissRequest } from '~/navigation/use-drawer-controller'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
@@ -23,21 +27,90 @@ import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store
 interface SideNavigationDrawerProps {
   activeTab: MobileTab
   controller: GatewayController
+  dismissRequest: DrawerDismissRequest | null
+  onDismissRequest(intent?: DrawerDismissIntent): void
+  onDismissed(): void
+  onEdgeOpen?(): void
   open: boolean
-  onClose(): void
-  onNavigate(tab: MobileTab): void
-  onOpenModel(): void
 }
 
-interface SwipeStart {
-  id: string
-  x: number
-  y: number
+function gestureOwnedByControl(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return Boolean(target.closest('.session-row')) || Boolean(target.closest('button, input, textarea, select, [contenteditable="true"]'))
 }
 
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
 
-export function SideNavigationDrawer({ activeTab, controller, open, onClose, onNavigate, onOpenModel }: SideNavigationDrawerProps) {
+interface SessionRowProps {
+  active: boolean
+  onDelete(title: string): void
+  onReveal(id: string | null): void
+  onOpen(id: string, active: boolean): void
+  pending: boolean
+  revealed: boolean
+  session: StoredSession
+}
+
+function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, session }: SessionRowProps) {
+  const date = new Date(session.started_at * 1_000)
+  const title = session.title || 'Untitled session'
+  const motion = useSwipeMotion({
+    canStart: target => {
+      if (!(target instanceof HTMLElement)) return true
+      if (target.closest('.session-delete-action')) return false
+      return true
+    },
+    direction: 'left',
+    enabled: !pending,
+    extentPx: () => 104,
+    initialProgress: revealed ? 1 : 0,
+    onCommit: endpoint => onReveal(endpoint === 1 ? session.id : null),
+    restingEndpoint: revealed ? 1 : 0
+  })
+
+  useEffect(() => {
+    motion.setProgress(revealed ? 1 : 0)
+  }, [motion.setProgress, revealed])
+
+  return (
+    <article
+      className={`session-row ${revealed ? 'delete-revealed' : ''} ${active ? 'active-session' : ''}`}
+      key={session.id}
+      ref={motion.ref}
+      {...motion.bind}
+    >
+      <div className="session-delete-action">
+        <Button
+          aria-hidden={!revealed}
+          aria-label={`Delete ${title}`}
+          disabled={pending}
+          onClick={() => {
+            onReveal(null)
+            onDelete(title)
+          }}
+          tabIndex={revealed ? 0 : -1}
+          variant="destructive"
+        >
+          <IconTrash size={18} /> Delete
+        </Button>
+      </div>
+      <button
+        aria-current={active ? 'page' : undefined}
+        className="session-main"
+        disabled={pending}
+        onClick={() => {
+          if (revealed) return onReveal(null)
+          onOpen(session.id, active)
+        }}
+      >
+        <strong>{title}</strong>
+        <time dateTime={date.toISOString()}>{date.toLocaleDateString()}</time>
+      </button>
+    </article>
+  )
+}
+
+export function SideNavigationDrawer({ activeTab, controller, dismissRequest, onDismissRequest, onDismissed, onEdgeOpen, open }: SideNavigationDrawerProps) {
   const chat = useStore($chat)
   const preferences = useStore($preferences)
   const sessions = useStore($sessions)
@@ -51,8 +124,9 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   const loadMoreRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
-  const swipeStart = useRef<SwipeStart | null>(null)
   const actionPendingRef = useRef(false)
+  const handledDismissRef = useRef<number | null>(null)
+  const previousOpenRef = useRef(open)
   const refreshGeneration = useRef(0)
   const action = useScopedTask()
   const filtered = useMemo(() => {
@@ -60,9 +134,36 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
     const needle = query.trim().toLowerCase()
     return needle ? visible.filter(session => session.title.toLowerCase().includes(needle)) : visible
   }, [query, sessions])
+  const drawerMotion = useSwipeMotion({
+    canStart: target => {
+      if (!open) return target instanceof HTMLElement && Boolean(target.closest('[data-drawer-edge]'))
+      return !gestureOwnedByControl(target)
+    },
+    direction: 'right',
+    enabled: open || Boolean(onEdgeOpen),
+    extentPx: () => panelRef.current?.getBoundingClientRect().width || panelRef.current?.clientWidth || window.innerWidth,
+    initialProgress: open ? 0 : 1,
+    onCommit: endpoint => {
+      if (open && endpoint === 1) onDismissed()
+      else if (!open && endpoint === 0) onEdgeOpen?.()
+    },
+    restingEndpoint: open ? 0 : 1
+  })
   const loadMoreSessions = useCallback(async () => {
     await action.run(() => controller.loadMoreSessions(), { onError: error => setError(error.message) })
   }, [action, controller])
+
+  useEffect(() => {
+    if (open && !previousOpenRef.current) drawerMotion.animateTo(0)
+    if (!open && previousOpenRef.current) drawerMotion.setProgress(1)
+    previousOpenRef.current = open
+  }, [drawerMotion.animateTo, drawerMotion.setProgress, open])
+
+  useEffect(() => {
+    if (!open || !dismissRequest || handledDismissRef.current === dismissRequest.id) return
+    handledDismissRef.current = dismissRequest.id
+    drawerMotion.animateTo(1, { onSettled: onDismissed })
+  }, [dismissRequest, drawerMotion.animateTo, onDismissed, open])
 
   useEffect(() => {
     if (!open) return
@@ -98,8 +199,7 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
       setError(null)
       await callback()
       if (!task.isCurrent()) return
-      onNavigate('sessions')
-      onClose()
+      onDismissRequest({ type: 'tab', tab: 'sessions' })
     }, { onError: error => setError(error.message) })
     // The pending latch is unconditional cleanup: it must reset even when the
     // scope went stale mid-action, exactly as the previous unguarded finally did.
@@ -115,19 +215,17 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
   }
 
   const requestClose = () => {
-    if (!actionPendingRef.current) onClose()
+    if (!actionPendingRef.current) onDismissRequest()
   }
 
   const navigate = (tab: MobileTab) => {
     if (actionPendingRef.current) return
-    onNavigate(tab)
-    onClose()
+    onDismissRequest({ type: 'tab', tab })
   }
 
   const navigateModel = () => {
     if (actionPendingRef.current) return
-    onOpenModel()
-    onClose()
+    onDismissRequest({ type: 'model' })
   }
 
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -155,9 +253,12 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
       aria-hidden={!open}
       className={`side-drawer-backdrop ${open ? 'open' : ''}`}
       data-testid="side-navigation-backdrop"
-      inert={!open}
+      inert={!open && !onEdgeOpen ? true : undefined}
       onClick={event => { if (event.target === event.currentTarget) requestClose() }}
+      ref={drawerMotion.ref}
+      {...drawerMotion.bind}
     >
+      {!open && onEdgeOpen && <div aria-hidden className="drawer-edge-open" data-drawer-edge />}
       <aside
         aria-label="Navigation"
         aria-modal="true"
@@ -191,61 +292,22 @@ export function SideNavigationDrawer({ activeTab, controller, open, onClose, onN
           </header>
           <div aria-label="Sessions" className="session-list drawer-session-list" role="region">
             {filtered.map(session => {
-              const date = new Date(session.started_at * 1_000)
               const revealed = swipedId === session.id
               const active = chat.storedSessionId === session.id
-              const title = session.title || 'Untitled session'
               return (
-                <article
-                  className={`session-row ${revealed ? 'delete-revealed' : ''} ${active ? 'active-session' : ''}`}
+                <SessionRow
+                  active={active}
                   key={session.id}
-                  onTouchEnd={event => {
-                    const start = swipeStart.current
-                    swipeStart.current = null
-                    if (!start || start.id !== session.id) return
-                    const touch = event.changedTouches[0]
-                    if (!touch) return
-                    const dx = touch.clientX - start.x
-                    const dy = touch.clientY - start.y
-                    if (Math.abs(dx) <= Math.abs(dy)) return
-                    if (dx < -50) setSwipedId(session.id)
-                    else if (dx > 35 && revealed) setSwipedId(null)
+                  onDelete={title => { setRemove({ id: session.id, title }) }}
+                  onOpen={(id, isActive) => {
+                    if (isActive) navigate('sessions')
+                    else void runSessionAction(() => controller.resumeSession(id))
                   }}
-                  onTouchStart={event => {
-                    if (event.touches.length !== 1) return
-                    const touch = event.touches[0]
-                    if (touch) swipeStart.current = { id: session.id, x: touch.clientX, y: touch.clientY }
-                  }}
-                >
-                  <div className="session-delete-action">
-                    <Button
-                      aria-hidden={!revealed}
-                      aria-label={`Delete ${title}`}
-                      disabled={pendingSessionAction}
-                      onClick={() => {
-                        setSwipedId(null)
-                        setRemove({ id: session.id, title })
-                      }}
-                      tabIndex={revealed ? 0 : -1}
-                      variant="destructive"
-                    >
-                      <IconTrash size={18} /> Delete
-                    </Button>
-                  </div>
-                  <button
-                    aria-current={active ? 'page' : undefined}
-                    className="session-main"
-                    disabled={pendingSessionAction}
-                    onClick={() => {
-                      if (revealed) return setSwipedId(null)
-                      if (active) navigate('sessions')
-                      else void runSessionAction(() => controller.resumeSession(session.id))
-                    }}
-                  >
-                    <strong>{title}</strong>
-                    <time dateTime={date.toISOString()}>{date.toLocaleDateString()}</time>
-                  </button>
-                </article>
+                  onReveal={setSwipedId}
+                  pending={pendingSessionAction}
+                  revealed={revealed}
+                  session={session}
+                />
               )
             })}
             {filtered.length === 0 && <div className="empty-panel">No sessions match your search.</div>}
