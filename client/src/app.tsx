@@ -45,7 +45,6 @@ export function App() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
-  const [settingsOrigin, setSettingsOrigin] = useState<MobileTab>('roster')
   const screenHistoryRef = useRef<ScreenHistory | null>(null)
 
   useEffect(() => {
@@ -110,8 +109,7 @@ export function App() {
     setDrawerOpen(false)
     setTab('roster')
   }
-  const openSettingsFrom = (origin: MobileTab) => {
-    setSettingsOrigin(origin)
+  const openSettingsFrom = () => {
     resetTabRoutes('settings')
     setTab('settings')
   }
@@ -125,7 +123,7 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={openDestination} onOpenModel={() => { setSettingsOrigin(navigation.activeTab); openModelSettings() }} open={drawerOpen} /> : null}
+        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} onClose={() => setDrawerOpen(false)} onNavigate={openDestination} onOpenModel={() => openModelSettings()} open={drawerOpen} /> : null}
         drawerOpen={drawerOpen}
         header={<header className="app-header">
           {navigation.activeTab === 'roster' ? (
@@ -148,7 +146,7 @@ export function App() {
             <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
           )}
           {navigation.activeTab === 'roster' && (
-            <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom('roster')} variant="ghost"><IconSettings className="size-6" /></Button>
+            <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom()} variant="ghost"><IconSettings className="size-6" /></Button>
           )}
         </header>}
         onSwipeBack={() => { if (inProfile) goBackOr(() => setTab('roster')) }}        onRefresh={refresh}
@@ -161,7 +159,7 @@ export function App() {
         {navigation.activeTab === 'roster' && <RosterScreen onOpenAgent={openAgent} query={rosterQuery} />}
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
         {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onExit={() => setTab(settingsOrigin)} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
       </MobileShell>
     </GatewayProvider>
   )

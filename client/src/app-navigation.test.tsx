@@ -159,7 +159,8 @@ describe('App navigation', () => {
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
+    // The top bar owns settings exit: its chevron returns to the bots roster.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
     expect(screen.getByText('Roster screen')).not.toBeNull()
   })
 
@@ -198,7 +199,9 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     expect(screen.getByText('Settings screen')).not.toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Settings back' }))
+    // With no in-page exit left, the drawer's bot identity returns to the chat.
+    openDrawer()
+    fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
