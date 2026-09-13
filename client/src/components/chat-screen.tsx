@@ -131,10 +131,15 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </article>
         ) : (
           <article className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
-            <div className="message-meta">
-              <span>{entry.kind === 'activity' ? 'Activity' : entry.author === 'assistant' ? 'Hermes' : entry.author}</span>
-              {entry.streaming && <Badge variant="muted">Streaming</Badge>}
-            </div>
+            {/* Bubbles identify their speaker by side, so no author caption —
+              the meta row only carries non-positional markers (Activity is an
+              event kind, Streaming is a delivery state). */}
+            {(entry.kind === 'activity' || entry.streaming) && (
+              <div className="message-meta">
+                <span>{entry.kind === 'activity' ? 'Activity' : null}</span>
+                {entry.streaming && <Badge variant="muted">Streaming</Badge>}
+              </div>
+            )}
             {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
             <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{entry.content || (entry.streaming ? '…' : '')}</ReactMarkdown></div>
             {entry.author === 'user' && (

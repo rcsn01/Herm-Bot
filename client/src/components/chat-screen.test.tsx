@@ -62,6 +62,24 @@ afterEach(() => {
 })
 
 describe('chat interaction wiring', () => {
+  it('labels bubbles by position, not by a speaker caption', () => {
+    $chat.set({
+      ...emptyChatState(),
+      transcript: createTranscript({ source: null, storedSessionId: null }, [
+        { content: 'Hello there', role: 'user' },
+        { content: 'General greeting', role: 'assistant' }
+      ])
+    })
+
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    const bubbles = Array.from(container.querySelectorAll('article.message'))
+    expect(bubbles).toHaveLength(2)
+    expect(bubbles[0].classList.contains('user')).toBe(true)
+    expect(bubbles[1].classList.contains('assistant')).toBe(true)
+    expect(container.querySelector('.message-meta')).toBeNull()
+  })
+
   it('routes speech through the supplied media adapter', async () => {
     $chat.set({
       ...emptyChatState(),
