@@ -1,30 +1,36 @@
 import { describe, expect, it } from 'vitest'
 
 import { ROOT_ROUTES } from './routes'
-import { navigationFromPath } from './screen-url'
+import { navigationFromPath, pathForTabRoute, sessionPath } from './screen-url'
 
-describe('direct navigation URL parser', () => {
-  it('maps tab roots', () => {
-    expect(navigationFromPath('/')).toEqual({ stack: [ROOT_ROUTES.roster], tab: 'roster' })
-    expect(navigationFromPath('/sessions')).toEqual({ stack: [ROOT_ROUTES.sessions], tab: 'sessions' })
-    expect(navigationFromPath('/capabilities')).toEqual({ stack: [ROOT_ROUTES.capabilities], tab: 'capabilities' })
-    expect(navigationFromPath('/cron')).toEqual({ stack: [ROOT_ROUTES.cron], tab: 'cron' })
-    expect(navigationFromPath('/settings')).toEqual({ stack: [ROOT_ROUTES.settings], tab: 'settings' })
+describe('screen URL codec', () => {
+  it('maps every tab root', () => {
+    expect(pathForTabRoute('roster', ROOT_ROUTES.roster)).toBe('/')
+    expect(pathForTabRoute('sessions', ROOT_ROUTES.sessions)).toBe('/sessions')
+    expect(pathForTabRoute('capabilities', ROOT_ROUTES.capabilities)).toBe('/capabilities')
+    expect(pathForTabRoute('cron', ROOT_ROUTES.cron)).toBe('/cron')
+    expect(pathForTabRoute('settings', ROOT_ROUTES.settings)).toBe('/settings')
   })
 
-  it('parses capability routes and decodes detail ids', () => {
+  it('round-trips capability routes, encoding detail ids', () => {
     const section = { section: 'mcp', tab: 'capabilities', type: 'capabilities-section' } as const
     const skills = { section: 'skills', tab: 'capabilities', type: 'capabilities-section' } as const
     const detail = { capabilityId: 'Server One/2', section: 'mcp', tab: 'capabilities', type: 'capability-detail' } as const
+    const path = pathForTabRoute('capabilities', detail)
+    expect(path).toBe('/capabilities/mcp/Server%20One%2F2')
 
-    expect(navigationFromPath('/capabilities/skills')).toEqual({ stack: [ROOT_ROUTES.capabilities, skills], tab: 'capabilities' })
-    expect(navigationFromPath('/capabilities/mcp/Server%20One%2F2')).toEqual({
+    expect(navigationFromPath('/capabilities')).toEqual({ stack: [ROOT_ROUTES.capabilities], tab: 'capabilities' })
+    expect(navigationFromPath('/capabilities/skills')).toEqual({
+      stack: [ROOT_ROUTES.capabilities, skills],
+      tab: 'capabilities'
+    })
+    expect(navigationFromPath(path)).toEqual({
       stack: [ROOT_ROUTES.capabilities, section, detail],
       tab: 'capabilities'
     })
   })
 
-  it('parses cron routes with reserved segments', () => {
+  it('round-trips cron routes with reserved segments', () => {
     const detail = { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' } as const
     const editor = { jobId: 'job-1', tab: 'cron', type: 'cron-job-editor' } as const
     const blueprints = { tab: 'cron', type: 'cron-blueprints' } as const
@@ -34,23 +40,31 @@ describe('direct navigation URL parser', () => {
     expect(navigationFromPath('/cron/new')).toEqual({ stack: [ROOT_ROUTES.cron, fresh], tab: 'cron' })
     expect(navigationFromPath('/cron/job-1/edit')).toEqual({ stack: [ROOT_ROUTES.cron, detail, editor], tab: 'cron' })
     expect(navigationFromPath('/cron/job-1')).toEqual({ stack: [ROOT_ROUTES.cron, detail], tab: 'cron' })
+    expect(pathForTabRoute('cron', detail)).toBe('/cron/job-1')
+    expect(pathForTabRoute('cron', editor)).toBe('/cron/job-1/edit')
+    expect(pathForTabRoute('cron', fresh)).toBe('/cron/new')
+    // a job id may not squat a reserved word or an editor suffix position
     expect(navigationFromPath('/cron/blueprints/edit')).toBeNull()
+    expect(navigationFromPath('/cron/new')).toEqual({ stack: [ROOT_ROUTES.cron, fresh], tab: 'cron' })
   })
 
-  it('parses settings categories and administration pages', () => {
+  it('round-trips settings categories and administration pages', () => {
     const category = { category: 'model', tab: 'settings', type: 'settings-category' } as const
     const admin = { page: 'profiles', tab: 'settings', type: 'settings-administration' } as const
 
     expect(navigationFromPath('/settings/model')).toEqual({ stack: [ROOT_ROUTES.settings, category], tab: 'settings' })
     expect(navigationFromPath('/settings/profiles')).toEqual({ stack: [ROOT_ROUTES.settings, admin], tab: 'settings' })
+    expect(pathForTabRoute('settings', category)).toBe('/settings/model')
+    expect(pathForTabRoute('settings', admin)).toBe('/settings/profiles')
     expect(navigationFromPath('/settings/nope')).toBeNull()
   })
 
-  it('leaves session deep links and unknown paths to their own handlers', () => {
+  it('treats the session deep-link namespace as foreign and rejects junk paths', () => {
     expect(navigationFromPath('/session/abc')).toBeNull()
     expect(navigationFromPath('/session/abc?profile=work')).toBeNull()
     expect(navigationFromPath('/nope')).toBeNull()
     expect(navigationFromPath('/bot')).toBeNull()
+    expect(navigationFromPath('/bot/extra')).toBeNull()
     expect(navigationFromPath('/capabilities/nope')).toBeNull()
     expect(navigationFromPath('/capabilities/mcp')).not.toBeNull()
     expect(navigationFromPath('/capabilities/mcp/')).toEqual({
@@ -59,14 +73,24 @@ describe('direct navigation URL parser', () => {
     })
   })
 
-  it('parses group-room routes', () => {
-    const route = { roomId: 'id:r-abc-1', tab: 'roster', type: 'group-room' } as const
+  it('rejects a route rendered under a mismatched tab', () => {
+    expect(() => pathForTabRoute('roster', ROOT_ROUTES.cron)).toThrow(/cron route.*roster tab/)
+  })
 
+  it('builds and parses group-room routes', () => {
+    const route = { roomId: 'id:r-abc-1', tab: 'roster', type: 'group-room' } as const
+    expect(pathForTabRoute('roster', route)).toBe('/group/id%3Ar-abc-1')
     expect(navigationFromPath('/group/id%3Ar-abc-1')).toEqual({
       stack: [ROOT_ROUTES.roster, route],
       tab: 'roster'
     })
     expect(navigationFromPath('/group')).toBeNull()
     expect(navigationFromPath('/group/a/b')).toBeNull()
+  })
+
+  it('builds canonical session deep-link URLs', () => {
+    expect(sessionPath('saved-work', null)).toBe('/session/saved-work')
+    expect(sessionPath('saved-work', 'work')).toBe('/session/saved-work?profile=work')
+    expect(sessionPath('a/b', null)).toBe('/session/a%2Fb')
   })
 })

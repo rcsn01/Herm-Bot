@@ -28,7 +28,7 @@ beforeEach(() => {
 })
 
 describe('observeHermesDeepLinks', () => {
-  it('feeds a valid browser cold-start URL without observing later browser history', () => {
+  it('feeds a valid browser cold-start URL and warm popstate, then cleans up', () => {
     mocks.state.native = false
     history.replaceState(null, '', '/session/cold?profile=work')
     const handler = vi.fn()
@@ -37,17 +37,17 @@ describe('observeHermesDeepLinks', () => {
 
     history.pushState(null, '', '/session/warm')
     window.dispatchEvent(new PopStateEvent('popstate'))
-    expect(handler).toHaveBeenCalledExactlyOnceWith(`${window.location.origin}/session/cold?profile=work`)
+    expect(handler).toHaveBeenLastCalledWith(`${window.location.origin}/session/warm`)
 
     unsubscribe()
     history.pushState(null, '', '/session/ignored')
     window.dispatchEvent(new PopStateEvent('popstate'))
-    expect(handler).toHaveBeenCalledExactlyOnceWith(`${window.location.origin}/session/cold?profile=work`)
+    expect(handler).toHaveBeenCalledTimes(2)
     expect(mocks.addListener).not.toHaveBeenCalled()
     expect(mocks.getLaunchUrl).not.toHaveBeenCalled()
   })
 
-  it('does not reserve or interpret browser history entries', () => {
+  it('ignores drawer-guard popstates but forwards normal internal session history', () => {
     mocks.state.native = false
     history.replaceState(null, '', '/')
     const handler = vi.fn()
@@ -55,10 +55,12 @@ describe('observeHermesDeepLinks', () => {
 
     history.pushState({ hermesScreen: 2, hermesDrawerBase: true }, '', '/session/internal')
     window.dispatchEvent(new PopStateEvent('popstate', { state: { hermesScreen: 2, hermesDrawerBase: true } }))
+    expect(handler).not.toHaveBeenCalled()
+
     history.pushState({ hermesScreen: 3 }, '', '/session/normal')
     window.dispatchEvent(new PopStateEvent('popstate', { state: { hermesScreen: 3 } }))
+    expect(handler).toHaveBeenCalledExactlyOnceWith(`${window.location.origin}/session/normal`)
 
-    expect(handler).not.toHaveBeenCalled()
     unsubscribe()
   })
 
@@ -75,8 +77,8 @@ describe('observeHermesDeepLinks', () => {
       data: { type: 'HERMES_DEEP_LINK', url: target }
     }))
     expect(handler).toHaveBeenCalledExactlyOnceWith(target)
-    expect(window.location.pathname).toBe('/')
-    expect(window.location.search).toBe('')
+    expect(window.location.pathname).toBe('/session/from-push')
+    expect(window.location.search).toBe('?profile=work')
 
     unsubscribe()
     serviceWorker.dispatchEvent(new MessageEvent('message', {

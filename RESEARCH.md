@@ -227,7 +227,7 @@ user's Back/Forward traversal across browsers.
 - Treat an app-level drawer/chat swipe and a browser/OS edge-back gesture as separate ownership domains.
 - Set `overscroll-behavior-x: contain` or `none` on the relevant root/scroll containers if horizontal
   overscroll navigation is the problem; keep `touch-action` scoped to the drawer or custom gesture owner.
-- Keep ordinary drawer and screen transitions in memory when browser/OS edge gestures conflict. Direct launch URLs can still select the initial screen, but the app should not create history entries for routine transitions.
+- Use `popstate`/history state to reconcile the drawer and route after traversal, not to block it.
 - Do not use `beforeunload` to trap ordinary navigation.
 - If the requirement is an absolute “never go back or forward” rule, a web PWA cannot guarantee it; a native
   wrapper or platform-specific browser/container control is required.

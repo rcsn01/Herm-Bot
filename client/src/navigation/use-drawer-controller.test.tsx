@@ -12,22 +12,19 @@ function Harness({ onReady, onDismissed }: { onReady: (controller: DrawerControl
 afterEach(cleanup)
 
 describe('useDrawerController', () => {
-  it('opens without changing browser history', () => {
-    window.history.replaceState({ screen: 'sessions' }, '', '/sessions')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+  it('opens with a drawer sentinel layered over the current screen entry', () => {
+    window.history.replaceState({ hermesScreen: 4 }, '', '/sessions')
     let controller!: DrawerController
     render(<Harness onReady={value => { controller = value }} />)
 
     act(() => { controller.openDrawer() })
 
     expect(controller.isOpen).toBe(true)
-    expect(window.history.state).toEqual({ screen: 'sessions' })
-    expect(pushState).not.toHaveBeenCalled()
-    expect(replaceState).not.toHaveBeenCalled()
+    expect(window.history.state).toMatchObject({ hermesDrawer: true, hermesDrawerBase: true, hermesScreen: 4 })
   })
 
-  it('completes a visual close without traversing history', () => {
+  it('waits for guard consumption before completing a visual close and intent', () => {
+    window.history.replaceState({ hermesScreen: 4 }, '', '/sessions')
     const back = vi.spyOn(window.history, 'back')
     const onDismissed = vi.fn()
     let controller!: DrawerController
@@ -37,20 +34,35 @@ describe('useDrawerController', () => {
     act(() => { controller.requestDismiss({ type: 'tab', tab: 'capabilities' }) })
     expect(controller.dismissRequest?.intent).toEqual({ type: 'tab', tab: 'capabilities' })
     act(() => { controller.completeDismiss() })
+    expect(back).toHaveBeenCalledOnce()
+    expect(onDismissed).not.toHaveBeenCalled()
 
-    expect(back).not.toHaveBeenCalled()
+    act(() => {
+      window.history.replaceState({ hermesScreen: 4, hermesDrawerBase: true }, '', '/sessions')
+      window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+    })
     expect(controller.isOpen).toBe(false)
     expect(onDismissed).toHaveBeenCalledWith({ type: 'tab', tab: 'capabilities' })
+    back.mockRestore()
   })
 
-  it('closes directly when a swipe reaches the dismissed endpoint', () => {
-    const onDismissed = vi.fn()
+  it('turns native back into a dismissal request without traversing history twice', () => {
+    window.history.replaceState({ hermesScreen: 4 }, '', '/sessions')
+    const back = vi.spyOn(window.history, 'back')
     let controller!: DrawerController
-    render(<Harness onDismissed={onDismissed} onReady={value => { controller = value }} />)
+    render(<Harness onReady={value => { controller = value }} />)
     act(() => { controller.openDrawer() })
-    act(() => { controller.completeDismiss() })
 
+    act(() => {
+      window.history.replaceState({ hermesScreen: 4, hermesDrawerBase: true }, '', '/sessions')
+      window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+    })
+    expect(controller.isOpen).toBe(true)
+    expect(controller.dismissRequest?.intent).toEqual({ type: 'close' })
+
+    act(() => { controller.completeDismiss() })
+    expect(back).not.toHaveBeenCalled()
     expect(controller.isOpen).toBe(false)
-    expect(onDismissed).toHaveBeenCalledWith({ type: 'close' })
+    back.mockRestore()
   })
 })

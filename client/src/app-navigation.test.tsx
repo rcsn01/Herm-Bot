@@ -81,7 +81,7 @@ async function enterAgent(buttonName: 'Open agent work' | 'Open agent default' =
   await act(async () => undefined)
 }
 
-async function settleUI(): Promise<void> {
+async function settleHistory(): Promise<void> {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 }
 
@@ -154,6 +154,7 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Back to bots' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
+    // In-app back rides history.back(); the popstate lands in a later task.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
 
     expect(screen.getByText('Roster screen')).not.toBeNull()
@@ -175,7 +176,7 @@ describe('App navigation', () => {
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await settleUI()
+    await settleHistory()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
   })
 
@@ -201,7 +202,7 @@ describe('App navigation', () => {
     openDrawer()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
-    await settleUI()
+    await settleHistory()
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
@@ -212,12 +213,12 @@ describe('App navigation', () => {
     await enterAgent()
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await settleUI()
+    await settleHistory()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
 
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    await settleUI()
+    await settleHistory()
     expect(screen.getByText('Cron screen')).not.toBeNull()
   })
 
@@ -227,13 +228,13 @@ describe('App navigation', () => {
     await enterAgent()
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
-    await settleUI()
+    await settleHistory()
     expect(screen.getByText('Settings screen')).not.toBeNull()
 
     // With no in-page exit left, the drawer's bot identity returns to the chat.
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
-    await settleUI()
+    await settleHistory()
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
@@ -243,7 +244,7 @@ describe('App navigation', () => {
     await enterAgent()
     openDrawer()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    await settleUI()
+    await settleHistory()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
 
@@ -300,30 +301,33 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).toBe(chat)
   })
 
-  it('opens the drawer without adding a browser history entry', async () => {
-    const initialState = window.history.state
-    const initialURL = window.location.href
+  it('pushes a guard entry when the drawer opens so system back closes it', async () => {
     render(<App />)
     await enterAgent()
 
     openDrawer()
+    expect((window.history.state as { hermesDrawer?: boolean }).hermesDrawer).toBe(true)
 
-    expect(window.history.state).toBe(initialState)
-    expect(window.location.href).toBe(initialURL)
-    expect(screen.getByTestId('side-navigation-backdrop').className).toContain('open')
+    // The OS back gesture (iOS/Android edge swipe, hardware back) rides popstate.
+    window.history.back()
+    await settleHistory()
+    expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
+    expect((window.history.state as { hermesDrawer?: boolean; hermesDrawerBase?: boolean }).hermesDrawer).toBeUndefined()
+    // The gesture closed only the drawer — the conversation stays underneath.
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
-  it('closes the drawer without traversing browser history', async () => {
+  it('consumes the guard entry when the drawer closes without a back gesture', async () => {
     const back = vi.spyOn(window.history, 'back')
     render(<App />)
     await enterAgent()
 
     openDrawer()
     fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
-    await settleUI()
+    await settleHistory()
 
-    expect(back).not.toHaveBeenCalled()
+    expect(back).toHaveBeenCalledOnce()
     expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
     back.mockRestore()
   })

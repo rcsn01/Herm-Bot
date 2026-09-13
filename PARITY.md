@@ -69,15 +69,20 @@ for the primary `default` profile) remain as the fallback for stored classic
 picks. Rows read the desktop's presentation labels: the primary `default`
 profile reads "Hermes"; a CLI display name from the roster row wins when the
 row carries one; otherwise slug names are word-capitalized (`codex` reads
-"Codex"). Screen changes stay in memory so browser and OS edge gestures do not
-compete with app-created history entries. The app parses direct launch
-paths such as `/settings`, `/cron`, and `/group/<key>` once at startup,
-and the offline shell serves those paths. In-app navigation does not call
-`pushState` or `replaceState`, so reload returns to the launch URL instead
-of the last in-memory screen. Session deep links
-(`/session/<id>?profile=<p>`) are still handled on direct launch; service
-worker notification taps resume the session in memory without changing the
-URL. The active profile remains global persisted state. Opening an agent
+"Codex"). Every screen also owns a URI — `/`, `/sessions`,
+`/capabilities[/section[/id]]`, `/cron[/blueprints|/<job>[/edit]|/new]`,
+`/settings/<category|page>` — mirrored into browser history: forward
+navigation pushes an entry, the system back gesture and browser back
+reconcile the app's navigation stacks through popstate, reloads and cold
+starts restore the screen after sign-in, and the offline app shell serves
+all of these paths. While a stored session is open, the sessions view
+mirrors the conversation's canonical deep link
+(`/session/<id>?profile=<p>`, `?profile=` omitted for the default
+profile); the generic `/sessions` root covers fresh conversations that
+have no stored id yet, and reconciling back to it never re-pushes the
+session URL. Session deep links (`/session/<id>?profile=<p>`) keep
+their canonical URL for the sessions view; other screen paths don't
+carry the active profile (it is global persisted state). Opening an agent
 enters that profile's latest human conversation — cron-run sessions and
 the desktop Bot Mode's own plumbing stay out of the recent-sessions list
 and the newest-conversation pick: automation sources (cron/kanban/tool)

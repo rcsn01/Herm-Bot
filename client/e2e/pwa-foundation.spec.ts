@@ -167,9 +167,8 @@ test('desktop group chats list on the main screen and open with sending', async 
   expect(faceBox!.width).toBeLessThanOrEqual(33)
   expect(faceBox!.height).toBeLessThanOrEqual(33)
 
-  const initialURL = page.url()
   await row.click()
-  await expect(page).toHaveURL(initialURL)
+  await expect(page).toHaveURL(/\/group\/id%3Ar-crew$/)
   await expect(page.getByText('Two candidates so far', { exact: true })).toBeVisible()
 
   // Sending runs the desktop round engine locally: the user bubble lands
@@ -179,24 +178,33 @@ test('desktop group chats list on the main screen and open with sending', async 
   await expect(page.getByText('hello crew')).toBeVisible()
 
   // The top bar owns the exit, and back lands on the roster.
-  await page.getByRole('button', { name: 'Back to bots' }).click()
+  await page.goBack()
   await expect(row).toBeVisible()
 })
 
-test('screens stay in one document URL while navigation remains in memory', async ({ page }) => {
+test('screens mirror into the URL and browser back undoes navigation', async ({ page }) => {
   await login(page)
-  const initialURL = page.url()
+  // openProfile resumed the profile's latest stored session, so the URL
+  // mirrors the open conversation, not the generic sessions root.
+  await expect(page).toHaveURL(/\/session\/saved-default$/)
+
+  // Browser back/OS edge-back while the drawer is open dismisses the drawer,
+  // rather than popping the conversation back to the roster.
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await expect(page.getByTestId('side-navigation-backdrop')).toHaveClass(/open/)
+  await page.goBack()
+  await expect(page).toHaveURL(/\/session\/saved-default$/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
+  await expect(page.getByTestId('side-navigation-backdrop')).not.toHaveClass(/open/)
 
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name: 'Capabilities' }).click()
-  await expect(page.getByText('Capabilities')).toBeVisible()
-  await expect(page).toHaveURL(initialURL)
+  await expect(page).toHaveURL(/\/capabilities$/)
 
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Open bot chat' }).click()
+  // The system back gesture rides the mirrored history entries.
+  await page.goBack()
+  await expect(page).toHaveURL(/\/session\/saved-default$/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
-  await expect(page).toHaveURL(initialURL)
 })
 
 test('drawer touch motion moves only the panel and commits after the visual endpoint', async ({ page, browserName }) => {
@@ -322,20 +330,18 @@ test('reduced motion still reaches drawer endpoints immediately', async ({ page,
   await expect(backdrop).not.toHaveClass(/open/)
 })
 
-test('reloading returns to the launch screen because navigation is not persisted in history', async ({ page }) => {
+test('reloading keeps the current screen', async ({ page }) => {
   await login(page)
-  const initialURL = page.url()
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name: 'Cron Jobs' }).click()
-  await expect(page.getByText('Cron Jobs')).toBeVisible()
-  await expect(page).toHaveURL(initialURL)
+  await expect(page).toHaveURL(/\/cron$/)
 
   await page.reload()
-  await expect(page).toHaveURL(initialURL)
-  await expect(page.getByRole('button', { name: 'Open settings' })).toBeVisible()
+  await expect(page).toHaveURL(/\/cron$/)
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible()
 })
 
-test('a direct launch URL still selects its initial screen', async ({ page }) => {
+test('a screen URL survives a cold start', async ({ page }) => {
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Continue' }).click()
   await page.getByRole('button', { name: 'Use password for Test account' }).click()
