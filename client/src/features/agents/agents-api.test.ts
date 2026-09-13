@@ -13,8 +13,40 @@ describe('agent roster parsing', () => {
     ])).toEqual([
       { displayName: 'Ops Bot', isDefault: false, name: 'work', preview: 'One new Fujitsu stream', sessionId: 'bot-chat', startedAt: 1_700_000_000, title: undefined },
       { displayName: undefined, isDefault: true, name: 'default', preview: undefined, sessionId: undefined, startedAt: undefined, title: undefined },
-      { displayName: undefined, isDefault: false, name: 'Searcher', preview: undefined, sessionId: undefined, startedAt: Math.floor(Date.parse('2026-09-10T09:30:00Z') / 1000), title: 'Searcher' }
+      { displayName: undefined, isDefault: false, name: 'Searcher', preview: undefined, sessionId: undefined, startedAt: Math.floor(Date.parse('2026-09-10T09:30:00Z') / 1000), title: undefined }
     ])
+  })
+
+  it('reads the Bot Mode meta from ui_meta and never mistakes the session title for the bot name', () => {
+    const entries = parseAgentRoster([
+      {
+        // The wire's top-level title is the latest human session's title
+        // (tui_gateway/methods_profiles.py roster enrichment) — not the bot's name.
+        name: 'default',
+        title: 'My weekend plans',
+        ui_meta: {
+          'hermes-bots': {
+            color: '#8b5cf6',
+            custom: true,
+            image: 'data:image/png;base64,AAA',
+            imageKind: 'photo',
+            shape: 'blobatar:7:cat',
+            title: '  Hermes  '
+          }
+        }
+      },
+      { name: 'scout', ui_meta: { unrelated: true } },
+      { name: 'forge', ui_meta: { 'hermes-bots': { title: '   ' } } }
+    ])
+
+    expect(entries[0]).toMatchObject({
+      meta: { color: '#8b5cf6', custom: true, image: 'data:image/png;base64,AAA', imageKind: 'photo', shape: 'blobatar:7:cat', title: 'Hermes' },
+      title: 'Hermes'
+    })
+    expect(entries[1]?.meta).toBeUndefined()
+    expect(entries[1]?.title).toBeUndefined()
+    expect(entries[2]?.meta).toBeUndefined()
+    expect(entries[2]?.title).toBeUndefined()
   })
 
   it('unwraps a profiles object body and drops unusable entries', () => {

@@ -12,6 +12,12 @@ async function login(page: Page, path = '/') {
     await page.getByRole('button', { name: 'Hermes' }).click()
   }
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
+  if (path === '/') {
+    // The newest session on the fixture is Bot Mode plumbing ('Group: r-crew');
+    // opening Hermes must land on the human conversation instead. The fixture
+    // echoes the requested session id as the resumed title.
+    await expect(page.locator('.header-bot-button small')).toHaveText('saved-default')
+  }
 }
 
 async function fixtureCalls(page: Page) {
@@ -124,7 +130,7 @@ test('cold deep link switches profile, resumes, and reloads durable history', as
   ]))
 })
 
-test('desktop group chats list on the main screen and open read-only', async ({ page }) => {
+test('desktop group chats list on the main screen and open with sending', async ({ page }) => {
   await login(page)
 
   await page.getByRole('button', { name: 'Back to bots' }).click()
@@ -144,7 +150,12 @@ test('desktop group chats list on the main screen and open read-only', async ({ 
   await row.click()
   await expect(page).toHaveURL(/\/group\/id%3Ar-crew$/)
   await expect(page.getByText('Two candidates so far')).toBeVisible()
-  await expect(page.getByText('Reading only for now — sending to group chats is not available in Mobile yet.')).toBeVisible()
+
+  // Sending runs the desktop round engine locally: the user bubble lands
+  // immediately, member turns fire against the gateway in the background.
+  await page.getByLabel('Message Research crew').fill('hello crew')
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect(page.getByText('hello crew')).toBeVisible()
 
   // The top bar owns the exit, and back lands on the roster.
   await page.goBack()

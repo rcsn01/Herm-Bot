@@ -25,7 +25,7 @@ import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
 import { GatewayController } from '~/state/gateway-controller'
-import { $connection, $preferences } from '~/state/store'
+import { $connection, $preferences, $profileSwitching } from '~/state/store'
 
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
@@ -41,6 +41,7 @@ const DESTINATION_TITLES = {
 export function App() {
   const connection = useStore($connection)
   const preferences = useStore($preferences)
+  const profileSwitching = useStore($profileSwitching)
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
   const activeGroupId = routeForGroupRoom(activeRoute)
@@ -86,10 +87,14 @@ export function App() {
   if (connection.phase === 'unsupported') {
     return <main className="blocking-screen"><div className="brand-mark letter">!</div><h1>Update remote Hermes</h1><p>{connection.error}</p><Button onClick={() => void controller.connect().catch(() => undefined)}>Check again</Button></main>
   }
-  if (connection.phase === 'connecting' || (connection.phase === 'reconnecting' && !reconnecting)) {
+  // The full-screen takeover is for cold boot and lost transports. A roster
+  // tap (a profile switch) renders the destination shell in place instead —
+  // the chat screen shows its own inline connecting state.
+  const switchingConnect = connection.phase === 'connecting' && profileSwitching
+  if (connection.phase === 'connecting' && !profileSwitching || (connection.phase === 'reconnecting' && !reconnecting)) {
     return <main aria-label="Connecting to Hermes" className="blocking-screen startup-screen"><BrandMark small /><p role="status">Connecting…</p></main>
   }
-  if (connection.phase !== 'connected' && !reconnecting) return <ConnectScreen controller={controller} />
+  if (connection.phase !== 'connected' && !reconnecting && !switchingConnect) return <ConnectScreen controller={controller} />
 
   const refresh = async () => {
     setRefreshing(true)
@@ -97,7 +102,10 @@ export function App() {
     setRefreshing(false)
   }
   const openAgent = (profile: null | string) => {
-    void controller.openProfile(profile).finally(() => setTab('sessions'))
+    // Enter the destination first; the wire work (profile switch, session
+    // resume) streams into the already-visible chat shell.
+    setTab('sessions')
+    void controller.openProfile(profile)
   }
   /** In-app back rides browser history while an app entry sits behind it
    *  (so the system back gesture stays in sync); at the boundary the caller's

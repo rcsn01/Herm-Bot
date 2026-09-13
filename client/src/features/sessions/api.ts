@@ -14,8 +14,25 @@ import type { StoredSession } from '~/lib/types'
  */
 const AUTOMATION_SOURCES = new Set(['cron', 'kanban', 'tool'])
 
+/**
+ * Titles Bot Mode itself mints for its plumbing sessions (ported from
+ * apps/desktop/src/plugins/hermes-bots/session-sweep.ts isBotModeSweepTitle):
+ * group member sessions are titled `Group: <roomId>` (group-turns.ts
+ * ensureGroupChatSession), bot-to-bot CLI handoffs create exactly 'Bot Chat'
+ * and 'Agent Inbox'. The desktop's own sweep matches these by exact title or
+ * prefix — deliberately title-based, so a user's real conversation keeps
+ * whatever title it has and is never filtered.
+ */
+const BOT_MODE_SWEEP_TITLES = new Set(['Bot Chat', 'Agent Inbox'])
+
+function isBotModePlumbing(session: StoredSession): boolean {
+  const title = String(session.title ?? '').trim()
+  return BOT_MODE_SWEEP_TITLES.has(title) || title.startsWith('Group: ')
+}
+
 export function humanSessions(sessions: StoredSession[]): StoredSession[] {
-  return sessions.filter(session => !AUTOMATION_SOURCES.has((session.source ?? '').trim().toLowerCase()))
+  return sessions.filter(session =>
+    !AUTOMATION_SOURCES.has((session.source ?? '').trim().toLowerCase()) && !isBotModePlumbing(session))
 }
 
 export interface SessionsApi {

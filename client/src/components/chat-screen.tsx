@@ -110,9 +110,19 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         )}
         {entries.length === 0 && (
           <div className="empty-chat">
-            <BrandMark small />
-            <h2>What can Hermes do for you?</h2>
-            <p>This conversation runs on {connection.status?.version ? `Hermes ${connection.status.version}` : 'your remote gateway'}.</p>
+            {connection.phase === 'connecting' ? (
+              <>
+                <BrandMark small />
+                <h2>Connecting…</h2>
+                <p role="status">Setting up the conversation.</p>
+              </>
+            ) : (
+              <>
+                <BrandMark small />
+                <h2>What can Hermes do for you?</h2>
+                <p>This conversation runs on {connection.status?.version ? `Hermes ${connection.status.version}` : 'your remote gateway'}.</p>
+              </>
+            )}
           </div>
         )}
         {entries.map(entry => entry.kind === 'cron-instructions' ? (

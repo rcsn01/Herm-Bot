@@ -74,7 +74,9 @@ export function RosterScreen({ onOpenAgent, onOpenGroup, query = '' }: { onOpenA
         {visible.map(agent => (
           <button className="agent-row" key={agent.name} onClick={() => onOpenAgent(agent.isDefault ? null : agent.name)}>
             <span aria-hidden className="agent-avatar">
-              {agent.avatar ? <img alt="" className="agent-avatar-img" src={agent.avatar} /> : <BotFace name={agent.name} />}
+              {agent.meta?.image ?? agent.avatar
+                ? <img alt="" className="agent-avatar-img" src={agent.meta?.image ?? agent.avatar} />
+                : <BotFace color={agent.meta?.color} name={agent.name} shape={agent.meta?.shape} />}
             </span>
             <span className="agent-row-main">
               <span className="agent-row-top">

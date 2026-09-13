@@ -83,19 +83,54 @@ have no stored id yet, and reconciling back to it never re-pushes the
 session URL. Session deep links (`/session/<id>?profile=<p>`) keep
 their canonical URL for the sessions view; other screen paths don't
 carry the active profile (it is global persisted state). Opening an agent
-enters that profile's latest human conversation — cron-run sessions stay
-out of the recent-sessions list and the newest-conversation pick, like
-the desktop's recents — starting a fresh one when none exists. The
+enters that profile's latest human conversation — cron-run sessions and
+the desktop Bot Mode's own plumbing stay out of the recent-sessions list
+and the newest-conversation pick: automation sources (cron/kanban/tool)
+plus the Bot Mode minted titles (`Group: <roomId>` member sessions,
+'Bot Chat', 'Agent Inbox' — ported from the desktop's session-sweep
+isBotModeSweepTitle), since `include_hidden` returns those rows too —
+like the desktop's recents — starting a fresh one when none exists. The
 listing asks the gateway for bot-owned hidden sessions (`include_hidden`),
 the same grant the desktop's Bots pane uses, so conversations created on
-the desktop are visible and resumable on mobile. Group chats created in
+the desktop are visible and resumable on mobile. Bot identity and
+avatar customization ride the row's `ui_meta['hermes-bots']` (the
+desktop's BotMeta, synced via `profiles.configure`): the meta title
+leads the label like the desktop's `labels.ts` displayName, the meta
+title replaces the latest-session title the wire's top-level `title`
+carries, and the meta shape/color/photo drives the roster face. Group
+chats created in
 the desktop's Bot Mode ride the same listing: the default profile's
 `ui_meta['hermes-bots-groups']` mirror lists rooms on the main screen
-(`/group/<key>` opens a read-only room view of the shared log; sending
-into a group still runs on the desktop's client-side turn engine and is
-not available in Mobile yet). The conversation is the
+(`/group/<key>` opens the room view of the shared log). Sending now runs
+the desktop's round engine locally: a user send appends to the room, then
+bounded serial round-robin drives each member in its own hidden
+per-group plumbing session (`session.create` with `room_plumbing` +
+`follow_profile_config`; desktop source
+apps/desktop/src/plugins/hermes-bots/{group-rounds,group-turns}.ts) —
+@mention routing with @everyone/@all, "(pass)" silence, per-member
+watermark deltas, thread-scoped turns, the (#93129) stop holds with
+session.interrupt, (#93127) epoch commit guards, (#94376) reply
+selection, (#90694) clarify/approval cards, and late stranded-reply
+harvest. Mobile writes the shared mirror through the desktop's
+read-merge-CAS-write protocol (`ui_meta_expected_revisions` + read-back,
+desktop group-chat.ts), so desktop edits and mobile sends merge
+idempotently instead of clobbering. Attachments in group sends remain
+deferred (mirror strips images; mobile turns are text-only). The
+conversation is the
 bot's home surface; there is no separate bot hub
-page. The messaging header leads with the bot's identity (the roster
+page.
+
+Opening a bot behaves like the desktop's in-process entry rather than a
+reconnect: the tap enters the chat shell immediately (the destination
+header shows the agent's identity while the wire work streams in), a
+profile switch renders that shell in place instead of the full-screen
+boot takeover, and the PWA keeps the most recent session's history in
+localStorage (`state/transcript-cache.ts`), so the last conversation is
+visible before the gateway answers; reconcile replaces it with the
+authoritative page. The connect handshake selects the session and paints
+before the history and session-list refreshes land, and a tap on the
+already-open conversation only freshens it (one reconcile, no resume).
+The messaging header leads with the bot's identity (the roster
 label — Hermes for the default profile) and carries the open session's
 name beneath it. A header gear on the roster opens **Settings**; profile
 surfaces reach the model settings from the side navigation. **Capabilities**,

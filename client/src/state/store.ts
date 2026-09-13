@@ -13,6 +13,10 @@ export const $connection = atom<{
   status: GatewayStatus | null
 }>({ authMode: 'token', error: null, phase: 'connecting', status: null })
 
+/** True while a roster-tapped profile switch is connecting; the app shell
+ *  renders the destination in place instead of the full-screen boot takeover. */
+export const $profileSwitching = atom(false)
+
 export const $preferences = atom<ConnectionPreferences>({
   authMode: 'token',
   profile: localStorage.getItem('hermes.profile'),

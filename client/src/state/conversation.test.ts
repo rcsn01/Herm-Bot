@@ -6,6 +6,7 @@ import type { ChatState } from '~/lib/types'
 import { SessionRuntime } from '~/gateway/session-runtime'
 import { MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $chat, Conversation, emptyChatState, reduceGatewayEvent } from '~/state/conversation'
+import { loadCachedTranscript, saveCachedTranscript } from '~/state/transcript-cache'
 import { $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
@@ -435,6 +436,79 @@ describe('incremental session loading', () => {
     await vi.waitFor(() => expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['older answer', 'recent answer', 'final answer']))
     expect(fetches).toBe(1)
     expect($chat.get()).toMatchObject({ historyHasMore: false, historyNextOffset: 2, running: false })
+    dispose()
+  })
+})
+describe('local transcript cache', () => {
+  const cachedEntry = {
+    author: 'user' as const,
+    content: 'Cached line',
+    id: 'cached-1',
+    kind: 'message' as const,
+    streaming: false
+  }
+
+  it('seeds the transcript from the cache when the adopted session is the cached one', () => {
+    saveCachedTranscript(null, { entries: [cachedEntry], storedSessionId: 'stored-1' })
+    const gateway = new MemoryGateway()
+    const { conversation, dispose } = subject(gateway)
+
+    conversation.adopt({ contractVersion: null, info: null, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['Cached line'])
+    dispose()
+  })
+
+  it('prefers the session rows over the cache and ignores other sessions', () => {
+    saveCachedTranscript(null, { entries: [cachedEntry], storedSessionId: 'stored-9' })
+    const gateway = new MemoryGateway()
+    const { conversation, dispose } = subject(gateway)
+
+    conversation.adopt({
+      contractVersion: null,
+      info: null,
+      rows: [{ content: 'live row', role: 'user', row_id: 1 }],
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['live row'])
+    dispose()
+  })
+
+  it('replaces the seeded cache with the authoritative page on reconcile', async () => {
+    saveCachedTranscript(null, { entries: [{ ...cachedEntry, content: 'Stale line' }], storedSessionId: 'stored-1' })
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({ row_id: 1, session_id: 'runtime-1', stored_session_id: 'stored-1' }))
+      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ content: 'fresh answer', role: 'assistant', row_id: 1 }],
+        pagination: { limit: 80, offset: 0, returned: 1 }
+      }))
+    const { conversation, dispose, runtime } = subject(gateway)
+
+    conversation.adopt(await runtime.resumeSession(null, 'stored-1'))
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['Stale line'])
+    await conversation.reconcileHistory()
+
+    expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['fresh answer'])
+    dispose()
+  })
+
+  it('persists the transcript when a turn completes', () => {
+    const gateway = new MemoryGateway()
+    const { conversation, dispose } = subject(gateway)
+    conversation.adopt({
+      contractVersion: null,
+      info: null,
+      rows: [{ content: 'done answer', role: 'assistant', row_id: 7 }],
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+
+    conversation.onGatewayEvent({ type: 'message.complete', session_id: 'runtime-1', payload: {} })
+
+    expect(loadCachedTranscript(null)).toMatchObject({ storedSessionId: 'stored-1' })
+    expect(loadCachedTranscript(null)?.entries.map(entry => entry.content)).toContain('done answer')
     dispose()
   })
 })

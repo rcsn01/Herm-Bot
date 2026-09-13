@@ -125,7 +125,20 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .group-screen { display: flex; flex-direction: column; }
 .group-log { display: grid; gap: 10px; align-content: start; }
 .group-members { margin: 0; }
+.group-activity-line { margin: -4px 0 0; font-size: 12px; text-align: center; }
 .group-send-note { margin: 14px 0 0; text-align: center; }
+.group-composer { display: grid; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.group-composer textarea { width: 100%; resize: vertical; }
+.group-composer-actions { display: flex; justify-content: space-between; gap: 8px; }
+.group-new-thread { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; color: var(--muted); }
+.group-new-thread.active { border-color: var(--accent); color: var(--accent); }
+.group-stop { align-self: center; margin-top: 12px; padding: 8px 22px; border-radius: 999px; border: 1px solid var(--danger, #c0392b); background: none; color: var(--danger, #c0392b); font-weight: var(--weight-bold, 600); }
+.group-prompt-card { display: grid; gap: 8px; justify-items: start; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 10px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.group-prompt-card p, .group-prompt-card pre { margin: 0; white-space: pre-wrap; }
+.group-prompt-member { font-weight: var(--weight-bold); font-size: 13px; }
+.group-prompt-command { font-size: 12px; overflow-x: auto; max-width: 100%; }
+.group-prompt-card input { width: 100%; }
+.group-prompt-choice { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; background: var(--panel); }
 .connection-dot, .status-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--success); }
 .connection-dot.busy, .connection-dot.reconnecting, .status-dot.running, .status-dot.progress, .status-dot.generating { background: var(--primary); box-shadow: 0 0 0 4px var(--accent); }
 .view-container { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }

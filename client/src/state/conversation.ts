@@ -6,6 +6,7 @@ import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
 import type { ChatState, PendingPrompt, ToolActivity } from '~/lib/types'
+import { loadCachedTranscript, saveCachedTranscript } from '~/state/transcript-cache'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
 /**
@@ -142,16 +143,25 @@ export class Conversation {
 
   constructor(private readonly runtime: SessionRuntime) {}
 
-  /** Install a newly selected runtime session as the open conversation. */
+  /** Install a newly selected runtime session as the open conversation.
+   *  When the session carries no rows, the locally cached transcript of the
+   *  most recent visit fills the screen immediately; reconcile replaces it. */
   adopt(session: RuntimeSession, source: null | string = null): void {
     this.historyLoadRequest += 1
+    const context = { source, storedSessionId: session.storedSessionId }
+    const cached = !session.rows?.length && session.storedSessionId
+      ? loadCachedTranscript(currentGatewayScope().profile)
+      : null
+    const transcript = cached && cached.storedSessionId === session.storedSessionId
+      ? { context, entries: cached.entries }
+      : createTranscript(context, session.rows)
     $chat.set({
       ...emptyChatState(),
       contractVersion: session.contractVersion,
       info: session.info,
       runtimeSessionId: session.runtimeSessionId,
       storedSessionId: session.storedSessionId,
-      transcript: createTranscript({ source, storedSessionId: session.storedSessionId }, session.rows)
+      transcript
     })
   }
 
@@ -182,12 +192,24 @@ export class Conversation {
     $chat.set(emptyChatState())
   }
 
+  /** Keep the PWA's local copy of the most recent session's history fresh
+   *  so the next open renders it instantly. */
+  private persistTranscript(): void {
+    const current = $chat.get()
+    if (!current.storedSessionId) return
+    saveCachedTranscript(currentGatewayScope().profile, {
+      entries: current.transcript.entries,
+      storedSessionId: current.storedSessionId
+    })
+  }
+
   onGatewayEvent(event: GatewayEvent): void {
     const previous = $chat.get()
     if (event.session_id && event.session_id !== previous.runtimeSessionId) return
     const next = reduceGatewayEvent(previous, event)
     $chat.set(next)
     if (event.type === 'message.complete') {
+      this.persistTranscript()
       void this.reconcileHistory().catch(error => {
         const current = $chat.get()
         if (current.runtimeSessionId === event.session_id) {
@@ -346,6 +368,7 @@ export class Conversation {
       running: Boolean(current.info?.running),
       transcript
     })
+    this.persistTranscript()
   }
 
   async loadOlderMessages(): Promise<boolean> {

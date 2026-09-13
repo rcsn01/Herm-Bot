@@ -18,6 +18,20 @@ describe('humanSessions', () => {
 
     expect(humanSessions(sessions).map(session => session.id)).toEqual(['human-1', 'human-2', 'human-3'])
   })
+
+  it('drops Bot Mode plumbing sessions by title, like the desktop sweep', () => {
+    // include_hidden now returns the desktop Bot Mode's group-member and
+    // handoff sessions; they are plumbing, never a human conversation.
+    const sessions = [
+      { id: 'group-1', message_count: 9, preview: '', source: 'ios', started_at: 500, title: 'Group: r-crew' },
+      { id: 'handoff-1', message_count: 2, preview: '', source: 'ios', started_at: 490, title: 'Bot Chat' },
+      { id: 'inbox-1', message_count: 2, preview: '', source: 'ios', started_at: 480, title: 'Agent Inbox' },
+      { id: 'lookalike', message_count: 1, preview: '', source: 'ios', started_at: 470, title: 'Group project notes' },
+      { id: 'human-1', message_count: 4, preview: '', source: 'ios', started_at: 460, title: 'Planning session' }
+    ]
+
+    expect(humanSessions(sessions).map(session => session.id)).toEqual(['lookalike', 'human-1'])
+  })
 })
 
 describe('sessionsApi', () => {

@@ -12,7 +12,16 @@ import { createSessionsApi, humanSessions, type SessionsApi } from '~/features/s
 import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetRoutes } from '~/navigation/navigation-store'
 import { $chat, Conversation } from '~/state/conversation'
-import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
+import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
+import { setGroupSyncScheduler } from '~/features/groups/group-store'
+import {
+  handleGatewayTransition,
+  pullGroupChatState,
+  scheduleGroupChatSync,
+  startGroupChatSync,
+  stopGroupChatSync
+} from '~/features/groups/groups-sync'
+import { setGroupEngineRequest } from '~/features/groups/group-engine'
 
 export const MINIMUM_CONTRACT = 6
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
@@ -127,20 +136,19 @@ export class GatewayController {
     if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
     if (storedSessionId && !opened.resumed) this.clearSessionBookmark(scope)
     this.selectSession(opened.session)
+    // The session is selected: paint the destination now. History and the
+    // session list continue loading underneath (both use the captured scope,
+    // so a profile change mid-open cannot publish another profile's data).
+    $connection.set({ authMode, error: null, phase: 'connected', status })
+    this.installGroupEngine()
     try {
       if (opened.resumed) await this.conversation.reconcileHistory(scope)
-      // Keep the connection in `connecting` until the captured profile's
-      // session list has been refreshed. A profile can change while the
-      // transport is opening; using current preferences here would fetch and
-      // publish a different profile's list before the stale connect notices.
       await this.refreshSessions(scope)
     } catch (error) {
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
       this.applyConnectionError(error)
       throw error
     }
-    if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
-    $connection.set({ authMode, error: null, phase: 'connected', status })
   }
 
   async login(provider: string) {
@@ -180,9 +188,14 @@ export class GatewayController {
     if (profile === $preferences.get().profile) return
     this.invalidateReconnect()
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
-    await this.teardownGatewayScope({ cancelQueries: true })
-    savePreferences({ profile })
-    await this.connect()
+    $profileSwitching.set(true)
+    try {
+      await this.teardownGatewayScope({ cancelQueries: true })
+      savePreferences({ profile })
+      await this.connect()
+    } finally {
+      $profileSwitching.set(false)
+    }
   }
 
   async newSession() {
@@ -205,13 +218,23 @@ export class GatewayController {
   /**
    * Roster tap: enter a profile's latest conversation. Switches profiles when
    * needed, resumes the newest session from the refreshed list, and starts a
-   * fresh session when none exist or the newest one is gone.
+   * fresh session when none exist or the newest one is gone. A switch lets
+   * connect() resume the profile's bookmarked session directly, so when that
+   * is already the newest conversation no second resume happens.
    */
   async openProfile(profile: null | string) {
-    if (profile !== $preferences.get().profile) await this.switchProfile(profile)
+    const switched = profile !== $preferences.get().profile
+    if (switched) await this.switchProfile(profile)
     const sessions = humanSessions($sessions.get())
     const latest = sessions.reduce<null | (typeof sessions)[number]>((newest, session) =>
       !newest || session.started_at > newest.started_at ? session : newest, null)
+    const active = $chat.get()
+    if (latest && active.runtimeSessionId && latest.id === active.storedSessionId) {
+      // Already inside the target conversation; a switch reconciled it in
+      // passing, a warm tap only needs a freshen.
+      if (!switched) await this.conversation.reconcileHistory()
+      return
+    }
     if (latest) {
       try {
         await this.resumeSession(latest.id)
@@ -303,6 +326,9 @@ export class GatewayController {
     this.invalidateReconnect()
     this.appBackgrounded = false
     ++this.sessionSelectionGeneration
+    setGroupEngineRequest(null)
+    setGroupSyncScheduler(null)
+    stopGroupChatSync()
     this.unsubscribeEvents?.()
     this.unsubscribeEvents = undefined
     this.unsubscribeState?.()
@@ -335,6 +361,13 @@ export class GatewayController {
 
   /** Shared teardown for every Scope-ending transition (configure-URL change, logout, profile switch). */
   private async teardownGatewayScope(options: { cancelQueries?: boolean } = {}) {
+    // A scope change kills the group engine's transport: in-flight turns must
+    // not fire at a dead gateway, and the mirror writer must not publish a
+    // dying scope's pending state.
+    setGroupEngineRequest(null)
+    setGroupSyncScheduler(null)
+    handleGatewayTransition() // bump epochs so live room loops bail
+    stopGroupChatSync()
     this.runtime.close()
     if (options.cancelQueries) await cancelGatewayQueries() // switchProfile: cancel in-flight, KEEP the cache
     else clearGatewayQueries()                              // configure/logout: remove the gateway cache
@@ -344,6 +377,17 @@ export class GatewayController {
 
   private sessionsApi(scope: CurrentGatewayScope): SessionsApi {
     return createSessionsApi(createGatewayApi(this.runtime, scope.profile))
+  }
+
+  /** Point the group send engine at this scope's transport and arm the
+   *  mirror writer. The initial pull happens BEFORE any local publish (the
+   *  receive half of the sync contract). */
+  private installGroupEngine() {
+    const runtime = this.runtime
+    setGroupEngineRequest((method, params) => runtime.rpc(method, params))
+    startGroupChatSync()
+    setGroupSyncScheduler(changedRoom => scheduleGroupChatSync({ changedRooms: [changedRoom] }))
+    void pullGroupChatState().catch(() => undefined)
   }
 
   private subscribeRuntime() {

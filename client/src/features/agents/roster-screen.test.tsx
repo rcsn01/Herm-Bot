@@ -100,6 +100,59 @@ describe('agent roster screen', () => {
     expect(container.querySelector('.agent-avatar img')).not.toBeNull()
   })
 
+  it('labels bots with their Bot Mode title, not their latest session title', async () => {
+    renderRoster(new MemoryGateway().handle('profiles.list', () => ({
+      profiles: [
+        // The wire's top-level title is the latest session's title; the bot's
+        // own name lives in ui_meta['hermes-bots'].title.
+        { name: 'default', is_default: true, title: 'My weekend plans', ui_meta: { 'hermes-bots': { title: 'Hermes Prime' } } },
+        { name: 'work', title: 'Sprint board sweep' }
+      ]
+    })))
+
+    await screen.findByRole('button', { name: /Hermes Prime/ })
+    // No meta title: the default profile still reads as Hermes, and the
+    // session title never becomes the bot's name.
+    expect(screen.getByRole('button', { name: /^Hermes/ })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /Sprint board sweep/ })).toBeNull()
+  })
+
+  it('renders the customized face from its Bot Mode meta', async () => {
+    const { container } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({
+      profiles: [
+        { name: 'work', ui_meta: { 'hermes-bots': { shape: 'blobatar:91:dog', custom: true, title: 'Worky' } } }
+      ]
+    })))
+
+    // The meta title only renders once profiles.list has landed.
+    const customizedRow = await screen.findByRole('button', { name: /Worky/ })
+    const customized = customizedRow.querySelector('.bot-face')!.innerHTML
+    cleanup()
+
+    // The same name without a stored pick renders the name-derived face.
+    const { container: plain } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({
+      profiles: [{ name: 'work', ui_meta: { 'hermes-bots': { title: 'Worky' } } }]
+    })))
+    const derivedRow = await screen.findByRole('button', { name: /Worky/ })
+    const derived = derivedRow.querySelector('.bot-face')!.innerHTML
+
+    expect(customized).not.toBe(derived)
+    void container
+    void plain
+  })
+
+  it('renders a photo avatar from the Bot Mode meta image', async () => {
+    const { container } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({
+      profiles: [
+        { name: 'work', ui_meta: { 'hermes-bots': { image: 'data:image/png;base64,AAA', imageKind: 'photo', title: 'Worky' } } }
+      ]
+    })))
+
+    const row = await screen.findByRole('button', { name: /Worky/ })
+    expect(row.querySelector('img')).not.toBeNull()
+    expect(row.querySelector('.bot-face')).toBeNull()
+  })
+
   it('lists desktop group chats beneath the bots and opens them', async () => {
     const { onOpenGroup } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({
       profiles: [{

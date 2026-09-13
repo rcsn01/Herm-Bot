@@ -126,23 +126,33 @@ sockets.on('connection', (ws, _req, id, profile) => {
     } else if (request.method === 'session.history') {
       result = { messages: state.messages.get(stored) ?? initialMessages(stored) }
     } else if (request.method === 'session.list') {
-      result = { sessions: [{ id: `saved-${params.profile || profile}`, title: `Saved ${params.profile || profile}`, preview: 'Fixture transcript', source: 'mobile', started_at: 1_700_000_000, message_count: 2 }] }
+      // The 'Group: ' row is newer on purpose: opening a bot must skip the
+      // desktop's group-plumbing sessions and land on the human conversation.
+      result = { sessions: [
+        { id: `saved-${params.profile || profile}`, title: `Saved ${params.profile || profile}`, preview: 'Fixture transcript', source: 'mobile', started_at: 1_700_000_000, message_count: 2 },
+        { id: 'plumb-group', title: 'Group: r-crew', preview: '[Group chat: "Research crew"]', source: 'ios', started_at: 1_700_000_500, message_count: 9 }
+      ] }
     } else if (request.method === 'profiles.list') {
-      // The default profile row carries the desktop Bot Mode group-chat mirror.
+      // The default profile row carries the desktop Bot Mode meta + mirror.
       result = { profiles: [
         {
           name: 'default', is_default: true,
-          ui_meta: { 'hermes-bots-groups': {
-            version: 3, updatedAt: 1_700_000_000_000,
-            rooms: { 'id:r-crew': {
-              name: 'Research crew', roomId: 'r-crew', revision: 3,
-              members: [{ name: 'codex' }, { name: 'scout' }],
-              log: [
-                { at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Find the specs' },
-                { at: 1_700_000_060_000, from: { kind: 'member', name: 'Codex' }, text: 'Two candidates so far' }
-              ]
-            } }, deleted: {}
-          } }
+          // ui_meta['hermes-bots']: the user-named bot title drives the roster
+          // label; the custom shape drives the face. Groups mirror beside it.
+          ui_meta: {
+            'hermes-bots': { custom: true, shape: 'blobatar:12:organic', title: 'Hermes' },
+            'hermes-bots-groups': {
+              version: 3, updatedAt: 1_700_000_000_000,
+              rooms: { 'id:r-crew': {
+                name: 'Research crew', roomId: 'r-crew', revision: 3,
+                members: [{ name: 'codex' }, { name: 'scout' }],
+                log: [
+                  { at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Find the specs' },
+                  { at: 1_700_000_060_000, from: { kind: 'member', name: 'Codex' }, text: 'Two candidates so far' }
+                ]
+              } }, deleted: {}
+            }
+          }
         },
         { name: 'work' }
       ] }

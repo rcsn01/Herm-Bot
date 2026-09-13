@@ -53,12 +53,14 @@ import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { $groups } from '~/features/groups/groups-store'
 import { resetNavigation } from '~/navigation/navigation-store'
-import { $connection, $preferences, $sessions } from '~/state/store'
+import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'
 
 afterEach(cleanup)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks drops resolved-value setups; restore the defaults.
+  controller.openProfile.mockResolvedValue(undefined)
   // The URL is an input now: App restores the screen it describes on mount.
   window.history.replaceState(null, '', '/')
   resetNavigation()
@@ -67,6 +69,7 @@ beforeEach(() => {
   $chat.set({ ...emptyChatState(), info: { model: 'provider/test-model', title: 'Current chat' } as never, runtimeSessionId: 'runtime-1' })
   $sessions.set([])
   $groups.set([])
+  $profileSwitching.set(false)
 })
 
 function openDrawer() {
@@ -238,6 +241,37 @@ describe('App navigation', () => {
     expect(controller.resumeSession).toHaveBeenCalledWith('cron-session-1')
     expect(screen.queryByText('Cron screen')).toBeNull()
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
+  })
+
+  it('enters the tapped agent conversation immediately, while the switch is still connecting', async () => {
+    let releaseOpenProfile: (() => void) | null = null
+    controller.openProfile.mockImplementation(() => new Promise<void>(resolve => { releaseOpenProfile = resolve }))
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent work' }))
+    await act(async () => undefined)
+
+    // The chat shell is up before the profile switch resolves; no full-screen
+    // connecting takeover in between.
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.queryByLabelText('Connecting to Hermes')).toBeNull()
+    releaseOpenProfile!()
+    await act(async () => undefined)
+  })
+
+  it('renders the app shell during a switching connect and the boot takeover otherwise', () => {
+    act(() => {
+      $connection.set({ authMode: 'token', error: null, phase: 'connecting', status: null })
+      $profileSwitching.set(true)
+    })
+    const { container } = render(<App />)
+
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.queryByLabelText('Connecting to Hermes')).toBeNull()
+
+    act(() => { $profileSwitching.set(false) })
+    expect(screen.queryByLabelText('Connecting to Hermes')).not.toBeNull()
+    expect(container).toBeTruthy()
   })
 
   it('keeps the active ChatScreen instance through drawer toggles and destination round trips', async () => {

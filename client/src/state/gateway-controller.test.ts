@@ -9,7 +9,7 @@ vi.mock('~/native/app-lifecycle', () => ({
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
-import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript } from '~/transcript/transcript'
 
@@ -46,6 +46,7 @@ beforeEach(() => {
   $sessions.set([])
   $sessionsHasMore.set(false)
   $sessionsLoadingMore.set(false)
+  $profileSwitching.set(false)
   $connection.set({ authMode: 'token', error: null, phase: 'disconnected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
   localStorage.clear()
@@ -216,6 +217,74 @@ describe('roster tap flow', () => {
 
     expect(switchProfile).not.toHaveBeenCalled()
     expect(resumeSession).toHaveBeenCalledWith('newest')
+    controller.dispose()
+  })
+
+  it('does not re-resume a conversation that is already open, only refreshes it', async () => {
+    $preferences.set({ authMode: 'token', profile: 'work', remoteURL: '', theme: 'system' })
+    const controller = new GatewayController({} as never)
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    const reconcile = vi.spyOn(controller.conversation, 'reconcileHistory').mockResolvedValue()
+    $sessions.set([{ id: 'current', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Current' }])
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'current' })
+
+    await controller.openProfile('work')
+
+    expect(resumeSession).not.toHaveBeenCalled()
+    expect(reconcile).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('does not resume again when the profile switch already landed on the newest session', async () => {
+    const controller = new GatewayController({} as never)
+    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    vi.spyOn(controller, 'switchProfile').mockImplementation(async () => {
+      // connect() resumes the scope bookmark and refreshes the list in passing
+      $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Newest' }])
+      $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-9', storedSessionId: 'newest' })
+    })
+
+    await controller.openProfile('work')
+
+    expect(resumeSession).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('reports connected as soon as a session is selected, before the list loads', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-default' }))
+    const controller = new GatewayController(connection as never, gateway)
+    let phaseWhenListSettled = 'never-called'
+    vi.spyOn(controller, 'refreshSessions').mockImplementation(async () => {
+      phaseWhenListSettled = $connection.get().phase
+    })
+
+    await controller.connect()
+
+    expect(phaseWhenListSettled).toBe('connected')
+    expect($connection.get().phase).toBe('connected')
+    controller.dispose()
+  })
+
+  it('flags the profile switch while it is in flight and clears it afterwards', async () => {
+    const controller = new GatewayController({} as never)
+    let releaseConnect: (() => void) | null = null
+    const connectSpy = vi.spyOn(controller, 'connect').mockImplementation(() => new Promise<void>(resolve => { releaseConnect = resolve }))
+
+    const pending = controller.switchProfile('work')
+    await vi.waitFor(() => expect(connectSpy).toHaveBeenCalled())
+    expect($profileSwitching.get()).toBe(true)
+    releaseConnect!()
+    await pending
+    expect($profileSwitching.get()).toBe(false)
+
+    vi.spyOn(controller, 'connect').mockRejectedValueOnce(new Error('gateway down'))
+    await expect(controller.switchProfile('home')).rejects.toThrow('gateway down')
+    expect($profileSwitching.get()).toBe(false)
     controller.dispose()
   })
 })
@@ -528,7 +597,9 @@ describe('connection restoration', () => {
     await connecting
 
     expect($sessions.get()).toEqual([])
-    expect($connection.get().phase).toBe('connecting')
+    // The stale connect still reports its own scope connected; the captured
+    // scope guard is what keeps the other profile's list unpublished.
+    expect($connection.get().phase).toBe('connected')
     controller.dispose()
   })
 

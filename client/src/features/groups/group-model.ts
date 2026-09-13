@@ -31,6 +31,11 @@ export interface GroupMessage {
 export interface GroupMember {
   handle?: string
   name: string
+  /** Source-qualified remote members (another machine's connection). */
+  connectionId?: string
+  connectionKind?: string
+  connectionLabel?: string
+  sourceScoped?: boolean
 }
 
 export interface GroupRoom {

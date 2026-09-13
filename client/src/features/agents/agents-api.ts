@@ -8,11 +8,45 @@ export interface AgentRosterEntry {
   avatar?: string
   displayName?: string
   isDefault: boolean
+  /** The desktop Bot Mode's per-bot meta, synced via profiles.configure
+   *  ui_meta['hermes-bots'] (apps/desktop/src/plugins/hermes-bots/data.ts
+   *  saveBotMeta) and mirrored back on every profiles.list row
+   *  (tui_gateway/methods_profiles.py rides profile.yaml's ui_meta block). */
+  meta?: BotMeta
   name: string
   preview?: string
   sessionId?: string
   startedAt?: number
   title?: string
+}
+
+/** Bot identity + avatar customization, ported from the desktop BotMeta
+ *  (apps/desktop/src/plugins/hermes-bots/types.ts). The photo data URL rides
+ *  ui_meta only when small; large pfps travel via profiles.get_asset and the
+ *  row just carries `has_avatar`. */
+export interface BotMeta {
+  color?: string
+  custom?: boolean
+  image?: string
+  imageKind?: 'photo' | 'shape'
+  shape?: string
+  title?: string
+}
+
+function parseBotMeta(record: Record<string, unknown>): BotMeta | undefined {
+  const uiMeta = record.ui_meta
+  if (typeof uiMeta !== 'object' || uiMeta === null) return undefined
+  const raw = (uiMeta as Record<string, unknown>)['hermes-bots']
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const source = raw as Record<string, unknown>
+  const meta: BotMeta = {}
+  if (typeof source.title === 'string' && source.title.trim()) meta.title = source.title.trim()
+  if (typeof source.shape === 'string' && source.shape.trim()) meta.shape = source.shape.trim()
+  if (typeof source.color === 'string' && source.color.trim()) meta.color = source.color.trim()
+  if (typeof source.image === 'string' && /^(data:image\/|https?:\/\/)/i.test(source.image)) meta.image = source.image
+  if (source.imageKind === 'photo' || source.imageKind === 'shape') meta.imageKind = source.imageKind
+  if (source.custom === true) meta.custom = true
+  return Object.keys(meta).length > 0 ? meta : undefined
 }
 
 /** What one profiles.list RPC yields: bot rows plus the desktop-mirrored
@@ -52,13 +86,17 @@ export function normalizeAgentEntry(item: unknown): AgentRosterEntry | null {
       ? record.display_name.trim()
       : undefined,
     isDefault: record.is_default === true || (record.is_default === undefined && name === 'default'),
+    meta: parseBotMeta(record),
     name,
     preview: typeof record.preview === 'string' && record.preview ? record.preview : undefined,
     sessionId: typeof record.session_id === 'string' && record.session_id
       ? record.session_id
       : typeof record.canonical_session_id === 'string' ? record.canonical_session_id : undefined,
     startedAt: toSeconds(record.last_active ?? record.started_at),
-    title: typeof record.title === 'string' && record.title ? record.title : undefined
+    // The wire's top-level title is the latest human SESSION's title (roster
+    // enrichment), never the bot's name — the bot's own title, when the user
+    // set one, lives in the Bot Mode meta (desktop labels.ts reads meta.title).
+    title: parseBotMeta(record)?.title
   }
 }
 
@@ -100,6 +138,7 @@ export function mergeAgentRoster(
       avatar: entry?.avatar,
       displayName: entry?.displayName,
       isDefault: (typeof profile !== 'string' && profile.is_default === true) || name === 'default' || (entry?.isDefault ?? false),
+      meta: entry?.meta,
       name,
       preview: entry?.preview,
       sessionId: entry?.sessionId,

@@ -8,6 +8,13 @@ import type { AgentRosterEntry } from './agents-api'
  * here; the PWA sees only the profiles.list row.
  */
 export function displayNameFor(agent: { displayName?: string; name: string; title?: string }): string {
+  // The Bot Mode title (ui_meta['hermes-bots'].title) leads, like the
+  // desktop's labels.ts displayName — it is the name the user gave the bot
+  // on the roster surface.
+  if (typeof agent.title === 'string' && agent.title.trim()) {
+    return agent.title.trim()
+  }
+
   // Core-profile display name (profile.yaml, set via `hermes profile rename
   // <name>` or the dashboard) — rides the profiles.list row; presentation-only.
   if (typeof agent.displayName === 'string' && agent.displayName.trim()) {

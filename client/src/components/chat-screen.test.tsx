@@ -15,6 +15,7 @@ import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection } from '~/state/store'
 import { createTranscript } from '~/transcript/transcript'
+import { act } from 'react'
 
 const mediaConnectionStub = () => ({
   request: vi.fn(),
@@ -62,6 +63,17 @@ afterEach(() => {
 })
 
 describe('chat interaction wiring', () => {
+  it('shows an inline connecting state in the empty transcript while a switch connects', () => {
+    act(() => {
+      $connection.set({ authMode: 'token', error: null, phase: 'connecting', status: null })
+    })
+
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    expect(container.querySelector('.empty-chat')?.textContent).toContain('Connecting')
+    expect(container.querySelector('.empty-chat h2')?.textContent).not.toContain('What can Hermes do')
+  })
+
   it('labels bubbles by position, not by a speaker caption', () => {
     $chat.set({
       ...emptyChatState(),
