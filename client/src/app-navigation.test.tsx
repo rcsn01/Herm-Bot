@@ -97,6 +97,28 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Open navigation' })).not.toBeNull()
   })
 
+  it('titles the messaging header with the profile name and the session beneath', async () => {
+    // the real openProfile flow persists the switched profile
+    $preferences.set({ authMode: 'token', profile: 'work', remoteURL: 'https://gateway.test', theme: 'system' })
+    const { container } = render(<App />)
+
+    await enterAgent('Open agent work')
+
+    const header = container.querySelector('.header-bot-button')!
+    expect(header.querySelector('strong')?.textContent).toBe('Work')
+    expect(header.querySelector('small')?.textContent).toBe('Current chat')
+  })
+
+  it('titles the messaging header Hermes for the default profile', async () => {
+    const { container } = render(<App />)
+
+    await enterAgent('Open agent default')
+
+    const header = container.querySelector('.header-bot-button')!
+    expect(header.querySelector('strong')?.textContent).toBe('Hermes')
+    expect(header.querySelector('small')?.textContent).toBe('Current chat')
+  })
+
   it('returns to the roster from the header back button', async () => {
     render(<App />)
     expect(screen.queryByRole('button', { name: 'Back to bots' })).toBeNull()

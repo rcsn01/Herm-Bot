@@ -90,7 +90,9 @@ listing asks the gateway for bot-owned hidden sessions (`include_hidden`),
 the same grant the desktop's Bots pane uses, so conversations created on
 the desktop are visible and resumable on mobile. The conversation is the
 bot's home surface; there is no separate bot hub
-page. A header gear on the roster opens **Settings**; profile
+page. The messaging header leads with the bot's identity (the roster
+label — Hermes for the default profile) and carries the open session's
+name beneath it. A header gear on the roster opens **Settings**; profile
 surfaces reach the model settings from the side navigation. **Capabilities**,
 **Cron Jobs** and **Model** are agent-specific shortcuts in the side
 navigation: one bot per gateway profile owns its

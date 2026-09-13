@@ -8,6 +8,7 @@ import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
 import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
+import { displayNameFor } from '~/features/agents/agent-labels'
 import { applyTheme } from '~/features/settings/settings-screen'
 import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
@@ -115,8 +116,11 @@ export function App() {
     setTab('settings')
   }
   const headerTitle = navigation.activeTab === 'sessions'
-    ? ((chat.info as { title?: string } | null)?.title || 'New conversation')
+    ? displayNameFor({ name: preferences.profile || 'default' })
     : DESTINATION_TITLES[navigation.activeTab]
+  /** The messaging header leads with the bot's identity (matching the roster
+   *  and drawer labels) and carries the open session's name beneath it. */
+  const headerSession = (chat.info as { title?: string } | null)?.title || 'New conversation'
 
   return (
     <GatewayProvider gateway={controller.gateway}>
@@ -135,7 +139,7 @@ export function App() {
           {navigation.activeTab === 'sessions' ? (
             <div className="header-bot-button">
               <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
-              <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : `${preferences.profile || 'default'} profile`}</small></div>
+              <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : headerSession}</small></div>
             </div>
           ) : inProfile ? (
             <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
