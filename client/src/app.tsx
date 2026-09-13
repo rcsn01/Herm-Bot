@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { IconChevronLeft, IconMenu2, IconSearch, IconSettings } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
@@ -19,8 +19,8 @@ import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/sett
 import type { CapabilitiesRoute, CronRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator } from '~/navigation/deep-links'
+import { restoreInitialNavigation } from '~/navigation/initial-navigation'
 import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
-import { installScreenHistory, type ScreenHistory } from '~/navigation/screen-history'
 import { useDrawerController } from '~/navigation/use-drawer-controller'
 import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
@@ -51,7 +51,6 @@ export function App() {
   const chat = useStore($chat)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
-  const screenHistoryRef = useRef<ScreenHistory | null>(null)
   const drawer = useDrawerController({
     onDismissed: intent => {
       if (intent.type === 'tab') openDestination(intent.tab)
@@ -64,15 +63,8 @@ export function App() {
     applyTheme(preferences.theme)
   }, [preferences.theme])
 
-  // Mirror every screen into browser history so reloads, the Android system
-  // back button and shared URLs all resolve to the screen the user was on.
   useEffect(() => {
-    const app = installScreenHistory()
-    screenHistoryRef.current = app
-    return () => {
-      app.dispose()
-      screenHistoryRef.current = null
-    }
+    restoreInitialNavigation()
   }, [])
 
   useEffect(() => {
@@ -114,17 +106,8 @@ export function App() {
     setTab('sessions')
     void controller.openProfile(profile)
   }
-  /** In-app back rides browser history while an app entry sits behind it
-   *  (so the system back gesture stays in sync); at the boundary the caller's
-   *  action runs instead. */
-  const goBackOr = (fallback: () => void) => {
-    const app = screenHistoryRef.current
-    if (app) app.goBack(fallback)
-    else fallback()
-  }
   /** The header chevron is a labeled destination ("Back to bots"), so it
-   *  navigates explicitly — pushing "/" keeps the system back able to undo
-   *  it. True back gestures use goBackOr instead. */
+   *  navigates explicitly to the roster in the in-memory store. */
   const backToRoster = () => {
     setTab('roster')
   }
@@ -153,7 +136,7 @@ export function App() {
     <header className="app-header">
       {activeGroupId ? (
         <>
-          <Button aria-label="Back to bots" className="header-back-button" onClick={() => goBackOr(() => popRoute('roster'))} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+          <Button aria-label="Back to bots" className="header-back-button" onClick={() => popRoute('roster')} variant="ghost"><IconChevronLeft className="size-6" /></Button>
           <div className="header-title"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
         </>
       ) : (
@@ -178,9 +161,9 @@ export function App() {
         <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
       </div>
       {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => popRoute('capabilities')} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
+      {navigation.activeTab === 'cron' && <CronScreen onBack={() => popRoute('cron')} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => popRoute('settings')} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
     </>
   )
 
@@ -195,8 +178,7 @@ export function App() {
         foregroundVisible={foregroundVisible}
         onDismissForeground={() => {
           // A committed swipe always dismisses the whole foreground to the
-          // fixed roster. Unlike a header back, it must not land on another
-          // canonical session URL in the browser history.
+          // fixed roster without changing the browser URL.
           if (activeGroupId) resetTabRoutes('roster')
           if (navigation.activeTab === 'sessions' || activeGroupId) setTab('roster')
         }}

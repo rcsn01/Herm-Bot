@@ -3,40 +3,28 @@ import { Capacitor } from '@capacitor/core'
 
 import { parseHermesDeepLink } from '~/navigation/deep-links'
 
-function isDrawerGuardState(state: unknown): boolean {
-  if (typeof state !== 'object' || state === null) return false
-  const record = state as { hermesDrawer?: unknown; hermesDrawerBase?: unknown }
-  return record.hermesDrawer === true || record.hermesDrawerBase === true
-}
-
 /**
  * Bridge iOS deep links (`hermes://` URLs opened via the app's URL scheme)
- * into a handler. Covers both cold start (`getLaunchUrl`) and warm taps
- * (`appUrlOpen`). Returns an unsubscribe function; no-op on the web so
- * browser dev sessions are unaffected.
+ * into a handler. Covers cold start (`getLaunchUrl`) and warm taps
+ * (`appUrlOpen`). On the web, the current URL is treated as a cold-start
+ * input and notification clicks are handled in memory without creating a
+ * browser history entry.
  */
 export function observeHermesDeepLinks(handler: (rawURL: string) => void): () => void {
   if (!Capacitor.isNativePlatform()) {
     let active = true
-    const forwardCurrentURL = (event?: PopStateEvent) => {
-      // The drawer guard also uses popstate. Its marked traversal is an
-      // internal close, not a new external session deep link.
-      if (event && isDrawerGuardState(event.state)) return
+    const forwardCurrentURL = () => {
       const rawURL = window.location.href
       if (active && parseHermesDeepLink(rawURL)) handler(rawURL)
     }
     const forwardServiceWorkerURL = (event: MessageEvent) => {
       if (event.data?.type !== 'HERMES_DEEP_LINK' || typeof event.data.url !== 'string') return
-      if (!active || !parseHermesDeepLink(event.data.url)) return
-      history.replaceState(null, '', event.data.url)
-      handler(event.data.url)
+      if (active && parseHermesDeepLink(event.data.url)) handler(event.data.url)
     }
-    window.addEventListener('popstate', forwardCurrentURL)
     navigator.serviceWorker?.addEventListener('message', forwardServiceWorkerURL)
     forwardCurrentURL()
     return () => {
       active = false
-      window.removeEventListener('popstate', forwardCurrentURL)
       navigator.serviceWorker?.removeEventListener('message', forwardServiceWorkerURL)
     }
   }
