@@ -39,6 +39,9 @@ vi.mock('~/features/agents/roster-screen', () => ({
     </div>
   )
 }))
+vi.mock('~/features/groups/group-screen', () => ({
+  GroupChatScreen: ({ roomId }: { roomId: string }) => <div data-testid="group-instance">Group {roomId}</div>
+}))
 vi.mock('~/features/settings/settings-screen', () => ({
   applyTheme: vi.fn(),
   SettingsScreen: ({ onExit }: { onExit?(): void }) => <div>Settings screen{onExit && <button onClick={onExit}>Settings back</button>}</div>
@@ -48,6 +51,7 @@ vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: 
 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
+import { $groups } from '~/features/groups/groups-store'
 import { resetNavigation } from '~/navigation/navigation-store'
 import { $connection, $preferences, $sessions } from '~/state/store'
 
@@ -62,6 +66,7 @@ beforeEach(() => {
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
   $chat.set({ ...emptyChatState(), info: { model: 'provider/test-model', title: 'Current chat' } as never, runtimeSessionId: 'runtime-1' })
   $sessions.set([])
+  $groups.set([])
 })
 
 function openDrawer() {
@@ -107,6 +112,21 @@ describe('App navigation', () => {
     const header = container.querySelector('.header-bot-button')!
     expect(header.querySelector('strong')?.textContent).toBe('Work')
     expect(header.querySelector('small')?.textContent).toBe('Current chat')
+  })
+
+  it('opens a desktop group chat from its URL with the top bar owning back and title', () => {
+    window.history.replaceState(null, '', '/group/id%3Ar-crew')
+    const { container } = render(<App />)
+
+    expect(screen.getByTestId('group-instance')).not.toBeNull()
+    expect(container.querySelector('.header-title strong')?.textContent).toBe('Group chat')
+
+    // once the roster mirror lands, the room name replaces the fallback
+    act(() => { $groups.set([{ key: 'id:r-crew', log: [], members: [], name: 'Research crew' }]) })
+    expect(container.querySelector('.header-title strong')?.textContent).toBe('Research crew')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
+    expect(screen.getByText('Roster screen')).not.toBeNull()
   })
 
   it('titles the messaging header Hermes for the default profile', async () => {

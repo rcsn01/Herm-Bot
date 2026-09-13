@@ -41,6 +41,8 @@ export function pathForTabRoute(tab: MobileTab, route: MobileRoute): string {
   switch (route.type) {
     case 'roster-root':
       return '/'
+    case 'group-room':
+      return `/group/${encodeURIComponent(route.roomId)}`
     case 'sessions-root':
       return '/sessions'
     case 'capabilities-root':
@@ -93,6 +95,11 @@ export function navigationFromPath(pathname: string): ScreenPath | null {
 
   if (segments.length === 0) return { stack: [ROOT_ROUTES.roster], tab: 'roster' }
   const [head, second, third] = segments
+
+  if (head === 'group') {
+    if (segments.length !== 2 || !second) return null
+    return { stack: [ROOT_ROUTES.roster, { roomId: second, tab: 'roster', type: 'group-room' }], tab: 'roster' }
+  }
 
   if (head === 'sessions' && segments.length === 1) return { stack: [ROOT_ROUTES.sessions], tab: 'sessions' }
 

@@ -11,6 +11,15 @@ export interface RosterRootRoute {
   tab: 'roster'
 }
 
+export interface GroupRoomRoute {
+  type: 'group-room'
+  tab: 'roster'
+  /** The group snapshot record key (`id:<roomId>` or `name:<name>`). */
+  roomId: string
+}
+
+export type RosterRoute = RosterRootRoute | GroupRoomRoute
+
 export interface SessionsRootRoute {
   type: 'sessions-root'
   tab: 'sessions'
@@ -146,7 +155,7 @@ export interface SettingsAdministrationRoute {
 export type SettingsRoute = SettingsRootRoute | SettingsCategoryRoute | SettingsAdministrationRoute
 
 export interface RoutesByTab {
-  roster: RosterRootRoute
+  roster: RosterRoute
   capabilities: CapabilitiesRoute
   cron: CronRoute
   settings: SettingsRoute

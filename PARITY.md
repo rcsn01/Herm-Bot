@@ -88,7 +88,12 @@ out of the recent-sessions list and the newest-conversation pick, like
 the desktop's recents — starting a fresh one when none exists. The
 listing asks the gateway for bot-owned hidden sessions (`include_hidden`),
 the same grant the desktop's Bots pane uses, so conversations created on
-the desktop are visible and resumable on mobile. The conversation is the
+the desktop are visible and resumable on mobile. Group chats created in
+the desktop's Bot Mode ride the same listing: the default profile's
+`ui_meta['hermes-bots-groups']` mirror lists rooms on the main screen
+(`/group/<key>` opens a read-only room view of the shared log; sending
+into a group still runs on the desktop's client-side turn engine and is
+not available in Mobile yet). The conversation is the
 bot's home surface; there is no separate bot hub
 page. The messaging header leads with the bot's identity (the roster
 label — Hermes for the default profile) and carries the open session's

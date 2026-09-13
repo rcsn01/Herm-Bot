@@ -1,6 +1,9 @@
 import type { GatewayApi } from '~/gateway/gateway-api'
 
 /** One agent row on the main screen: a gateway profile plus its latest-conversation data when known. */
+import type { GroupRoom } from '~/features/groups/group-model'
+import { groupRoomsFromRoster } from '~/features/groups/group-model'
+
 export interface AgentRosterEntry {
   avatar?: string
   displayName?: string
@@ -10,6 +13,13 @@ export interface AgentRosterEntry {
   sessionId?: string
   startedAt?: number
   title?: string
+}
+
+/** What one profiles.list RPC yields: bot rows plus the desktop-mirrored
+ *  group chats (they ride the default profile's ui_meta). */
+export interface AgentRosterPage {
+  entries: AgentRosterEntry[]
+  groups: GroupRoom[]
 }
 
 /**
@@ -54,12 +64,19 @@ export function normalizeAgentEntry(item: unknown): AgentRosterEntry | null {
 
 /** Parse a profiles.list response body: a bare array or a { profiles: [...] } wrapper. */
 export function parseAgentRoster(response: unknown): AgentRosterEntry[] {
+  return parseAgentRosterPage(response).entries
+}
+
+export function parseAgentRosterPage(response: unknown): AgentRosterPage {
   const items = Array.isArray(response)
     ? response
     : typeof response === 'object' && response !== null && Array.isArray((response as Record<string, unknown>).profiles)
       ? (response as { profiles: unknown[] }).profiles
       : []
-  return items.map(normalizeAgentEntry).filter((entry): entry is AgentRosterEntry => entry !== null)
+  return {
+    entries: items.map(normalizeAgentEntry).filter((entry): entry is AgentRosterEntry => entry !== null),
+    groups: groupRoomsFromRoster(response)
+  }
 }
 
 /**
@@ -105,7 +122,7 @@ export function mergeAgentRoster(
  */
 export function createAgentsApi(api: GatewayApi) {
   return {
-    list: (signal?: AbortSignal): Promise<AgentRosterEntry[]> =>
-      api.rpc<unknown>('profiles.list', {}, { signal }).then(parseAgentRoster)
+    list: (signal?: AbortSignal): Promise<AgentRosterPage> =>
+      api.rpc<unknown>('profiles.list', {}, { signal }).then(parseAgentRosterPage)
   }
 }

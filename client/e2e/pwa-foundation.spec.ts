@@ -124,6 +124,33 @@ test('cold deep link switches profile, resumes, and reloads durable history', as
   ]))
 })
 
+test('desktop group chats list on the main screen and open read-only', async ({ page }) => {
+  await login(page)
+
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  const row = page.getByRole('button', { name: /Research crew/ })
+  await expect(row).toBeVisible()
+  const rowText = await row.textContent()
+  expect(rowText).toContain('2 bots')
+  expect(rowText).toContain('Codex: Two candidates so far')
+
+  // The stacked member faces must sit inside the avatar box — a face drawn at
+  // the roster size would overflow its chip (blank icon in a real browser).
+  const faceBox = await page.locator('.group-faces .group-face .bot-face').first().boundingBox()
+  expect(faceBox).toBeTruthy()
+  expect(faceBox!.width).toBeLessThanOrEqual(33)
+  expect(faceBox!.height).toBeLessThanOrEqual(33)
+
+  await row.click()
+  await expect(page).toHaveURL(/\/group\/id%3Ar-crew$/)
+  await expect(page.getByText('Two candidates so far')).toBeVisible()
+  await expect(page.getByText('Reading only for now — sending to group chats is not available in Mobile yet.')).toBeVisible()
+
+  // The top bar owns the exit, and back lands on the roster.
+  await page.goBack()
+  await expect(row).toBeVisible()
+})
+
 test('screens mirror into the URL and browser back undoes navigation', async ({ page }) => {
   await login(page)
   // openProfile resumed the profile's latest stored session, so the URL

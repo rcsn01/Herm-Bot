@@ -9,6 +9,8 @@ import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
 import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
 import { displayNameFor } from '~/features/agents/agent-labels'
+import { GroupChatScreen } from '~/features/groups/group-screen'
+import { $groups } from '~/features/groups/groups-store'
 import { applyTheme } from '~/features/settings/settings-screen'
 import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
@@ -41,6 +43,9 @@ export function App() {
   const preferences = useStore($preferences)
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
+  const activeGroupId = routeForGroupRoom(activeRoute)
+  const groups = useStore($groups)
+  const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
   const chat = useStore($chat)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -127,13 +132,20 @@ export function App() {
         drawerOpen={drawerOpen}
         header={<header className="app-header">
           {navigation.activeTab === 'roster' ? (
+          activeGroupId ? (
+            <>
+              <Button aria-label="Back to bots" className="header-back-button" onClick={() => goBackOr(() => popRoute('roster'))} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+              <div className="header-title"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
+            </>
+          ) : (
             <div className="header-search">
               <IconSearch aria-hidden size={17} />
               <Input aria-label="Search bots" onChange={event => setRosterQuery(event.target.value)} placeholder="Search bots" type="search" value={rosterQuery} />
             </div>
-          ) : (
-            <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
-          )}
+          )
+        ) : (
+          <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+        )}
           {navigation.activeTab === 'sessions' ? (
             <div className="header-bot-button">
               <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
@@ -145,7 +157,7 @@ export function App() {
           {inProfile && (
             <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={() => setDrawerOpen(true)} variant="ghost"><IconMenu2 className="size-6" /></Button>
           )}
-          {navigation.activeTab === 'roster' && (
+          {navigation.activeTab === 'roster' && !activeGroupId && (
             <Button aria-label="Open settings" className="header-gear-button" onClick={() => openSettingsFrom()} variant="ghost"><IconSettings className="size-6" /></Button>
           )}
         </header>}
@@ -156,7 +168,9 @@ export function App() {
         <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
           <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
         </div>
-        {navigation.activeTab === 'roster' && <RosterScreen onOpenAgent={openAgent} query={rosterQuery} />}
+        {navigation.activeTab === 'roster' && (activeGroupId
+          ? <GroupChatScreen roomId={activeGroupId} />
+          : <RosterScreen onOpenAgent={openAgent} onOpenGroup={roomId => pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })} query={rosterQuery} />)}
         {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
         {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
         {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
@@ -167,6 +181,10 @@ export function App() {
 
 function routeForCapabilities(route: ReturnType<typeof $activeRoute.get>): CapabilitiesRoute {
   return route.tab === 'capabilities' ? route : ROOT_ROUTES.capabilities
+}
+
+function routeForGroupRoom(route: ReturnType<typeof $activeRoute.get>): string | null {
+  return route.tab === 'roster' && route.type === 'group-room' ? route.roomId : null
 }
 
 function routeForCron(route: ReturnType<typeof $activeRoute.get>): CronRoute {

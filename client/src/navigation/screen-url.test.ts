@@ -77,6 +77,17 @@ describe('screen URL codec', () => {
     expect(() => pathForTabRoute('roster', ROOT_ROUTES.cron)).toThrow(/cron route.*roster tab/)
   })
 
+  it('builds and parses group-room routes', () => {
+    const route = { roomId: 'id:r-abc-1', tab: 'roster', type: 'group-room' } as const
+    expect(pathForTabRoute('roster', route)).toBe('/group/id%3Ar-abc-1')
+    expect(navigationFromPath('/group/id%3Ar-abc-1')).toEqual({
+      stack: [ROOT_ROUTES.roster, route],
+      tab: 'roster'
+    })
+    expect(navigationFromPath('/group')).toBeNull()
+    expect(navigationFromPath('/group/a/b')).toBeNull()
+  })
+
   it('builds canonical session deep-link URLs', () => {
     expect(sessionPath('saved-work', null)).toBe('/session/saved-work')
     expect(sessionPath('saved-work', 'work')).toBe('/session/saved-work?profile=work')
