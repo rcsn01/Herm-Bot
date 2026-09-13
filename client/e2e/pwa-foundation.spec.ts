@@ -126,7 +126,9 @@ test('cold deep link switches profile, resumes, and reloads durable history', as
 
 test('screens mirror into the URL and browser back undoes navigation', async ({ page }) => {
   await login(page)
-  await expect(page).toHaveURL(/\/sessions$/)
+  // openProfile resumed the profile's latest stored session, so the URL
+  // mirrors the open conversation, not the generic sessions root.
+  await expect(page).toHaveURL(/\/session\/saved-default$/)
 
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name: 'Capabilities' }).click()
@@ -134,7 +136,7 @@ test('screens mirror into the URL and browser back undoes navigation', async ({ 
 
   // The system back gesture rides the mirrored history entries.
   await page.goBack()
-  await expect(page).toHaveURL(/\/sessions$/)
+  await expect(page).toHaveURL(/\/session\/saved-default$/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
 })
 

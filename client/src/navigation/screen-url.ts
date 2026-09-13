@@ -21,9 +21,18 @@ import {
  *   /settings/<category|page>
  *
  * The active profile is global (persisted preferences), so screen paths don't
- * carry it — `?profile=` remains a session-link-only parameter, matching the
- * desktop deep-link shape.
+ * carry it. Open conversations DO: while a stored session is on screen the
+ * sessions view mirrors the session deep-link namespace
+ * (`/session/<id>?profile=<p>`, `?profile=` omitted for the default profile)
+ * so a conversation can be reloaded or shared like any other screen.
  */
+
+/** Canonical URI for an open conversation — the deep-link namespace the
+ *  coordinator owns, shaped like the desktop's session links. */
+export function sessionPath(storedSessionId: string, profile: null | string): string {
+  const path = `/session/${encodeURIComponent(storedSessionId)}`
+  return profile ? `${path}?profile=${encodeURIComponent(profile)}` : path
+}
 
 export function pathForTabRoute(tab: MobileTab, route: MobileRoute): string {
   if (route.tab !== tab) {

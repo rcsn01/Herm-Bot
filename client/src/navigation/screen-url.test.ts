@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { ROOT_ROUTES } from './routes'
-import { navigationFromPath, pathForTabRoute } from './screen-url'
+import { navigationFromPath, pathForTabRoute, sessionPath } from './screen-url'
 
 describe('screen URL codec', () => {
   it('maps every tab root', () => {
@@ -75,5 +75,11 @@ describe('screen URL codec', () => {
 
   it('rejects a route rendered under a mismatched tab', () => {
     expect(() => pathForTabRoute('roster', ROOT_ROUTES.cron)).toThrow(/cron route.*roster tab/)
+  })
+
+  it('builds canonical session deep-link URLs', () => {
+    expect(sessionPath('saved-work', null)).toBe('/session/saved-work')
+    expect(sessionPath('saved-work', 'work')).toBe('/session/saved-work?profile=work')
+    expect(sessionPath('a/b', null)).toBe('/session/a%2Fb')
   })
 })

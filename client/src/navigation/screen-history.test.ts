@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $chat, emptyChatState } from '~/state/conversation'
+import { $preferences } from '~/state/store'
+
 import { $navigation, resetNavigation, setTab } from './navigation-store'
 import { ROOT_ROUTES } from './routes'
 import { installScreenHistory } from './screen-history'
@@ -11,6 +14,8 @@ function flush(): Promise<void> {
 beforeEach(() => {
   window.history.replaceState(null, '', '/')
   resetNavigation('roster')
+  $chat.set(emptyChatState())
+  $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
 })
 
 afterEach(() => {
@@ -123,5 +128,76 @@ describe('screen history bridge', () => {
     setTab('cron')
     await flush()
     expect(pushes).not.toHaveBeenCalled()
+  })
+
+  it('encodes the open conversation as a session deep-link URL', async () => {
+    const app = installScreenHistory()
+    try {
+      setTab('sessions')
+      $chat.set({ ...emptyChatState(), storedSessionId: 'saved-work' })
+      await flush()
+      // the default profile carries no ?profile parameter
+      expect(window.location.pathname + window.location.search).toBe('/session/saved-work')
+    } finally {
+      app.dispose()
+    }
+  })
+
+  it('carries the active profile on the session URL', async () => {
+    $preferences.set({ authMode: 'token', profile: 'work', remoteURL: 'https://gateway.test', theme: 'system' })
+    const app = installScreenHistory()
+    try {
+      setTab('sessions')
+      $chat.set({ ...emptyChatState(), storedSessionId: 'saved-work' })
+      await flush()
+      expect(window.location.pathname + window.location.search).toBe('/session/saved-work?profile=work')
+    } finally {
+      app.dispose()
+    }
+  })
+
+  it('keeps a canonical deep-link URL instead of pushing a duplicate', async () => {
+    window.history.replaceState(null, '', '/session/saved-work?profile=work')
+    $preferences.set({ authMode: 'token', profile: 'work', remoteURL: 'https://gateway.test', theme: 'system' })
+    const pushes = vi.spyOn(history, 'pushState')
+    const app = installScreenHistory()
+    try {
+      setTab('sessions')
+      $chat.set({ ...emptyChatState(), storedSessionId: 'saved-work' })
+      await flush()
+      expect(pushes).not.toHaveBeenCalled()
+      expect(window.location.pathname).toBe('/session/saved-work')
+    } finally {
+      app.dispose()
+    }
+  })
+
+  it('falls back to the sessions root while a fresh conversation has no stored session', async () => {
+    const app = installScreenHistory()
+    try {
+      setTab('sessions')
+      $chat.set({ ...emptyChatState(), storedSessionId: null })
+      await flush()
+      expect(window.location.pathname).toBe('/sessions')
+    } finally {
+      app.dispose()
+    }
+  })
+
+  it('does not re-push a session URL after reconciling back to the sessions root', async () => {
+    const app = installScreenHistory()
+    try {
+      $chat.set({ ...emptyChatState(), storedSessionId: 'saved-work' })
+      setTab('sessions')
+      await flush()
+      expect(window.location.pathname).toBe('/session/saved-work')
+
+      window.history.replaceState(window.history.state, '', '/sessions')
+      window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+      await flush()
+      expect(window.location.pathname).toBe('/sessions')
+    } finally {
+      app.dispose()
+    }
   })
 })

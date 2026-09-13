@@ -1,5 +1,8 @@
+import { $chat } from '~/state/conversation'
+import { $preferences } from '~/state/store'
+
 import { $navigation, applyPathState } from './navigation-store'
-import { navigationFromPath, pathForTabRoute } from './screen-url'
+import { navigationFromPath, pathForTabRoute, sessionPath } from './screen-url'
 
 /**
  * Mirror in-memory navigation into browser history so every screen owns a
@@ -12,10 +15,15 @@ import { navigationFromPath, pathForTabRoute } from './screen-url'
  * ever seen marks the boundary: going back past it would leave the app, so
  * in-app back falls back to the caller's action there.
  *
- * Session deep links (`/session/<id>?profile=<p>`) stay canonical for the
- * sessions view — refreshing one re-runs the deep-link coordinator instead
- * of losing the session — so the bridge never rewrites them, and leaves
- * their popstate handling to the coordinator.
+ * The sessions view mirrors the open conversation as a canonical session
+ * deep link (`/session/<id>?profile=<p>`, `?profile=` omitted for the
+ * default profile): resuming a session — from the roster, the drawer, cron
+ * runs, or the deep-link coordinator — pushes its URL, while a fresh
+ * conversation without a stored id yet stays on the generic `/sessions`.
+ * Reconciling back to a non-session URL keeps the open conversation in
+ * memory but never re-pushes the session URL behind it (the back gesture
+ * must win), and the bridge never downgrades a canonical session URL to
+ * `/sessions` — a stored id appearing later upgrades it again.
  */
 
 interface ScreenEntryState {
@@ -42,7 +50,6 @@ export function installScreenHistory(): ScreenHistory {
   let boundarySeq = Number.MAX_SAFE_INTEGER
   let applying = false
   let pushQueued = false
-  let primed = false
   let disposed = false
 
   const existing = entrySeq(history.state)
@@ -78,14 +85,8 @@ export function installScreenHistory(): ScreenHistory {
   }
   window.addEventListener('popstate', onPop)
 
-  const unsubscribe = $navigation.subscribe(() => {
-    // nanostores invokes the listener immediately; the store already matches
-    // the restored URL at that point, so only react to later changes.
-    if (!primed) {
-      primed = true
-      return
-    }
-    if (applying || pushQueued) return
+  const sync = (): void => {
+    if (applying || pushQueued || disposed) return
     pushQueued = true
     queueMicrotask(() => {
       pushQueued = false
@@ -99,12 +100,38 @@ export function installScreenHistory(): ScreenHistory {
       } catch {
         return
       }
-      if (state.activeTab === 'sessions' && isSessionPath(window.location.pathname)) return
-      if (window.location.pathname === path) return
+      if (state.activeTab === 'sessions') {
+        const storedSessionId = $chat.get().storedSessionId
+        if (storedSessionId) {
+          // The open conversation owns a canonical session URL.
+          path = sessionPath(storedSessionId, $preferences.get().profile)
+        } else if (isSessionPath(window.location.pathname)) {
+          // Never overwrite a canonical deep-link URL with the generic root
+          // while the conversation has no stored id (e.g. the coordinator set
+          // the tab before its resume completes).
+          return
+        }
+      }
+      if (window.location.pathname + window.location.search === path) return
       seq += 1
       history.pushState({ hermesScreen: seq }, '', path)
     })
+  }
+
+  let primed = false
+  const unsubscribeNavigation = $navigation.subscribe(() => {
+    // nanostores invokes the listener immediately; the store already matches
+    // the restored URL at that point, so only react to later changes.
+    if (!primed) {
+      primed = true
+      return
+    }
+    sync()
   })
+  // Conversation changes (resume, new session, the gateway assigning a
+  // stored id) may move the URL without any navigation-store change. The
+  // immediate first call is a no-op via the URL equality check above.
+  const unsubscribeChat = $chat.subscribe(sync)
 
   return {
     goBack(fallback: () => void): void {
@@ -118,7 +145,8 @@ export function installScreenHistory(): ScreenHistory {
     dispose(): void {
       disposed = true
       window.removeEventListener('popstate', onPop)
-      unsubscribe()
+      unsubscribeNavigation()
+      unsubscribeChat()
     }
   }
 }

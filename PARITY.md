@@ -75,9 +75,14 @@ row carries one; otherwise slug names are word-capitalized (`codex` reads
 navigation pushes an entry, the system back gesture and browser back
 reconcile the app's navigation stacks through popstate, reloads and cold
 starts restore the screen after sign-in, and the offline app shell serves
-all of these paths. Session deep links (`/session/<id>?profile=<p>`) keep
-their canonical URL for the sessions view; screen paths don't carry the
-active profile (it is global persisted state). Opening an agent
+all of these paths. While a stored session is open, the sessions view
+mirrors the conversation's canonical deep link
+(`/session/<id>?profile=<p>`, `?profile=` omitted for the default
+profile); the generic `/sessions` root covers fresh conversations that
+have no stored id yet, and reconciling back to it never re-pushes the
+session URL. Session deep links (`/session/<id>?profile=<p>`) keep
+their canonical URL for the sessions view; other screen paths don't
+carry the active profile (it is global persisted state). Opening an agent
 enters that profile's latest conversation, starting a fresh one when none
 exists — the conversation is the bot's home surface; there is no separate
 bot hub page. A header gear on the roster opens **Settings**; profile
