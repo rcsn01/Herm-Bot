@@ -90,8 +90,8 @@ describe('profile-scoped session mutations', () => {
       expect.objectContaining({ method: 'DELETE', path: '/api/sessions/session-1?profile=default' })
     ])
     expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => call.value)).toEqual([
-      { limit: 30, profile: 'default' },
-      { limit: 30, profile: 'default' }
+      { include_hidden: true, limit: 30, profile: 'default' },
+      { include_hidden: true, limit: 30, profile: 'default' }
     ])
     controller.dispose()
   })
@@ -115,8 +115,8 @@ describe('incremental session loading', () => {
     expect($sessions.get()).toHaveLength(31)
     expect($sessionsHasMore.get()).toBe(false)
     expect(gateway.calls.filter(call => call.method === 'session.list').map(call => call.value)).toEqual([
-      { limit: 30, profile: 'default' },
-      { limit: 60, profile: 'default' }
+      { include_hidden: true, limit: 30, profile: 'default' },
+      { include_hidden: true, limit: 60, profile: 'default' }
     ])
     controller.dispose()
   })
@@ -810,6 +810,47 @@ describe('authentication lifecycle', () => {
     await controller.passwordLogin('local', 'user', 'secret')
     expect(passwordLogin).toHaveBeenCalledWith({ password: 'secret', provider: 'local', username: 'user' })
     expect(connect).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+})
+
+describe('roster tap into a desktop conversation', () => {
+  it("resumes the profile's existing desktop conversation instead of starting fresh", async () => {
+    const desktopSession = {
+      id: 'codex-desktop-1', message_count: 2, preview: 'Hey, tell me about yourself!',
+      source: 'desktop', started_at: 300, title: 'Hey, tell me about yourself!'
+    }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.list', params =>
+        // The real gateway keeps bot-mode sessions hidden from global lists
+        // and only returns them to callers that own them (include_hidden).
+        (params as { profile?: string; include_hidden?: boolean }).profile === 'codex' && (params as { include_hidden?: boolean }).include_hidden
+          ? { sessions: [desktopSession] }
+          : { sessions: [] })
+      .handle('session.create', () => ({
+        session_id: 'fresh-runtime', stored_session_id: 'fresh-stored',
+        info: { desktop_contract: 6, model: 'fixture/test-model', title: '' }
+      }))
+      .handle('session.resume', params => ({
+        session_id: 'resumed-runtime', stored_session_id: (params as { session_id: string }).session_id,
+        info: { desktop_contract: 6, model: 'fixture/test-model', title: desktopSession.title }
+      }))
+      .handle('/api/sessions/codex-desktop-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=codex', () => ({
+        messages: [{ kind: 'user', session_id: 'codex-desktop-1', text: 'Hey, tell me about yourself!' }],
+        pagination: { limit: 80, offset: 0, returned: 1 }
+      }))
+    const controller = new GatewayController(
+      { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: null }) } as never,
+      gateway
+    )
+
+    await controller.openProfile('codex')
+
+    const resumedIds = gateway.calls
+      .filter(call => call.kind === 'rpc' && call.method === 'session.resume')
+      .map(call => (call.value as { session_id: string }).session_id)
+    expect(resumedIds).toContain('codex-desktop-1')
+    expect($chat.get().storedSessionId).toBe('codex-desktop-1')
     controller.dispose()
   })
 })

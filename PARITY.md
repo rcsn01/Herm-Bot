@@ -85,8 +85,11 @@ their canonical URL for the sessions view; other screen paths don't
 carry the active profile (it is global persisted state). Opening an agent
 enters that profile's latest human conversation — cron-run sessions stay
 out of the recent-sessions list and the newest-conversation pick, like
-the desktop's recents — starting a fresh one when none exists — the
-conversation is the bot's home surface; there is no separate bot hub
+the desktop's recents — starting a fresh one when none exists. The
+listing asks the gateway for bot-owned hidden sessions (`include_hidden`),
+the same grant the desktop's Bots pane uses, so conversations created on
+the desktop are visible and resumable on mobile. The conversation is the
+bot's home surface; there is no separate bot hub
 page. A header gear on the roster opens **Settings**; profile
 surfaces reach the model settings from the side navigation. **Capabilities**,
 **Cron Jobs** and **Model** are agent-specific shortcuts in the side

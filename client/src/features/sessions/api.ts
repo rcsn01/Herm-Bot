@@ -30,7 +30,16 @@ export interface SessionsApi {
 export function createSessionsApi(api: GatewayApi): SessionsApi {
   return {
     list: (limit, signal) =>
-      api.rpc<{ sessions: StoredSession[] }>('session.list', { limit, profile: api.profileKey }, { signal }),
+      // include_hidden: the desktop's Bot Mode marks its conversations hidden
+      // from global lists (apps/desktop/src/plugins/hermes-bots/canonical-chat.ts
+      // — "Always born hidden from the global sidebar"), and the gateway's
+      // session.list RPC only returns them to surfaces that own them
+      // (tui_gateway/methods_session.py — "the Bots pane's per-profile
+      // browser, plugin session pickers", which pass include_hidden). The
+      // mobile app is the bot's owner surface: without the flag, every
+      // desktop-created conversation is invisible to the recents list and
+      // opening a profile always mints a fresh session instead of resuming.
+      api.rpc<{ sessions: StoredSession[] }>('session.list', { include_hidden: true, limit, profile: api.profileKey }, { signal }),
     rename: (id, title, signal, timeoutMs) =>
       api.request(`/api/sessions/${encodeURIComponent(id)}`, {
         body: { profile: api.profileKey, title }, method: 'PATCH', signal, timeoutMs

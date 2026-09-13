@@ -79,14 +79,27 @@ describe('sessionsApi', () => {
     const gateway = new MemoryGateway().handle('session.list', params => params)
     const sessions = createSessionsApi(createGatewayApi(gateway, null))
 
-    await expect(sessions.list(30)).resolves.toEqual({ limit: 30, profile: 'default' })
+    await expect(sessions.list(30)).resolves.toEqual({ include_hidden: true, limit: 30, profile: 'default' })
 
     const named = createSessionsApi(createGatewayApi(gateway, 'client work/ios'))
     await named.list(30)
     expect(gateway.calls.filter(call => call.kind === 'rpc').map(call => call.value)).toEqual([
-      { limit: 30, profile: 'default' },
-      { limit: 30, profile: 'client work/ios' }
+      { include_hidden: true, limit: 30, profile: 'default' },
+      { include_hidden: true, limit: 30, profile: 'client work/ios' }
     ])
+  })
+
+  it('lists bot-owned hidden sessions so the desktop conversations are visible', async () => {
+    const gateway = new MemoryGateway().handle('session.list', params => ({
+      sessions: (params as { include_hidden?: boolean }).include_hidden
+        ? [{ id: 'hidden-bot-chat', message_count: 2, preview: '', source: 'desktop', started_at: 1, title: 'Hey, tell me about yourself!' }]
+        : []
+    }))
+    const sessions = createSessionsApi(createGatewayApi(gateway, 'codex'))
+
+    await expect(sessions.list(30)).resolves.toEqual({
+      sessions: [expect.objectContaining({ id: 'hidden-bot-chat' })]
+    })
   })
 
   it('URL-encodes session ids in the route path', async () => {
