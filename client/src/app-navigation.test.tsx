@@ -343,7 +343,7 @@ describe('App navigation', () => {
     await settleNavigation()
     expect(screen.getByText('Cron screen')).not.toBeNull()
 
-    openNavigationPage()
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Bot workspace' })).getByRole('button', { name: 'Sessions' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     await settleNavigation()
     expect(screen.getByTestId('chat-instance')).toBe(chat)

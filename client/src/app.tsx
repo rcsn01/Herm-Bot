@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
+import { BotWorkspaceHeader } from '~/components/bot-workspace-header'
 import { BotWorkspaceNavigation, type BotWorkspaceDestination } from '~/components/bot-workspace-navigation'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
@@ -195,13 +196,8 @@ export function App() {
       : 'Back to bots'
   const botName = displayNameFor({ name: preferences.profile || 'default' })
   const headerTitle = DESTINATION_TITLES[navigation.activeTab]
-  /** Profile surfaces lead with the bot's identity. Chat shows the current
-   *  session beneath it; configuration pages show their workspace section. */
-  const headerSubtitle = navigation.activeTab === 'sessions'
-    ? (chat.info as { title?: string } | null)?.title || 'New conversation'
-    : activeBotConfiguration
-      ? BOT_CONFIGURATION_TITLES[activeBotConfiguration]
-      : null
+  /** Chat shows the current session beneath the bot identity. */
+  const headerSubtitle = (chat.info as { title?: string } | null)?.title || 'New conversation'
   const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
   const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
   const backFromForeground = () => {
@@ -228,28 +224,32 @@ export function App() {
       <Button aria-label="Open settings" className="header-gear-button" onClick={openSettingsFrom} variant="ghost"><IconSettings className="size-6" /></Button>
     </header>
   )
-  const foregroundHeader = foregroundVisible ? (
-    <header className="app-header">
-      {activeGroupId ? (
-        <>
-          <Button aria-label="Back to bots" className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
-          <div aria-level={1} className="header-title" role="heading"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
-        </>
-      ) : (
-        <Button aria-label={backDestinationLabel} className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
-      )}
-      {navigation.activeTab === 'sessions' || activeBotConfiguration ? (
-        <div className="header-bot-button">
-          <div><strong>{botName}</strong><small>{reconnecting && navigation.activeTab === 'sessions' ? 'Reconnecting…' : headerSubtitle}</small></div>
-        </div>
-      ) : inProfile ? (
-        <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
-      ) : null}
-      {inProfile && (
-        <Button aria-controls="sessions-menu" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
-      )}
-    </header>
-  ) : null
+  const foregroundHeader = !foregroundVisible
+    ? null
+    : activeBotConfiguration
+      ? <BotWorkspaceHeader backLabel={backDestinationLabel} botName={botName} onBack={backFromForeground} subtitle={BOT_CONFIGURATION_TITLES[activeBotConfiguration]} />
+      : (
+          <header className="app-header">
+            {activeGroupId ? (
+              <>
+                <Button aria-label="Back to bots" className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+                <div aria-level={1} className="header-title" role="heading"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
+              </>
+            ) : (
+              <Button aria-label={backDestinationLabel} className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+            )}
+            {navigation.activeTab === 'sessions' ? (
+              <div className="header-bot-button">
+                <div><strong>{botName}</strong><small>{reconnecting ? 'Reconnecting…' : headerSubtitle}</small></div>
+              </div>
+            ) : inProfile ? (
+              <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
+            ) : null}
+            {inProfile && (
+              <Button aria-controls="sessions-menu" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
+            )}
+          </header>
+        )
   const foregroundContent = (
     <>
       <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>

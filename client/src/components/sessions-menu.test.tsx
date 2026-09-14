@@ -70,7 +70,7 @@ describe('SessionsMenu', () => {
     const identity = screen.getByRole('button', { name: 'Open bot chat' })
     expect(identity.querySelector('strong')?.textContent).toBe('Work')
     expect(identity.querySelector('small')?.textContent).toBe('Sessions')
-    expect(container.querySelector('.navigation-identity .brand-mark')).toBeNull()
+    expect(container.querySelector('.sessions-menu-header .header-bot-button .brand-mark')).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()

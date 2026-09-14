@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { IconChevronLeft, IconPlus, IconSearch, IconTrash } from '@tabler/icons-react'
+import { IconPlus, IconSearch, IconTrash } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { useSwipeMotion } from '~/gestures/use-swipe-motion'
 
 import { Button, Input } from '~/compat/primitives'
+import { BotWorkspaceHeader } from '~/components/bot-workspace-header'
 import { BotWorkspaceNavigation } from '~/components/bot-workspace-navigation'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { displayNameFor } from '~/features/agents/agent-labels'
@@ -240,14 +241,14 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
         ref={panelRef}
         tabIndex={-1}
       >
-        <header className="app-header sessions-menu-header">
-          <div className="navigation-heading">
-            <Button aria-label="Back" className="navigation-back-button" onClick={requestClose} size="icon" variant="ghost"><IconChevronLeft aria-hidden size={24} /></Button>
-            <button aria-label="Open bot chat" className="navigation-identity" onClick={() => navigate('sessions')}>
-              <div><strong>{displayNameFor({ name: preferences.profile || 'default' })}</strong><small>Sessions</small></div>
-            </button>
-          </div>
-        </header>
+        <BotWorkspaceHeader
+          backLabel="Back"
+          botName={displayNameFor({ name: preferences.profile || 'default' })}
+          className="sessions-menu-header"
+          onBack={requestClose}
+          onIdentityClick={() => navigate('sessions')}
+          subtitle="Sessions"
+        />
         <div className="sessions-menu-body">
           <label className="search-box sessions-menu-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
 

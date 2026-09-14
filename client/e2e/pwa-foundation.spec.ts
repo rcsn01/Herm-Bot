@@ -16,7 +16,7 @@ async function login(page: Page, path = '/') {
     // The newest session on the fixture is Bot Mode plumbing ('Group: r-crew');
     // opening Hermes must land on the human conversation instead. The fixture
     // echoes the requested session id as the resumed title.
-    await expect(page.locator('.header-bot-button small')).toHaveText('saved-default')
+    await expect(page.locator('.foreground-layer.active > .app-header .header-bot-button small')).toHaveText('saved-default')
   }
 }
 
@@ -196,6 +196,33 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
   await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
   await expect(page).toHaveURL(rootURL)
   await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
+})
+
+test('workspace tabs share a stable header without redundant menu buttons', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+
+  const sessionHeader = page.getByTestId('sessions-menu').locator('.bot-workspace-header')
+  await expect(sessionHeader).toBeVisible()
+  const sessionIdentity = await sessionHeader.locator('.header-bot-button').boundingBox()
+  expect(sessionIdentity).toBeTruthy()
+
+  await page.getByRole('button', { name: 'Automations' }).click()
+  for (const destination of [
+    { button: 'Automations', subtitle: 'Automations' },
+    { button: 'Capabilities', subtitle: 'Capabilities' },
+    { button: 'Models', subtitle: 'Models' }
+  ]) {
+    if (destination.button !== 'Automations') {
+      await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: destination.button }).click()
+    }
+    const header = page.locator('.foreground-layer.active > .bot-workspace-header')
+    await expect(header.locator('.header-bot-button small')).toHaveText(destination.subtitle)
+    await expect(header.getByRole('button', { name: 'Open navigation' })).toHaveCount(0)
+    const identity = await header.locator('.header-bot-button').boundingBox()
+    expect(identity?.x).toBe(sessionIdentity?.x)
+    expect(identity?.width).toBe(sessionIdentity?.width)
+  }
 })
 
 test('bot configuration destinations return to the sessions menu', async ({ page }) => {
