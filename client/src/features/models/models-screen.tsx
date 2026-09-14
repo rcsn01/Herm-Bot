@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
+
 import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
@@ -65,7 +65,7 @@ interface ModelsScreenProps {
   showBack?: boolean
 }
 
-export function ModelsScreen({ onBack, showBack = true }: ModelsScreenProps) {
+export function ModelsScreen({ onBack: _onBack, showBack: _showBack = true }: ModelsScreenProps) {
   const models = useApi(createModelsApi)
   const queryClient = useQueryClient()
   const preferences = useStore($preferences)
@@ -178,9 +178,7 @@ export function ModelsScreen({ onBack, showBack = true }: ModelsScreenProps) {
 
   return (
     <PageShell
-      actions={<Button aria-label="Refresh models" onClick={() => void Promise.all([info.refetch(), options.refetch(), auxiliary.refetch(), config.refetch(), moa.refetch()])} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>}
-      eyebrow="Remote gateway"
-      leading={showBack && <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      heading={false}
       subtitle={`Current model, assignments, and model capabilities for the ${profile || 'default'} profile.`}
       title="Models"
     >

@@ -177,6 +177,8 @@ describe('ModelsScreen', () => {
     mountScreen(gateway)
 
     expect(await screen.findByText('Applied:')).not.toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Models' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Refresh models' })).toBeNull()
     for (const path of READ_PATHS) {
       expect(gateway.calls.some(call => call.kind === 'request' && (call.value as { path: string }).path === path)).toBe(true)
     }

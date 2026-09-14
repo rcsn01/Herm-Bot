@@ -15,7 +15,7 @@ describe('CapabilitiesScreen', () => {
   it('contains only Skills, Tools, and MCP at the capabilities root', () => {
     render(<CapabilitiesScreen onBack={vi.fn()} onNavigate={vi.fn()} route={{ tab: 'capabilities', type: 'capabilities-root' }} />)
 
-    expect(screen.getByRole('heading', { name: 'Capabilities' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Capabilities' })).toBeNull()
     expect(screen.getByRole('button', { name: /^Skills/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Tools/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^MCP/ })).toBeTruthy()

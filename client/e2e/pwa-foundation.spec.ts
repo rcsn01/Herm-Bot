@@ -212,7 +212,8 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
 
   await page.getByRole('button', { name: 'Capabilities' }).click()
   await expect(page).toHaveURL(rootURL)
-  await expect(page.getByRole('heading', { name: 'Capabilities' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Capabilities' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /^Skills/ })).toBeVisible()
 
   await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
   await expect(page).toHaveURL(rootURL)
@@ -270,15 +271,18 @@ test('bot configuration destinations return to the sessions menu', async ({ page
   const rootURL = page.url()
 
   for (const destination of [
-    { button: 'Models', heading: 'Models' },
-    { button: 'Capabilities', heading: 'Capabilities' },
-    { button: 'Automations', heading: null }
+    { button: 'Models', marker: 'Main model', markerRole: 'heading' as const },
+    { button: 'Capabilities', marker: /^Skills/, markerRole: 'button' as const },
+    { button: 'Automations', marker: 'New automations', markerRole: 'button' as const }
   ]) {
     await page.getByRole('button', { name: 'Open navigation' }).click()
     await page.getByRole('button', { name: destination.button, exact: true }).click()
     await expect(page).toHaveURL(rootURL)
-    if (destination.heading) await expect(page.getByRole('heading', { exact: true, name: destination.heading })).toBeVisible()
-    else await expect(page.getByRole('button', { name: 'New automations' })).toBeVisible()
+    await expect(page.getByRole(destination.markerRole, { name: destination.marker })).toBeVisible()
+    if (destination.button === 'Models') {
+      await expect(page.getByRole('heading', { exact: true, name: 'Models' })).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Refresh models' })).toHaveCount(0)
+    }
     await page.getByRole('button', { name: 'Back to menu' }).click()
     await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
     await expect(page.getByRole('navigation', { name: 'Bot workspace' })).toBeVisible()
