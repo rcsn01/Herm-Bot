@@ -72,6 +72,19 @@ const server = http.createServer(async (req, res) => {
         const messages = state.messages.get(stored) ?? initialMessages(stored)
         return json(res, 200, { messages, pagination: { offset: Number(url.searchParams.get('offset') || 0), limit: 80, returned: messages.length } })
       }
+      if (url.pathname === '/api/cron/blueprints' && req.method === 'GET') return json(res, 200, { blueprints: [
+        {
+          appUrl: 'https://example.test/calendar', category: 'Productivity', command: 'calendar-digest',
+          description: 'Summarize upcoming calendar events and prepare a daily briefing.',
+          fields: [
+            { default: '09:00', help: 'Local delivery time.', label: 'Delivery time', name: 'time', optional: false, options: [], type: 'time' },
+            { default: 'mon,tue,wed,thu,fri', help: 'Days when this automation should run.', label: 'Weekdays', name: 'weekdays', optional: false, options: [], type: 'weekdays' },
+            { default: 'concise', help: 'Controls the amount of detail.', label: 'Style', name: 'style', optional: false, options: ['concise', 'detailed'], type: 'enum' },
+            { default: '', help: 'Extra instructions for the briefing.', label: 'Instructions', name: 'instructions', optional: true, options: [], type: 'text' }
+          ],
+          key: 'calendar-digest', tags: ['calendar', 'daily'], title: 'Daily calendar briefing'
+        }
+      ] })
       if (url.pathname === '/api/private-fixture') return json(res, 200, { secret: 'cookie-private-response' })
       if (url.pathname === '/api/fixture-calls') return json(res, 200, { calls: state.calls })
       return json(res, 404, { detail: 'Fixture API route not found' })
