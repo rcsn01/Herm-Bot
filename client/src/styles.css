@@ -145,8 +145,8 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .group-prompt-command { font-size: 12px; overflow-x: auto; max-width: 100%; }
 .group-prompt-card input { width: 100%; }
 .group-prompt-choice { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; background: var(--panel); }
-.connection-dot, .status-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--success); }
-.connection-dot.busy, .connection-dot.reconnecting, .status-dot.running, .status-dot.progress, .status-dot.generating { background: var(--primary); box-shadow: 0 0 0 4px var(--accent); }
+.status-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--success); }
+.status-dot.running, .status-dot.progress, .status-dot.generating { background: var(--primary); box-shadow: 0 0 0 4px var(--accent); }
 .view-container { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
 .view-container:has(.chat-screen) { scroll-padding-bottom: calc(var(--composer-occlusion, 94px) + var(--latest-composer-gap)); }
 .mobile-shell.navigation-open .view-container { overflow-y: hidden; overscroll-behavior: none; touch-action: none; }

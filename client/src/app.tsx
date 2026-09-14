@@ -158,7 +158,6 @@ export function App() {
       )}
       {navigation.activeTab === 'sessions' ? (
         <div className="header-bot-button">
-          <span aria-hidden className={`connection-dot ${chat.running ? 'busy' : ''} ${reconnecting ? 'reconnecting' : ''}`} />
           <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : headerSession}</small></div>
         </div>
       ) : inProfile ? (
