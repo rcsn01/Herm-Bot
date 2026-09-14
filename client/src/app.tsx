@@ -16,11 +16,11 @@ import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { CronScreen } from '~/features/cron/cron-screen'
 import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
-import type { CapabilitiesRoute, CronRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
+import type { CapabilitiesRoute, CronRoute, MobileRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
 import { restoreInitialNavigation } from '~/navigation/initial-navigation'
-import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
+import { $activeRoute, $navigation, applyPathState, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
 import { useNavigationPageController } from '~/navigation/use-navigation-page-controller'
 import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
@@ -54,15 +54,24 @@ export function App() {
   const [returnTab, setReturnTab] = useState<MobileTab | null>(null)
   const initialNavigationRestoredRef = useRef(false)
   const menuOriginRef = useRef<MobileTab | null>(null)
+  const menuOriginStackRef = useRef<MobileRoute[] | null>(null)
+  const returnStackRef = useRef<MobileRoute[] | null>(null)
   const navigationPage = useNavigationPageController({
     onDismissed: intent => {
       const origin = menuOriginRef.current
+      const originStack = menuOriginStackRef.current
       menuOriginRef.current = null
+      menuOriginStackRef.current = null
       if (intent.type === 'tab') {
-        setReturnTab(origin && origin !== intent.tab ? origin : null)
+        if (origin === intent.tab) return
+        setReturnTab(origin)
+        returnStackRef.current = originStack
         openDestination(intent.tab)
       } else if (intent.type === 'model') {
-        setReturnTab(origin && origin !== 'settings' ? origin : null)
+        const originRoute = originStack?.at(-1)
+        if (origin === 'settings' && originRoute?.type === 'settings-category' && originRoute.category === 'model') return
+        setReturnTab(origin)
+        returnStackRef.current = originStack
         openModelSettings()
       }
     }
@@ -118,10 +127,14 @@ export function App() {
     await Promise.allSettled([controller.conversation.reconcileHistory(), controller.refreshSessions()])
     setRefreshing(false)
   }
+  const clearMenuReturn = () => {
+    setReturnTab(null)
+    returnStackRef.current = null
+  }
   const openAgent = (profile: null | string) => {
     // Enter the destination first; the wire work (profile switch, session
     // resume) streams into the already-visible chat shell.
-    setReturnTab(null)
+    clearMenuReturn()
     setTab('sessions')
     void controller.openProfile(profile)
   }
@@ -132,31 +145,38 @@ export function App() {
   }
   const exitDestination = (fallback: MobileTab = 'roster') => {
     const destination = returnTab ?? fallback
-    setReturnTab(null)
-    setTab(destination)
+    const returnStack = returnStackRef.current
+    const reopenMenu = returnTab !== null && returnStack !== null
+    clearMenuReturn()
+    if (returnStack) applyPathState(destination, returnStack)
+    else setTab(destination)
+    if (reopenMenu) {
+      menuOriginRef.current = destination
+      menuOriginStackRef.current = returnStack
+      navigationPage.openNavigationPage()
+    }
   }
   const backToRoster = () => {
-    setReturnTab(null)
+    clearMenuReturn()
     setTab('roster')
   }
   const openSettingsFrom = () => {
-    setReturnTab(null)
+    clearMenuReturn()
     resetTabRoutes('settings')
     setTab('settings')
   }
   const openNavigationPage = () => {
     menuOriginRef.current = navigation.activeTab
+    menuOriginStackRef.current = [...navigation.stacks[navigation.activeTab]] as MobileRoute[]
     navigationPage.openNavigationPage()
   }
   const nestedRoute = navigation.stacks[navigation.activeTab].length > 1
   const modelReturnsToSurface = navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab
   const backDestinationLabel = nestedRoute && !modelReturnsToSurface
     ? 'Back'
-    : returnTab === 'sessions'
-      ? 'Back to sessions'
-      : returnTab
-        ? `Back to ${DESTINATION_TITLES[returnTab]}`
-        : 'Back to bots'
+    : returnTab
+      ? 'Back to menu'
+      : 'Back to bots'
   const headerTitle = navigation.activeTab === 'sessions'
     ? displayNameFor({ name: preferences.profile || 'default' })
     : activeRoute.type === 'settings-category' && activeRoute.category === 'model'
@@ -220,7 +240,7 @@ export function App() {
       </div>
       {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
       {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setReturnTab(null); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); clearMenuReturn(); setTab('sessions') }} route={routeForCron(activeRoute)} />}
       {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => exitDestination())} onExit={returnTab ? () => exitDestination('sessions') : undefined} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
     </>
   )
@@ -228,7 +248,7 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
+        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu activeDestination={activeBotConfigurationDestination(navigation.activeTab, activeRoute)} activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
         navigationPageOpen={navigationPageOpen}
         foreground={foregroundContent}
         foregroundDismissible={foregroundDismissible}
@@ -248,6 +268,12 @@ export function App() {
       />
     </GatewayProvider>
   )
+}
+
+function activeBotConfigurationDestination(tab: MobileTab, route: MobileRoute): 'capabilities' | 'cron' | 'model' | null {
+  if (tab === 'capabilities' || tab === 'cron') return tab
+  if (tab === 'settings' && route.type === 'settings-category' && route.category === 'model') return 'model'
+  return null
 }
 
 function routeForCapabilities(route: ReturnType<typeof $activeRoute.get>): CapabilitiesRoute {

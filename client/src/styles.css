@@ -165,11 +165,18 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .navigation-identity > div { min-width: 0; display: grid; }
 .navigation-identity strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-body); font-weight: var(--weight-bold); }
 .navigation-identity small { color: var(--muted-foreground); font-size: var(--font-caption); }
-.sessions-menu-search { width: 100%; flex: none; }
+.bot-configuration { flex: none; }
+.bot-configuration h2 { margin: 0 0 7px 3px; color: var(--muted-foreground); font-size: var(--font-caption); font-weight: var(--weight-bold); letter-spacing: .045em; text-transform: uppercase; }
+.navigation-sections { display: grid; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.navigation-sections button { width: 100%; min-height: 52px; padding: 7px 11px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--text); text-align: left; }
+.navigation-sections button:last-child { border-bottom: 0; }
+.navigation-sections button > span { min-width: 0; display: grid; flex: 1; gap: 1px; }
+.navigation-sections button strong { font-size: var(--font-control); font-weight: var(--weight-semibold); }
+.navigation-sections button small { color: var(--muted-foreground); font-size: var(--font-caption); font-weight: 400; }
+.navigation-sections button > svg { flex: none; }
+.navigation-sections button[aria-current='page'] { background: var(--accent); color: var(--primary); }
+.sessions-menu-search { width: 100%; flex: none; margin-top: 12px; }
 .sessions-menu-search input { width: 100%; min-width: 0; min-height: 42px; padding-inline: 0; border: 0; background: transparent; box-shadow: none; color: var(--text); }
-.navigation-sections { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
-.navigation-sections button { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--text); font-size: var(--font-control); font-weight: var(--weight-semibold); }
-.navigation-sections button[aria-current='page'] { border-color: color-mix(in srgb, var(--primary) 55%, var(--line)); color: var(--primary); }
 .navigation-error { flex: none; margin: 9px 0 0; }
 .navigation-sessions { min-height: 0; flex: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
 .navigation-sessions-header { min-height: 51px; padding: 5px 9px 5px 16px; display: flex; flex: none; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }

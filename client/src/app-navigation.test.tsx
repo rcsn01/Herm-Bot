@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const controller = vi.hoisted(() => ({
@@ -52,7 +52,7 @@ vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { $groups } from '~/features/groups/groups-store'
-import { resetNavigation } from '~/navigation/navigation-store'
+import { $navigation, pushRoute, resetNavigation } from '~/navigation/navigation-store'
 import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'
 
 afterEach(cleanup)
@@ -171,16 +171,19 @@ describe('App navigation', () => {
     expect(window.location.pathname).toBe('/')
     expect(screen.getByRole('main', { name: 'Sessions menu' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Back' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Model' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Cron Jobs' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Automations' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Back to sessions' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
+    expect(screen.getByRole('main', { name: 'Sessions menu' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
@@ -224,7 +227,7 @@ describe('App navigation', () => {
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
 
-  it('reaches Capabilities and Cron Jobs from the side navigation', async () => {
+  it('returns from Automations to the menu over the exact originating Capabilities page', async () => {
     render(<App />)
 
     await enterAgent()
@@ -232,15 +235,19 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    act(() => { pushRoute('capabilities', { section: 'mcp', tab: 'capabilities', type: 'capabilities-section' }) })
 
     openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     await settleNavigation()
     expect(screen.getByText('Cron screen')).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Back to Capabilities' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to Capabilities' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
+    const menu = screen.getByRole('main', { name: 'Sessions menu' })
+    fireEvent.click(within(menu).getByRole('button', { name: 'Back' }))
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    expect($navigation.get().stacks.capabilities.at(-1)).toEqual({ section: 'mcp', tab: 'capabilities', type: 'capabilities-section' })
   })
 
   it('opens model settings from the side navigation and returns to the chat', async () => {
@@ -251,9 +258,11 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Back to sessions' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
+    expect(screen.getByRole('main', { name: 'Sessions menu' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
 
     // The sessions menu's bot identity also returns to the chat.
@@ -268,7 +277,7 @@ describe('App navigation', () => {
 
     await enterAgent()
     openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     await settleNavigation()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
@@ -321,7 +330,7 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
     openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     await settleNavigation()
     expect(screen.getByText('Cron screen')).not.toBeNull()
 

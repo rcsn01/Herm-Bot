@@ -3,6 +3,7 @@ import {
   IconBolt,
   IconCalendarClock,
   IconChevronLeft,
+  IconChevronRight,
   IconPlus,
   IconRobot,
   IconSearch,
@@ -25,7 +26,10 @@ import type { GatewayController } from '~/state/gateway-controller'
 import { $preferences } from '~/state/store'
 import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
+type BotConfigurationDestination = 'capabilities' | 'cron' | 'model'
+
 interface SessionsMenuProps {
+  activeDestination?: BotConfigurationDestination | null
   activeTab: MobileTab
   controller: GatewayController
   onDismissRequest(intent?: NavigationPageDismissIntent): void
@@ -106,7 +110,7 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
   )
 }
 
-export function SessionsMenu({ activeTab, controller, onDismissRequest, open }: SessionsMenuProps) {
+export function SessionsMenu({ activeDestination = null, activeTab, controller, onDismissRequest, open }: SessionsMenuProps) {
   const chat = useStore($chat)
   const preferences = useStore($preferences)
   const sessions = useStore($sessions)
@@ -257,14 +261,17 @@ export function SessionsMenu({ activeTab, controller, onDismissRequest, open }: 
           </div>
         </header>
         <div className="sessions-menu-body">
+          <section aria-labelledby="bot-configuration-title" className="bot-configuration">
+            <h2 id="bot-configuration-title">Bot configuration</h2>
+            <nav aria-label="Bot configuration" className="navigation-sections">
+              <Button aria-current={activeDestination === 'model' ? 'page' : undefined} aria-label="Model" className="navigation-section-button" onClick={navigateModel} type="button" variant="secondary"><IconRobot aria-hidden="true" size={19} /><span><strong>Model</strong><small>Default for new sessions</small></span><IconChevronRight aria-hidden="true" size={18} /></Button>
+              <Button aria-current={activeDestination === 'capabilities' ? 'page' : undefined} aria-label="Capabilities" className="navigation-section-button" onClick={() => navigate('capabilities')} type="button" variant="secondary"><IconBolt aria-hidden="true" size={19} /><span><strong>Capabilities</strong><small>Skills, tools, and MCP</small></span><IconChevronRight aria-hidden="true" size={18} /></Button>
+              <Button aria-current={activeDestination === 'cron' ? 'page' : undefined} aria-label="Automations" className="navigation-section-button" onClick={() => navigate('cron')} type="button" variant="secondary"><IconCalendarClock aria-hidden="true" size={19} /><span><strong>Automations</strong><small>Scheduled jobs</small></span><IconChevronRight aria-hidden="true" size={18} /></Button>
+            </nav>
+          </section>
           <label className="search-box sessions-menu-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
-        <nav aria-label="Bot sections" className="navigation-sections">
-          <Button aria-current={activeTab === 'capabilities' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('capabilities')} type="button" variant="secondary"><IconBolt aria-hidden="true" size={17} />Capabilities</Button>
-          <Button aria-current={activeTab === 'cron' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('cron')} type="button" variant="secondary"><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</Button>
-          <Button aria-current={activeTab === 'settings' ? 'page' : undefined} className="navigation-section-button" onClick={navigateModel} type="button" variant="secondary"><IconRobot aria-hidden="true" size={17} />Model</Button>
-        </nav>
 
-        {error && <div className="error-banner navigation-error" role="alert">{error}</div>}
+          {error && <div className="error-banner navigation-error" role="alert">{error}</div>}
 
         <section className="navigation-sessions" onClick={event => {
           if (swipedId && !(event.target as HTMLElement).closest('.session-row')) setSwipedId(null)

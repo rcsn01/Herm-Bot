@@ -194,25 +194,28 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
   await expect(page.getByRole('heading', { name: 'Capabilities' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Cron Jobs' }).click()
+  await page.getByRole('button', { name: 'Automations' }).click()
   await expect(page).toHaveURL(rootURL)
   await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
 })
 
-test('menu destinations return to the originating sessions surface', async ({ page }) => {
+test('bot configuration destinations return to the sessions menu', async ({ page }) => {
   await login(page)
   const rootURL = page.url()
 
   for (const destination of [
+    { button: 'Model', heading: 'Models' },
     { button: 'Capabilities', heading: 'Capabilities' },
-    { button: 'Cron Jobs', heading: 'Cron Jobs' },
-    { button: 'Model', heading: 'Models' }
+    { button: 'Automations', heading: 'Cron Jobs' }
   ]) {
     await page.getByRole('button', { name: 'Open navigation' }).click()
     await page.getByRole('button', { name: destination.button, exact: true }).click()
     await expect(page).toHaveURL(rootURL)
     await expect(page.getByRole('heading', { exact: true, name: destination.heading })).toBeVisible()
-    await page.getByRole('button', { name: 'Back to sessions' }).click()
+    await page.getByRole('button', { name: 'Back to menu' }).click()
+    await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
+    await expect(page.getByRole('navigation', { name: 'Bot configuration' })).toBeVisible()
+    await page.getByRole('button', { exact: true, name: 'Back' }).click()
     await expect(page.getByLabel('Message Hermes')).toBeVisible()
   }
 })
@@ -319,7 +322,7 @@ test('session-row touch motion reveals and conceals without dismissing the navig
 test('reloading resets a runtime screen to the startup route', async ({ page }) => {
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Cron Jobs' }).click()
+  await page.getByRole('button', { name: 'Automations' }).click()
   await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
   await expect(page).toHaveURL(/\/$/)
 

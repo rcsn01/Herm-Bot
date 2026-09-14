@@ -143,14 +143,20 @@ describe('SessionsMenu', () => {
     expect(screen.getByRole('button', { name: /Planning session/ })).not.toBeNull()
   })
 
-  it('offers agent capabilities and cron jobs next to the sessions search', () => {
+  it('groups bot configuration above session search and navigation', () => {
     const { onClose, onNavigate } = renderNavigationPage()
+    const configuration = screen.getByRole('navigation', { name: 'Bot configuration' })
+    const search = screen.getByRole('textbox', { name: 'Search sessions' })
+    const sessions = screen.getByRole('region', { name: 'Sessions' })
+
+    expect(configuration.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(configuration.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     expect(onNavigate).toHaveBeenCalledWith('capabilities')
     expect(onClose).toHaveBeenCalledOnce()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     expect(onNavigate).toHaveBeenCalledWith('cron')
     expect(onClose).toHaveBeenCalledTimes(2)
   })
@@ -174,7 +180,7 @@ describe('SessionsMenu', () => {
     expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot chat' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Recent sessions' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
-    expect(sessionList.contains(screen.getByRole('button', { name: 'Cron Jobs' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Automations' }))).toBe(false)
   })
 
   it('filters session titles only and keeps the query while closed', () => {
