@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import {
   IconBolt,
   IconCalendarClock,
+  IconChevronLeft,
   IconPlus,
   IconRobot,
   IconSearch,
@@ -17,29 +18,23 @@ import { displayNameFor } from '~/features/agents/agent-labels'
 import { humanSessions } from '~/features/sessions/api'
 import type { StoredSession } from '~/lib/types'
 import type { MobileTab } from '~/navigation/routes'
-import type { DrawerDismissIntent, DrawerDismissRequest } from '~/navigation/use-drawer-controller'
+import type { NavigationPageDismissIntent } from '~/navigation/use-navigation-page-controller'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $preferences } from '~/state/store'
 import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
-interface SideNavigationDrawerProps {
+interface SideNavigationPageProps {
   activeTab: MobileTab
   controller: GatewayController
-  dismissRequest: DrawerDismissRequest | null
-  onDismissRequest(intent?: DrawerDismissIntent): void
-  onDismissed(): void
-  onEdgeOpen?(): void
+  onDismissRequest(intent?: NavigationPageDismissIntent): void
   open: boolean
 }
 
-function gestureOwnedByControl(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  return Boolean(target.closest('.session-row')) || Boolean(target.closest('button, input, textarea, select, [contenteditable="true"]'))
-}
-
+const EDGE_BACK_WIDTH_PX = 28
 const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]):not([aria-hidden="true"]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+const NAVIGATION_CONTROLS = 'button, input, textarea, select, [contenteditable="true"], .session-row'
 
 interface SessionRowProps {
   active: boolean
@@ -55,7 +50,8 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
   const date = new Date(session.started_at * 1_000)
   const title = session.title || 'Untitled session'
   const motion = useSwipeMotion({
-    canStart: target => {
+    canStart: (target, event) => {
+      if (event && event.clientX <= EDGE_BACK_WIDTH_PX) return false
       if (!(target instanceof HTMLElement)) return true
       if (target.closest('.session-delete-action')) return false
       return true
@@ -110,7 +106,7 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
   )
 }
 
-export function SideNavigationDrawer({ activeTab, controller, dismissRequest, onDismissRequest, onDismissed, onEdgeOpen, open }: SideNavigationDrawerProps) {
+export function SideNavigationPage({ activeTab, controller, onDismissRequest, open }: SideNavigationPageProps) {
   const chat = useStore($chat)
   const preferences = useStore($preferences)
   const sessions = useStore($sessions)
@@ -125,45 +121,32 @@ export function SideNavigationDrawer({ activeTab, controller, dismissRequest, on
   const panelRef = useRef<HTMLElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const actionPendingRef = useRef(false)
-  const handledDismissRef = useRef<number | null>(null)
-  const previousOpenRef = useRef(open)
   const refreshGeneration = useRef(0)
   const action = useScopedTask()
+  const navigationMotion = useSwipeMotion({
+    canStart: (target, event) => {
+      if (!event || event.clientX > EDGE_BACK_WIDTH_PX) return false
+      if (!(target instanceof Element)) return true
+      if (target.closest('.session-row')) return true
+      return !target.closest(NAVIGATION_CONTROLS)
+    },
+    direction: 'right',
+    enabled: open && !pendingSessionAction,
+    extentPx: () => window.innerWidth,
+    initialProgress: 0,
+    onCommit: endpoint => {
+      if (endpoint === 1 && !actionPendingRef.current) onDismissRequest({ type: 'close' })
+    },
+    restingEndpoint: 0
+  })
   const filtered = useMemo(() => {
     const visible = humanSessions(sessions)
     const needle = query.trim().toLowerCase()
     return needle ? visible.filter(session => session.title.toLowerCase().includes(needle)) : visible
   }, [query, sessions])
-  const drawerMotion = useSwipeMotion({
-    canStart: target => {
-      if (!open) return target instanceof HTMLElement && Boolean(target.closest('[data-drawer-edge]'))
-      return !gestureOwnedByControl(target)
-    },
-    direction: 'right',
-    enabled: open || Boolean(onEdgeOpen),
-    extentPx: () => panelRef.current?.getBoundingClientRect().width || panelRef.current?.clientWidth || window.innerWidth,
-    initialProgress: open ? 0 : 1,
-    onCommit: endpoint => {
-      if (open && endpoint === 1) onDismissed()
-      else if (!open && endpoint === 0) onEdgeOpen?.()
-    },
-    restingEndpoint: open ? 0 : 1
-  })
   const loadMoreSessions = useCallback(async () => {
     await action.run(() => controller.loadMoreSessions(), { onError: error => setError(error.message) })
   }, [action, controller])
-
-  useEffect(() => {
-    if (open && !previousOpenRef.current) drawerMotion.animateTo(0)
-    if (!open && previousOpenRef.current) drawerMotion.setProgress(1)
-    previousOpenRef.current = open
-  }, [drawerMotion.animateTo, drawerMotion.setProgress, open])
-
-  useEffect(() => {
-    if (!open || !dismissRequest || handledDismissRef.current === dismissRequest.id) return
-    handledDismissRef.current = dismissRequest.id
-    drawerMotion.animateTo(1, { onSettled: onDismissed })
-  }, [dismissRequest, drawerMotion.animateTo, onDismissed, open])
 
   useEffect(() => {
     if (!open) return
@@ -186,7 +169,7 @@ export function SideNavigationDrawer({ activeTab, controller, dismissRequest, on
     if (!open || !target || !sessionsHaveMore || sessionsLoadingMore || typeof IntersectionObserver === 'undefined') return
     const observer = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting)) void loadMoreSessions()
-    }, { root: target.closest('.drawer-session-list') })
+    }, { root: target.closest('.navigation-session-list') })
     observer.observe(target)
     return () => observer.disconnect()
   }, [loadMoreSessions, open, sessionsHaveMore, sessionsLoadingMore])
@@ -215,7 +198,7 @@ export function SideNavigationDrawer({ activeTab, controller, dismissRequest, on
   }
 
   const requestClose = () => {
-    if (!actionPendingRef.current) onDismissRequest()
+    if (!actionPendingRef.current) onDismissRequest({ type: 'close' })
   }
 
   const navigate = (tab: MobileTab) => {
@@ -251,46 +234,45 @@ export function SideNavigationDrawer({ activeTab, controller, dismissRequest, on
   return (
     <div
       aria-hidden={!open}
-      className={`side-drawer-backdrop ${open ? 'open' : ''}`}
-      data-testid="side-navigation-backdrop"
-      inert={!open && !onEdgeOpen ? true : undefined}
-      onClick={event => { if (event.target === event.currentTarget) requestClose() }}
-      ref={drawerMotion.ref}
-      {...drawerMotion.bind}
+      className={`side-navigation-page ${open ? 'open' : ''}`}
+      data-testid="side-navigation-page"
+      inert={!open ? true : undefined}
+      ref={navigationMotion.ref}
+      {...navigationMotion.bind}
     >
-      {!open && onEdgeOpen && <div aria-hidden className="drawer-edge-open" data-drawer-edge />}
-      <aside
+      <main
         aria-label="Navigation"
-        aria-modal="true"
-        className="side-drawer-panel"
-        id="side-navigation-drawer"
+        className="side-navigation-content page-screen"
+        id="side-navigation-page"
         onKeyDown={trapFocus}
         ref={panelRef}
-        role="dialog"
         tabIndex={-1}
       >
-        <header className="side-drawer-top">
-          <button aria-label="Open bot chat" className="drawer-identity" onClick={() => navigate('sessions')}>
-            <strong>{displayNameFor({ name: preferences.profile || 'default' })}</strong>
-          </button>
-          <label className="drawer-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
-          <nav aria-label="Bot sections" className="drawer-sections">
-            <button aria-current={activeTab === 'capabilities' ? 'page' : undefined} onClick={() => navigate('capabilities')}><IconBolt aria-hidden="true" size={17} />Capabilities</button>
-            <button aria-current={activeTab === 'cron' ? 'page' : undefined} onClick={() => navigate('cron')}><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</button>
-            <button onClick={navigateModel}><IconRobot aria-hidden="true" size={17} />Model</button>
-          </nav>
+        <header className="page-heading side-navigation-heading">
+          <div className="navigation-heading">
+            <Button aria-label="Back" className="navigation-back-button" onClick={requestClose} size="icon" variant="ghost"><IconChevronLeft aria-hidden size={24} /></Button>
+            <button aria-label="Open bot chat" className="navigation-identity" onClick={() => navigate('sessions')}>
+              <div><strong>{displayNameFor({ name: preferences.profile || 'default' })}</strong><small>Sessions</small></div>
+            </button>
+          </div>
         </header>
+        <label className="search-box side-navigation-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
+        <nav aria-label="Bot sections" className="navigation-sections">
+          <Button aria-current={activeTab === 'capabilities' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('capabilities')} type="button" variant="secondary"><IconBolt aria-hidden="true" size={17} />Capabilities</Button>
+          <Button aria-current={activeTab === 'cron' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('cron')} type="button" variant="secondary"><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</Button>
+          <Button className="navigation-section-button" onClick={navigateModel} type="button" variant="secondary"><IconRobot aria-hidden="true" size={17} />Model</Button>
+        </nav>
 
-        {error && <div className="error-banner drawer-error" role="alert">{error}</div>}
+        {error && <div className="error-banner navigation-error" role="alert">{error}</div>}
 
-        <section className="drawer-sessions" onClick={event => {
+        <section className="navigation-sessions" onClick={event => {
           if (swipedId && !(event.target as HTMLElement).closest('.session-row')) setSwipedId(null)
         }}>
-          <header className="drawer-sessions-header">
-            <button aria-current={activeTab === 'sessions' ? 'page' : undefined} disabled={pendingSessionAction} onClick={() => navigate('sessions')}>Recent sessions</button>
-            <Button aria-label="New session" className="drawer-icon-button" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} variant="ghost"><IconPlus size={20} /></Button>
+          <header className="navigation-sessions-header">
+            <Button aria-current={activeTab === 'sessions' ? 'page' : undefined} className="navigation-sessions-title" disabled={pendingSessionAction} onClick={() => navigate('sessions')} type="button" variant="ghost">Recent sessions</Button>
+            <Button aria-label="New session" className="navigation-icon-button" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} variant="ghost"><IconPlus size={20} /></Button>
           </header>
-          <div aria-label="Sessions" className="session-list drawer-session-list" role="region">
+          <div aria-label="Sessions" className="session-list navigation-session-list" role="region">
             {filtered.map(session => {
               const revealed = swipedId === session.id
               const active = chat.storedSessionId === session.id
@@ -326,7 +308,7 @@ export function SideNavigationDrawer({ activeTab, controller, dismissRequest, on
           </div>
         </section>
         {remove && <ConfirmDialog confirmLabel="Delete" description={`Delete ${remove.title}? This cannot be undone.`} onCancel={() => setRemove(null)} onConfirm={() => { const id = remove.id; setRemove(null); void deleteSession(id) }} title="Delete session" />}
-      </aside>
+      </main>
     </div>
   )
 }

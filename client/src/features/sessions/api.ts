@@ -8,7 +8,7 @@ import type { StoredSession } from '~/lib/types'
  * and still returns cron rows, so mirroring the desktop recents split means
  * dropping the automation sources here too: the desktop separates its recents
  * from the cron section with ``exclude_sources=cron`` on GET /api/sessions
- * (web_routers/sessions.py). Deny-listing keeps the drawer stable across
+ * (web_routers/sessions.py). Deny-listing keeps the session list stable across
  * gateways that pre-filter differently and leaves unknown/custom
  * `HERMES_SESSION_SOURCE` values visible, like the RPC does.
  */

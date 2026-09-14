@@ -2,7 +2,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { IconBook, IconChevronRight, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 
-import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
+import { PageShell } from '~/components/page-shell'
+import { Button, Input, Skeleton } from '~/compat/primitives'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi } from '~/gateway/gateway-api-hooks'
@@ -61,12 +62,15 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
 
   const selectedSkill = selected ? skills.data?.find(skill => skill.name === selected) : undefined
   if (selected && selectedSkill && onBack) return <SkillDetail onArchived={() => { const task = beginScopedTask(); if (!task.isCurrent()) return; void queryClient.invalidateQueries({ queryKey }); onBack() }} onBack={onBack} skill={selectedSkill} />
-  if (selected && skills.data && !selectedSkill) return <section className="screen page-screen"><Button onClick={onBack} variant="text">‹ Back</Button><div className="empty-panel">That skill is no longer installed.</div></section>
+  if (selected && skills.data && !selectedSkill) return <PageShell leading={<Button onClick={onBack} variant="text">‹ Back</Button>} title="Skills"><div className="empty-panel">That skill is no longer installed.</div></PageShell>
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading"><div><p className="eyebrow">Capabilities</p><h2>Skills</h2></div><div className="button-row"><Button aria-label="Refresh skills" onClick={() => void skills.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={onOpenHub} size="sm" variant="secondary"><IconPlus size={16} /> Skill hub</Button></div></header>
-      <p className="muted">Skills are loaded for the {profile || 'default'} profile and apply to new sessions.</p>
+    <PageShell
+      actions={<div className="button-row"><Button aria-label="Refresh skills" onClick={() => void skills.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={onOpenHub} size="sm" variant="secondary"><IconPlus size={16} /> Skill hub</Button></div>}
+      eyebrow="Capabilities"
+      subtitle={`Skills are loaded for the ${profile || 'default'} profile and apply to new sessions.`}
+      title="Skills"
+    >
       {error && <div className="error-banner" role="alert">{error}</div>}
       <div className="search-box"><IconSearch size={17} aria-hidden="true" /><Input aria-label="Search installed skills" onChange={event => setSearch(event.target.value)} placeholder="Search installed skills" value={search} /></div>
       <div className="filter-row"><label>Category<select aria-label="Skill category" onChange={event => setCategory(event.target.value)} value={category}><option value="all">All categories</option>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></label><label>Activation<select aria-label="Skill activation" onChange={event => setActivation(event.target.value as typeof activation)} value={activation}><option value="all">All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label></div>
@@ -76,7 +80,7 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
         {filtered.map(skill => <article className="capability-row" key={skill.name}><button onClick={() => onSelect?.(skill)}><IconBook size={20} /><span><strong>{skill.name}</strong><small>{skill.description || skill.category || 'No description'}</small><small>{skill.category || 'Uncategorized'} · {skill.provenance || 'unknown'}{skill.usage === undefined ? '' : ` · ${skill.usage} uses`}</small></span><IconChevronRight size={18} /></button><label className="row-switch"><span className="sr-only">Enable {skill.name}</span><input checked={skill.enabled} onChange={event => toggle.mutate({ enabled: event.target.checked, name: skill.name })} type="checkbox" /></label></article>)}
         {skills.data && filtered.length === 0 && <div className="empty-panel">No installed skills match these filters.</div>}
       </div>
-    </section>
+    </PageShell>
   )
 }
 

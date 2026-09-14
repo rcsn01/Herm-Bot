@@ -78,9 +78,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     let relative = decodeURIComponent(url.pathname).replace(/^\/+/, '')
-    // App-shell paths: the session deep-link namespace plus every screen
-    // mirror served offline by the service worker policy (see src/pwa/policy.ts).
-    if (!relative || url.pathname === '/' || /^\/(?:session|bot|sessions|capabilities|cron|settings)(?:\/|$)/.test(url.pathname)) relative = 'index.html'
+    // App-shell paths: session deep links plus known startup screen paths
+    // served offline by the service worker policy (see src/pwa/policy.ts).
+    if (!relative || url.pathname === '/' || /^\/(?:session|bot|group|sessions|capabilities|cron|settings|navigation)(?:\/|$)/.test(url.pathname)) relative = 'index.html'
     const target = path.resolve(root, relative)
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) return json(res, 404, { detail: 'Not found' })
     try {

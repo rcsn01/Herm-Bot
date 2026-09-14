@@ -3,6 +3,7 @@ import { IconChevronRight, IconDownload, IconFile, IconFolder, IconGitBranch, Ic
 import { useEffect, useRef, useState } from 'react'
 
 import { Badge, Button, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '~/compat/primitives'
+import { PageShell } from '~/components/page-shell'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask } from '~/gateway/scope-guard'
@@ -14,21 +15,20 @@ import { $preferences } from '~/state/store'
 
 const platformActions = new PlatformActions()
 
-export function FilesScreen() {
+export function FilesScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const preferences = useStore($preferences)
   const scopeIdentity = `${preferences.remoteURL}:${profileKey(preferences.profile)}`
   const api = useApi(createFilesApi)
-  return (
-    <section className="screen page-screen">
-      <header className="page-heading"><div><p className="eyebrow">Remote workspace</p><h2>Projects</h2></div><Badge variant="muted">Gateway files</Badge></header>
-      <Tabs defaultValue="files">
-        <TabsList><TabsTrigger value="files">Files</TabsTrigger><TabsTrigger value="git">Git</TabsTrigger><TabsTrigger value="artifacts">Artifacts</TabsTrigger></TabsList>
-        <TabsContent value="files"><FileBrowser api={api} key={`files:${scopeIdentity}`} /></TabsContent>
-        <TabsContent value="git"><GitPanel api={api} key={`git:${scopeIdentity}`} /></TabsContent>
-        <TabsContent value="artifacts"><ArtifactsPanel api={api} key={`artifacts:${scopeIdentity}`} /></TabsContent>
-      </Tabs>
-    </section>
+  const content = (
+    <Tabs defaultValue="files">
+      <TabsList><TabsTrigger value="files">Files</TabsTrigger><TabsTrigger value="git">Git</TabsTrigger><TabsTrigger value="artifacts">Artifacts</TabsTrigger></TabsList>
+      <TabsContent value="files"><FileBrowser api={api} key={`files:${scopeIdentity}`} /></TabsContent>
+      <TabsContent value="git"><GitPanel api={api} key={`git:${scopeIdentity}`} /></TabsContent>
+      <TabsContent value="artifacts"><ArtifactsPanel api={api} key={`artifacts:${scopeIdentity}`} /></TabsContent>
+    </Tabs>
   )
+  if (embedded) return <div className="files-screen-embedded">{content}</div>
+  return <PageShell actions={<Badge variant="muted">Gateway files</Badge>} eyebrow="Remote workspace" title="Projects">{content}</PageShell>
 }
 
 function FileBrowser({ api }: { api: FilesApi }) {

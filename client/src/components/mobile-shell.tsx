@@ -3,8 +3,8 @@ import { useRef, type ReactNode, type SyntheticEvent, type TouchEvent } from 're
 import { useSwipeMotion } from '~/gestures/use-swipe-motion'
 
 interface MobileShellProps {
-  drawer: ReactNode
-  drawerOpen: boolean
+  navigationPage: ReactNode
+  navigationPageOpen: boolean
   foreground: ReactNode
   foregroundDismissible?: boolean
   foregroundHeader: ReactNode
@@ -29,8 +29,8 @@ function gestureOwnedByControl(target: EventTarget | null): boolean {
 }
 
 export function MobileShell({
-  drawer,
-  drawerOpen,
+  navigationPage,
+  navigationPageOpen,
   foreground,
   foregroundDismissible = false,
   foregroundHeader,
@@ -46,7 +46,7 @@ export function MobileShell({
   const foregroundMotion = useSwipeMotion({
     canStart: target => !gestureOwnedByControl(target),
     direction: 'right',
-    enabled: foregroundVisible && foregroundDismissible && !drawerOpen && !reconnecting,
+    enabled: foregroundVisible && foregroundDismissible && !navigationPageOpen && !reconnecting,
     extentPx: () => window.innerWidth,
     initialProgress: 0,
     onCommit: endpoint => { if (endpoint === 1) onDismissForeground?.() },
@@ -55,7 +55,7 @@ export function MobileShell({
 
   const startRefreshGesture = (event: TouchEvent<HTMLElement>) => {
     refreshStart.current = null
-    if (drawerOpen || reconnecting || event.touches.length !== 1) return
+    if (navigationPageOpen || reconnecting || event.touches.length !== 1) return
     refreshStart.current = {
       atTop: event.currentTarget.scrollTop <= 0,
       x: event.touches[0]?.clientX ?? 0,
@@ -66,7 +66,7 @@ export function MobileShell({
   const finishRefreshGesture = (event: TouchEvent<HTMLElement>) => {
     const start = refreshStart.current
     refreshStart.current = null
-    if (!start || drawerOpen || reconnecting || event.changedTouches.length !== 1) return
+    if (!start || navigationPageOpen || reconnecting || event.changedTouches.length !== 1) return
     const touch = event.changedTouches[0]
     if (!touch) return
     const dy = touch.clientY - start.y
@@ -83,13 +83,13 @@ export function MobileShell({
     <>
       <div
         aria-busy={reconnecting}
-        className={`mobile-shell${drawerOpen ? ' drawer-open' : ''}${reconnecting ? ' reconnecting' : ''}`}
+        className={`mobile-shell${navigationPageOpen ? ' navigation-open' : ''}${reconnecting ? ' reconnecting' : ''}`}
         inert={reconnecting ? true : undefined}
         onClickCapture={blockInteraction}
         onKeyDownCapture={blockInteraction}
         onSubmitCapture={blockInteraction}
       >
-        <div className="screen-stack" inert={drawerOpen ? true : undefined}>
+        <div className="screen-stack" inert={navigationPageOpen ? true : undefined}>
           <section aria-hidden={foregroundVisible} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible ? true : undefined}>
             {rosterHeader}
             <main
@@ -117,7 +117,7 @@ export function MobileShell({
             </main>
           </section>
         </div>
-        {drawer}
+        {navigationPage}
         {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
       </div>
       {reconnecting && <div aria-live="polite" className="connection-status" role="status">Reconnecting to Hermes…</div>}

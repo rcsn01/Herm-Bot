@@ -65,8 +65,7 @@ export function resetRoutes(): void {
   $navigation.set(initialNavigationState(activeTab))
 }
 
-/** Reconcile one tab's stack wholesale (popstate restore): select the tab and
- *  replace its stack with the URL-derived one. Routes must belong to the tab. */
+/** Restore one tab's stack from a startup URL. Routes must belong to the tab. */
 export function applyPathState(tab: MobileTab, stack: readonly MobileRoute[]): void {
   if (!stack.length || stack.some(route => route.tab !== tab)) {
     throw new Error(`Cannot apply a path state for the ${tab} tab with foreign routes`)

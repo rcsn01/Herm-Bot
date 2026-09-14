@@ -11,63 +11,10 @@ import {
 } from './routes'
 
 /**
- * One path per screen, extending the existing session deep-link contract
- * (`/session/<id>?profile=<p>` stays owned by the deep-link coordinator):
- *
- *   /                          roster root
- *   /sessions                  sessions root (the active conversation)
- *   /capabilities[/section[/id]]
- *   /cron[/blueprints|/<job>[/edit]|/new]
- *   /settings/<category|page>
- *
- * The active profile is global (persisted preferences), so screen paths don't
- * carry it. Open conversations DO: while a stored session is on screen the
- * sessions view mirrors the session deep-link namespace
- * (`/session/<id>?profile=<p>`, `?profile=` omitted for the default profile)
- * so a conversation can be reloaded or shared like any other screen.
+ * Parse a client screen URL supplied at startup. Once the app is running,
+ * route changes stay in memory and are not mirrored back into the address bar.
+ * Session URLs remain owned by the deep-link coordinator.
  */
-
-/** Canonical URI for an open conversation — the deep-link namespace the
- *  coordinator owns, shaped like the desktop's session links. */
-export function sessionPath(storedSessionId: string, profile: null | string): string {
-  const path = `/session/${encodeURIComponent(storedSessionId)}`
-  return profile ? `${path}?profile=${encodeURIComponent(profile)}` : path
-}
-
-export function pathForTabRoute(tab: MobileTab, route: MobileRoute): string {
-  if (route.tab !== tab) {
-    throw new Error(`Cannot render a ${route.tab} route under the ${tab} tab`)
-  }
-  switch (route.type) {
-    case 'roster-root':
-      return '/'
-    case 'group-room':
-      return `/group/${encodeURIComponent(route.roomId)}`
-    case 'sessions-root':
-      return '/sessions'
-    case 'capabilities-root':
-      return '/capabilities'
-    case 'capabilities-section':
-      return `/capabilities/${route.section}`
-    case 'capability-detail':
-      return `/capabilities/${route.section}/${encodeURIComponent(route.capabilityId)}`
-    case 'cron-root':
-      return '/cron'
-    case 'cron-blueprints':
-      return '/cron/blueprints'
-    case 'cron-job-detail':
-      return `/cron/${encodeURIComponent(route.jobId)}`
-    case 'cron-job-editor':
-      return route.jobId ? `/cron/${encodeURIComponent(route.jobId)}/edit` : '/cron/new'
-    case 'settings-root':
-      return '/settings'
-    case 'settings-category':
-      return `/settings/${route.category}`
-    case 'settings-administration':
-      return `/settings/${route.page}`
-  }
-}
-
 function decodeSegment(raw: string): string | null {
   try {
     return decodeURIComponent(raw)
@@ -81,9 +28,7 @@ export interface ScreenPath {
   tab: MobileTab
 }
 
-/** Parse an app-screen path into its tab and URL-derived stack. Returns null
- *  for session deep links (the coordinator owns those), unknown namespaces,
- *  and malformed segments — the caller decides what an unknown path means. */
+/** Parse a startup screen path into its tab and in-memory route stack. */
 export function navigationFromPath(pathname: string): ScreenPath | null {
   const segments: string[] = []
   for (const raw of pathname.split('/')) {

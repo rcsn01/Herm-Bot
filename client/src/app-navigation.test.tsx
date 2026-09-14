@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const controller = vi.hoisted(() => ({
@@ -61,7 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   // clearAllMocks drops resolved-value setups; restore the defaults.
   controller.openProfile.mockResolvedValue(undefined)
-  // The URL is an input now: App restores the screen it describes on mount.
+  // The URL is an optional cold-start input; runtime routes stay in memory.
   window.history.replaceState(null, '', '/')
   resetNavigation()
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
@@ -72,7 +72,7 @@ beforeEach(() => {
   $profileSwitching.set(false)
 })
 
-function openDrawer() {
+function openNavigationPage() {
   fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
 }
 
@@ -81,8 +81,8 @@ async function enterAgent(buttonName: 'Open agent work' | 'Open agent default' =
   await act(async () => undefined)
 }
 
-async function settleHistory(): Promise<void> {
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+async function settleNavigation(): Promise<void> {
+  await waitFor(() => expect(screen.getByTestId('side-navigation-page').getAttribute('aria-hidden')).toBe('true'))
 }
 
 describe('App navigation', () => {
@@ -94,7 +94,7 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Open bot profile' })).toBeNull()
-    expect(screen.queryByTestId('side-navigation-backdrop')).toBeNull()
+    expect(screen.queryByTestId('side-navigation-page')).toBeNull()
     expect(screen.getByRole('button', { name: 'Open settings' })).not.toBeNull()
   })
 
@@ -154,8 +154,6 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Back to bots' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))
-    // In-app back rides history.back(); the popstate lands in a later task.
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
 
     expect(screen.getByText('Roster screen')).not.toBeNull()
     expect(screen.getByRole('searchbox', { name: 'Search bots' })).not.toBeNull()
@@ -163,21 +161,36 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
-  it('opens the drawer only inside a profile', async () => {
+  it('opens the navigation page only inside a profile', async () => {
     render(<App />)
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
 
     await enterAgent()
-    openDrawer()
+    openNavigationPage()
 
-    expect(screen.getByRole('dialog', { name: 'Navigation' })).not.toBeNull()
+    expect(window.location.pathname).toBe('/')
+    expect(screen.getByRole('main', { name: 'Navigation' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await settleHistory()
+    await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
+  })
+
+  it('closes the navigation page from its back button without changing the current screen', async () => {
+    render(<App />)
+    await enterAgent()
+    openNavigationPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await settleNavigation()
+
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.getByTestId('side-navigation-page').getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
   })
 
   it('opens Settings from the main screen header button and returns to the roster', () => {
@@ -199,10 +212,10 @@ describe('App navigation', () => {
     await enterAgent()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
 
-    openDrawer()
+    openNavigationPage()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
-    await settleHistory()
+    await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
@@ -211,14 +224,14 @@ describe('App navigation', () => {
     render(<App />)
 
     await enterAgent()
-    openDrawer()
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
-    await settleHistory()
+    await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
 
-    openDrawer()
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    await settleHistory()
+    await settleNavigation()
     expect(screen.getByText('Cron screen')).not.toBeNull()
   })
 
@@ -226,15 +239,15 @@ describe('App navigation', () => {
     render(<App />)
 
     await enterAgent()
-    openDrawer()
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
-    await settleHistory()
+    await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
 
-    // With no in-page exit left, the drawer's bot identity returns to the chat.
-    openDrawer()
+    // The navigation page's bot identity returns to the chat.
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
-    await settleHistory()
+    await settleNavigation()
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
@@ -242,9 +255,9 @@ describe('App navigation', () => {
     render(<App />)
 
     await enterAgent()
-    openDrawer()
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    await settleHistory()
+    await settleNavigation()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
 
@@ -285,50 +298,45 @@ describe('App navigation', () => {
     expect(container).toBeTruthy()
   })
 
-  it('keeps the active ChatScreen instance through drawer toggles and destination round trips', async () => {
+  it('keeps the active ChatScreen instance through navigation page toggles and destination round trips', async () => {
     render(<App />)
     await enterAgent()
     const chat = screen.getByTestId('chat-instance')
 
-    openDrawer()
-    fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
+    openNavigationPage()
+    fireEvent.keyDown(screen.getByRole('main', { name: 'Navigation' }), { key: 'Escape' })
+    await settleNavigation()
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
-    openDrawer()
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
-    openDrawer()
+    await settleNavigation()
+    expect(screen.getByText('Cron screen')).not.toBeNull()
+
+    openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
+    await settleNavigation()
     expect(screen.getByTestId('chat-instance')).toBe(chat)
   })
 
-  it('pushes a guard entry when the drawer opens so system back closes it', async () => {
+  it('keeps navigation-page open and close operations out of browser history', async () => {
     render(<App />)
     await enterAgent()
-
-    openDrawer()
-    expect((window.history.state as { hermesDrawer?: boolean }).hermesDrawer).toBe(true)
-
-    // The OS back gesture (iOS/Android edge swipe, hardware back) rides popstate.
-    window.history.back()
-    await settleHistory()
-    expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
-    expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
-    expect((window.history.state as { hermesDrawer?: boolean; hermesDrawerBase?: boolean }).hermesDrawer).toBeUndefined()
-    // The gesture closed only the drawer — the conversation stays underneath.
-    expect(screen.getByTestId('chat-instance')).not.toBeNull()
-  })
-
-  it('consumes the guard entry when the drawer closes without a back gesture', async () => {
+    const beforeLength = window.history.length
+    const beforeState = window.history.state
     const back = vi.spyOn(window.history, 'back')
-    render(<App />)
-    await enterAgent()
 
-    openDrawer()
-    fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
-    await settleHistory()
+    openNavigationPage()
+    expect(window.location.pathname).toBe('/')
+    expect(window.history.length).toBe(beforeLength)
+    expect(window.history.state).toBe(beforeState)
 
-    expect(back).toHaveBeenCalledOnce()
-    expect(screen.getByTestId('side-navigation-backdrop').getAttribute('aria-hidden')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    await settleNavigation()
+
+    expect(back).not.toHaveBeenCalled()
+    expect(screen.getByTestId('side-navigation-page').getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
     back.mockRestore()
   })
 

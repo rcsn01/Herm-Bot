@@ -15,6 +15,7 @@ import type { MemoryProviderConfig, MemoryProviderField, MemoryProviderOAuthStat
 import type { SettingsCategory } from '~/navigation/routes'
 import { $preferences } from '~/state/store'
 import { createSettingsApi } from './settings-api'
+import { PageHeading } from '~/components/page-shell'
 import { SettingsPageShell } from './settings-page-shell'
 
 type MemoryValues = Record<string, unknown>
@@ -156,15 +157,14 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     })
   }
 
-  return <SettingsPageShell title="Memory & Context" subtitle="Provider configuration and memory files belong to the selected gateway profile. Changes apply to new sessions.">
-    <Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
+  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Provider configuration and memory files belong to the selected gateway profile. Changes apply to new sessions." title="Memory & Context">
     {error && <div className="error-banner" role="alert">{error}</div>}
     {!profileSupportsMemoryManagement && <section className="unsupported-card" role="alert"><strong>Memory management is unavailable for this profile.</strong><p>This gateway's memory status, provider selection, reset, and dependency setup routes are process-scoped. Use the default profile or connect to a gateway dedicated to this profile.</p></section>}
     {profileSupportsMemoryManagement && status.error && <GatewayErrorBanner error={status.error} unsupportedText="Memory management is unavailable on this gateway." />}
     {profileSupportsMemoryManagement && status.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-14 w-full" /></div>}
     {profileSupportsMemoryManagement && status.data && <>
       <section className="settings-section">
-        <header className="page-heading"><h3>Memory provider</h3><Button aria-label="Refresh memory" onClick={() => void status.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header>
+        <PageHeading actions={<Button aria-label="Refresh memory" onClick={() => void status.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>} level={3} title="Memory provider" />
         <div className="settings-list static">
           {providers.map(provider => <div className="memory-provider-row" key={provider.name}>
             <button className={provider.name === (status.data.active || selectedProvider) ? 'memory-provider-select active' : 'memory-provider-select'} onClick={() => chooseProvider(provider.name)}>
@@ -176,7 +176,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
         </div>
       </section>
       <section className="data-card memory-files">
-        <header className="page-heading"><h3>Built-in memory</h3><Badge variant="muted">{profile || 'default'}</Badge></header>
+        <PageHeading actions={<Badge variant="muted">{profile || 'default'}</Badge>} level={3} title="Built-in memory" />
         <p className="muted">Stored memory files are profile-local. Reset only what you select.</p>
         <div className="settings-list static"><div><span><strong>MEMORY.md</strong><small>{formatBytes(status.data.builtin_files.memory)}</small></span><Button onClick={() => setResetTarget('memory')} size="sm" variant="destructive"><IconTrash size={14} /> Reset</Button></div><div><span><strong>USER.md</strong><small>{formatBytes(status.data.builtin_files.user)}</small></span><Button onClick={() => setResetTarget('user')} size="sm" variant="destructive"><IconTrash size={14} /> Reset</Button></div></div>
         <Button className="touch-button" onClick={() => setResetTarget('all')} variant="destructive"><IconTrash size={16} /> Reset all built-in memory</Button>
@@ -213,7 +213,7 @@ function MemoryProviderEditor({ config, error, loading, onSave, onSetup, provide
       return next
     })
   }
-  return <section className="data-card memory-provider-editor"><header className="page-heading"><div><h3>{config.label || provider}</h3><p className="muted">Only this provider's declared fields are sent to the gateway.</p></div>{config.docs_url && <a aria-label={`Open ${config.label || provider} documentation`} href={config.docs_url} rel="noreferrer" target="_blank"><IconExternalLink size={18} /></a>}</header>{fields.map(field => <MemoryField field={field} key={field.key} onChange={value => setValues(current => ({ ...current, [field.key]: value }))} value={values[field.key]} />)}{fields.length === 0 && <p className="muted">This provider has no mobile-editable configuration.</p>}<div className="button-row">{fields.length > 0 && <Button disabled={saving} onClick={saveValues}>{saving ? 'Saving…' : 'Save provider settings'}</Button>}{needsSetup && <Button disabled={saving} onClick={onSetup} variant="secondary">Install provider dependencies</Button>}</div>{needsSetup && <p className="muted">Setup may install the provider's declared dependencies on the gateway. It never runs on the iOS device.</p>}</section>
+  return <section className="data-card memory-provider-editor"><PageHeading actions={config.docs_url && <a aria-label={`Open ${config.label || provider} documentation`} href={config.docs_url} rel="noreferrer" target="_blank"><IconExternalLink size={18} /></a>} level={3} title={config.label || provider} /><p className="muted">Only this provider's declared fields are sent to the gateway.</p>{fields.map(field => <MemoryField field={field} key={field.key} onChange={value => setValues(current => ({ ...current, [field.key]: value }))} value={values[field.key]} />)}{fields.length === 0 && <p className="muted">This provider has no mobile-editable configuration.</p>}<div className="button-row">{fields.length > 0 && <Button disabled={saving} onClick={saveValues}>{saving ? 'Saving…' : 'Save provider settings'}</Button>}{needsSetup && <Button disabled={saving} onClick={onSetup} variant="secondary">Install provider dependencies</Button>}</div>{needsSetup && <p className="muted">Setup may install the provider's declared dependencies on the gateway. It never runs on the iOS device.</p>}</section>
 }
 
 function MemoryField({ field, onChange, value }: { field: MemoryProviderField; onChange(value: unknown): void; value: unknown }) {
@@ -226,7 +226,7 @@ function MemoryField({ field, onChange, value }: { field: MemoryProviderField; o
 
 function MemoryOAuthCard({ error, onStart, pending, status }: { error: string | null; onStart(): void; pending: boolean; status?: MemoryProviderOAuthStatus }) {
   if (!status && !error) return null
-  return <section className="data-card memory-oauth"><header className="page-heading"><h3>Provider connection</h3>{status?.connected && <Badge>Connected</Badge>}</header><p className="muted">{pending ? 'The gateway is waiting for provider authorization.' : status?.detail || error || 'Connect this provider through its supported OAuth flow.'}</p>{error && <div className="error-banner" role="alert">{error}</div>}<Button disabled={pending} onClick={onStart} variant="secondary"><IconExternalLink size={16} /> {status?.connected ? 'Reconnect' : 'Connect with OAuth'}</Button></section>
+  return <section className="data-card memory-oauth"><PageHeading actions={status?.connected && <Badge>Connected</Badge>} level={3} title="Provider connection" /><p className="muted">{pending ? 'The gateway is waiting for provider authorization.' : status?.detail || error || 'Connect this provider through its supported OAuth flow.'}</p>{error && <div className="error-banner" role="alert">{error}</div>}<Button disabled={pending} onClick={onStart} variant="secondary"><IconExternalLink size={16} /> {status?.connected ? 'Reconnect' : 'Connect with OAuth'}</Button></section>
 }
 
 function fieldVisible(field: MemoryProviderField, values: MemoryValues): boolean {

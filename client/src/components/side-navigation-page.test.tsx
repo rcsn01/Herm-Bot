@@ -6,7 +6,7 @@ vi.mock('~/compat/primitives', () => ({
   Input: (props: React.ComponentProps<'input'>) => <input {...props} />
 }))
 
-import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
+import { SideNavigationPage } from '~/components/side-navigation-page'
 import { $chat, emptyChatState } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
@@ -28,7 +28,7 @@ function deferred() {
   return { promise, reject, resolve }
 }
 
-function renderDrawer(controller = controllerStub(), open = true) {
+function renderNavigationPage(controller = controllerStub(), open = true) {
   const onClose = vi.fn()
   const onNavigate = vi.fn()
   const onOpenModel = vi.fn()
@@ -37,9 +37,8 @@ function renderDrawer(controller = controllerStub(), open = true) {
     if (intent.type === 'model') onOpenModel()
     else if (intent.type === 'tab') onNavigate(intent.tab)
   })
-  const onDismissed = vi.fn()
-  const result = render(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={onDismissRequest} onDismissed={onDismissed} open={open} />)
-  return { controller, onClose, onDismissRequest, onDismissed, onNavigate, onOpenModel, ...result }
+  const result = render(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={onDismissRequest} open={open} />)
+  return { controller, onClose, onDismissRequest, onNavigate, onOpenModel, ...result }
 }
 
 function pointer(node: HTMLElement, type: 'pointerDown' | 'pointerMove' | 'pointerUp' | 'pointerCancel', values: Record<string, unknown>) {
@@ -64,13 +63,14 @@ beforeEach(() => {
   ])
 })
 
-describe('SideNavigationDrawer', () => {
-  it('shows the bot identity without brand chrome above sessions', () => {
-    const { container, onClose, onNavigate } = renderDrawer()
+describe('SideNavigationPage', () => {
+  it('shows the bot identity and Sessions title without brand chrome', () => {
+    const { container, onClose, onNavigate } = renderNavigationPage()
 
     const identity = screen.getByRole('button', { name: 'Open bot chat' })
-    expect(identity.textContent).toBe('Work')
-    expect(container.querySelector('.drawer-identity .brand-mark')).toBeNull()
+    expect(identity.querySelector('strong')?.textContent).toBe('Work')
+    expect(identity.querySelector('small')?.textContent).toBe('Sessions')
+    expect(container.querySelector('.navigation-identity .brand-mark')).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
@@ -82,60 +82,45 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
-  it('tracks and commits a rightward drawer swipe without navigating', async () => {
+  it('requests an in-memory dismissal from the accessible back button', () => {
+    const { onDismissRequest } = renderNavigationPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+
+    expect(onDismissRequest).toHaveBeenCalledWith({ type: 'close' })
+  })
+
+  it('dismisses from the left edge with a rightward swipe', () => {
     vi.useFakeTimers()
-    const { onDismissed, onNavigate } = renderDrawer()
-    const backdrop = screen.getByTestId('side-navigation-backdrop')
-    const panel = screen.getByRole('dialog', { name: 'Navigation' })
-
-    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
-    pointer(panel, 'pointerMove', { clientX: 600, clientY: 208 })
-    expect(Number(backdrop.style.getPropertyValue('--swipe-progress'))).toBeGreaterThan(0)
-    pointer(panel, 'pointerUp', { clientX: 600, clientY: 208 })
+    const { container, onDismissRequest } = renderNavigationPage()
+    const page = container.querySelector('.side-navigation-page') as HTMLElement
+    const surface = container.querySelector('.session-main') as HTMLElement
+    pointer(surface, 'pointerDown', { clientX: 4, clientY: 220 })
+    pointer(surface, 'pointerMove', { clientX: 180, clientY: 224 })
+    expect(Number(page.style.getPropertyValue('--swipe-progress'))).toBeGreaterThan(0)
+    pointer(surface, 'pointerUp', { clientX: 180, clientY: 224 })
     act(() => { vi.runAllTimers() })
-
-    expect(onDismissed).toHaveBeenCalledOnce()
-    expect(onNavigate).not.toHaveBeenCalled()
+    expect(onDismissRequest).toHaveBeenCalledExactlyOnceWith({ type: 'close' })
+    expect(container.querySelector('.session-row')?.classList.contains('delete-revealed')).toBe(false)
     vi.useRealTimers()
   })
 
-  it('does not close on short, vertical, or multi-pointer swipes', () => {
-    const { onClose } = renderDrawer()
-    const panel = screen.getByRole('dialog', { name: 'Navigation' })
-
-    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
-    pointer(panel, 'pointerMove', { clientX: 160, clientY: 205 })
-    pointer(panel, 'pointerUp', { clientX: 160, clientY: 205 })
-    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
-    pointer(panel, 'pointerMove', { clientX: 126, clientY: 300 })
-    pointer(panel, 'pointerUp', { clientX: 220, clientY: 300 })
-    fireEvent.pointerDown(panel, { isPrimary: false, pointerId: 2, pointerType: 'touch', clientX: 120, clientY: 200 })
-    fireEvent.pointerMove(panel, { isPrimary: false, pointerId: 2, pointerType: 'touch', clientX: 220, clientY: 200 })
-
-    expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it('settles a cancelled pointer and accepts the next swipe', () => {
+  it('does not let a non-edge page swipe dismiss navigation', () => {
     vi.useFakeTimers()
-    const { onDismissed } = renderDrawer()
-    const panel = screen.getByRole('dialog', { name: 'Navigation' })
-
-    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
-    pointer(panel, 'pointerMove', { clientX: 180, clientY: 205 })
-    pointer(panel, 'pointerCancel', { clientX: 180, clientY: 205 })
+    const { container, onDismissRequest } = renderNavigationPage()
+    const page = container.querySelector('.side-navigation-page') as HTMLElement
+    pointer(page, 'pointerDown', { clientX: 60, clientY: 220 })
+    pointer(page, 'pointerMove', { clientX: 240, clientY: 224 })
+    pointer(page, 'pointerUp', { clientX: 240, clientY: 224 })
     act(() => { vi.runAllTimers() })
-    pointer(panel, 'pointerDown', { clientX: 120, clientY: 200 })
-    pointer(panel, 'pointerMove', { clientX: 600, clientY: 208 })
-    pointer(panel, 'pointerUp', { clientX: 600, clientY: 208 })
-    act(() => { vi.runAllTimers() })
-
-    expect(onDismissed).toHaveBeenCalledOnce()
+    expect(onDismissRequest).not.toHaveBeenCalled()
+    expect(page.style.getPropertyValue('--swipe-progress')).toBe('0')
     vi.useRealTimers()
   })
 
-  it('lets a session-row swipe reveal its delete action without closing the drawer', () => {
+  it('lets a session-row swipe reveal its delete action without closing the navigation page', () => {
     vi.useFakeTimers()
-    const { container, onClose } = renderDrawer()
+    const { container, onClose } = renderNavigationPage()
     const row = container.querySelector('.session-row') as HTMLElement
     const surface = row.querySelector('.session-main') as HTMLElement
     pointer(surface, 'pointerDown', { clientX: 300, clientY: 200 })
@@ -152,14 +137,14 @@ describe('SideNavigationDrawer', () => {
       { id: 'session-1', message_count: 4, preview: 'Hidden body', source: 'ios', started_at: 1_777_374_000, title: 'Planning session' },
       { id: 'cron-1', message_count: 9, preview: 'Cron body', source: 'cron', started_at: 1_777_500_000, title: 'Nightly digest' }
     ])
-    const { container } = renderDrawer()
+    const { container } = renderNavigationPage()
 
     expect(container.querySelector('.session-list')?.textContent).not.toContain('Nightly digest')
     expect(screen.getByRole('button', { name: /Planning session/ })).not.toBeNull()
   })
 
   it('offers agent capabilities and cron jobs next to the sessions search', () => {
-    const { onClose, onNavigate } = renderDrawer()
+    const { onClose, onNavigate } = renderNavigationPage()
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     expect(onNavigate).toHaveBeenCalledWith('capabilities')
@@ -171,7 +156,7 @@ describe('SideNavigationDrawer', () => {
   })
 
   it('opens the model settings from the sections list', () => {
-    const { onClose, onOpenModel } = renderDrawer()
+    const { onClose, onOpenModel } = renderNavigationPage()
 
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     expect(onOpenModel).toHaveBeenCalledOnce()
@@ -180,7 +165,7 @@ describe('SideNavigationDrawer', () => {
 
   it('keeps only session rows and pagination inside the session-list scroll region', () => {
     $sessionsHasMore.set(true)
-    renderDrawer()
+    renderNavigationPage()
 
     const sessionList = screen.getByRole('region', { name: 'Sessions' })
     expect(sessionList.contains(screen.getByRole('button', { name: /Planning session/ }))).toBe(true)
@@ -194,7 +179,7 @@ describe('SideNavigationDrawer', () => {
 
   it('filters session titles only and keeps the query while closed', () => {
     const controller = controllerStub()
-    const { rerender } = renderDrawer(controller)
+    const { rerender } = renderNavigationPage(controller)
     const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' })
     fireEvent.change(search, { target: { value: 'release' } })
 
@@ -202,26 +187,26 @@ describe('SideNavigationDrawer', () => {
     expect(screen.getByText('Release notes')).not.toBeNull()
     expect(screen.queryByText('Other hidden body')).toBeNull()
 
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open={false} />)
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open />)
+    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
   })
 
   it('loads more sessions only when the bounded page reports more', () => {
     const controller = controllerStub()
     $sessionsHasMore.set(true)
-    const { rerender } = renderDrawer(controller)
+    const { rerender } = renderNavigationPage(controller)
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more sessions' }))
     expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
 
     $sessionsLoadingMore.set(true)
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open />)
+    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
   })
 
   it('returns to the current chat from Recent sessions without a session RPC', () => {
-    const { controller, onClose, onNavigate } = renderDrawer()
+    const { controller, onClose, onNavigate } = renderNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Recent sessions' }))
 
     expect(onNavigate).toHaveBeenCalledWith('sessions')
@@ -231,7 +216,7 @@ describe('SideNavigationDrawer', () => {
   })
 
   it('marks and opens the active durable session without resuming it', () => {
-    const { controller, onClose, onNavigate } = renderDrawer()
+    const { controller, onClose, onNavigate } = renderNavigationPage()
     const active = screen.getByRole('button', { name: /Planning session/ })
     expect(active.getAttribute('aria-current')).toBe('page')
 
@@ -245,7 +230,7 @@ describe('SideNavigationDrawer', () => {
     const controller = controllerStub()
     const resume = deferred()
     vi.mocked(controller.resumeSession).mockReturnValue(resume.promise)
-    const { onClose, onNavigate } = renderDrawer(controller)
+    const { onClose, onNavigate } = renderNavigationPage(controller)
 
     fireEvent.click(screen.getByRole('button', { name: /Release notes/ }))
     expect(controller.resumeSession).toHaveBeenCalledWith('session-2')
@@ -261,7 +246,7 @@ describe('SideNavigationDrawer', () => {
     const controller = controllerStub()
     const creation = deferred()
     vi.mocked(controller.newSession).mockReturnValue(creation.promise)
-    const { onClose, onNavigate } = renderDrawer(controller)
+    const { onClose, onNavigate } = renderNavigationPage(controller)
 
     fireEvent.click(screen.getByRole('button', { name: 'New session' }))
     expect(screen.getByRole<HTMLButtonElement>('button', { name: /Release notes/ }).disabled).toBe(true)
@@ -277,10 +262,10 @@ describe('SideNavigationDrawer', () => {
   it.each([
     ['resume', 'resumeSession', /Release notes/, 'resume failed'],
     ['creation', 'newSession', 'New session', 'creation failed']
-  ] as const)('keeps the drawer open when %s fails', async (_label, method, control, message) => {
+  ] as const)('keeps the navigation page open when %s fails', async (_label, method, control, message) => {
     const controller = controllerStub()
     vi.mocked(controller[method]).mockRejectedValue(new Error(message))
-    const { onClose, onNavigate } = renderDrawer(controller)
+    const { onClose, onNavigate } = renderNavigationPage(controller)
 
     fireEvent.click(screen.getByRole('button', { name: control }))
     expect((await screen.findByRole('alert')).textContent).toContain(message)
@@ -288,10 +273,10 @@ describe('SideNavigationDrawer', () => {
     expect(onNavigate).not.toHaveBeenCalled()
   })
 
-  it('keeps loaded rows and the drawer open when refresh fails', async () => {
+  it('keeps loaded rows and the navigation page open when refresh fails', async () => {
     const controller = controllerStub()
     vi.mocked(controller.refreshSessions).mockRejectedValue(new Error('refresh failed'))
-    const { onClose } = renderDrawer(controller)
+    const { onClose } = renderNavigationPage(controller)
 
     expect((await screen.findByRole('alert')).textContent).toContain('refresh failed')
     expect(screen.getByText('Planning session')).not.toBeNull()
@@ -301,7 +286,7 @@ describe('SideNavigationDrawer', () => {
   it('reveals delete with a left swipe, confirms it, and reports deletion failures', async () => {
     const controller = controllerStub()
     vi.mocked(controller.deleteSession).mockRejectedValue(new Error('delete failed'))
-    const { onClose } = renderDrawer(controller)
+    const { onClose } = renderNavigationPage(controller)
     const row = screen.getByText('Release notes').closest('article')!
     const remove = row.querySelector<HTMLButtonElement>('[aria-label="Delete Release notes"]')!
     const surface = row.querySelector<HTMLElement>('.session-main')!
@@ -319,31 +304,26 @@ describe('SideNavigationDrawer', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('closes with Escape and backdrop click', () => {
-    const escape = renderDrawer()
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+  it('closes with Escape', () => {
+    const escape = renderNavigationPage()
+    fireEvent.keyDown(screen.getByRole('main'), { key: 'Escape' })
     expect(escape.onClose).toHaveBeenCalledOnce()
-    escape.unmount()
-
-    const backdrop = renderDrawer()
-    fireEvent.click(screen.getByTestId('side-navigation-backdrop'))
-    expect(backdrop.onClose).toHaveBeenCalledOnce()
   })
 
-  it('makes the closed drawer inert, focuses the panel on open without focusing search, and restores opener focus', () => {
+  it('makes the closed navigation page inert, focuses the panel on open without focusing search, and restores opener focus', () => {
     const controller = controllerStub()
     const opener = document.createElement('button')
     document.body.append(opener)
     opener.focus()
-    const { container, rerender } = render(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open={false} />)
-    const backdrop = container.querySelector<HTMLElement>('.side-drawer-backdrop')!
-    expect(backdrop.getAttribute('aria-hidden')).toBe('true')
-    expect(backdrop.hasAttribute('inert')).toBe(true)
+    const { container, rerender } = render(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    const page = container.querySelector<HTMLElement>('.side-navigation-page')!
+    expect(page.getAttribute('aria-hidden')).toBe('true')
+    expect(page.hasAttribute('inert')).toBe(true)
 
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open />)
-    expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Navigation' }))
+    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Navigation' }))
     expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
-    rerender(<SideNavigationDrawer activeTab="sessions" controller={controller} dismissRequest={null} onDismissRequest={() => undefined} onDismissed={() => undefined} open={false} />)
+    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()
   })

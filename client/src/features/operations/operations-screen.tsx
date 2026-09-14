@@ -1,5 +1,7 @@
 import { IconCalendarClock, IconChevronRight, IconLink, IconMessages, IconRobot, IconUserCheck } from '@tabler/icons-react'
 
+import { PageList, PageListButton } from '~/components/page-list'
+import { PageShell } from '~/components/page-shell'
 import { Badge } from '~/compat/primitives'
 import { CronScreen } from '~/features/cron/cron-screen'
 import { OPERATION_RESOURCES, operationById } from '~/features/operations/api'
@@ -13,14 +15,13 @@ export function OperationsScreen({ selected, onBack, onSelect }: { selected?: st
   if (definition) return <RemoteResourceScreen definition={definition} onBack={onBack} />
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading"><div><p className="eyebrow">Remote work</p><h2>Operations</h2></div><Badge variant="muted">Gateway owned</Badge></header>
-      <div className="settings-list capability-list">
+    <PageShell actions={<Badge variant="muted">Gateway owned</Badge>} eyebrow="Remote work" title="Operations">
+      <PageList className="capability-list">
         {OPERATION_RESOURCES.map((item, index) => {
           const Icon = ICONS[index]
-          return <button key={item.id} onClick={() => onSelect(item.id)}><Icon size={20} /><span><strong>{item.title}</strong><small>{item.description}</small></span><IconChevronRight size={18} /></button>
+          return <PageListButton key={item.id} leading={<Icon size={20} />} onClick={() => onSelect(item.id)} title={item.title} description={item.description} trailing={<IconChevronRight size={18} />} />
         })}
-      </div>
-    </section>
+      </PageList>
+    </PageShell>
   )
 }

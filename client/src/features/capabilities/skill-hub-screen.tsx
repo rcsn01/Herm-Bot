@@ -3,6 +3,7 @@ import { IconChevronLeft, IconSearch, IconShieldCheck } from '@tabler/icons-reac
 import { useRef, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton, Textarea } from '~/compat/primitives'
+import { PageHeading, PageShell } from '~/components/page-shell'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
@@ -94,10 +95,13 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
   }
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading"><Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><Badge variant="muted">45s network limit</Badge></header>
-      <p className="eyebrow">Skills</p><h2>Skill hub</h2>
-      <p className="muted">Preview and scan a skill before installing it into the selected profile.</p>
+    <PageShell
+      actions={<Badge variant="muted">45s network limit</Badge>}
+      eyebrow="Skills"
+      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      subtitle="Preview and scan a skill before installing it into the selected profile."
+      title="Skill hub"
+    >
       {error && <div className="error-banner" role="alert">{error}</div>}
       <form className="search-box" onSubmit={submit}><IconSearch size={17} aria-hidden="true" /><Input aria-label="Search skill hub" onChange={event => setTerm(event.target.value)} placeholder="Search skills" value={term} /><Button type="submit" variant="text">Search</Button></form>
       <label className="inline-field">Source<select aria-label="Skill hub source" onChange={event => setSource(event.target.value)} value={source}><option value="all">All sources</option>{sources.data?.sources.filter(item => item.searchable !== false).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
@@ -113,9 +117,9 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
         ))}
         {search.data && search.data.results.length === 0 && <div className="empty-panel">No hub skills match this search.</div>}
       </div>
-      {preview && <section className="data-card"><header className="page-heading"><div><h3>{preview.name}</h3><p className="muted">{preview.files.length} files · {preview.source}</p></div><Button onClick={() => setPreview(null)} variant="text">Close</Button></header><pre className="file-content">{preview.skill_md || 'No SKILL.md content was returned.'}</pre></section>}
+      {preview && <section className="data-card"><PageHeading actions={<Button onClick={() => setPreview(null)} variant="text">Close</Button>} level={3} title={preview.name} /><p className="muted">{preview.files.length} files · {preview.source}</p><pre className="file-content">{preview.skill_md || 'No SKILL.md content was returned.'}</pre></section>}
       {scan && <section className={`data-card scan-result ${scan.policy === 'block' ? 'scan-blocked' : ''}`}><h3>Security scan: {scan.verdict}</h3><p>{scan.summary || scan.policy_reason || 'No findings were reported.'}</p>{scan.findings.length > 0 && <ul>{scan.findings.map((finding, index) => <li key={`${finding.file}-${index}`}>{finding.severity}: {finding.description} ({finding.file}{finding.line ? `:${finding.line}` : ''})</li>)}</ul>}</section>}
       {selected && install && <ConfirmDialog confirmLabel="Install" description={`Install ${install.name} into the ${profile || 'default'} profile? Review its SKILL.md and scan result first.`} onCancel={() => setInstall(null)} onConfirm={() => installMutation.mutate(install.identifier)} title="Install skill" />}
-    </section>
+    </PageShell>
   )
 }

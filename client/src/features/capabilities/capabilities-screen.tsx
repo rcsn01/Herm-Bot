@@ -1,5 +1,7 @@
 import { IconBrain, IconChevronLeft, IconChevronRight, IconServer, IconSparkles, IconTools } from '@tabler/icons-react'
 
+import { PageList, PageListButton } from '~/components/page-list'
+import { PageShell } from '~/components/page-shell'
 import { Badge, Button } from '~/compat/primitives'
 import type { CapabilitiesRoute, CapabilitySection } from '~/navigation/routes'
 import { SkillsScreen } from './skills-screen'
@@ -27,7 +29,7 @@ interface CapabilitiesScreenProps {
 
 export function CapabilitiesScreen({ onBack, onExit, onNavigate, route }: CapabilitiesScreenProps) {
   if (route.type === 'capabilities-root') {
-    return <section className="screen page-screen"><header className="page-heading">{onExit && <Button aria-label="Back to bot" onClick={onExit} size="icon-sm" variant="ghost"><IconChevronLeft size={20} /></Button>}<div><p className="eyebrow">New sessions</p><h2>Capabilities</h2></div><Badge variant="muted">Profile scoped</Badge></header><p className="muted">Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation.</p><div className="settings-list capability-list">{sections.map(section => <button key={section.id} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })}><section.icon size={20} /><span><strong>{section.title}</strong><small>{section.description}</small></span><IconChevronRight size={18} /></button>)}</div></section>
+    return <PageShell actions={<Badge variant="muted">Profile scoped</Badge>} eyebrow="New sessions" heading={!onExit} leading={onExit && <Button aria-label="Back to bot" onClick={onExit} size="icon-sm" variant="ghost"><IconChevronLeft size={20} /></Button>} subtitle="Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation." title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
   }
 
   const section = route.section

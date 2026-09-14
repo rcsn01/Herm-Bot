@@ -3,7 +3,7 @@ import type { AgentRosterEntry } from './agents-api'
 /**
  * The identity every bot surface reads — ported from hermes-agent
  * apps/desktop/src/plugins/hermes-bots/labels.ts (displayName): the roster,
- * the drawer and chat surfaces all render the same label. Desktop branches
+ * the navigation page and chat surfaces all render the same label. Desktop branches
  * that need local bot-meta (the Bot Mode title) or alias routing can't apply
  * here; the PWA sees only the profiles.list row.
  */

@@ -7,7 +7,7 @@ import { BrandMark } from '~/components/brand-mark'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
-import { SideNavigationDrawer } from '~/components/side-navigation-drawer'
+import { SideNavigationPage } from '~/components/side-navigation-page'
 import { displayNameFor } from '~/features/agents/agent-labels'
 import { GroupChatScreen } from '~/features/groups/group-screen'
 import { $groups } from '~/features/groups/groups-store'
@@ -18,10 +18,10 @@ import { CronScreen } from '~/features/cron/cron-screen'
 import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
 import type { CapabilitiesRoute, CronRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
 import { GatewayProvider } from '~/gateway/gateway-context'
-import { DeepLinkCoordinator } from '~/navigation/deep-links'
+import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
+import { restoreInitialNavigation } from '~/navigation/initial-navigation'
 import { $activeRoute, $navigation, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
-import { installScreenHistory, type ScreenHistory } from '~/navigation/screen-history'
-import { useDrawerController } from '~/navigation/use-drawer-controller'
+import { useNavigationPageController } from '~/navigation/use-navigation-page-controller'
 import { ROOT_ROUTES } from '~/navigation/routes'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
@@ -51,27 +51,28 @@ export function App() {
   const chat = useStore($chat)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
-  const screenHistoryRef = useRef<ScreenHistory | null>(null)
-  const drawer = useDrawerController({
+  const initialNavigationRestoredRef = useRef(false)
+  const navigationPage = useNavigationPageController({
     onDismissed: intent => {
       if (intent.type === 'tab') openDestination(intent.tab)
       else if (intent.type === 'model') openModelSettings()
     }
   })
-  const drawerOpen = drawer.isOpen
+  const navigationPageOpen = navigationPage.isOpen
 
   useEffect(() => {
     applyTheme(preferences.theme)
   }, [preferences.theme])
 
-  // Mirror every screen into browser history so reloads, the Android system
-  // back button and shared URLs all resolve to the screen the user was on.
+  // A screen URL is an optional cold-start input only. Once the app is
+  // running, route state stays in memory and never grows browser history.
   useEffect(() => {
-    const app = installScreenHistory()
-    screenHistoryRef.current = app
-    return () => {
-      app.dispose()
-      screenHistoryRef.current = null
+    if (initialNavigationRestoredRef.current) return
+    initialNavigationRestoredRef.current = true
+    const pathname = window.location.pathname
+    restoreInitialNavigation(pathname)
+    if (pathname !== '/' && !parseHermesDeepLink(window.location.href)) {
+      history.replaceState(null, '', '/')
     }
   }, [])
 
@@ -88,7 +89,7 @@ export function App() {
 
   const reconnecting = connection.phase === 'reconnecting' && Boolean(chat.runtimeSessionId)
   // The side navigation belongs to profile surfaces only; the main screen is
-  // the roster, so it has no menu button or drawer.
+  // the roster, so it has no menu button or navigation page.
   const inProfile = navigation.activeTab !== 'roster'
 
   if (connection.phase === 'unsupported') {
@@ -114,17 +115,13 @@ export function App() {
     setTab('sessions')
     void controller.openProfile(profile)
   }
-  /** In-app back rides browser history while an app entry sits behind it
-   *  (so the system back gesture stays in sync); at the boundary the caller's
-   *  action runs instead. */
+  /** In-app back pops the active in-memory route stack; at its root the
+   *  caller's destination fallback runs instead. */
   const goBackOr = (fallback: () => void) => {
-    const app = screenHistoryRef.current
-    if (app) app.goBack(fallback)
-    else fallback()
+    if (popRoute(navigation.activeTab) === undefined) fallback()
   }
   /** The header chevron is a labeled destination ("Back to bots"), so it
-   *  navigates explicitly — pushing "/" keeps the system back able to undo
-   *  it. True back gestures use goBackOr instead. */
+   *  selects the roster explicitly rather than relying on browser history. */
   const backToRoster = () => {
     setTab('roster')
   }
@@ -136,7 +133,7 @@ export function App() {
     ? displayNameFor({ name: preferences.profile || 'default' })
     : DESTINATION_TITLES[navigation.activeTab]
   /** The messaging header leads with the bot's identity (matching the roster
-   *  and drawer labels) and carries the open session's name beneath it. */
+   *  and navigation labels) and carries the open session's name beneath it. */
   const headerSession = (chat.info as { title?: string } | null)?.title || 'New conversation'
   const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
   const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
@@ -154,7 +151,7 @@ export function App() {
       {activeGroupId ? (
         <>
           <Button aria-label="Back to bots" className="header-back-button" onClick={() => goBackOr(() => popRoute('roster'))} variant="ghost"><IconChevronLeft className="size-6" /></Button>
-          <div className="header-title"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
+          <div aria-level={1} className="header-title" role="heading"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
         </>
       ) : (
         <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
@@ -165,10 +162,10 @@ export function App() {
           <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : headerSession}</small></div>
         </div>
       ) : inProfile ? (
-        <div className="header-title"><div><strong>{headerTitle}</strong></div></div>
+        <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
       ) : null}
       {inProfile && (
-        <Button aria-controls="side-navigation-drawer" aria-expanded={drawerOpen} aria-label="Open navigation" className="header-menu-button" onClick={drawer.openDrawer} variant="ghost"><IconMenu2 className="size-6" /></Button>
+        <Button aria-controls="side-navigation-page" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={navigationPage.openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
       )}
     </header>
   ) : null
@@ -187,16 +184,15 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        drawer={inProfile ? <SideNavigationDrawer activeTab={navigation.activeTab} controller={controller} dismissRequest={drawer.dismissRequest} onDismissRequest={drawer.requestDismiss} onDismissed={() => drawer.completeDismiss()} onEdgeOpen={drawer.openDrawer} open={drawerOpen} /> : null}
-        drawerOpen={drawerOpen}
+        navigationPage={navigationPageOpen || inProfile ? <SideNavigationPage activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
+        navigationPageOpen={navigationPageOpen}
         foreground={foregroundContent}
         foregroundDismissible={foregroundDismissible}
         foregroundHeader={foregroundHeader}
         foregroundVisible={foregroundVisible}
         onDismissForeground={() => {
           // A committed swipe always dismisses the whole foreground to the
-          // fixed roster. Unlike a header back, it must not land on another
-          // canonical session URL in the browser history.
+          // fixed roster. It changes only the in-memory route state.
           if (activeGroupId) resetTabRoutes('roster')
           if (navigation.activeTab === 'sessions' || activeGroupId) setTab('roster')
         }}

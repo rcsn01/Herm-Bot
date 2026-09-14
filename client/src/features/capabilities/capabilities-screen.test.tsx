@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 
 vi.mock('~/compat/primitives', () => ({
-  Badge: ({ children }: { children: ReactNode }) => <span>{children}</span>
+  Badge: ({ children }: { children: ReactNode }) => <span>{children}</span>,
+  Button: ({ children, ...props }: ComponentProps<'button'>) => <button {...props}>{children}</button>
 }))
 
 afterEach(() => cleanup())

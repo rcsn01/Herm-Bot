@@ -11,7 +11,7 @@ const request = (pathname: string, overrides = {}) => ({
 })
 
 describe('app shell navigation policy', () => {
-  it.each(['/', '/session/abc', '/session/abc/', '/bot', '/sessions', '/capabilities/mcp', '/capabilities/skills/x%2Fy', '/cron', '/cron/blueprints', '/cron/job-1/edit', '/settings/model'])('allows the bounded shell route %s', pathname => {
+  it.each(['/', '/session/abc', '/session/abc/', '/bot', '/group/id%3Ar-crew', '/sessions', '/capabilities/mcp', '/capabilities/skills/x%2Fy', '/cron', '/cron/blueprints', '/cron/job-1/edit', '/settings/model', '/navigation'])('allows the bounded shell route %s', pathname => {
     expect(isAppShellNavigation(request(pathname))).toBe(true)
   })
 

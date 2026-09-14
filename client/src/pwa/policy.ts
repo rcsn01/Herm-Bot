@@ -13,8 +13,8 @@ export function isAppShellNavigation(input: NavigationRequestPolicyInput): boole
   return /^\/session\/[^/]+\/?$/.test(input.pathname) || isScreenPath(input.pathname)
 }
 
-/** Screen mirrors (roster, bot, sessions, capabilities, cron, settings) —
- *  every one is a pure client route, so the shell serves them offline too. */
+/** Known startup screen paths — the shell still serves them for direct links and
+ *  offline reloads, even though runtime navigation is kept in memory. */
 function isScreenPath(pathname: string): boolean {
-  return /^\/(?:bot|sessions|capabilities|cron|settings)(?:\/|$)/.test(pathname)
+  return /^\/(?:bot|group|sessions|capabilities|cron|settings|navigation)(?:\/|$)/.test(pathname)
 }

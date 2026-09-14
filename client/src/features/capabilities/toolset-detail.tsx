@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
+import { PageShell } from '~/components/page-shell'
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
@@ -98,10 +99,13 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
   }, toolset.name)
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading"><Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button><Button aria-label="Refresh toolset" onClick={() => void config.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header>
-      <div className="page-heading"><div><p className="eyebrow">Tools</p><h2>{toolset.label || toolset.name}</h2></div><Badge variant={toolset.enabled ? 'default' : 'muted'}>{toolset.enabled ? 'Enabled' : 'Disabled'}</Badge></div>
-      <p className="muted">{toolset.description || 'Toolset configuration applies to new sessions.'}</p>
+    <PageShell
+      actions={<><Button aria-label="Refresh toolset" onClick={() => void config.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Badge variant={toolset.enabled ? 'default' : 'muted'}>{toolset.enabled ? 'Enabled' : 'Disabled'}</Badge></>}
+      eyebrow="Tools"
+      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      subtitle={toolset.description || 'Toolset configuration applies to new sessions.'}
+      title={toolset.label || toolset.name}
+    >
       {error && <div className="error-banner" role="alert">{error}</div>}
       {setupMessage && <div className="success-banner" role="status">{setupMessage}</div>}
       <div className="button-row"><Button disabled={toggle.isPending} onClick={() => toggle.mutate(!toolset.enabled)}>{toolset.enabled ? 'Disable toolset' : 'Enable toolset'}</Button></div>
@@ -111,6 +115,6 @@ export function ToolsetDetail({ toolset, onBack }: { onBack(): void; toolset: To
       {selectedProvider && <section className="data-card"><h3>Provider model</h3><select aria-label="Toolset model" disabled={!models.data?.has_models || selectModel.isPending} onChange={event => { if (event.target.value) selectModel.mutate({ model: event.target.value, previous: selectedModel }) }} value={selectedModel || models.data?.current || ''}><option value="">Provider default</option>{models.data?.models.map(model => <option key={model.id} value={model.id}>{model.display || model.id}</option>)}</select>{models.error && <p className="muted">Model selection is unavailable: {classifyGatewayError(models.error).message}</p>}</section>}
       {providers.some(provider => provider.env_vars.length > 0) && <section className="data-card"><h3>Credentials</h3><p className="muted">Values are sent directly to the gateway and are cleared after saving.</p>{providers.flatMap(provider => provider.env_vars).filter((item, index, rows) => rows.findIndex(candidate => candidate.key === item.key) === index).map(item => <label className="config-field" key={item.key}><span>{item.prompt || item.key}{item.is_set ? ' · configured' : ''}</span><Input autoComplete="off" onChange={event => setEnv(current => ({ ...current, [item.key]: event.target.value }))} placeholder={item.is_set ? 'Replace saved credential' : 'Enter credential'} type="password" value={env[item.key] ?? ''} /></label>)}<Button disabled={saveEnv.isPending || Object.values(env).every(value => !value.trim())} onClick={() => saveCredentials(Object.fromEntries(Object.entries(env).filter(([, value]) => value.trim())))}>Save credentials</Button></section>}
       {providers.filter(provider => provider.post_setup).map(provider => <Button key={provider.name} disabled={setup.isPending} onClick={() => void setup.mutateAsync(provider.post_setup!)} variant="secondary">Run setup for {provider.name}</Button>)}
-    </section>
+    </PageShell>
   )
 }

@@ -1,5 +1,7 @@
 import { IconAdjustments, IconChartBar, IconChevronRight, IconCoin, IconFile, IconFolder, IconHeartRateMonitor, IconSchool, IconUsers } from '@tabler/icons-react'
 
+import { PageList, PageListButton } from '~/components/page-list'
+import { PageShell } from '~/components/page-shell'
 import { Badge } from '~/compat/primitives'
 
 export const MORE_PAGES = [
@@ -17,11 +19,10 @@ export type MorePageId = (typeof MORE_PAGES)[number]['id']
 
 export function MoreScreen({ onSelect }: { onSelect(id: MorePageId): void }) {
   return (
-    <section className="screen page-screen">
-      <header className="page-heading"><div><p className="eyebrow">Gateway administration</p><h2>More</h2></div><Badge variant="muted">Remote</Badge></header>
-      <div className="settings-list capability-list">
-        {MORE_PAGES.map(item => <button key={item.id} onClick={() => onSelect(item.id)}><item.icon size={20} /><span><strong>{item.title}</strong><small>{item.description}</small></span><IconChevronRight size={18} /></button>)}
-      </div>
-    </section>
+    <PageShell actions={<Badge variant="muted">Remote</Badge>} eyebrow="Gateway administration" title="More">
+      <PageList className="capability-list">
+        {MORE_PAGES.map(item => <PageListButton key={item.id} leading={<item.icon size={20} />} onClick={() => onSelect(item.id)} title={item.title} description={item.description} trailing={<IconChevronRight size={18} />} />)}
+      </PageList>
+    </PageShell>
   )
 }

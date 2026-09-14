@@ -3,6 +3,7 @@ import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
 
 import { Badge, Button, Skeleton, Textarea } from '~/compat/primitives'
+import { PageShell } from '~/components/page-shell'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
@@ -51,13 +52,13 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
   const canEdit = skill.provenance === 'agent'
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading">
-        <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
-        <Button aria-label="Refresh skill" onClick={() => void content.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>
-      </header>
-      <div className="page-heading"><div><p className="eyebrow">Skill detail</p><h2>{skill.name}</h2></div><Badge variant="muted">{skill.provenance ?? 'unknown'}</Badge></div>
-      <p className="muted">{skill.description || 'No description provided.'}</p>
+    <PageShell
+      actions={<><Button aria-label="Refresh skill" onClick={() => void content.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Badge variant="muted">{skill.provenance ?? 'unknown'}</Badge></>}
+      eyebrow="Skill detail"
+      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      subtitle={skill.description || 'No description provided.'}
+      title={skill.name}
+    >
       {error && <div className="error-banner" role="alert">{error}</div>}
       {content.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-56 w-full" /></div>}
       {content.error && <GatewayErrorBanner error={content.error} />}
@@ -69,7 +70,7 @@ export function SkillDetail({ skill, onBack, onArchived }: { skill: SkillInfo; o
         </div>
       )}
       {remove && <ConfirmDialog confirmLabel="Archive" description={`Archive learned skill ${skill.name}? It can be restored from the skill archive.`} onCancel={() => setRemove(false)} onConfirm={() => archive.mutate()} title="Archive learned skill" />}
-    </section>
+    </PageShell>
   )
 }
 

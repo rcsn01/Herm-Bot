@@ -5,14 +5,14 @@ import { MobileShell } from '~/components/mobile-shell'
 
 afterEach(cleanup)
 
-function renderShell({ drawerOpen = false, foregroundVisible = true, reconnecting = false } = {}) {
+function renderShell({ navigationPageOpen = false, foregroundVisible = true, reconnecting = false } = {}) {
   const onAction = vi.fn()
   const onDismissForeground = vi.fn()
   const onRefresh = vi.fn()
   const view = render(
     <MobileShell
-      drawer={<aside>Drawer</aside>}
-      drawerOpen={drawerOpen}
+      navigationPage={<aside>Navigation page</aside>}
+      navigationPageOpen={navigationPageOpen}
       foreground={<div><button onClick={onAction}>Action</button>Foreground content</div>}
       foregroundDismissible
       foregroundHeader={<header>Foreground header</header>}
@@ -89,12 +89,12 @@ describe('MobileShell', () => {
     expect(onDismissForeground).not.toHaveBeenCalled()
   })
 
-  it('disables foreground motion while the drawer is open or reconnecting', () => {
-    const drawer = renderShell({ drawerOpen: true })
-    pointer(drawer.foreground, 'pointerDown', { clientX: 20, clientY: 100 })
-    pointer(drawer.foreground, 'pointerMove', { clientX: 420, clientY: 108 })
-    expect(drawer.foreground.style.getPropertyValue('--swipe-progress')).toBe('0')
-    drawer.view.unmount()
+  it('disables foreground motion while the navigation page is open or reconnecting', () => {
+    const navigationPage = renderShell({ navigationPageOpen: true })
+    pointer(navigationPage.foreground, 'pointerDown', { clientX: 20, clientY: 100 })
+    pointer(navigationPage.foreground, 'pointerMove', { clientX: 420, clientY: 108 })
+    expect(navigationPage.foreground.style.getPropertyValue('--swipe-progress')).toBe('0')
+    navigationPage.view.unmount()
 
     const reconnecting = renderShell({ reconnecting: true })
     pointer(reconnecting.foreground, 'pointerDown', { clientX: 20, clientY: 100 })

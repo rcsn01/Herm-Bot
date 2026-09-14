@@ -131,23 +131,22 @@ test('password cookie authenticates a real WebSocket chat session', async ({ pag
   ]))
 })
 
-test('cold deep link switches profile, resumes, and reloads durable history', async ({ page }) => {
+test('cold session deep links switch profile and normalize the URL', async ({ page }) => {
   await login(page, '/session/saved-work?profile=work')
   await expect(page.getByText('Durable reply from saved-work')).toBeVisible()
+  await expect(page).toHaveURL(/\/$/)
 
-  let calls = (await fixtureCalls(page)).calls
+  const calls = (await fixtureCalls(page)).calls
   expect(calls).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: 'ws-connect', profile: 'work' }),
     expect.objectContaining({ kind: 'rpc', method: 'session.resume', params: expect.objectContaining({ profile: 'work', session_id: 'saved-work', source: 'mobile' }) })
   ]))
 
+  // Reloading no longer replays the session URL: in-memory navigation resets
+  // to the roster while the browser URL remains the root.
   await page.reload()
-  await expect(page.getByText('Durable reply from saved-work')).toBeVisible()
-  calls = (await fixtureCalls(page)).calls
-  expect(calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume' && call.params.session_id === 'saved-work').length).toBeGreaterThanOrEqual(2)
-  expect(calls).toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: 'http', path: '/api/sessions/saved-work/messages', query: expect.objectContaining({ include_compacted: 'true', order: 'latest' }) })
-  ]))
+  await expect(page.getByRole('searchbox', { name: 'Search bots' })).toBeVisible()
+  await expect(page).toHaveURL(/\/$/)
 })
 
 test('desktop group chats list on the main screen and open with sending', async ({ page }) => {
@@ -168,7 +167,7 @@ test('desktop group chats list on the main screen and open with sending', async 
   expect(faceBox!.height).toBeLessThanOrEqual(33)
 
   await row.click()
-  await expect(page).toHaveURL(/\/group\/id%3Ar-crew$/)
+  await expect(page).toHaveURL(/\/$/)
   await expect(page.getByText('Two candidates so far', { exact: true })).toBeVisible()
 
   // Sending runs the desktop round engine locally: the user bubble lands
@@ -177,84 +176,67 @@ test('desktop group chats list on the main screen and open with sending', async 
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByText('hello crew')).toBeVisible()
 
-  // The top bar owns the exit, and back lands on the roster.
-  await page.goBack()
+  // The top bar owns the exit, and in-app back lands on the roster.
+  await page.getByRole('button', { name: 'Back to bots' }).click()
   await expect(row).toBeVisible()
 })
 
-test('screens mirror into the URL and browser back undoes navigation', async ({ page }) => {
+test('runtime screen and navigation routes stay out of the browser URL', async ({ page }) => {
   await login(page)
-  // openProfile resumed the profile's latest stored session, so the URL
-  // mirrors the open conversation, not the generic sessions root.
-  await expect(page).toHaveURL(/\/session\/saved-default$/)
-
-  // Browser back/OS edge-back while the drawer is open dismisses the drawer,
-  // rather than popping the conversation back to the roster.
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  await expect(page.getByTestId('side-navigation-backdrop')).toHaveClass(/open/)
-  await page.goBack()
-  await expect(page).toHaveURL(/\/session\/saved-default$/)
-  await expect(page.getByLabel('Message Hermes')).toBeVisible()
-  await expect(page.getByTestId('side-navigation-backdrop')).not.toHaveClass(/open/)
+  const rootURL = page.url()
 
   await page.getByRole('button', { name: 'Open navigation' }).click()
+  await expect(page).toHaveURL(rootURL)
+  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
+
   await page.getByRole('button', { name: 'Capabilities' }).click()
-  await expect(page).toHaveURL(/\/capabilities$/)
+  await expect(page).toHaveURL(rootURL)
+  await expect(page.getByRole('heading', { name: 'Capabilities' })).toBeVisible()
 
-  // The system back gesture rides the mirrored history entries.
-  await page.goBack()
-  await expect(page).toHaveURL(/\/session\/saved-default$/)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'Cron Jobs' }).click()
+  await expect(page).toHaveURL(rootURL)
+  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
+})
+
+test('reloading resets the in-memory navigation page to the startup screen', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
+  await expect(page).toHaveURL(/\/$/)
+
+  await page.reload()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('searchbox', { name: 'Search bots' })).toBeVisible()
+  await expect(page.getByTestId('side-navigation-page')).toHaveCount(0)
+})
+
+test('navigation-page back button dismisses in memory without changing the URL', async ({ page }) => {
+  await login(page)
+  const previousURL = page.url()
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await expect(page).toHaveURL(previousURL)
+
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await expect(page).toHaveURL(previousURL)
+  await expect(page.getByTestId('side-navigation-page')).not.toHaveClass(/open/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
 })
 
-test('drawer touch motion moves only the panel and commits after the visual endpoint', async ({ page, browserName }) => {
+test('navigation-page edge swipe dismisses with in-memory back', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  const backdrop = page.getByTestId('side-navigation-backdrop')
-  const panel = page.locator('.side-drawer-panel')
-  await expect(backdrop).toHaveClass(/open/)
-  await expect.poll(() => backdrop.evaluate(element => element.style.getPropertyValue('--swipe-progress'))).toBe('0')
-  await expect(page.locator('.screen-stack')).toHaveCSS('pointer-events', 'none')
-
-  const box = await panel.boundingBox()
+  const navigationPage = page.getByTestId('side-navigation-page')
+  await expect(navigationPage).toHaveClass(/open/)
+  const box = await navigationPage.boundingBox()
   expect(box).toBeTruthy()
-  // Start at the viewport edge, outside the panel, to cover the full-screen
-  // backdrop path that must not wake the foreground gesture.
-  const start = { x: 0, y: box!.y + 180 }
-  const partial = { x: start.x + box!.width * .2, y: start.y + 4 }
-  const foreground = page.locator('.foreground-layer.active')
-  const mainTransform = await foreground.evaluate(element => getComputedStyle(element).transform)
-  await touchDrag(page, start, partial, 2, async () => {
-    await page.waitForTimeout(180)
-    await expect.poll(() => backdrop.evaluate(element => Number(element.style.getPropertyValue('--swipe-progress')))).toBeGreaterThan(0)
-    expect(await foreground.evaluate(element => getComputedStyle(element).transform)).toBe(mainTransform)
-  })
-  await waitForSwipeIdle(page, '[data-testid="side-navigation-backdrop"]')
-  await expect.poll(() => backdrop.evaluate(element => Number(element.style.getPropertyValue('--swipe-progress')))).toBe(0)
 
-  const reopenedBox = await panel.boundingBox()
-  expect(reopenedBox).toBeTruthy()
-  const commitStart = { x: 10, y: reopenedBox!.y + 180 }
-  await touchDrag(page, commitStart, { x: commitStart.x + reopenedBox!.width * .75, y: commitStart.y + 2 })
-  await expect(backdrop).not.toHaveClass(/open/)
+  await touchDrag(page, { x: box!.x + 3, y: box!.y + 240 }, { x: box!.x + box!.width * .6, y: box!.y + 244 }, 2)
+  await waitForSwipeIdle(page, '[data-testid="side-navigation-page"]')
+  await expect(navigationPage).not.toHaveClass(/open/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
-})
-
-test('right-edge touch opening moves only the drawer over the session', async ({ page, browserName }) => {
-  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
-  await login(page)
-  const backdrop = page.getByTestId('side-navigation-backdrop')
-  const foreground = page.locator('.foreground-layer.active')
-  await expect(backdrop).not.toHaveClass(/open/)
-  const mainTransform = await foreground.evaluate(element => getComputedStyle(element).transform)
-
-  await touchDrag(page, { x: 388, y: 220 }, { x: 240, y: 224 }, 2, async () => {
-    expect(await foreground.evaluate(element => getComputedStyle(element).transform)).toBe(mainTransform)
-  })
-  await waitForSwipeIdle(page, '[data-testid="side-navigation-backdrop"]')
-  await expect(backdrop).toHaveClass(/open/)
-  await expect(foreground).toHaveCSS('transform', mainTransform)
+  await expect(page).toHaveURL(/\/$/)
 })
 
 test('single-chat touch dismissal moves the foreground over a fixed roster', async ({ page, browserName }) => {
@@ -299,11 +281,11 @@ test('group touch dismissal uses the same right-only foreground motion', async (
   await expect(page.getByRole('button', { name: /Research crew/ })).toBeVisible()
 })
 
-test('session-row touch motion reveals and conceals without dismissing the drawer', async ({ page, browserName }) => {
+test('session-row touch motion reveals and conceals without dismissing the navigation page', async ({ page, browserName }) => {
   test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  await waitForSwipeIdle(page, '[data-testid="side-navigation-backdrop"]')
+  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
   const row = page.locator('.session-row').filter({ hasText: 'Saved default' })
   await expect(row).toBeVisible()
   const main = row.locator('.session-main')
@@ -313,35 +295,23 @@ test('session-row touch motion reveals and conceals without dismissing the drawe
   await expect(row.locator('.session-delete-action button')).toHaveAttribute('aria-hidden', 'false')
   await touchDrag(page, { x: box!.x + 30, y: box!.y + 20 }, { x: box!.x + box!.width - 30, y: box!.y + 22 })
   await expect(row.locator('.session-delete-action button')).toHaveAttribute('aria-hidden', 'true')
-  await expect(page.getByTestId('side-navigation-backdrop')).toHaveClass(/open/)
+  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
 })
 
-test('reduced motion still reaches drawer endpoints immediately', async ({ page, browserName }) => {
-  test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
-  await page.emulateMedia({ reducedMotion: 'reduce' })
-  await login(page)
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  const backdrop = page.getByTestId('side-navigation-backdrop')
-  await expect.poll(() => backdrop.evaluate(element => element.style.getPropertyValue('--swipe-progress'))).toBe('0')
-  const panel = page.locator('.side-drawer-panel')
-  const box = await panel.boundingBox()
-  expect(box).toBeTruthy()
-  await touchDrag(page, { x: 10, y: box!.y + 160 }, { x: 10 + box!.width * .75, y: box!.y + 162 })
-  await expect(backdrop).not.toHaveClass(/open/)
-})
-
-test('reloading keeps the current screen', async ({ page }) => {
+test('reloading resets a runtime screen to the startup route', async ({ page }) => {
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name: 'Cron Jobs' }).click()
-  await expect(page).toHaveURL(/\/cron$/)
+  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
+  await expect(page).toHaveURL(/\/$/)
 
   await page.reload()
-  await expect(page).toHaveURL(/\/cron$/)
-  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('searchbox', { name: 'Search bots' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toHaveCount(0)
 })
 
-test('a screen URL survives a cold start', async ({ page }) => {
+test('a screen URL is consumed as a cold-start input', async ({ page }) => {
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Continue' }).click()
   await page.getByRole('button', { name: 'Use password for Test account' }).click()
@@ -350,7 +320,7 @@ test('a screen URL survives a cold start', async ({ page }) => {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
 
   await expect(page.getByText('Profile defaults, mobile preferences, and gateway administration.')).toBeVisible()
-  await expect(page).toHaveURL(/\/settings$/)
+  await expect(page).toHaveURL(/\/$/)
 })
 
 test('offline shell works without caching private API responses', async ({ page, context, browserName }) => {

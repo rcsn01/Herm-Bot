@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '@nanostores/react'
 
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
+import { PageShell } from '~/components/page-shell'
 import { Badge, Button, Skeleton, Switch } from '~/compat/primitives'
 import { ContextWindowField, FallbackField } from '~/features/models/config-editors'
 import { createModelsApi } from '~/features/models/api'
@@ -175,20 +176,13 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
   const loadError = info.error ?? options.error ?? auxiliary.error ?? config.error
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading">
-        <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
-        <Button
-          aria-label="Refresh models"
-          onClick={() => void Promise.all([info.refetch(), options.refetch(), auxiliary.refetch(), config.refetch(), moa.refetch()])}
-          size="icon-sm"
-          variant="ghost"
-        ><IconRefresh size={18} /></Button>
-      </header>
-      <p className="eyebrow">Remote gateway</p>
-      <h2>Models</h2>
-      <p className="muted">Current model, assignments, and model capabilities for the {profile || 'default'} profile.</p>
-
+    <PageShell
+      actions={<Button aria-label="Refresh models" onClick={() => void Promise.all([info.refetch(), options.refetch(), auxiliary.refetch(), config.refetch(), moa.refetch()])} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>}
+      eyebrow="Remote gateway"
+      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      subtitle={`Current model, assignments, and model capabilities for the ${profile || 'default'} profile.`}
+      title="Models"
+    >
       {loading && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-3 h-32 w-full" /></div>}
       {loadError && <GatewayErrorBanner error={loadError} subject="Models" />}
 
@@ -373,6 +367,6 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
           title="Confirm model change"
         />
       )}
-    </section>
+    </PageShell>
   )
 }

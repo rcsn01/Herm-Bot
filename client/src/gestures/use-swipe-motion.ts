@@ -5,7 +5,7 @@ export type SwipePhase = 'idle' | 'pending' | 'dragging' | 'settling'
 export type SwipeEndpoint = 0 | 1
 
 export interface SwipeMotionOptions {
-  canStart?(target: EventTarget | null): boolean
+  canStart?(target: EventTarget | null, event?: ReactPointerEvent<HTMLElement>): boolean
   direction: SwipeDirection
   enabled: boolean
   extentPx(): number
@@ -60,6 +60,10 @@ const MIN_SETTLE_MS = 80
 
 function clampProgress(progress: number): number {
   return Math.max(0, Math.min(1, progress))
+}
+
+function now(): number {
+  return typeof window !== 'undefined' ? window.performance.now() : performance.now()
 }
 
 function prefersReducedMotion(): boolean {
@@ -135,9 +139,10 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
       return
     }
 
-    const startedAt = performance.now()
+    let startedAt: number | null = null
     const frame = (timestamp: number) => {
       if (animationTokenRef.current !== token) return
+      startedAt ??= timestamp
       const t = Math.min(1, (timestamp - startedAt) / duration)
       const eased = t * t * (3 - 2 * t)
       writeProgress(start + (endpoint - start) * eased)
@@ -165,17 +170,17 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const current = optionsRef.current
     if (!current.enabled || event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) return
-    if (current.canStart && !current.canStart(event.target)) return
+    if (current.canStart && !current.canStart(event.target, event)) return
     cancelAnimation()
     const element = event.currentTarget
-    const now = performance.now()
+    const startedAt = now()
     activePointerRef.current = {
       id: event.pointerId,
       lastX: event.clientX,
       lastY: event.clientY,
       locked: false,
       startProgress: progressRef.current,
-      startTime: now,
+      startTime: startedAt,
       startX: event.clientX,
       startY: event.clientY
     }
@@ -225,7 +230,7 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
     }
     const sign = current.direction === 'right' ? 1 : -1
     const signedDistance = sign * (event.clientX - active.startX)
-    const elapsed = Math.max(1, performance.now() - active.startTime)
+    const elapsed = Math.max(1, now() - active.startTime)
     const speed = Math.abs(signedDistance) / elapsed
     const towardEndpoint = current.restingEndpoint === 0
       ? progressRef.current >= COMMIT_PROGRESS

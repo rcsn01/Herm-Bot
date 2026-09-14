@@ -1,5 +1,6 @@
 import { IconChevronLeft, IconRefresh } from '@tabler/icons-react'
 
+import { PageShell } from '~/components/page-shell'
 import { Badge, Button, Skeleton } from '~/compat/primitives'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { useGatewayApi } from '~/gateway/gateway-api-hooks'
@@ -29,19 +30,18 @@ export function RemoteResourceScreen({ definition, onBack }: { definition: Remot
   })
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading">
-        <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>
-        <Button aria-label={`Refresh ${definition.title}`} disabled={isUnavailableForProfile} onClick={() => void query.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>
-      </header>
-      <p className="eyebrow">Remote gateway</p>
-      <h2>{definition.title}</h2>
-      <p className="muted">{definition.description}</p>
+    <PageShell
+      actions={<Button aria-label={`Refresh ${definition.title}`} disabled={isUnavailableForProfile} onClick={() => void query.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>}
+      eyebrow="Remote gateway"
+      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      subtitle={definition.description}
+      title={definition.title}
+    >
       {isUnavailableForProfile && <div className="unsupported-card" role="alert"><strong>Unavailable for this profile</strong><p>{definition.unavailableMessage ?? 'This gateway resource is process-scoped and is only available from the default profile.'}</p></div>}
       {!isUnavailableForProfile && query.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /></div>}
       {!isUnavailableForProfile && query.error && <GatewayErrorBanner error={query.error} subject={definition.title} />}
       {!isUnavailableForProfile && query.data !== undefined && <ResourceOverview presentation={definition.presentation ?? 'summary'} value={query.data} />}
-    </section>
+    </PageShell>
   )
 }
 

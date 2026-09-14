@@ -1,6 +1,7 @@
 import { IconChevronRight, IconRefresh, IconSearch, IconTools } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 
+import { PageShell } from '~/components/page-shell'
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
@@ -57,12 +58,15 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
 
   const selectedToolset = selected ? toolsets.data?.find(toolset => toolset.name === selected) : undefined
   if (selected && selectedToolset) return <ToolsetDetail onBack={onBack} toolset={selectedToolset} />
-  if (selected && toolsets.data && !selectedToolset) return <section className="screen page-screen"><Button onClick={onBack} variant="text">‹ Back</Button><div className="empty-panel">That toolset is no longer available.</div></section>
+  if (selected && toolsets.data && !selectedToolset) return <PageShell leading={<Button onClick={onBack} variant="text">‹ Back</Button>} title="Tools"><div className="empty-panel">That toolset is no longer available.</div></PageShell>
 
   return (
-    <section className="screen page-screen">
-      <header className="page-heading"><div><p className="eyebrow">Capabilities</p><h2>Tools</h2></div><Button aria-label="Refresh tools" onClick={() => void toolsets.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button></header>
-      <p className="muted">Toolsets are profile defaults for new sessions. The active conversation keeps its existing tool schema.</p>
+    <PageShell
+      actions={<Button aria-label="Refresh tools" onClick={() => void toolsets.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>}
+      eyebrow="Capabilities"
+      subtitle="Toolsets are profile defaults for new sessions. The active conversation keeps its existing tool schema."
+      title="Tools"
+    >
       {error && <div className="error-banner" role="alert">{error}</div>}
       <div className="search-box"><IconSearch size={17} aria-hidden="true" /><Input aria-label="Search toolsets" onChange={event => setSearch(event.target.value)} placeholder="Search toolsets" value={search} /></div>
       <div className="button-row tool-actions"><Badge variant="muted">{toolsets.data?.filter(toolset => toolset.enabled).length ?? 0} enabled</Badge><Button disabled={!toolsets.data?.some(toolset => toolset.enabled) || toggle.isPending} onClick={() => setConfirmClear(true)} size="sm" variant="destructive">Clear enabled toolsets</Button></div>
@@ -70,7 +74,7 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
       {toolsets.error && <GatewayErrorBanner error={toolsets.error} unsupportedText="Toolsets are unavailable on this gateway." />}
       <div className="settings-list capability-list">{filtered.map(toolset => <article className="capability-row" key={toolset.name}><button onClick={() => onSelect?.(toolset)}><IconTools size={20} /><span><strong>{toolset.label || toolset.name}</strong><small>{toolset.description || 'No description'}</small><small>{toolset.tools.length} tools · {toolset.configured ? 'Configured' : 'Setup needed'}</small></span><IconChevronRight size={18} /></button><label className="row-switch"><span className="sr-only">Enable {toolset.label || toolset.name}</span><input checked={toolset.enabled} onChange={event => toggle.mutate({ enabled: event.target.checked, name: toolset.name })} type="checkbox" /></label></article>)}{toolsets.data && filtered.length === 0 && <div className="empty-panel">No toolsets match this search.</div>}</div>
       {confirmClear && <ConfirmDialog confirmLabel="Clear all" description="Disable every enabled toolset for this profile? The change affects new sessions only." onCancel={() => setConfirmClear(false)} onConfirm={() => void clearAll()} title="Clear enabled toolsets" />}
-    </section>
+    </PageShell>
   )
 }
 
