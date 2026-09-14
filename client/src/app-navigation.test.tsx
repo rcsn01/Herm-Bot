@@ -52,7 +52,7 @@ vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { $groups } from '~/features/groups/groups-store'
-import { $navigation, pushRoute, resetNavigation } from '~/navigation/navigation-store'
+import { resetNavigation } from '~/navigation/navigation-store'
 import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'
 
 afterEach(cleanup)
@@ -177,7 +177,7 @@ describe('App navigation', () => {
     expect(window.location.pathname).toBe('/')
     expect(screen.getByRole('main', { name: 'Sessions menu' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Back' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Model' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Models' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Automations' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
@@ -228,13 +228,13 @@ describe('App navigation', () => {
 
     openNavigationPage()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
 
-  it('returns from Automations to the menu over the exact originating Capabilities page', async () => {
+  it('switches configuration pages through persistent bottom navigation and opens Sessions by default', async () => {
     const { container } = render(<App />)
 
     await enterAgent()
@@ -242,20 +242,20 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
-    act(() => { pushRoute('capabilities', { section: 'mcp', tab: 'capabilities', type: 'capabilities-section' }) })
+    const capabilitiesNavigation = screen.getByRole('navigation', { name: 'Bot workspace' })
+    expect(within(capabilitiesNavigation).getByRole('button', { name: 'Capabilities' }).getAttribute('aria-current')).toBe('page')
 
-    openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
-    await settleNavigation()
+    fireEvent.click(within(capabilitiesNavigation).getByRole('button', { name: 'Automations' }))
     expect(screen.getByText('Cron screen')).not.toBeNull()
     expectBotConfigurationHeader(container, 'Automations')
-    expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
+    const automationsNavigation = screen.getByRole('navigation', { name: 'Bot workspace' })
+    expect(within(automationsNavigation).getByRole('button', { name: 'Automations' }).getAttribute('aria-current')).toBe('page')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
+    fireEvent.click(within(automationsNavigation).getByRole('button', { name: 'Sessions' }))
     const menu = screen.getByRole('main', { name: 'Sessions menu' })
+    expect(within(menu).getByRole('button', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page')
     fireEvent.click(within(menu).getByRole('button', { name: 'Back' }))
-    expect(screen.getByText('Capabilities screen')).not.toBeNull()
-    expect($navigation.get().stacks.capabilities.at(-1)).toEqual({ section: 'mcp', tab: 'capabilities', type: 'capabilities-section' })
+    expect(screen.getByText('Cron screen')).not.toBeNull()
   })
 
   it('opens model settings from the side navigation and returns to the chat', async () => {
@@ -263,7 +263,7 @@ describe('App navigation', () => {
 
     await enterAgent()
     openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
     expectBotConfigurationHeader(container, 'Models')

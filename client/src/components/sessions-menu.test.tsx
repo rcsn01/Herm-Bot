@@ -37,7 +37,7 @@ function renderNavigationPage(controller = controllerStub(), open = true) {
     if (intent.type === 'model') onOpenModel()
     else if (intent.type === 'tab') onNavigate(intent.tab)
   })
-  const result = render(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={onDismissRequest} open={open} />)
+  const result = render(<SessionsMenu controller={controller} onDismissRequest={onDismissRequest} open={open} />)
   return { controller, onClose, onDismissRequest, onNavigate, onOpenModel, ...result }
 }
 
@@ -143,14 +143,15 @@ describe('SessionsMenu', () => {
     expect(screen.getByRole('button', { name: /Planning session/ })).not.toBeNull()
   })
 
-  it('groups bot configuration above session search and navigation', () => {
-    const { onClose, onNavigate } = renderNavigationPage()
-    const configuration = screen.getByRole('navigation', { name: 'Bot configuration' })
-    const search = screen.getByRole('textbox', { name: 'Search sessions' })
+  it('shows Sessions first in bottom navigation, followed by Automations, Capabilities, and Models', () => {
+    const { onClose, onNavigate, onOpenModel } = renderNavigationPage()
+    const navigation = screen.getByRole('navigation', { name: 'Bot workspace' })
+    const tabs = Array.from(navigation.querySelectorAll('button'))
     const sessions = screen.getByRole('region', { name: 'Sessions' })
 
-    expect(configuration.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
-    expect(configuration.compareDocumentPosition(sessions) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(tabs.map(tab => tab.getAttribute('aria-label'))).toEqual(['Sessions', 'Automations', 'Capabilities', 'Models'])
+    expect(tabs[0]?.getAttribute('aria-current')).toBe('page')
+    expect(sessions.compareDocumentPosition(navigation) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     expect(onNavigate).toHaveBeenCalledWith('capabilities')
@@ -159,14 +160,10 @@ describe('SessionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     expect(onNavigate).toHaveBeenCalledWith('cron')
     expect(onClose).toHaveBeenCalledTimes(2)
-  })
 
-  it('opens the model settings from the sections list', () => {
-    const { onClose, onOpenModel } = renderNavigationPage()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     expect(onOpenModel).toHaveBeenCalledOnce()
-    expect(onClose).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledTimes(3)
   })
 
   it('keeps only session rows and pagination inside the session-list scroll region', () => {
@@ -193,8 +190,8 @@ describe('SessionsMenu', () => {
     expect(screen.getByText('Release notes')).not.toBeNull()
     expect(screen.queryByText('Other hidden body')).toBeNull()
 
-    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
-    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open={false} />)
+    rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
   })
 
@@ -207,7 +204,7 @@ describe('SessionsMenu', () => {
     expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
 
     $sessionsLoadingMore.set(true)
-    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
   })
 
@@ -321,15 +318,15 @@ describe('SessionsMenu', () => {
     const opener = document.createElement('button')
     document.body.append(opener)
     opener.focus()
-    const { container, rerender } = render(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    const { container, rerender } = render(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open={false} />)
     const page = container.querySelector<HTMLElement>('.sessions-menu')!
     expect(page.getAttribute('aria-hidden')).toBe('true')
     expect(page.hasAttribute('inert')).toBe(true)
 
-    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
     expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Sessions menu' }))
     expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
-    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()
   })

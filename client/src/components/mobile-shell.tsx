@@ -8,6 +8,7 @@ interface MobileShellProps {
   foreground: ReactNode
   foregroundDismissible?: boolean
   foregroundHeader: ReactNode
+  foregroundNavigation?: ReactNode
   foregroundVisible: boolean
   onDismissForeground?(): void
   onRefresh(): unknown
@@ -34,6 +35,7 @@ export function MobileShell({
   foreground,
   foregroundDismissible = false,
   foregroundHeader,
+  foregroundNavigation,
   foregroundVisible,
   onDismissForeground,
   onRefresh,
@@ -102,7 +104,7 @@ export function MobileShell({
           </section>
           <section
             aria-hidden={!foregroundVisible}
-            className={`foreground-layer${foregroundVisible ? ' active' : ''}${foregroundDismissible ? ' dismissible' : ''}`}
+            className={`foreground-layer${foregroundVisible ? ' active' : ''}${foregroundDismissible ? ' dismissible' : ''}${foregroundNavigation ? ' with-workspace-navigation' : ''}`}
             inert={!foregroundVisible ? true : undefined}
             ref={foregroundMotion.ref}
             {...foregroundMotion.bind}
@@ -115,6 +117,7 @@ export function MobileShell({
             >
               {foreground}
             </main>
+            {foregroundNavigation}
           </section>
         </div>
         {navigationPage}

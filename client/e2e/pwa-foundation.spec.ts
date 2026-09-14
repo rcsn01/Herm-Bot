@@ -193,8 +193,7 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
   await expect(page).toHaveURL(rootURL)
   await expect(page.getByRole('heading', { name: 'Capabilities' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Automations' }).click()
+  await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
   await expect(page).toHaveURL(rootURL)
   await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
 })
@@ -204,7 +203,7 @@ test('bot configuration destinations return to the sessions menu', async ({ page
   const rootURL = page.url()
 
   for (const destination of [
-    { button: 'Model', heading: 'Models' },
+    { button: 'Models', heading: 'Models' },
     { button: 'Capabilities', heading: 'Capabilities' },
     { button: 'Automations', heading: 'Cron Jobs' }
   ]) {
@@ -214,7 +213,7 @@ test('bot configuration destinations return to the sessions menu', async ({ page
     await expect(page.getByRole('heading', { exact: true, name: destination.heading })).toBeVisible()
     await page.getByRole('button', { name: 'Back to menu' }).click()
     await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
-    await expect(page.getByRole('navigation', { name: 'Bot configuration' })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Bot workspace' })).toBeVisible()
     await page.getByRole('button', { exact: true, name: 'Back' }).click()
     await expect(page.getByLabel('Message Hermes')).toBeVisible()
   }

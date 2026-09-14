@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
+import { BotWorkspaceNavigation, type BotWorkspaceDestination } from '~/components/bot-workspace-navigation'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
@@ -176,6 +177,14 @@ export function App() {
     menuOriginStackRef.current = [...navigation.stacks[navigation.activeTab]] as MobileRoute[]
     navigationPage.openNavigationPage()
   }
+  const selectBotWorkspaceDestination = (destination: BotWorkspaceDestination) => {
+    if (destination === 'sessions') {
+      openNavigationPage()
+      return
+    }
+    if (destination === 'model') openModelSettings()
+    else openDestination(destination)
+  }
   const nestedRoute = navigation.stacks[navigation.activeTab].length > 1
   const activeBotConfiguration = activeBotConfigurationDestination(navigation.activeTab, activeRoute)
   const modelReturnsToSurface = navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab
@@ -256,11 +265,12 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu activeDestination={activeBotConfiguration} activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
+        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
         navigationPageOpen={navigationPageOpen}
         foreground={foregroundContent}
         foregroundDismissible={foregroundDismissible}
         foregroundHeader={foregroundHeader}
+        foregroundNavigation={activeBotConfiguration ? <BotWorkspaceNavigation active={activeBotConfiguration} onSelect={selectBotWorkspaceDestination} /> : null}
         foregroundVisible={foregroundVisible}
         onDismissForeground={() => {
           // A committed swipe always dismisses the whole foreground to the
