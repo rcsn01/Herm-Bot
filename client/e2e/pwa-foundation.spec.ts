@@ -216,7 +216,9 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
 
   await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
   await expect(page).toHaveURL(rootURL)
-  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
+  const automationList = page.locator('.cron-job-list')
+  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toHaveCount(0)
+  await expect(automationList.locator(':scope > :first-child')).toHaveAccessibleName('New automations')
 })
 
 test('workspace tabs share a stable header without redundant menu buttons', async ({ page }) => {
@@ -261,12 +263,13 @@ test('bot configuration destinations return to the sessions menu', async ({ page
   for (const destination of [
     { button: 'Models', heading: 'Models' },
     { button: 'Capabilities', heading: 'Capabilities' },
-    { button: 'Automations', heading: 'Cron Jobs' }
+    { button: 'Automations', heading: null }
   ]) {
     await page.getByRole('button', { name: 'Open navigation' }).click()
     await page.getByRole('button', { name: destination.button, exact: true }).click()
     await expect(page).toHaveURL(rootURL)
-    await expect(page.getByRole('heading', { exact: true, name: destination.heading })).toBeVisible()
+    if (destination.heading) await expect(page.getByRole('heading', { exact: true, name: destination.heading })).toBeVisible()
+    else await expect(page.getByRole('button', { name: 'New automations' })).toBeVisible()
     await page.getByRole('button', { name: 'Back to menu' }).click()
     await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
     await expect(page.getByRole('navigation', { name: 'Bot workspace' })).toBeVisible()
@@ -378,7 +381,7 @@ test('reloading resets a runtime screen to the startup route', async ({ page }) 
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name: 'Automations' }).click()
-  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'New automations' })).toBeVisible()
   await expect(page).toHaveURL(/\/$/)
 
   await page.reload()

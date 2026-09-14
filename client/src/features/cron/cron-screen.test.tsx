@@ -130,10 +130,16 @@ describe('cron jobs', () => {
         state: 'Active'
       }]))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const onNavigate = vi.fn()
 
-    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ tab: 'cron', type: 'cron-root' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+    const { container } = render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ tab: 'cron', type: 'cron-root' }} onNavigate={onNavigate} /></GatewayProvider></QueryClientProvider>)
 
     expect(await screen.findByText('Morning briefing')).not.toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Cron Jobs' })).toBeNull()
+    const newAutomation = screen.getByRole('button', { name: 'New automations' })
+    expect(container.querySelector('.cron-job-list')?.firstElementChild).toBe(newAutomation)
+    fireEvent.click(newAutomation)
+    expect(onNavigate).toHaveBeenCalledWith({ tab: 'cron', type: 'cron-job-editor' })
     expect(screen.getByText('Every day at 9:00 AM')).not.toBeNull()
     expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('Remote automation')).toBeNull()

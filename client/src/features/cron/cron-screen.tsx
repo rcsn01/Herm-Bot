@@ -41,7 +41,25 @@ export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBac
   }
   if (activeRoute.type === 'cron-blueprints') return <CronBlueprintsScreen onCreated={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />
 
-  return <PageShell actions={<div className="button-row"><Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-blueprints' })} size="sm" variant="secondary">Blueprints</Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-job-editor' })} size="sm"><IconPlus size={16} /> New</Button></div>} title="Cron Jobs"><div className="search-box"><IconCalendarClock size={17} aria-hidden="true" /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div><div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label><Badge variant="muted">{filtered.length} jobs</Badge></div>{jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}{jobs.isStale && jobs.data && !jobs.isFetching && <p className="muted" role="status">Showing cached jobs. Pull to refresh.</p>}{jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}{jobs.error && <GatewayErrorBanner error={jobs.error} unsupportedText="Cron Jobs are unavailable on this gateway." />}{jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}<div className="cron-job-list">{filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}</div></PageShell>
+  return (
+    <PageShell
+      actions={<div className="button-row"><Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-blueprints' })} size="sm" variant="secondary">Blueprints</Button></div>}
+      heading={false}
+      title="Automations"
+    >
+      <div className="search-box"><IconCalendarClock aria-hidden="true" size={17} /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div>
+      <div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label><Badge variant="muted">{filtered.length} jobs</Badge></div>
+      {jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}
+      {jobs.isStale && jobs.data && !jobs.isFetching && <p className="muted" role="status">Showing cached jobs. Pull to refresh.</p>}
+      {jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}
+      {jobs.error && <GatewayErrorBanner error={jobs.error} unsupportedText="Cron Jobs are unavailable on this gateway." />}
+      <div className="cron-job-list">
+        <Button className="cron-new-automation" onClick={() => navigate({ tab: 'cron', type: 'cron-job-editor' })} type="button" variant="ghost"><IconPlus aria-hidden="true" size={18} /><span>New automations</span></Button>
+        {jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}
+        {filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}
+      </div>
+    </PageShell>
+  )
 }
 
 function CronJobCard({ job, onOpen }: { job: CronJob; onOpen(): void }) {
