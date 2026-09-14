@@ -33,10 +33,16 @@ const deepLinks = new DeepLinkCoordinator(controller)
 
 const DESTINATION_TITLES = {
   capabilities: 'Capabilities',
-  cron: 'Cron Jobs',
+  cron: 'Automations',
   roster: 'Hermes',
   settings: 'Settings',
   sessions: 'Sessions'
+} as const
+
+const BOT_CONFIGURATION_TITLES = {
+  capabilities: 'Capabilities',
+  cron: 'Automations',
+  model: 'Models'
 } as const
 
 export function App() {
@@ -171,20 +177,22 @@ export function App() {
     navigationPage.openNavigationPage()
   }
   const nestedRoute = navigation.stacks[navigation.activeTab].length > 1
+  const activeBotConfiguration = activeBotConfigurationDestination(navigation.activeTab, activeRoute)
   const modelReturnsToSurface = navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab
   const backDestinationLabel = nestedRoute && !modelReturnsToSurface
     ? 'Back'
     : returnTab
       ? 'Back to menu'
       : 'Back to bots'
-  const headerTitle = navigation.activeTab === 'sessions'
-    ? displayNameFor({ name: preferences.profile || 'default' })
-    : activeRoute.type === 'settings-category' && activeRoute.category === 'model'
-      ? 'Models'
-      : DESTINATION_TITLES[navigation.activeTab]
-  /** The messaging header leads with the bot's identity (matching the roster
-   *  and navigation labels) and carries the open session's name beneath it. */
-  const headerSession = (chat.info as { title?: string } | null)?.title || 'New conversation'
+  const botName = displayNameFor({ name: preferences.profile || 'default' })
+  const headerTitle = DESTINATION_TITLES[navigation.activeTab]
+  /** Profile surfaces lead with the bot's identity. Chat shows the current
+   *  session beneath it; configuration pages show their workspace section. */
+  const headerSubtitle = navigation.activeTab === 'sessions'
+    ? (chat.info as { title?: string } | null)?.title || 'New conversation'
+    : activeBotConfiguration
+      ? BOT_CONFIGURATION_TITLES[activeBotConfiguration]
+      : null
   const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
   const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
   const backFromForeground = () => {
@@ -221,9 +229,9 @@ export function App() {
       ) : (
         <Button aria-label={backDestinationLabel} className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
       )}
-      {navigation.activeTab === 'sessions' ? (
+      {navigation.activeTab === 'sessions' || activeBotConfiguration ? (
         <div className="header-bot-button">
-          <div><strong>{headerTitle}</strong><small>{reconnecting ? 'Reconnecting…' : headerSession}</small></div>
+          <div><strong>{botName}</strong><small>{reconnecting && navigation.activeTab === 'sessions' ? 'Reconnecting…' : headerSubtitle}</small></div>
         </div>
       ) : inProfile ? (
         <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
@@ -239,16 +247,16 @@ export function App() {
         <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
       </div>
       {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); clearMenuReturn(); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => exitDestination())} onExit={returnTab ? () => exitDestination('sessions') : undefined} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
+      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); clearMenuReturn(); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => exitDestination())} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} showModelBack={!returnTab} />}
     </>
   )
 
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu activeDestination={activeBotConfigurationDestination(navigation.activeTab, activeRoute)} activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
+        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu activeDestination={activeBotConfiguration} activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
         navigationPageOpen={navigationPageOpen}
         foreground={foregroundContent}
         foregroundDismissible={foregroundDismissible}

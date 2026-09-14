@@ -41,14 +41,14 @@ const ICONS: Record<string, typeof IconSettings> = {
   workspace: IconWorld
 }
 
-export function SettingsScreen({ controller, onBack, onExit, onNavigate, route }: { controller: GatewayController; onBack(): void; onExit?(): void; onNavigate(route: SettingsRoute): void; route: SettingsRoute }) {
+export function SettingsScreen({ controller, onBack, onNavigate, route, showModelBack = true }: { controller: GatewayController; onBack(): void; onNavigate(route: SettingsRoute): void; route: SettingsRoute; showModelBack?: boolean }) {
   const preferences = useStore($preferences)
   const connection = useStore($connection)
   const profiles = (connection.status?.profiles ?? []).map(profile => typeof profile === 'string' ? profile : profile.name)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
 
   if (route.type === 'settings-category') {
-    if (route.category === 'model') return <ModelsScreen onBack={onBack} onExit={onExit} />
+    if (route.category === 'model') return <ModelsScreen onBack={onBack} showBack={showModelBack} />
     if (route.category === 'appearance') return <AppearanceSettings onBack={onBack} />
     if (route.category === 'memory') return <MemorySettings onBack={onBack} />
     if (route.category === 'notifications') return <NotificationsSettings onBack={onBack} />

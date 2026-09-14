@@ -1,8 +1,8 @@
-import { IconBrain, IconChevronLeft, IconChevronRight, IconServer, IconSparkles, IconTools } from '@tabler/icons-react'
+import { IconBrain, IconChevronRight, IconServer, IconSparkles, IconTools } from '@tabler/icons-react'
 
 import { PageList, PageListButton } from '~/components/page-list'
 import { PageShell } from '~/components/page-shell'
-import { Badge, Button } from '~/compat/primitives'
+import { Badge } from '~/compat/primitives'
 import type { CapabilitiesRoute, CapabilitySection } from '~/navigation/routes'
 import { SkillsScreen } from './skills-screen'
 import { SkillDetail } from './skill-detail'
@@ -22,14 +22,13 @@ const sections: ReadonlyArray<{ description: string; icon: typeof IconBrain; id:
 
 interface CapabilitiesScreenProps {
   onBack(): void
-  onExit?(): void
   onNavigate(route: CapabilitiesRoute): void
   route: CapabilitiesRoute
 }
 
-export function CapabilitiesScreen({ onBack, onExit, onNavigate, route }: CapabilitiesScreenProps) {
+export function CapabilitiesScreen({ onBack, onNavigate, route }: CapabilitiesScreenProps) {
   if (route.type === 'capabilities-root') {
-    return <PageShell actions={<Badge variant="muted">Profile scoped</Badge>} eyebrow="New sessions" heading={!onExit} leading={onExit && <Button aria-label="Back to bot" onClick={onExit} size="icon-sm" variant="ghost"><IconChevronLeft size={20} /></Button>} subtitle="Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation." title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
+    return <PageShell actions={<Badge variant="muted">Profile scoped</Badge>} eyebrow="New sessions" subtitle="Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation." title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
   }
 
   const section = route.section

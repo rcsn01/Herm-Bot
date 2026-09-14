@@ -85,6 +85,12 @@ async function settleNavigation(): Promise<void> {
   await waitFor(() => expect(screen.getByTestId('sessions-menu').getAttribute('aria-hidden')).toBe('true'))
 }
 
+function expectBotConfigurationHeader(container: HTMLElement, section: string) {
+  const header = container.querySelector('.foreground-layer .header-bot-button')!
+  expect(header.querySelector('strong')?.textContent).toBe('Hermes')
+  expect(header.querySelector('small')?.textContent).toBe(section)
+}
+
 describe('App navigation', () => {
   it('launches on the agent roster with settings access and no side navigation', () => {
     render(<App />)
@@ -162,7 +168,7 @@ describe('App navigation', () => {
   })
 
   it('opens the navigation page only inside a profile', async () => {
-    render(<App />)
+    const { container } = render(<App />)
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
 
     await enterAgent()
@@ -179,6 +185,7 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    expectBotConfigurationHeader(container, 'Capabilities')
     expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
@@ -228,7 +235,7 @@ describe('App navigation', () => {
   })
 
   it('returns from Automations to the menu over the exact originating Capabilities page', async () => {
-    render(<App />)
+    const { container } = render(<App />)
 
     await enterAgent()
     openNavigationPage()
@@ -241,6 +248,7 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     await settleNavigation()
     expect(screen.getByText('Cron screen')).not.toBeNull()
+    expectBotConfigurationHeader(container, 'Automations')
     expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
@@ -251,13 +259,14 @@ describe('App navigation', () => {
   })
 
   it('opens model settings from the side navigation and returns to the chat', async () => {
-    render(<App />)
+    const { container } = render(<App />)
 
     await enterAgent()
     openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
+    expectBotConfigurationHeader(container, 'Models')
     expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to menu' }))
