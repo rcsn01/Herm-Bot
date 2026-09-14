@@ -138,7 +138,17 @@ describe('cron jobs', () => {
     expect(screen.queryByRole('heading', { name: 'Cron Jobs' })).toBeNull()
     const newAutomation = screen.getByRole('button', { name: 'New automations' })
     expect(container.querySelector('.cron-job-list')?.firstElementChild).toBe(newAutomation)
+    expect(screen.queryByRole('button', { name: 'Blueprints' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Refresh cron jobs' })).toBeNull()
+    expect(screen.queryByText('Showing cached jobs. Pull to refresh.')).toBeNull()
+
     fireEvent.click(newAutomation)
+    expect(screen.getByRole('dialog', { name: 'New automation' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a blueprint' }))
+    expect(onNavigate).toHaveBeenCalledWith({ tab: 'cron', type: 'cron-blueprints' })
+
+    fireEvent.click(newAutomation)
+    fireEvent.click(screen.getByRole('button', { name: 'Create from scratch' }))
     expect(onNavigate).toHaveBeenCalledWith({ tab: 'cron', type: 'cron-job-editor' })
     expect(screen.getByText('Every day at 9:00 AM')).not.toBeNull()
     expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1)

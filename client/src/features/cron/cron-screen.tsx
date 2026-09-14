@@ -1,5 +1,5 @@
-import { IconCalendarClock, IconPlus, IconRefresh } from '@tabler/icons-react'
-import { useMemo, useState } from 'react'
+import { IconCalendarClock, IconPlus } from '@tabler/icons-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageShell } from '~/components/page-shell'
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
@@ -17,11 +17,13 @@ export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBac
   const scopeKey = useScopeKey('cron', ['jobs'])
   const jobs = useScopedQuery(scopeKey, { queryFn: signal => cron.list(signal) })
   const [search, setSearch] = useState('')
+  const [showCreateOptions, setShowCreateOptions] = useState(false)
   const [status, setStatus] = useState<'all' | 'active' | 'paused' | 'error'>('all')
   const activeRoute = route ?? { tab: 'cron', type: 'cron-root' as const }
   const navigate = onNavigate ?? (() => undefined)
   useScopeReset(() => {
     setSearch('')
+    setShowCreateOptions(false)
     setStatus('all')
   })
 
@@ -42,23 +44,42 @@ export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBac
   if (activeRoute.type === 'cron-blueprints') return <CronBlueprintsScreen onCreated={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />
 
   return (
-    <PageShell
-      actions={<div className="button-row"><Button aria-label="Refresh cron jobs" onClick={() => void jobs.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => navigate({ tab: 'cron', type: 'cron-blueprints' })} size="sm" variant="secondary">Blueprints</Button></div>}
-      heading={false}
-      title="Automations"
-    >
+    <PageShell heading={false} title="Automations">
       <div className="search-box"><IconCalendarClock aria-hidden="true" size={17} /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div>
       <div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label><Badge variant="muted">{filtered.length} jobs</Badge></div>
       {jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}
-      {jobs.isStale && jobs.data && !jobs.isFetching && <p className="muted" role="status">Showing cached jobs. Pull to refresh.</p>}
       {jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}
       {jobs.error && <GatewayErrorBanner error={jobs.error} unsupportedText="Cron Jobs are unavailable on this gateway." />}
       <div className="cron-job-list">
-        <Button className="cron-new-automation" onClick={() => navigate({ tab: 'cron', type: 'cron-job-editor' })} type="button" variant="ghost"><IconPlus aria-hidden="true" size={18} /><span>New automations</span></Button>
+        <Button className="cron-new-automation" onClick={() => setShowCreateOptions(true)} type="button" variant="ghost"><IconPlus aria-hidden="true" size={18} /><span>New automations</span></Button>
         {jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}
         {filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}
       </div>
+      {showCreateOptions && <NewAutomationDialog
+        onBlueprint={() => { setShowCreateOptions(false); navigate({ tab: 'cron', type: 'cron-blueprints' }) }}
+        onCancel={() => setShowCreateOptions(false)}
+        onScratch={() => { setShowCreateOptions(false); navigate({ tab: 'cron', type: 'cron-job-editor' }) }}
+      />}
     </PageShell>
+  )
+}
+
+function NewAutomationDialog({ onBlueprint, onCancel, onScratch }: { onBlueprint(): void; onCancel(): void; onScratch(): void }) {
+  const firstChoice = useRef<HTMLButtonElement>(null)
+  useEffect(() => { firstChoice.current?.focus() }, [])
+
+  return (
+    <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onCancel() }} role="presentation">
+      <section aria-labelledby="new-automation-title" aria-modal="true" className="mobile-dialog" onKeyDown={event => { if (event.key === 'Escape') onCancel() }} role="dialog">
+        <h3 id="new-automation-title">New automation</h3>
+        <p>Choose how you want to create it.</p>
+        <div className="automation-create-options">
+          <Button onClick={onBlueprint} ref={firstChoice} variant="secondary">Use a blueprint</Button>
+          <Button onClick={onScratch}>Create from scratch</Button>
+        </div>
+        <Button onClick={onCancel} variant="text">Cancel</Button>
+      </section>
+    </div>
   )
 }
 

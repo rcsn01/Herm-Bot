@@ -218,7 +218,16 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
   await expect(page).toHaveURL(rootURL)
   const automationList = page.locator('.cron-job-list')
   await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toHaveCount(0)
-  await expect(automationList.locator(':scope > :first-child')).toHaveAccessibleName('New automations')
+  const newAutomation = automationList.locator(':scope > :first-child')
+  await expect(newAutomation).toHaveAccessibleName('New automations')
+  await expect(page.getByRole('button', { name: 'Refresh cron jobs' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Blueprints' })).toHaveCount(0)
+  await expect(page.getByText('Showing cached jobs. Pull to refresh.')).toHaveCount(0)
+  await newAutomation.click()
+  const createDialog = page.getByRole('dialog', { name: 'New automation' })
+  await expect(createDialog.getByRole('button', { name: 'Use a blueprint' })).toBeVisible()
+  await expect(createDialog.getByRole('button', { name: 'Create from scratch' })).toBeVisible()
+  await createDialog.getByRole('button', { name: 'Cancel' }).click()
 })
 
 test('workspace tabs share a stable header without redundant menu buttons', async ({ page }) => {

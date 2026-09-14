@@ -365,6 +365,8 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 .cron-job-list { margin-top: 18px; display: grid; gap: 14px; }
 .cron-new-automation { width: 100%; min-height: 58px; justify-content: flex-start; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--accent); color: var(--text); font-weight: var(--weight-bold); }
+.automation-create-options { display: grid; gap: 9px; }
+.automation-create-options > button { width: 100%; min-height: 48px; justify-content: flex-start; }
 .cron-job-card { padding: 16px; display: grid; gap: 14px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
 .cron-job-card > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; }
 .cron-job-card > header > div { min-width: 0; display: grid; gap: 5px; }
