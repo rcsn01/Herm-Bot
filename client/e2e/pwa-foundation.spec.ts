@@ -267,6 +267,13 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
     expect(identity?.x).toBe(sessionIdentity?.x)
     expect(identity?.width).toBe(sessionIdentity?.width)
   }
+
+  await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
+  await page.getByRole('button', { name: 'New automations' }).click()
+  await page.getByRole('dialog', { name: 'New automation' }).getByRole('button', { name: 'Create from scratch' }).click()
+  await expect(page.getByRole('heading', { name: 'New job' })).toBeVisible()
+  const nestedPageTopPadding = await page.locator('.foreground-layer.active .page-screen').evaluate(element => getComputedStyle(element).paddingTop)
+  expect(nestedPageTopPadding).toBe(sessionTopPadding)
 })
 
 test('bot configuration destinations return to the sessions menu', async ({ page }) => {
