@@ -225,7 +225,11 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
 
   const sessionsList = page.getByRole('region', { name: 'Sessions' })
   await expect(page.getByText('Recent sessions')).toHaveCount(0)
-  await expect(sessionsList.locator(':scope > :first-child')).toHaveAccessibleName('New session')
+  const newSessionRow = sessionsList.locator(':scope > :first-child')
+  await expect(newSessionRow).toHaveAccessibleName('New session')
+  const newSessionBackground = await newSessionRow.evaluate(element => getComputedStyle(element).backgroundColor)
+  const sessionBackground = await sessionsList.locator('.session-main').first().evaluate(element => getComputedStyle(element).backgroundColor)
+  expect(newSessionBackground).toBe(sessionBackground)
 
   const sessionHeader = page.getByTestId('sessions-menu').locator('.bot-workspace-header')
   await expect(sessionHeader).toBeVisible()

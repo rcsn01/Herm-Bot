@@ -171,7 +171,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .navigation-error { flex: none; margin: 9px 0 0; }
 .navigation-sessions { min-height: 0; flex: 1; display: grid; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
 .navigation-session-list { min-height: 0; max-height: 100%; margin: 0; padding: 9px; display: grid; align-content: start; gap: 2px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
-.navigation-new-session { width: 100%; min-height: 46px; justify-content: space-between; padding: 6px 11px; border: 0; border-radius: var(--radius-control); color: var(--text); font-weight: var(--weight-bold); }
+.navigation-new-session { width: 100%; min-height: 46px; justify-content: space-between; padding: 6px 11px; border: 0; border-radius: var(--radius-control); background: var(--accent); color: var(--text); font-weight: var(--weight-bold); text-align: left; }
 .navigation-session-list .session-row { border: 0; border-radius: var(--radius-control); }
 .navigation-session-list .session-row, .navigation-session-list .session-main { min-height: 46px; }
 .navigation-session-list .session-main { padding: 6px 11px; gap: 7px; }
