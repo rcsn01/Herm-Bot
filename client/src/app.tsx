@@ -47,6 +47,22 @@ const BOT_CONFIGURATION_TITLES = {
   model: 'Models'
 } as const
 
+function botWorkspaceRouteTitle(destination: 'capabilities' | 'cron' | 'model', route: MobileRoute): string {
+  if (route.type === 'cron-job-detail') return 'Job details'
+  if (route.type === 'cron-job-editor') return route.jobId ? 'Edit job' : 'New job'
+  if (route.type === 'cron-blueprints') return 'Blueprints'
+  if (route.type === 'capabilities-section') return route.section === 'mcp' ? 'MCP' : route.section === 'skills' ? 'Skills' : 'Tools'
+  if (route.type === 'capability-detail') {
+    if (route.capabilityId === 'skills-hub') return 'Skill hub'
+    if (route.capabilityId === 'mcp-catalog') return 'MCP catalog'
+    if (route.capabilityId === 'mcp:new') return 'Add server'
+    if (route.capabilityId.startsWith('skill:')) return route.capabilityId.slice(6) || 'Skill'
+    if (route.capabilityId.startsWith('toolset:')) return route.capabilityId.slice(8) || 'Toolset'
+    if (route.capabilityId.startsWith('mcp:')) return route.capabilityId.slice(4) || 'MCP server'
+  }
+  return BOT_CONFIGURATION_TITLES[destination]
+}
+
 export function App() {
   const connection = useStore($connection)
   const preferences = useStore($preferences)
@@ -227,7 +243,7 @@ export function App() {
   const foregroundHeader = !foregroundVisible
     ? null
     : activeBotConfiguration
-      ? <BotWorkspaceHeader backLabel={backDestinationLabel} botName={botName} onBack={backFromForeground} subtitle={BOT_CONFIGURATION_TITLES[activeBotConfiguration]} />
+      ? <BotWorkspaceHeader backLabel={backDestinationLabel} botName={botName} onBack={backFromForeground} subtitle={botWorkspaceRouteTitle(activeBotConfiguration, activeRoute)} />
       : (
           <header className="app-header">
             {activeGroupId ? (

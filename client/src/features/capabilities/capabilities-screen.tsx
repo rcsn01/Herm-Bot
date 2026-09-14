@@ -41,7 +41,7 @@ export function CapabilitiesScreen({ onBack, onNavigate, route }: CapabilitiesSc
   }
   if (section === 'tools') return <ToolsetsScreen onBack={back} onSelect={toolset => navigateDetail(`toolset:${toolset.name}`)} selected={selected?.startsWith('toolset:') ? selected.slice(8) : undefined} />
   if (selected === 'mcp-catalog') return <McpCatalogScreen onBack={back} />
-  return <McpScreen onBack={back} onOpenCatalog={() => navigateDetail('mcp-catalog')} onSelect={server => navigateDetail(`mcp:${server.name}`)} selected={selected?.startsWith('mcp:') ? selected.slice(4) : undefined} />
+  return <McpScreen onAdd={() => navigateDetail('mcp:new')} onBack={back} onOpenCatalog={() => navigateDetail('mcp-catalog')} onSelect={server => navigateDetail(`mcp:${server.name}`)} selected={selected?.startsWith('mcp:') ? selected.slice(4) : undefined} />
 }
 
 /** Kept as a small route helper so callers/tests can make links without knowing wire ids. */

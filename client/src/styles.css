@@ -245,6 +245,13 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .page-heading h2, .page-heading h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .page-heading-actions { min-width: 0; display: flex; flex: 0 1 auto; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .page-heading-actions .button-row { display: contents; }
+/* The persistent workspace header owns route navigation and identity. Nested
+   PageShell headings keep their actions, but must not add a second Back/title row. */
+.foreground-layer.with-workspace-navigation .page-screen > .page-heading { min-height: 0; justify-content: flex-end; }
+.foreground-layer.with-workspace-navigation .page-screen > .page-heading > .page-heading-main { display: none; }
+.foreground-layer.with-workspace-navigation .page-screen > .page-heading:not(:has(.page-heading-actions)) { display: none; }
+.foreground-layer.with-workspace-navigation .page-screen > .page-subtitle:first-child,
+.foreground-layer.with-workspace-navigation .page-screen > .page-heading + .page-subtitle { margin-top: 0; }
 .page-actions { margin-bottom: 16px; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .page-actions .button-row { display: contents; }
 .page-subtitle { margin: -4px 0 18px; line-height: 1.5; }
