@@ -2,7 +2,6 @@ import { IconBrain, IconChevronRight, IconServer, IconSparkles, IconTools } from
 
 import { PageList, PageListButton } from '~/components/page-list'
 import { PageShell } from '~/components/page-shell'
-import { Badge } from '~/compat/primitives'
 import type { CapabilitiesRoute, CapabilitySection } from '~/navigation/routes'
 import { SkillsScreen } from './skills-screen'
 import { SkillDetail } from './skill-detail'
@@ -28,7 +27,7 @@ interface CapabilitiesScreenProps {
 
 export function CapabilitiesScreen({ onBack, onNavigate, route }: CapabilitiesScreenProps) {
   if (route.type === 'capabilities-root') {
-    return <PageShell actions={<Badge variant="muted">Profile scoped</Badge>} heading={false} subtitle="Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation." title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
+    return <PageShell heading={false} subtitle="Choose what Hermes can use. Capability changes apply to new sessions and never rebuild the active conversation." title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
   }
 
   const section = route.section
