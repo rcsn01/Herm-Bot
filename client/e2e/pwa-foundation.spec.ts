@@ -131,6 +131,27 @@ test('password cookie authenticates a real WebSocket chat session', async ({ pag
   ]))
 })
 
+test('a valid browser session supersedes a stale saved access token', async ({ page }) => {
+  await login(page)
+  const before = await fixtureCalls(page)
+  await page.evaluate(() => {
+    localStorage.setItem('hermes.remoteURL', window.location.origin)
+    sessionStorage.setItem('hermes.token', 'stale-browser-token')
+  })
+
+  await page.reload()
+  await expect(page.getByRole('region', { name: 'Bots' }).getByRole('button', { name: 'Hermes' })).toBeVisible()
+
+  const after = await fixtureCalls(page)
+  const reconnect = after.calls.slice(before.calls.length)
+  expect(reconnect).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: 'http', path: '/api/auth/me' }),
+    expect.objectContaining({ kind: 'http', path: '/api/auth/ws-ticket' }),
+    expect.objectContaining({ kind: 'ws-connect' })
+  ]))
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('hermes.token'))).toBeNull()
+})
+
 test('cold session deep links switch profile and normalize the URL', async ({ page }) => {
   await login(page, '/session/saved-work?profile=work')
   await expect(page.getByText('Durable reply from saved-work')).toBeVisible()

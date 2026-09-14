@@ -90,6 +90,35 @@ describe('browser gateway connection', () => {
     expect(url.searchParams.get('profile')).toBe('work')
   })
 
+  it('prefers a valid browser session over a stale saved token', async () => {
+    localStorage.setItem('hermes.remoteURL', origin)
+    sessionStorage.setItem('hermes.token', 'stale-token')
+    fetchMock.mockResolvedValueOnce(json({ auth_required: true }))
+      .mockResolvedValueOnce(json({ user_id: 'cookie-user' }))
+      .mockResolvedValueOnce(json({ ticket: 'cookie-ticket' }))
+
+    const restored = new HermesConnectionWeb()
+    await expect(restored.probe()).resolves.toMatchObject({ authMode: 'interactive' })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, `${origin}/api/auth/me`, expect.objectContaining({ headers: {} }))
+    expect(sessionStorage.getItem('hermes.token')).toBeNull()
+    const url = new URL((await restored.getWebSocketURL()).url)
+    expect(url.searchParams.get('ticket')).toBe('cookie-ticket')
+    expect(url.searchParams.has('token')).toBe(false)
+  })
+
+  it('keeps a saved token when no browser session is authenticated', async () => {
+    localStorage.setItem('hermes.remoteURL', origin)
+    sessionStorage.setItem('hermes.token', 'valid-token')
+    fetchMock.mockResolvedValueOnce(json({ auth_required: true }))
+      .mockResolvedValueOnce(json({ detail: 'Authentication required' }, 401))
+
+    const restored = new HermesConnectionWeb()
+    await expect(restored.probe()).resolves.toMatchObject({ authMode: 'token' })
+    expect(sessionStorage.getItem('hermes.token')).toBe('valid-token')
+    const url = new URL((await restored.getWebSocketURL()).url)
+    expect(url.searchParams.get('token')).toBe('valid-token')
+  })
+
   it('obtains a fresh cookie-authenticated ticket for each WebSocket connection', async () => {
     fetchMock.mockResolvedValueOnce(json({ auth_required: true }))
       .mockResolvedValueOnce(json({ ticket: 'first' }))

@@ -102,6 +102,19 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
 
   async probe() {
     const response = await this.fetch<GatewayStatus>('/api/status')
+    if (!Capacitor.isNativePlatform() && response.body.auth_required && this.token) {
+      try {
+        // A browser cookie is the primary interactive credential. A token can
+        // survive in sessionStorage after the gateway changes auth modes; if
+        // the cookie is valid, do not let that stale token force every socket
+        // handshake down the token path and fail before ticket creation.
+        await this.fetch<NativeIdentity>('/api/auth/me', 'GET', undefined, 30_000, undefined, false)
+        this.token = ''
+        sessionStorage.removeItem('hermes.token')
+      } catch (error) {
+        if (!(error instanceof HermesHTTPError) || (error.status !== 401 && error.status !== 403)) throw error
+      }
+    }
     this.authMode = authModeForCredentials(response.body, this.token)
     return { authMode: this.authMode, status: response.body }
   }
@@ -218,7 +231,7 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
     sessionStorage.removeItem('hermes.token')
   }
 
-  private async fetch<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 30_000, signal?: AbortSignal): Promise<NativeResponse<T>> {
+  private async fetch<T>(path: string, method = 'GET', body?: unknown, timeoutMs = 30_000, signal?: AbortSignal, includeToken = true): Promise<NativeResponse<T>> {
     if (!this.remoteURL) throw new Error('Configure a gateway first.')
     const controller = new AbortController()
     const abort = () => controller.abort(signal?.reason)
@@ -231,7 +244,7 @@ export class HermesConnectionWeb extends WebPlugin implements HermesConnectionPl
         credentials: 'include',
         headers: {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-          ...(this.token ? { 'X-Hermes-Session-Token': this.token } : {})
+          ...(includeToken && this.token ? { 'X-Hermes-Session-Token': this.token } : {})
         },
         method,
         redirect: 'error',
