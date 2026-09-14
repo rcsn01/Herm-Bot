@@ -6,7 +6,7 @@ vi.mock('~/compat/primitives', () => ({
   Input: (props: React.ComponentProps<'input'>) => <input {...props} />
 }))
 
-import { SideNavigationPage } from '~/components/side-navigation-page'
+import { SessionsMenu } from '~/components/sessions-menu'
 import { $chat, emptyChatState } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
@@ -37,7 +37,7 @@ function renderNavigationPage(controller = controllerStub(), open = true) {
     if (intent.type === 'model') onOpenModel()
     else if (intent.type === 'tab') onNavigate(intent.tab)
   })
-  const result = render(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={onDismissRequest} open={open} />)
+  const result = render(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={onDismissRequest} open={open} />)
   return { controller, onClose, onDismissRequest, onNavigate, onOpenModel, ...result }
 }
 
@@ -63,7 +63,7 @@ beforeEach(() => {
   ])
 })
 
-describe('SideNavigationPage', () => {
+describe('SessionsMenu', () => {
   it('shows the bot identity and Sessions title without brand chrome', () => {
     const { container, onClose, onNavigate } = renderNavigationPage()
 
@@ -93,7 +93,7 @@ describe('SideNavigationPage', () => {
   it('dismisses from the left edge with a rightward swipe', () => {
     vi.useFakeTimers()
     const { container, onDismissRequest } = renderNavigationPage()
-    const page = container.querySelector('.side-navigation-page') as HTMLElement
+    const page = container.querySelector('.sessions-menu') as HTMLElement
     const surface = container.querySelector('.session-main') as HTMLElement
     pointer(surface, 'pointerDown', { clientX: 4, clientY: 220 })
     pointer(surface, 'pointerMove', { clientX: 180, clientY: 224 })
@@ -108,7 +108,7 @@ describe('SideNavigationPage', () => {
   it('does not let a non-edge page swipe dismiss navigation', () => {
     vi.useFakeTimers()
     const { container, onDismissRequest } = renderNavigationPage()
-    const page = container.querySelector('.side-navigation-page') as HTMLElement
+    const page = container.querySelector('.sessions-menu') as HTMLElement
     pointer(page, 'pointerDown', { clientX: 60, clientY: 220 })
     pointer(page, 'pointerMove', { clientX: 240, clientY: 224 })
     pointer(page, 'pointerUp', { clientX: 240, clientY: 224 })
@@ -187,8 +187,8 @@ describe('SideNavigationPage', () => {
     expect(screen.getByText('Release notes')).not.toBeNull()
     expect(screen.queryByText('Other hidden body')).toBeNull()
 
-    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
-    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
   })
 
@@ -201,7 +201,7 @@ describe('SideNavigationPage', () => {
     expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
 
     $sessionsLoadingMore.set(true)
-    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
   })
 
@@ -315,15 +315,15 @@ describe('SideNavigationPage', () => {
     const opener = document.createElement('button')
     document.body.append(opener)
     opener.focus()
-    const { container, rerender } = render(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
-    const page = container.querySelector<HTMLElement>('.side-navigation-page')!
+    const { container, rerender } = render(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    const page = container.querySelector<HTMLElement>('.sessions-menu')!
     expect(page.getAttribute('aria-hidden')).toBe('true')
     expect(page.hasAttribute('inert')).toBe(true)
 
-    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
-    expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Navigation' }))
+    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open />)
+    expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Sessions menu' }))
     expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
-    rerender(<SideNavigationPage activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
+    rerender(<SessionsMenu activeTab="sessions" controller={controller} onDismissRequest={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()
   })

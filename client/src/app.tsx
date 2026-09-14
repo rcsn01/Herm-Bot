@@ -7,7 +7,7 @@ import { BrandMark } from '~/components/brand-mark'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
-import { SideNavigationPage } from '~/components/side-navigation-page'
+import { SessionsMenu } from '~/components/sessions-menu'
 import { displayNameFor } from '~/features/agents/agent-labels'
 import { GroupChatScreen } from '~/features/groups/group-screen'
 import { $groups } from '~/features/groups/groups-store'
@@ -165,7 +165,7 @@ export function App() {
         <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
       ) : null}
       {inProfile && (
-        <Button aria-controls="side-navigation-page" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={navigationPage.openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
+        <Button aria-controls="sessions-menu" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={navigationPage.openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
       )}
     </header>
   ) : null
@@ -184,7 +184,7 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        navigationPage={navigationPageOpen || inProfile ? <SideNavigationPage activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
+        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu activeTab={navigation.activeTab} controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
         navigationPageOpen={navigationPageOpen}
         foreground={foregroundContent}
         foregroundDismissible={foregroundDismissible}

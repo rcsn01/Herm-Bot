@@ -154,19 +154,19 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 /* This is a full-screen navigation page. The chat layer stays inert while
    the page is open. */
-.side-navigation-page { position: fixed; z-index: 70; inset: 0; overflow: hidden; visibility: hidden; pointer-events: none; background: var(--bg); transform: translate3d(calc(var(--swipe-progress, 0) * 100vw), 0, 0); touch-action: pan-y; }
-.side-navigation-page.open { visibility: visible; pointer-events: auto; }
-.side-navigation-content { width: 100%; height: 100%; min-height: 0; padding: calc(var(--safe-top) + 20px) 14px calc(var(--safe-bottom) + 30px); display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: none; background: var(--bg); touch-action: pan-y; outline: none; }
-.side-navigation-content.page-screen { width: min(100%, 860px); margin-inline: auto; }
-.side-navigation-heading { justify-content: flex-start; margin-bottom: 14px; }
+.sessions-menu { position: fixed; z-index: 70; inset: 0; overflow: hidden; visibility: hidden; pointer-events: none; background: var(--bg); transform: translate3d(calc(var(--swipe-progress, 0) * 100vw), 0, 0); touch-action: pan-y; }
+.sessions-menu.open { visibility: visible; pointer-events: auto; }
+.sessions-menu-content { width: 100%; height: 100%; min-height: 0; padding: 0; display: flex; flex-direction: column; overflow: hidden; overscroll-behavior: none; background: var(--bg); touch-action: pan-y; outline: none; }
+.sessions-menu-header { width: 100%; height: calc(var(--safe-top) + 58px); flex: none; padding: var(--safe-top) 10px 0; }
+.sessions-menu-body { width: min(100%, 860px); min-height: 0; flex: 1; margin-inline: auto; padding: 14px 14px calc(var(--safe-bottom) + 30px); display: flex; flex-direction: column; overflow: hidden; }
 .navigation-heading { width: 100%; min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 4px; }
 .navigation-back-button { min-width: 48px; min-height: 48px; flex: none; }
 .navigation-identity { min-width: 0; min-height: 44px; display: flex; flex: 1; align-items: center; padding: 0 4px; border: 0; background: transparent; color: var(--text); text-align: left; }
 .navigation-identity > div { min-width: 0; display: grid; }
 .navigation-identity strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-body); font-weight: var(--weight-bold); }
 .navigation-identity small { color: var(--muted-foreground); font-size: var(--font-caption); }
-.side-navigation-search { width: 100%; flex: none; }
-.side-navigation-search input { width: 100%; min-width: 0; min-height: 42px; padding-inline: 0; border: 0; background: transparent; box-shadow: none; color: var(--text); }
+.sessions-menu-search { width: 100%; flex: none; }
+.sessions-menu-search input { width: 100%; min-width: 0; min-height: 42px; padding-inline: 0; border: 0; background: transparent; box-shadow: none; color: var(--text); }
 .navigation-sections { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .navigation-sections button { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--text); font-size: var(--font-control); font-weight: var(--weight-semibold); }
 .navigation-sections button[aria-current='page'] { border-color: color-mix(in srgb, var(--primary) 55%, var(--line)); color: var(--primary); }
@@ -250,7 +250,6 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .page-actions { margin-bottom: 16px; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .page-actions .button-row { display: contents; }
 .page-subtitle { margin: -4px 0 18px; line-height: 1.5; }
-.side-navigation-content.page-screen { padding: calc(var(--safe-top) + 20px) 14px calc(var(--safe-bottom) + 30px); }
 .search-box { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--muted-foreground); }
 .search-box input { min-height: 44px; border: 0; background: transparent; box-shadow: none; }
 .session-list { margin-top: 14px; display: grid; gap: 9px; }

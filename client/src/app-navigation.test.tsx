@@ -82,7 +82,7 @@ async function enterAgent(buttonName: 'Open agent work' | 'Open agent default' =
 }
 
 async function settleNavigation(): Promise<void> {
-  await waitFor(() => expect(screen.getByTestId('side-navigation-page').getAttribute('aria-hidden')).toBe('true'))
+  await waitFor(() => expect(screen.getByTestId('sessions-menu').getAttribute('aria-hidden')).toBe('true'))
 }
 
 describe('App navigation', () => {
@@ -94,7 +94,7 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Open bot profile' })).toBeNull()
-    expect(screen.queryByTestId('side-navigation-page')).toBeNull()
+    expect(screen.queryByTestId('sessions-menu')).toBeNull()
     expect(screen.getByRole('button', { name: 'Open settings' })).not.toBeNull()
   })
 
@@ -169,7 +169,7 @@ describe('App navigation', () => {
     openNavigationPage()
 
     expect(window.location.pathname).toBe('/')
-    expect(screen.getByRole('main', { name: 'Navigation' })).not.toBeNull()
+    expect(screen.getByRole('main', { name: 'Sessions menu' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Back' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Cron Jobs' })).not.toBeNull()
@@ -189,7 +189,7 @@ describe('App navigation', () => {
     await settleNavigation()
 
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
-    expect(screen.getByTestId('side-navigation-page').getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByTestId('sessions-menu').getAttribute('aria-hidden')).toBe('true')
     expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
   })
 
@@ -304,7 +304,7 @@ describe('App navigation', () => {
     const chat = screen.getByTestId('chat-instance')
 
     openNavigationPage()
-    fireEvent.keyDown(screen.getByRole('main', { name: 'Navigation' }), { key: 'Escape' })
+    fireEvent.keyDown(screen.getByRole('main', { name: 'Sessions menu' }), { key: 'Escape' })
     await settleNavigation()
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
@@ -335,7 +335,7 @@ describe('App navigation', () => {
     await settleNavigation()
 
     expect(back).not.toHaveBeenCalled()
-    expect(screen.getByTestId('side-navigation-page').getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByTestId('sessions-menu').getAttribute('aria-hidden')).toBe('true')
     expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
     back.mockRestore()
   })

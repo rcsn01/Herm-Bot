@@ -187,7 +187,7 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
 
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await expect(page).toHaveURL(rootURL)
-  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
+  await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
 
   await page.getByRole('button', { name: 'Capabilities' }).click()
   await expect(page).toHaveURL(rootURL)
@@ -202,13 +202,13 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
 test('reloading resets the in-memory navigation page to the startup screen', async ({ page }) => {
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
+  await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
   await expect(page).toHaveURL(/\/$/)
 
   await page.reload()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('searchbox', { name: 'Search bots' })).toBeVisible()
-  await expect(page.getByTestId('side-navigation-page')).toHaveCount(0)
+  await expect(page.getByTestId('sessions-menu')).toHaveCount(0)
 })
 
 test('navigation-page back button dismisses in memory without changing the URL', async ({ page }) => {
@@ -219,7 +219,7 @@ test('navigation-page back button dismisses in memory without changing the URL',
 
   await page.getByRole('button', { name: 'Back', exact: true }).click()
   await expect(page).toHaveURL(previousURL)
-  await expect(page.getByTestId('side-navigation-page')).not.toHaveClass(/open/)
+  await expect(page.getByTestId('sessions-menu')).not.toHaveClass(/open/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
 })
 
@@ -227,13 +227,13 @@ test('navigation-page edge swipe dismisses with in-memory back', async ({ page, 
   test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  const navigationPage = page.getByTestId('side-navigation-page')
+  const navigationPage = page.getByTestId('sessions-menu')
   await expect(navigationPage).toHaveClass(/open/)
   const box = await navigationPage.boundingBox()
   expect(box).toBeTruthy()
 
   await touchDrag(page, { x: box!.x + 3, y: box!.y + 240 }, { x: box!.x + box!.width * .6, y: box!.y + 244 }, 2)
-  await waitForSwipeIdle(page, '[data-testid="side-navigation-page"]')
+  await waitForSwipeIdle(page, '[data-testid="sessions-menu"]')
   await expect(navigationPage).not.toHaveClass(/open/)
   await expect(page.getByLabel('Message Hermes')).toBeVisible()
   await expect(page).toHaveURL(/\/$/)
@@ -285,7 +285,7 @@ test('session-row touch motion reveals and conceals without dismissing the navig
   test.skip(browserName !== 'chromium', 'Pointer touch animation coverage uses Chromium CDP input.')
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
+  await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
   const row = page.locator('.session-row').filter({ hasText: 'Saved default' })
   await expect(row).toBeVisible()
   const main = row.locator('.session-main')
@@ -295,7 +295,7 @@ test('session-row touch motion reveals and conceals without dismissing the navig
   await expect(row.locator('.session-delete-action button')).toHaveAttribute('aria-hidden', 'false')
   await touchDrag(page, { x: box!.x + 30, y: box!.y + 20 }, { x: box!.x + box!.width - 30, y: box!.y + 22 })
   await expect(row.locator('.session-delete-action button')).toHaveAttribute('aria-hidden', 'true')
-  await expect(page.getByTestId('side-navigation-page')).toHaveClass(/open/)
+  await expect(page.getByTestId('sessions-menu')).toHaveClass(/open/)
 })
 
 test('reloading resets a runtime screen to the startup route', async ({ page }) => {

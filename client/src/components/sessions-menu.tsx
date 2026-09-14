@@ -25,7 +25,7 @@ import type { GatewayController } from '~/state/gateway-controller'
 import { $preferences } from '~/state/store'
 import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
-interface SideNavigationPageProps {
+interface SessionsMenuProps {
   activeTab: MobileTab
   controller: GatewayController
   onDismissRequest(intent?: NavigationPageDismissIntent): void
@@ -106,7 +106,7 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
   )
 }
 
-export function SideNavigationPage({ activeTab, controller, onDismissRequest, open }: SideNavigationPageProps) {
+export function SessionsMenu({ activeTab, controller, onDismissRequest, open }: SessionsMenuProps) {
   const chat = useStore($chat)
   const preferences = useStore($preferences)
   const sessions = useStore($sessions)
@@ -234,21 +234,21 @@ export function SideNavigationPage({ activeTab, controller, onDismissRequest, op
   return (
     <div
       aria-hidden={!open}
-      className={`side-navigation-page ${open ? 'open' : ''}`}
-      data-testid="side-navigation-page"
+      className={`sessions-menu ${open ? 'open' : ''}`}
+      data-testid="sessions-menu"
       inert={!open ? true : undefined}
       ref={navigationMotion.ref}
       {...navigationMotion.bind}
     >
       <main
-        aria-label="Navigation"
-        className="side-navigation-content page-screen"
-        id="side-navigation-page"
+        aria-label="Sessions menu"
+        className="sessions-menu-content"
+        id="sessions-menu"
         onKeyDown={trapFocus}
         ref={panelRef}
         tabIndex={-1}
       >
-        <header className="page-heading side-navigation-heading">
+        <header className="app-header sessions-menu-header">
           <div className="navigation-heading">
             <Button aria-label="Back" className="navigation-back-button" onClick={requestClose} size="icon" variant="ghost"><IconChevronLeft aria-hidden size={24} /></Button>
             <button aria-label="Open bot chat" className="navigation-identity" onClick={() => navigate('sessions')}>
@@ -256,7 +256,8 @@ export function SideNavigationPage({ activeTab, controller, onDismissRequest, op
             </button>
           </div>
         </header>
-        <label className="search-box side-navigation-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
+        <div className="sessions-menu-body">
+          <label className="search-box sessions-menu-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
         <nav aria-label="Bot sections" className="navigation-sections">
           <Button aria-current={activeTab === 'capabilities' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('capabilities')} type="button" variant="secondary"><IconBolt aria-hidden="true" size={17} />Capabilities</Button>
           <Button aria-current={activeTab === 'cron' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('cron')} type="button" variant="secondary"><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</Button>
@@ -307,6 +308,7 @@ export function SideNavigationPage({ activeTab, controller, onDismissRequest, op
             )}
           </div>
         </section>
+        </div>
         {remove && <ConfirmDialog confirmLabel="Delete" description={`Delete ${remove.title}? This cannot be undone.`} onCancel={() => setRemove(null)} onConfirm={() => { const id = remove.id; setRemove(null); void deleteSession(id) }} title="Delete session" />}
       </main>
     </div>
