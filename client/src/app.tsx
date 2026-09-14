@@ -51,11 +51,20 @@ export function App() {
   const chat = useStore($chat)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
+  const [returnTab, setReturnTab] = useState<MobileTab | null>(null)
   const initialNavigationRestoredRef = useRef(false)
+  const menuOriginRef = useRef<MobileTab | null>(null)
   const navigationPage = useNavigationPageController({
     onDismissed: intent => {
-      if (intent.type === 'tab') openDestination(intent.tab)
-      else if (intent.type === 'model') openModelSettings()
+      const origin = menuOriginRef.current
+      menuOriginRef.current = null
+      if (intent.type === 'tab') {
+        setReturnTab(origin && origin !== intent.tab ? origin : null)
+        openDestination(intent.tab)
+      } else if (intent.type === 'model') {
+        setReturnTab(origin && origin !== 'settings' ? origin : null)
+        openModelSettings()
+      }
     }
   })
   const navigationPageOpen = navigationPage.isOpen
@@ -88,8 +97,8 @@ export function App() {
   }, [connection.phase])
 
   const reconnecting = connection.phase === 'reconnecting' && Boolean(chat.runtimeSessionId)
-  // The side navigation belongs to profile surfaces only; the main screen is
-  // the roster, so it has no menu button or navigation page.
+  // The sessions menu belongs to profile surfaces only; the main screen is
+  // the roster, so it has no menu button or sessions menu.
   const inProfile = navigation.activeTab !== 'roster'
 
   if (connection.phase === 'unsupported') {
@@ -112,6 +121,7 @@ export function App() {
   const openAgent = (profile: null | string) => {
     // Enter the destination first; the wire work (profile switch, session
     // resume) streams into the already-visible chat shell.
+    setReturnTab(null)
     setTab('sessions')
     void controller.openProfile(profile)
   }
@@ -120,23 +130,58 @@ export function App() {
   const goBackOr = (fallback: () => void) => {
     if (popRoute(navigation.activeTab) === undefined) fallback()
   }
-  /** The header chevron is a labeled destination ("Back to bots"), so it
-   *  selects the roster explicitly rather than relying on browser history. */
+  const exitDestination = (fallback: MobileTab = 'roster') => {
+    const destination = returnTab ?? fallback
+    setReturnTab(null)
+    setTab(destination)
+  }
   const backToRoster = () => {
+    setReturnTab(null)
     setTab('roster')
   }
   const openSettingsFrom = () => {
+    setReturnTab(null)
     resetTabRoutes('settings')
     setTab('settings')
   }
+  const openNavigationPage = () => {
+    menuOriginRef.current = navigation.activeTab
+    navigationPage.openNavigationPage()
+  }
+  const nestedRoute = navigation.stacks[navigation.activeTab].length > 1
+  const modelReturnsToSurface = navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab
+  const backDestinationLabel = nestedRoute && !modelReturnsToSurface
+    ? 'Back'
+    : returnTab === 'sessions'
+      ? 'Back to sessions'
+      : returnTab
+        ? `Back to ${DESTINATION_TITLES[returnTab]}`
+        : 'Back to bots'
   const headerTitle = navigation.activeTab === 'sessions'
     ? displayNameFor({ name: preferences.profile || 'default' })
-    : DESTINATION_TITLES[navigation.activeTab]
+    : activeRoute.type === 'settings-category' && activeRoute.category === 'model'
+      ? 'Models'
+      : DESTINATION_TITLES[navigation.activeTab]
   /** The messaging header leads with the bot's identity (matching the roster
    *  and navigation labels) and carries the open session's name beneath it. */
   const headerSession = (chat.info as { title?: string } | null)?.title || 'New conversation'
   const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
   const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
+  const backFromForeground = () => {
+    if (activeGroupId) {
+      if (popRoute('roster') === undefined) backToRoster()
+      return
+    }
+    if (navigation.activeTab === 'sessions') {
+      backToRoster()
+      return
+    }
+    if (navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab) {
+      exitDestination()
+      return
+    }
+    if (popRoute(navigation.activeTab) === undefined) exitDestination()
+  }
   const rosterHeader = (
     <header className="app-header">
       <div className="header-search">
@@ -150,11 +195,11 @@ export function App() {
     <header className="app-header">
       {activeGroupId ? (
         <>
-          <Button aria-label="Back to bots" className="header-back-button" onClick={() => goBackOr(() => popRoute('roster'))} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+          <Button aria-label="Back to bots" className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
           <div aria-level={1} className="header-title" role="heading"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
         </>
       ) : (
-        <Button aria-label="Back to bots" className="header-back-button" onClick={backToRoster} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+        <Button aria-label={backDestinationLabel} className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
       )}
       {navigation.activeTab === 'sessions' ? (
         <div className="header-bot-button">
@@ -164,7 +209,7 @@ export function App() {
         <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
       ) : null}
       {inProfile && (
-        <Button aria-controls="sessions-menu" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={navigationPage.openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
+        <Button aria-controls="sessions-menu" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
       )}
     </header>
   ) : null
@@ -174,9 +219,9 @@ export function App() {
         <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
       </div>
       {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => popRoute('capabilities'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => popRoute('cron'))} onExit={() => setTab('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => popRoute('settings'))} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
+      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
+      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onExit={() => exitDestination('sessions')} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); setReturnTab(null); setTab('sessions') }} route={routeForCron(activeRoute)} />}
+      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => exitDestination())} onExit={returnTab ? () => exitDestination('sessions') : undefined} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} />}
     </>
   )
 

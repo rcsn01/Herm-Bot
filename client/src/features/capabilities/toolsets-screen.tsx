@@ -1,4 +1,4 @@
-import { IconChevronRight, IconRefresh, IconSearch, IconTools } from '@tabler/icons-react'
+import { IconChevronLeft, IconChevronRight, IconRefresh, IconSearch, IconTools } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 
 import { PageShell } from '~/components/page-shell'
@@ -58,12 +58,13 @@ export function ToolsetsScreen({ onBack, onSelect, selected }: { onBack(): void;
 
   const selectedToolset = selected ? toolsets.data?.find(toolset => toolset.name === selected) : undefined
   if (selected && selectedToolset) return <ToolsetDetail onBack={onBack} toolset={selectedToolset} />
-  if (selected && toolsets.data && !selectedToolset) return <PageShell leading={<Button onClick={onBack} variant="text">‹ Back</Button>} title="Tools"><div className="empty-panel">That toolset is no longer available.</div></PageShell>
+  if (selected && toolsets.data && !selectedToolset) return <PageShell leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Tools"><div className="empty-panel">That toolset is no longer available.</div></PageShell>
 
   return (
     <PageShell
       actions={<Button aria-label="Refresh tools" onClick={() => void toolsets.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>}
       eyebrow="Capabilities"
+      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
       subtitle="Toolsets are profile defaults for new sessions. The active conversation keeps its existing tool schema."
       title="Tools"
     >

@@ -178,6 +178,10 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
     expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back to sessions' })).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to sessions' }))
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
   it('closes the navigation page from its back button without changing the current screen', async () => {
@@ -233,6 +237,10 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cron Jobs' }))
     await settleNavigation()
     expect(screen.getByText('Cron screen')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back to Capabilities' })).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Capabilities' }))
+    expect(screen.getByText('Capabilities screen')).not.toBeNull()
   })
 
   it('opens model settings from the side navigation and returns to the chat', async () => {
@@ -243,8 +251,12 @@ describe('App navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Model' }))
     await settleNavigation()
     expect(screen.getByText('Settings screen')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Back to sessions' })).not.toBeNull()
 
-    // The navigation page's bot identity returns to the chat.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to sessions' }))
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+
+    // The sessions menu's bot identity also returns to the chat.
     openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     await settleNavigation()

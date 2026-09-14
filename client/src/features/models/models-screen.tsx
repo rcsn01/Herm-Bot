@@ -62,9 +62,10 @@ const REASONING_OPTIONS = REASONING_EFFORT_VALUES.map(value => ({ label: REASONI
 
 interface ModelsScreenProps {
   onBack(): void
+  onExit?(): void
 }
 
-export function ModelsScreen({ onBack }: ModelsScreenProps) {
+export function ModelsScreen({ onBack, onExit }: ModelsScreenProps) {
   const models = useApi(createModelsApi)
   const queryClient = useQueryClient()
   const preferences = useStore($preferences)
@@ -179,7 +180,8 @@ export function ModelsScreen({ onBack }: ModelsScreenProps) {
     <PageShell
       actions={<Button aria-label="Refresh models" onClick={() => void Promise.all([info.refetch(), options.refetch(), auxiliary.refetch(), config.refetch(), moa.refetch()])} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button>}
       eyebrow="Remote gateway"
-      leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
+      heading={!onExit}
+      leading={<Button aria-label="Back" onClick={onExit ?? onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
       subtitle={`Current model, assignments, and model capabilities for the ${profile || 'default'} profile.`}
       title="Models"
     >

@@ -261,7 +261,7 @@ export function SessionsMenu({ activeTab, controller, onDismissRequest, open }: 
         <nav aria-label="Bot sections" className="navigation-sections">
           <Button aria-current={activeTab === 'capabilities' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('capabilities')} type="button" variant="secondary"><IconBolt aria-hidden="true" size={17} />Capabilities</Button>
           <Button aria-current={activeTab === 'cron' ? 'page' : undefined} className="navigation-section-button" onClick={() => navigate('cron')} type="button" variant="secondary"><IconCalendarClock aria-hidden="true" size={17} />Cron Jobs</Button>
-          <Button className="navigation-section-button" onClick={navigateModel} type="button" variant="secondary"><IconRobot aria-hidden="true" size={17} />Model</Button>
+          <Button aria-current={activeTab === 'settings' ? 'page' : undefined} className="navigation-section-button" onClick={navigateModel} type="button" variant="secondary"><IconRobot aria-hidden="true" size={17} />Model</Button>
         </nav>
 
         {error && <div className="error-banner navigation-error" role="alert">{error}</div>}

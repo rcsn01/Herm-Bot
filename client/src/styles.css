@@ -244,7 +244,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .page-heading-main { min-width: 0; flex: 1 1 180px; display: flex; align-items: center; gap: 10px; }
 .page-heading-copy { min-width: 0; display: grid; gap: 1px; }
 .page-heading-copy .eyebrow { margin-bottom: 0; }
-.page-heading h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.page-heading h2, .page-heading h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .page-heading-actions { min-width: 0; display: flex; flex: 0 1 auto; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .page-heading-actions .button-row { display: contents; }
 .page-actions { margin-bottom: 16px; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }

@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { IconBook, IconChevronRight, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
+import { IconBook, IconChevronLeft, IconChevronRight, IconPlus, IconRefresh, IconSearch } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 
 import { PageShell } from '~/components/page-shell'
@@ -62,12 +62,13 @@ export function SkillsScreen({ onBack, onOpenHub, onSelect, selected }: SkillsSc
 
   const selectedSkill = selected ? skills.data?.find(skill => skill.name === selected) : undefined
   if (selected && selectedSkill && onBack) return <SkillDetail onArchived={() => { const task = beginScopedTask(); if (!task.isCurrent()) return; void queryClient.invalidateQueries({ queryKey }); onBack() }} onBack={onBack} skill={selectedSkill} />
-  if (selected && skills.data && !selectedSkill) return <PageShell leading={<Button onClick={onBack} variant="text">‹ Back</Button>} title="Skills"><div className="empty-panel">That skill is no longer installed.</div></PageShell>
+  if (selected && skills.data && !selectedSkill) return <PageShell leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Skills"><div className="empty-panel">That skill is no longer installed.</div></PageShell>
 
   return (
     <PageShell
       actions={<div className="button-row"><Button aria-label="Refresh skills" onClick={() => void skills.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={onOpenHub} size="sm" variant="secondary"><IconPlus size={16} /> Skill hub</Button></div>}
       eyebrow="Capabilities"
+      leading={onBack && <Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}
       subtitle={`Skills are loaded for the ${profile || 'default'} profile and apply to new sessions.`}
       title="Skills"
     >

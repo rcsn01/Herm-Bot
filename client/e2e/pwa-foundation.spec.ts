@@ -199,6 +199,24 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
   await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toBeVisible()
 })
 
+test('menu destinations return to the originating sessions surface', async ({ page }) => {
+  await login(page)
+  const rootURL = page.url()
+
+  for (const destination of [
+    { button: 'Capabilities', heading: 'Capabilities' },
+    { button: 'Cron Jobs', heading: 'Cron Jobs' },
+    { button: 'Model', heading: 'Models' }
+  ]) {
+    await page.getByRole('button', { name: 'Open navigation' }).click()
+    await page.getByRole('button', { name: destination.button, exact: true }).click()
+    await expect(page).toHaveURL(rootURL)
+    await expect(page.getByRole('heading', { exact: true, name: destination.heading })).toBeVisible()
+    await page.getByRole('button', { name: 'Back to sessions' }).click()
+    await expect(page.getByLabel('Message Hermes')).toBeVisible()
+  }
+})
+
 test('reloading resets the in-memory navigation page to the startup screen', async ({ page }) => {
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
