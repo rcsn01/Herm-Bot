@@ -72,6 +72,34 @@ const server = http.createServer(async (req, res) => {
         const messages = state.messages.get(stored) ?? initialMessages(stored)
         return json(res, 200, { messages, pagination: { offset: Number(url.searchParams.get('offset') || 0), limit: 80, returned: messages.length } })
       }
+      if (url.pathname === '/api/cron/jobs' && req.method === 'GET') return json(res, 200, [{
+        enabled: true, id: 'fixture-context-job', name: 'Daily notes', prompt: 'Summarize today.',
+        schedule: { display: 'Every day at 5:00 PM', expr: 'every day 5pm', kind: 'natural' }
+      }])
+      if (url.pathname === '/api/cron/jobs' && req.method === 'POST') {
+        const payload = await body(req)
+        state.calls.at(-1).body = payload
+        state.cronJob = { ...payload, enabled: true, id: 'created-fixture-job' }
+        return json(res, 200, state.cronJob)
+      }
+      if (url.pathname === '/api/cron/jobs/created-fixture-job' && req.method === 'GET' && state.cronJob) return json(res, 200, state.cronJob)
+      if (url.pathname === '/api/cron/jobs/created-fixture-job/runs' && req.method === 'GET') return json(res, 200, { runs: [] })
+      if (url.pathname === '/api/cron/delivery-targets' && req.method === 'GET') return json(res, 200, { targets: [
+        { home_env_var: null, home_target_set: true, id: 'local', name: 'Local storage' },
+        { home_env_var: 'TELEGRAM_HOME', home_target_set: true, id: 'telegram', name: 'Telegram' }
+      ] })
+      if (url.pathname === '/api/skills' && req.method === 'GET') return json(res, 200, [
+        ['browser', 'Browse websites'], ['calendar', 'Read calendars'], ['email', 'Read and send email'], ['files', 'Work with files'],
+        ['research', 'Research a topic'], ['terminal', 'Run terminal commands'], ['weather', 'Check forecasts']
+      ].map(([name, description]) => ({ category: 'fixture', description, enabled: true, name })))
+      if (url.pathname === '/api/tools/toolsets' && req.method === 'GET') return json(res, 200, [
+        { configured: true, description: 'Search the web', enabled: true, label: 'Web search', name: 'web_search', tools: [] },
+        { configured: true, description: 'Use a browser', enabled: true, label: 'Browser', name: 'browser', tools: [] }
+      ])
+      if (url.pathname === '/api/model/options' && req.method === 'GET') return json(res, 200, { providers: [
+        { authenticated: true, models: ['fixture/fast', 'fixture/deep'], name: 'Fixture AI', slug: 'fixture' },
+        { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }
+      ] })
       if (url.pathname === '/api/cron/blueprints' && req.method === 'GET') return json(res, 200, { blueprints: [
         {
           appUrl: 'https://example.test/calendar', category: 'Productivity', command: 'calendar-digest',

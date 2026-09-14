@@ -86,12 +86,12 @@ describe('cron jobs', () => {
 
     render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-editor' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
 
-    const model = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Model' })
-    const provider = screen.getByRole<HTMLInputElement>('textbox', { name: 'Provider' })
-    await waitFor(() => expect(model.value).toBe('gpt-old'))
-    expect(provider.value).toBe('openai-api')
-    fireEvent.change(model, { target: { value: '' } })
-    fireEvent.change(provider, { target: { value: '' } })
+    const provider = await screen.findByRole('button', { name: /^Provider/ })
+    await waitFor(() => expect(provider.textContent).toContain('openai-api'))
+    expect(screen.getByRole('button', { name: /^Model/ }).textContent).toContain('gpt-old')
+    fireEvent.click(provider)
+    expect(screen.getByRole('dialog', { name: 'Choose provider' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(updateBody).toMatchObject({ body: { updates: { model: null, provider: null } } }))

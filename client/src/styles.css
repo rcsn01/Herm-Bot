@@ -255,7 +255,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .page-actions { margin-bottom: 16px; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .page-actions .button-row { display: contents; }
 .page-subtitle { margin: -4px 0 18px; line-height: 1.5; }
-.search-box { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--muted-foreground); }
+.search-box, .mobile-dialog .search-box { display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--muted-foreground); }
 .search-box input { min-height: 44px; border: 0; background: transparent; box-shadow: none; }
 .session-list { margin-top: 14px; display: grid; gap: 9px; }
 .session-row { position: relative; min-height: 62px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); overflow: hidden; }
@@ -303,7 +303,8 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .scan-blocked { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
 .oauth-flow { display: grid; gap: 10px; }
 .oauth-flow h3 { margin: 0; color: var(--text); }
-.schedule-fields, .delivery-fields { margin: 16px 0 0; padding: 12px; display: grid; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.cron-job-form { display: grid; gap: 14px; }
+.schedule-fields { min-width: 0; margin: 0; padding: 12px; display: grid; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
 .blueprint-form { margin-top: 0; }
 .blueprint-weekdays { min-width: 0; margin: 0; padding: 0; display: grid; gap: 5px; border: 0; }
 .blueprint-weekdays legend { padding: 0; font-size: var(--font-control); font-weight: var(--weight-semibold); }
@@ -313,15 +314,27 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .weekday-grid label.selected { border-color: color-mix(in srgb, var(--primary) 55%, var(--line)); background: var(--accent); color: var(--primary); }
 .weekday-grid label:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
 .weekday-grid input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.schedule-fields legend, .delivery-fields legend { padding: 0 5px; color: var(--muted-foreground); font-size: var(--font-control); font-weight: var(--weight-bold); }
-.schedule-fields label, .delivery-fields label { display: grid; gap: 6px; color: var(--muted-foreground); font-size: var(--font-control); font-weight: var(--weight-semibold); }
-.schedule-fields select, .schedule-fields input, .delivery-fields input { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); color: var(--text); }
+.schedule-fields legend { padding: 0 5px; color: var(--muted-foreground); font-size: var(--font-control); font-weight: var(--weight-bold); }
+.schedule-fields label { min-width: 0; display: grid; gap: 6px; color: var(--muted-foreground); font-size: var(--font-control); font-weight: var(--weight-semibold); }
+.schedule-fields select, .schedule-fields input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 44px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); color: var(--text); }
 .schedule-help { margin: 0; line-height: 1.4; }
-.delivery-targets { display: grid; gap: 7px; }
-.delivery-target { display: flex !important; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px !important; padding: 9px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); }
-.delivery-target input { width: 20px; min-height: 20px; margin-top: 2px; accent-color: var(--primary); }
-.delivery-target span { min-width: 0; display: grid; gap: 3px; }
-.delivery-target small { color: var(--muted-foreground); font-size: var(--font-caption); }
+.cron-picker-field { width: 100%; min-width: 0; min-height: 58px; padding: 11px 13px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--text); text-align: left; }
+.cron-picker-field > span:first-child { min-width: 0; display: grid; gap: 3px; }
+.cron-picker-field strong, .cron-picker-field small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cron-picker-field small { color: var(--muted-foreground); font-size: var(--font-caption); font-weight: 400; }
+.cron-picker-field > span:last-child { color: var(--muted-foreground); font-size: 1.4rem; }
+.cron-editor-section { margin: 0; padding: 12px; display: grid; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.cron-editor-section > h3, .cron-editor-section > summary { margin: 0; font-size: var(--font-control); font-weight: var(--weight-bold); }
+.cron-editor-advanced { padding-top: 12px; display: grid; gap: 12px; }
+.cron-enabled-field { border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); }
+.cron-editor-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+.cron-editor-actions > button { min-height: 48px; }
+.cron-picker-dialog { max-height: min(78dvh, 640px); }
+.cron-picker-options { min-height: 0; max-height: 48dvh; display: grid; align-content: start; gap: 7px; overflow-y: auto; }
+.cron-picker-option { min-width: 0; padding: 10px; display: grid !important; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px !important; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); }
+.cron-picker-option input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--primary); }
+.cron-picker-option span { min-width: 0; display: grid; gap: 3px; }
+.cron-picker-option small { color: var(--muted-foreground); font-size: var(--font-caption); font-weight: 400; }
 .cron-job-card-button { width: 100%; color: var(--text); text-align: left; font: inherit; cursor: pointer; }
 .settings-list > :last-child, .page-list > :last-child { border-bottom: 0 !important; }
 .settings-list span { display: grid; gap: 3px; }

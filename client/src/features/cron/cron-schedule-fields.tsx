@@ -8,14 +8,14 @@ export interface CronScheduleValue {
 }
 
 export function CronScheduleFields({ value, onChange }: { onChange(value: CronScheduleValue): void; value: CronScheduleValue }) {
-  return <fieldset className="schedule-fields"><legend>Schedule</legend><label>Type<select aria-label="Schedule type" onChange={event => onChange({ ...value, expression: defaultExpression(event.target.value as CronScheduleMode), mode: event.target.value as CronScheduleMode })} value={value.mode}><option value="duration">Duration (for example 30m)</option><option value="natural">Natural schedule (for example every monday 9am)</option><option value="cron">Cron expression</option><option value="once">One-shot timestamp</option></select></label><label>{value.mode === 'duration' ? 'Duration' : value.mode === 'natural' ? 'Natural schedule' : value.mode === 'cron' ? 'Cron expression' : 'ISO timestamp'}<Input aria-label="Schedule value" onChange={event => onChange({ ...value, expression: event.target.value })} placeholder={placeholder(value.mode)} value={value.expression} /></label><p className="muted schedule-help">{help(value.mode)}</p></fieldset>
+  const once = value.mode === 'once'
+  return <fieldset className="schedule-fields"><legend>Schedule</legend><label>Type<select aria-label="Schedule type" onChange={event => onChange({ ...value, expression: defaultExpression(event.target.value as CronScheduleMode), mode: event.target.value as CronScheduleMode })} value={value.mode}><option value="duration">Repeating interval</option><option value="natural">Natural language</option><option value="cron">Cron expression</option><option value="once">One time</option></select></label><label>{value.mode === 'duration' ? 'Duration' : value.mode === 'natural' ? 'Natural schedule' : value.mode === 'cron' ? 'Cron expression' : 'Run at'}<Input aria-label="Schedule value" onChange={event => onChange({ ...value, expression: once ? isoValue(event.target.value) : event.target.value })} placeholder={placeholder(value.mode)} type={once ? 'datetime-local' : 'text'} value={once ? localDateTimeValue(value.expression) : value.expression} /></label><p className="muted schedule-help">{help(value.mode)}</p></fieldset>
 }
 
 export function scheduleValue(schedule?: { expr?: string; kind?: string } | null): CronScheduleValue {
-  const expression = schedule?.expr ?? ''
   const kind = schedule?.kind
   const mode: CronScheduleMode = kind === 'duration' ? 'duration' : kind === 'cron' ? 'cron' : kind === 'once' || kind === 'timestamp' ? 'once' : 'natural'
-  return { expression, mode }
+  return { expression: schedule?.expr ?? defaultExpression(mode), mode }
 }
 
 function defaultExpression(mode: CronScheduleMode): string {
@@ -30,6 +30,18 @@ function placeholder(mode: CronScheduleMode): string {
   if (mode === 'natural') return 'every monday 9am'
   if (mode === 'cron') return '0 9 * * *'
   return '2026-01-01T09:00:00Z'
+}
+
+function localDateTimeValue(value: string): string {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 16)
+}
+
+function isoValue(value: string): string {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString()
 }
 
 function help(mode: CronScheduleMode): string {

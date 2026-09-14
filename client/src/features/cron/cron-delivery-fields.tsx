@@ -1,15 +1,28 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
-import { Badge, Input } from '~/compat/primitives'
 import type { CronDeliveryTarget } from './api'
+import { CronPickerDialog, CronPickerField } from './cron-picker-dialog'
 
 export function CronDeliveryFields({ targets, value, onChange }: { onChange(value: string): void; targets: CronDeliveryTarget[]; value: string }) {
-  const selected = useMemo(() => new Set(value.split(',').map(item => item.trim()).filter(Boolean)), [value])
-  const toggle = (id: string) => {
-    const next = new Set(selected)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    onChange([...next].join(','))
-  }
-  return <fieldset className="delivery-fields"><legend>Delivery</legend><p className="muted">The gateway delivers after the job finishes. Choose local storage or configured platform targets.</p><div className="delivery-targets">{targets.map(target => <label className="delivery-target" key={target.id}><input checked={selected.has(target.id)} onChange={() => toggle(target.id)} type="checkbox" /><span><strong>{target.name}</strong>{!target.home_target_set && <small>Home channel is not configured</small>}</span></label>)}{targets.length === 0 && <Badge variant="muted">No delivery targets reported</Badge>}</div><label>Custom target expression (optional)<Input onChange={event => onChange(event.target.value)} placeholder="origin,local,telegram" value={value} /></label></fieldset>
+  const [open, setOpen] = useState(false)
+  const selected = useMemo(() => value.split(',').map(item => item.trim()).filter(Boolean), [value])
+  const options = useMemo(() => {
+    const known = new Map<string, { description?: string; label: string; value: string }>()
+    known.set('local', { description: 'Keep completed runs in Hermes.', label: 'Local storage', value: 'local' })
+    for (const target of targets) known.set(target.id, {
+      description: target.home_target_set ? undefined : 'Home channel is not configured.',
+      label: target.name,
+      value: target.id
+    })
+    for (const id of selected) if (!known.has(id)) known.set(id, { description: 'Custom target', label: id, value: id })
+    return [...known.values()]
+  }, [selected, targets])
+  const summary = selected.length === 0 ? 'Local storage' : selected.map(id => options.find(option => option.value === id)?.label ?? id).join(', ')
+
+  return (
+    <>
+      <CronPickerField label="Delivery" onOpen={() => setOpen(true)} summary={summary} />
+      {open && <CronPickerDialog multiple onCancel={() => setOpen(false)} onSave={values => { onChange(values.join(',') || 'local'); setOpen(false) }} options={options} selected={selected.length ? selected : ['local']} title="Delivery targets" />}
+    </>
+  )
 }
