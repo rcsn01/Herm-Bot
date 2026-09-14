@@ -245,6 +245,7 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
 
   const sessionHeader = page.getByTestId('sessions-menu').locator('.bot-workspace-header')
   await expect(sessionHeader).toBeVisible()
+  const sessionTopPadding = await page.locator('.sessions-menu-body').evaluate(element => getComputedStyle(element).paddingTop)
   const sessionIdentity = await sessionHeader.locator('.header-bot-button').boundingBox()
   expect(sessionIdentity).toBeTruthy()
 
@@ -260,6 +261,8 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
     const header = page.locator('.foreground-layer.active > .bot-workspace-header')
     await expect(header.locator('.header-bot-button small')).toHaveText(destination.subtitle)
     await expect(header.getByRole('button', { name: 'Open navigation' })).toHaveCount(0)
+    const contentTopPadding = await page.locator('.foreground-layer.active .page-screen').evaluate(element => getComputedStyle(element).paddingTop)
+    expect(contentTopPadding).toBe(sessionTopPadding)
     const identity = await header.locator('.header-bot-button').boundingBox()
     expect(identity?.x).toBe(sessionIdentity?.x)
     expect(identity?.width).toBe(sessionIdentity?.width)
