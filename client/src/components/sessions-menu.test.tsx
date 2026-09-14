@@ -74,8 +74,9 @@ describe('SessionsMenu', () => {
     expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Recent sessions' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'New session' })).not.toBeNull()
+    expect(screen.queryByText('Recent sessions')).toBeNull()
+    const newSession = screen.getByRole('button', { name: 'New session' })
+    expect(screen.getByRole('region', { name: 'Sessions' }).firstElementChild).toBe(newSession)
 
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
     expect(onNavigate).toHaveBeenCalledWith('sessions')
@@ -166,16 +167,16 @@ describe('SessionsMenu', () => {
     expect(onClose).toHaveBeenCalledTimes(3)
   })
 
-  it('keeps only session rows and pagination inside the session-list scroll region', () => {
+  it('keeps the new-session action, session rows, and pagination inside the session-list scroll region', () => {
     $sessionsHasMore.set(true)
     renderNavigationPage()
 
     const sessionList = screen.getByRole('region', { name: 'Sessions' })
+    expect(sessionList.contains(screen.getByRole('button', { name: 'New session' }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('button', { name: /Planning session/ }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Load more sessions' }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search sessions' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot chat' }))).toBe(false)
-    expect(sessionList.contains(screen.getByRole('button', { name: 'Recent sessions' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Automations' }))).toBe(false)
   })
@@ -206,16 +207,6 @@ describe('SessionsMenu', () => {
     $sessionsLoadingMore.set(true)
     rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
-  })
-
-  it('returns to the current chat from Recent sessions without a session RPC', () => {
-    const { controller, onClose, onNavigate } = renderNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Recent sessions' }))
-
-    expect(onNavigate).toHaveBeenCalledWith('sessions')
-    expect(onClose).toHaveBeenCalledOnce()
-    expect(controller.resumeSession).not.toHaveBeenCalled()
-    expect(controller.newSession).not.toHaveBeenCalled()
   })
 
   it('marks and opens the active durable session without resuming it', () => {

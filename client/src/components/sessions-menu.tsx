@@ -257,11 +257,10 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
           <section className="navigation-sessions" onClick={event => {
           if (swipedId && !(event.target as HTMLElement).closest('.session-row')) setSwipedId(null)
         }}>
-          <header className="navigation-sessions-header">
-            <Button className="navigation-sessions-title" disabled={pendingSessionAction} onClick={() => navigate('sessions')} type="button" variant="ghost">Recent sessions</Button>
-            <Button aria-label="New session" className="navigation-icon-button" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} variant="ghost"><IconPlus size={20} /></Button>
-          </header>
           <div aria-label="Sessions" className="session-list navigation-session-list" role="region">
+            <Button className="navigation-new-session" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} type="button" variant="ghost">
+              <span>New session</span><IconPlus aria-hidden="true" size={20} />
+            </Button>
             {filtered.map(session => {
               const revealed = swipedId === session.id
               const active = chat.storedSessionId === session.id
