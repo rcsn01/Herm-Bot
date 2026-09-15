@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { useStore } from '@nanostores/react'
 
 import { Button, Input } from '~/compat/primitives'
 import { displayNameFor } from '~/features/agents/agent-labels'
@@ -8,14 +7,7 @@ import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 
 import type { GroupRoom } from './group-model'
-import {
-  $groupChats,
-  GROUP_CHAT_MAX_MEMBERS,
-  mintGroupRoomId,
-  uniqueGroupChatName,
-  updateGroupChat
-} from './group-store'
-import { $groups } from './groups-store'
+import { createGroupChat, GROUP_CHAT_MAX_MEMBERS, useGroupRooms } from './group-engine'
 
 const GROUP_NAME_MAX_LENGTH = 64
 
@@ -36,7 +28,8 @@ export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroup
   const profiles = roster.data?.entries ?? []
   const selected = useMemo(() => profiles.filter(profile => selectedNames.has(profile.name)), [profiles, selectedNames])
   const suggestedName = selected.map(displayNameFor).join(', ')
-  const groupNames = useStoreGroupNames(roster.data?.groups ?? [])
+  const knownRooms = useGroupRooms(roster.data?.groups ?? [])
+  const groupNames = useMemo(() => new Set(knownRooms.map(room => room.name)), [knownRooms])
   const canCreate = selected.length >= 2 && Boolean((name.trim() || suggestedName).trim())
 
   useEffect(() => {
@@ -70,11 +63,9 @@ export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroup
     }
 
     try {
-      const groupName = uniqueGroupChatName(base, groupNames)
-      const roomId = mintGroupRoomId()
       const members = selected.map(profile => ({ name: profile.name }))
-      updateGroupChat(groupName, room => ({ ...room, members, name: groupName, roomId }))
-      onCreated({ key: `id:${roomId}`, log: [], members, name: groupName, roomId })
+      const room = createGroupChat(base, members, groupNames)
+      onCreated(room)
       onCancel()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not create the group chat.')
@@ -120,14 +111,4 @@ export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroup
       </form>
     </div>
   )
-}
-
-function useStoreGroupNames(remoteGroups: GroupRoom[]): Set<string> {
-  const groups = useStore($groups)
-  const localRooms = useStore($groupChats)
-  return useMemo(() => new Set([
-    ...remoteGroups.map(group => group.name),
-    ...groups.map(group => group.name),
-    ...Object.values(localRooms).map(room => room.name)
-  ]), [groups, localRooms, remoteGroups])
 }

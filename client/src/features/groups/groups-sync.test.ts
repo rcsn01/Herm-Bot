@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
-import { setGroupEngineRequest } from './group-engine'
+import { setEngineTransport } from './group-runtime'
 import {
   assignLegacyThreads,
   groupChatGatewayJsonSize,
@@ -325,7 +325,7 @@ describe('legacy threads', () => {
 
 describe('flush job', () => {
   it('pulls the remote snapshot into rooms', async () => {
-    setGroupEngineRequest(async method => {
+    setEngineTransport(async method => {
       if (method === 'profiles.list') {
         return {
           profiles: [
@@ -355,7 +355,7 @@ describe('flush job', () => {
     let revision = 3
     let writes = 0
     let stale = true
-    setGroupEngineRequest(async (method, params) => {
+    setEngineTransport(async (method, params) => {
       if (method === 'profiles.list') {
         return {
           profiles: [
@@ -399,7 +399,7 @@ describe('flush job', () => {
   it('never publishes an empty snapshot unless a disband allows it', async () => {
     vi.useFakeTimers()
     let writes = 0
-    setGroupEngineRequest(async method => {
+    setEngineTransport(async method => {
       if (method === 'profiles.configure') writes += 1
       return {}
     })

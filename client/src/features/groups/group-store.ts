@@ -72,7 +72,7 @@ export function mintGroupRoomId(): string {
 }
 
 /** Keep recreated rooms distinct without silently reopening an old room. */
-export function uniqueGroupChatName(base: string, taken: Set<string>): string {
+export function uniqueGroupChatName(base: string, taken: ReadonlySet<string>): string {
   if (!taken.has(base)) return base
   for (let number = 2; number < 100; number += 1) {
     const suffix = ` ${number}`
@@ -89,7 +89,7 @@ function groupChatEntryId(): string {
   return `e${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`
 }
 
-export function normalizeGroupChatText(text: string): string {
+function normalizeGroupChatText(text: string): string {
   const trimmed = String(text || '').replace(/\r\n/g, '\n').replace(/\n{4,}/g, '\n\n\n').trim()
 
   // The agent loop's "(empty)" terminal sentinel (empty_response_exhausted) is
@@ -118,7 +118,7 @@ export function groupSpeakerLabel(name?: null | string): string {
   return !trimmed ? trimmed : trimmed.toLowerCase() === 'default' ? 'Hermes' : trimmed
 }
 
-export function trimGroupChatLog(log: GroupMessage[], watermarks: Record<string, number>, limit = GROUP_LOG_RETAIN) {
+function trimGroupChatLog(log: GroupMessage[], watermarks: Record<string, number>, limit = GROUP_LOG_RETAIN) {
   if (log.length <= limit) return { log, watermarks }
   const drop = log.length - limit
   const trimmed: Record<string, number> = {}
@@ -142,34 +142,41 @@ function loadPersistedRooms(): Record<string, GroupChatRoom> {
 
 function persistRooms(all: Record<string, GroupChatRoom>): void {
   try {
-    const durable: Record<string, GroupChatRoom> = {}
-    for (const [key, room] of Object.entries(all)) {
-      const members = Array.isArray(room.members) ? room.members : []
-      // A newly-created room has no transcript yet, but its durable identity
-      // and membership make it a real local room rather than a runtime stub.
-      // Keep it locally; the gateway projection still omits empty rooms until
-      // the first message gives other clients something to mirror.
-      if (!Array.isArray(room.log) || (room.log.length === 0 && (!room.roomId || members.length === 0))) continue
-      durable[key] = {
-        epoch: room.epoch || 0,
-        holds: room.holds || {},
-        image: room.image || null,
-        log: room.log,
-        members,
-        name: room.name,
-        roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-        running: false,
-        sessions: room.sessions || {},
-        stranded: room.stranded || {},
-        syncRevision: Math.max(0, Number(room.syncRevision || 0)),
-        turn: null,
-        watermarks: room.watermarks || {}
-      }
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(durable))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(durableGroupChatRooms(all)))
   } catch {
     /* storage unavailable — rooms survive for this session only */
   }
+}
+
+/** The durable persistence shape for `all`: runtime-only coordination state
+ *  (running, turn) is stripped and empty-log stubs without a durable identity
+ *  are dropped, so a rehydrated store only ever contains real rooms. */
+export function durableGroupChatRooms(all: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
+  const durable: Record<string, GroupChatRoom> = {}
+  for (const [key, room] of Object.entries(all)) {
+    const members = Array.isArray(room.members) ? room.members : []
+    // A newly-created room has no transcript yet, but its durable identity
+    // and membership make it a real local room rather than a runtime stub.
+    // Keep it locally; the gateway projection still omits empty rooms until
+    // the first message gives other clients something to mirror.
+    if (!Array.isArray(room.log) || (room.log.length === 0 && (!room.roomId || members.length === 0))) continue
+    durable[key] = {
+      epoch: room.epoch || 0,
+      holds: room.holds || {},
+      image: room.image || null,
+      log: room.log,
+      members,
+      name: room.name,
+      roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      running: false,
+      sessions: room.sessions || {},
+      stranded: room.stranded || {},
+      syncRevision: Math.max(0, Number(room.syncRevision || 0)),
+      turn: null,
+      watermarks: room.watermarks || {}
+    }
+  }
+  return durable
 }
 
 $groupChats.set(loadPersistedRooms())

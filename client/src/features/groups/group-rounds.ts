@@ -15,7 +15,7 @@
  */
 
 import type { GroupMessage } from './group-model'
-import { groupEngineRequest, recordGroupActivity } from './group-engine'
+import { groupEngineRequest, recordGroupActivity } from './group-runtime'
 import {
   $groupNeedsYou,
   GROUP_CHAT_HISTORY_LIMIT,

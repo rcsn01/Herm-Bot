@@ -18,8 +18,8 @@ import { EditProfileDialog } from '~/features/agents/edit-profile-dialog'
 import { ProfileActionsDialog } from '~/features/agents/profile-actions-dialog'
 import { CreateGroupChatDialog } from '~/features/groups/create-group-chat-dialog'
 import { GroupChatScreen } from '~/features/groups/group-screen'
+import { useGroupRooms } from '~/features/groups/group-engine'
 import type { GroupRoom } from '~/features/groups/group-model'
-import { $groups } from '~/features/groups/groups-store'
 import { applyTheme } from '~/features/settings/settings-screen'
 import { CreateProfileDialog, PROFILE_NAME_MAX_LENGTH } from '~/features/agents/create-profile-dialog'
 import { RosterScreen } from '~/features/agents/roster-screen'
@@ -78,7 +78,7 @@ export function App() {
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
   const activeGroupId = routeForGroupRoom(activeRoute)
-  const groups = useStore($groups)
+  const groups = useGroupRooms()
   const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
   const chat = useStore($chat)
   const [refreshing, setRefreshing] = useState(false)
@@ -217,9 +217,10 @@ export function App() {
     setCreateGroupOpen(true)
   }
   const openCreatedGroup = (room: GroupRoom) => {
+    // The dialog already wrote the room into the engine store; the published
+    // known-rooms view picks the name up on the next publish tick.
     setCreateOptionsOpen(false)
     setCreateGroupOpen(false)
-    $groups.set([...$groups.get().filter(existing => existing.key !== room.key), room])
     pushRoute('roster', { roomId: room.key, tab: 'roster', type: 'group-room' })
   }
   const openSettingsFrom = () => {

@@ -12,7 +12,7 @@ vi.mock('./group-turns', async importOriginal => {
 })
 
 import { $groupChats, replaceGroupChats } from './group-store'
-import { setGroupEngineRequest } from './group-engine'
+import { setEngineTransport } from './group-runtime'
 import {
   applyGroupHoldDirective,
   botHandle,
@@ -59,7 +59,7 @@ async function settle(name: string): Promise<void> {
 beforeEach(() => {
   localStorage.clear()
   replaceGroupChats({})
-  setGroupEngineRequest(async () => {
+  setEngineTransport(async () => {
     throw new Error('no transport in rounds tests')
   })
   vi.mocked(runGroupChatMemberTurn).mockReset()
@@ -386,7 +386,7 @@ describe('round lifecycle', () => {
 
   it('stops a running thread: bumps the epoch, holds every member, and interrupts the mid-turn session', async () => {
     const interrupts: Array<Record<string, unknown>> = []
-    setGroupEngineRequest(async (method, params) => {
+    setEngineTransport(async (method, params) => {
       if (method === 'session.interrupt') interrupts.push(params ?? {})
       return {}
     })

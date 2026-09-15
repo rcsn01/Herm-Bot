@@ -10,48 +10,20 @@ import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 
 import type { GroupMember, GroupRoom } from './group-model'
 import {
+  $groupActivity,
   $groupChats,
-  adoptMirrorRoom,
+  $groupNeedsYou,
+  $groupPrompts,
+  answerGroupPrompt,
   getGroupRoom,
-  type GroupChatRoom
-} from './group-store'
-import { $groupActivity, $groupNeedsYou, $groupPrompts, type GroupActivityEntry, type GroupPrompt } from './group-engine'
-import { answerGroupClarify, harvestStrandedGroupReply } from './group-turns'
-import { groupChatRoomKey, pullGroupChatState } from './groups-sync'
-import { sendToGroupChat, stopGroupThread } from './group-rounds'
-import { $groups } from './groups-store'
-
-/**
- * The desktop-mirrored group chats, from the same unscoped profiles.list RPC
- * the roster uses — react-query dedupes the fetch, so opening a room costs
- * nothing on top of the main screen.
- */
-export function useGroupRooms(): GroupRoom[] {
-  const api = useApi(createAgentsApi)
-  const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
-  const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
-  const localRooms = useStore($groupChats)
-  const rooms = useMemo(() => {
-    const merged = new Map((roster.data?.groups ?? []).map(room => [room.key, room]))
-    for (const room of Object.values(localRooms)) {
-      const key = groupChatRoomKey(room.name, room)
-      if (merged.has(key)) continue
-      merged.set(key, {
-        key,
-        ...(room.image ? { image: room.image } : {}),
-        log: room.log,
-        members: room.members,
-        name: room.name,
-        ...(room.roomId ? { roomId: room.roomId } : {})
-      })
-    }
-    return [...merged.values()]
-  }, [localRooms, roster.data])
-  useEffect(() => {
-    $groups.set(rooms)
-  }, [rooms])
-  return rooms
-}
+  openGroupRoom,
+  sendToGroupChat,
+  stopGroupThread,
+  useGroupRooms,
+  type GroupActivityEntry,
+  type GroupChatRoom,
+  type GroupPrompt
+} from './group-engine'
 
 /** One room's engine state: the local coordination store, activity feed,
  *  and pending prompts, narrowed to this room's display name. */
@@ -100,27 +72,25 @@ function describeActivity(entry: GroupActivityEntry): null | string {
  * stranded-reply harvest.
  */
 export function GroupChatScreen({ roomId }: { roomId: string }) {
-  const rooms = useGroupRooms()
+  // The desktop-mirrored group chats come from the same unscoped profiles.list
+  // RPC the roster uses — react-query dedupes the fetch, so opening a room
+  // costs nothing on top of the main screen. The engine owns the merge.
+  const api = useApi(createAgentsApi)
+  const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
+  const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
+  const rooms = useGroupRooms(roster.data?.groups ?? [])
   const room = rooms.find(candidate => candidate.key === roomId)
   const engine = useGroupEngineState(room?.name ?? roomId)
   const [draft, setDraft] = useState('')
   const [newThreadNext, setNewThreadNext] = useState(false)
   const pulledRef = useRef<string | null>(null)
 
-  // Adopt the mirror row locally, then pull the live projection and harvest
-  // stranded replies: work that finished after a turn timeout posts late
-  // into the room instead of vanishing.
+  // Adopt + pull + stranded harvest live in the engine (openGroupRoom); the
+  // screen owns the mount-once guard.
   useEffect(() => {
     if (!room || pulledRef.current === room.name) return
     pulledRef.current = room.name
-    adoptMirrorRoom(room)
-    void pullGroupChatState().catch(() => undefined)
-    const local = getGroupRoom(room.name)
-    if (local.stranded && Object.keys(local.stranded).length > 0) {
-      void Promise.all(room.members.map(member => harvestStrandedGroupReply(room.name, member))).catch(
-        () => undefined
-      )
-    }
+    openGroupRoom(room)
   }, [room])
 
   if (!room) {
@@ -248,7 +218,7 @@ function GroupPromptCard({ prompt, members }: { prompt: GroupPrompt; members: Gr
   const [draft, setDraft] = useState('')
 
   const answer = (choice?: string) => {
-    void answerGroupClarify(prompt, member, choice ?? draft).catch(() => undefined)
+    void answerGroupPrompt(prompt, member, choice ?? draft).catch(() => undefined)
   }
 
   return (

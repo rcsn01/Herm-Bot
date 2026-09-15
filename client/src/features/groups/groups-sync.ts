@@ -12,7 +12,7 @@
  */
 
 import type { GroupMember, GroupMessage } from './group-model'
-import { groupEngineRequest } from './group-engine'
+import { groupEngineRequest } from './group-runtime'
 import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
 
 const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
@@ -801,13 +801,4 @@ export function handleGatewayTransition(): void {
     rooms[name] = { ...rooms[name], epoch: (rooms[name].epoch || 0) + 1, running: false }
   }
   $groupChats.set(rooms)
-}
-
-/** Reap stranded replies for every member after a room reopens — the port
- *  of the desktop's open-room harvest. */
-export async function harvestRoomStranded(group: string, members: GroupMember[]): Promise<void> {
-  const { harvestStrandedGroupReply } = await import('./group-turns')
-  for (const member of members) {
-    await harvestStrandedGroupReply(group, member)
-  }
 }

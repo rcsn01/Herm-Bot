@@ -15,7 +15,7 @@
  */
 
 import type { GroupMember } from './group-model'
-import { $groupPrompts, groupEngineRequest, recordGroupActivity, type GroupPrompt } from './group-engine'
+import { $groupPrompts, groupEngineRequest, recordGroupActivity, type GroupPrompt } from './group-runtime'
 import { $groupChats, $groupNeedsYou, appendGroupChatEntry, groupMemberKey, updateGroupChat, type GroupChatRoom } from './group-store'
 
 function roomOf(group: string): GroupChatRoom {
@@ -343,7 +343,7 @@ export function clearGroupPrompts(group: string): void {
  *    server-side. allow_expired server-side makes racing the timeout harmless.
  *  - approval: `approval.respond` with the choice (once/session/always/deny),
  *    keyed by session + request_id. */
-export async function answerGroupClarify(entry: GroupPrompt, member: GroupMember, answers: Record<string, string> | string | undefined): Promise<void> {
+export async function answerGroupPrompt(entry: GroupPrompt, member: GroupMember, answers: Record<string, string> | string | undefined): Promise<void> {
   if (entry.kind === 'approval') {
     await memberRequest(member, 'approval.respond', {
       session_id: entry.sessionId || undefined,

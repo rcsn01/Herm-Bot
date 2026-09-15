@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $groupPrompts, $groupNeedsYou, setGroupEngineRequest } from './group-engine'
+import { $groupPrompts, setEngineTransport } from './group-runtime'
+import { $groupNeedsYou } from './group-store'
 import { $groupChats, replaceGroupChats } from './group-store'
 import {
-  answerGroupClarify,
+  answerGroupPrompt,
   ensureGroupChatSession,
   harvestStrandedGroupReply,
   isGroupPassText,
@@ -19,7 +20,7 @@ let calls: Array<{ method: string; params: Record<string, unknown> }> = []
 let transport: Transport = async () => ({})
 
 function install(next: Partial<Record<string, (params: Record<string, unknown>) => unknown>> = {}) {
-  setGroupEngineRequest(async (method, params) => {
+  setEngineTransport(async (method, params) => {
     calls.push({ method, params: params ?? {} })
     const handler = next[method]
     if (handler) return handler(params ?? {})
@@ -38,7 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  setGroupEngineRequest(null)
+  setEngineTransport(null)
 })
 
 describe('pass text', () => {
@@ -215,7 +216,7 @@ describe('member turn', () => {
 
     let pollCount = 0
     const base = install
-    setGroupEngineRequest(async (method, params) => {
+    setEngineTransport(async (method, params) => {
       calls.push({ method, params: params ?? {} })
       if (method === 'session.resume' && params?.session_id === 'Group: r-3') {
         return { session_id: 'rt-live', session_key: 'stored-3' }
@@ -249,7 +250,7 @@ describe('member turn', () => {
     vi.useFakeTimers()
     let submitted = false
     let submitAttempts = 0
-    setGroupEngineRequest(async (method, params) => {
+    setEngineTransport(async (method, params) => {
       calls.push({ method, params: params ?? {} })
       if (method === 'session.resume' && params?.omit_messages) {
         if (params.session_id === 'stored-4') return { session_id: 'rt-fresh' }
@@ -295,7 +296,7 @@ describe('member turn', () => {
 
   it('reads a pass-only turn as silent and still advances the watermark (caller side)', async () => {
     vi.useFakeTimers()
-    setGroupEngineRequest(async method => {
+    setEngineTransport(async method => {
       calls.push({ method, params: {} })
       if (method === 'session.resume' && !calls.some(call => call.method === 'prompt.submit')) {
         return { session_id: 'rt-5', session_key: 'stored-5' }
@@ -318,7 +319,7 @@ describe('member turn', () => {
   it('abandons the poll when an explicit stop held the member', async () => {
     vi.useFakeTimers()
     let polls = 0
-    setGroupEngineRequest(async method => {
+    setEngineTransport(async method => {
       calls.push({ method, params: {} })
       if (method === 'session.resume' && !calls.some(call => call.method === 'prompt.submit')) {
         return { session_id: 'rt-6', session_key: 'stored-6' }
@@ -361,7 +362,7 @@ describe('member turn', () => {
 
   it('records a stranded marker on timeout so the reply can be harvested late', async () => {
     vi.useFakeTimers()
-    setGroupEngineRequest(async method => {
+    setEngineTransport(async method => {
       calls.push({ method, params: {} })
       if (method === 'session.resume' && !calls.some(call => call.method === 'prompt.submit')) {
         return { session_id: 'rt-7', session_key: 'stored-7' }
@@ -387,7 +388,7 @@ describe('member turn', () => {
 
 describe('stranded harvest', () => {
   it('posts the late reply into the stranded thread and clears the marker', async () => {
-    setGroupEngineRequest(async method => {
+    setEngineTransport(async method => {
       calls.push({ method, params: {} })
       if (method === 'session.resume') {
         return {
@@ -425,7 +426,7 @@ describe('stranded harvest', () => {
   })
 
   it('keeps the marker while the session is still working or unreachable', async () => {
-    setGroupEngineRequest(async () => {
+    setEngineTransport(async () => {
       throw new Error('unreachable')
     })
     replaceGroupChats({
@@ -443,7 +444,7 @@ describe('stranded harvest', () => {
     await harvestStrandedGroupReply('Room', { name: 'research' })
     expect($groupChats.get().Room.stranded?.research).toBeTruthy()
 
-    setGroupEngineRequest(async () => ({ messages: [], running: true }))
+    setEngineTransport(async () => ({ messages: [], running: true }))
     await harvestStrandedGroupReply('Room', { name: 'research' })
     expect($groupChats.get().Room.stranded?.research).toBeTruthy()
   })
@@ -486,7 +487,7 @@ describe('clarify and approvals (#90694)', () => {
     const entry = $groupPrompts.get()['Room::research']!
 
     install({})
-    await answerGroupClarify(entry, member, 'yes')
+    await answerGroupPrompt(entry, member, 'yes')
 
     const respond = calls.find(call => call.method === 'clarify.respond')
     expect(respond?.params).toMatchObject({ request_id: 'q2', answer: 'yes', profile: 'research' })
@@ -508,7 +509,7 @@ describe('clarify and approvals (#90694)', () => {
     const entry = $groupPrompts.get()['Room::research']!
 
     install({})
-    await answerGroupClarify(entry, member, { a: 'one', b: 'two' })
+    await answerGroupPrompt(entry, member, { a: 'one', b: 'two' })
 
     const answers = calls.filter(call => call.method === 'clarify.respond')
     expect(answers).toHaveLength(2)
@@ -527,7 +528,7 @@ describe('clarify and approvals (#90694)', () => {
     expect(entry.choices).toEqual(['once', 'deny'])
 
     install({})
-    await answerGroupClarify(entry, member, 'once')
+    await answerGroupPrompt(entry, member, 'once')
 
     const approval = calls.find(call => call.method === 'approval.respond')
     expect(approval?.params).toMatchObject({ request_id: 'ap1', choice: 'once', session_id: 'rt-z' })

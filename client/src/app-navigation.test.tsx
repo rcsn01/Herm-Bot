@@ -31,14 +31,24 @@ vi.mock('~/components/chat-screen', async () => {
   let nextId = 0
   return { ChatScreen: () => { const id = useRef(++nextId); return <div data-testid="chat-instance">Chat {id.current}</div> } }
 })
-vi.mock('~/features/agents/roster-screen', () => ({
-  RosterScreen: ({ onOpenAgent }: { onOpenAgent(profile: null | string): void }) => (
-    <div>Roster screen
-      <button onClick={() => onOpenAgent('work')}>Open agent work</button>
-      <button onClick={() => onOpenAgent(null)}>Open agent default</button>
-    </div>
-  )
-}))
+vi.mock('~/features/agents/roster-screen', async () => {
+  // The real RosterScreen is a roster-carrying useGroupRooms caller — the
+  // publisher of the engine's known-rooms view the app header reads. The
+  // mock keeps that contract: it mounts the engine hook (no roster data)
+  // so $groupChats seeds publish through the same path.
+  const { useGroupRooms } = await import('~/features/groups/group-engine')
+  return {
+    RosterScreen: ({ onOpenAgent }: { onOpenAgent(profile: null | string): void }) => {
+      useGroupRooms([])
+      return (
+        <div>Roster screen
+          <button onClick={() => onOpenAgent('work')}>Open agent work</button>
+          <button onClick={() => onOpenAgent(null)}>Open agent default</button>
+        </div>
+      )
+    }
+  }
+})
 vi.mock('~/features/groups/group-screen', () => ({
   GroupChatScreen: ({ roomId }: { roomId: string }) => <div data-testid="group-instance">Group {roomId}</div>
 }))
@@ -51,7 +61,7 @@ vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: 
 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
-import { $groups } from '~/features/groups/groups-store'
+import { $groupChats } from '~/features/groups/group-store'
 import { resetNavigation } from '~/navigation/navigation-store'
 import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'
 
@@ -68,7 +78,7 @@ beforeEach(() => {
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
   $chat.set({ ...emptyChatState(), info: { model: 'provider/test-model', title: 'Current chat' } as never, runtimeSessionId: 'runtime-1' })
   $sessions.set([])
-  $groups.set([])
+  $groupChats.set({})
   $profileSwitching.set(false)
 })
 
@@ -147,8 +157,22 @@ describe('App navigation', () => {
     expect(screen.getByTestId('group-instance')).not.toBeNull()
     expect(container.querySelector('.header-title strong')?.textContent).toBe('Group chat')
 
-    // once the roster mirror lands, the room name replaces the fallback
-    act(() => { $groups.set([{ key: 'id:r-crew', log: [], members: [], name: 'Research crew' }]) })
+    // once the roster mirror lands, the room name replaces the fallback.
+    // The seed must carry the durable identity (roomId -> key `id:r-crew`)
+    // and a member, or the engine's empty-tombstone filter drops it.
+    act(() => {
+      $groupChats.set({
+        'Research crew': {
+          epoch: 0,
+          log: [],
+          members: [{ name: 'default' }],
+          name: 'Research crew',
+          roomId: 'r-crew',
+          running: false,
+          watermarks: {}
+        }
+      })
+    })
     expect(container.querySelector('.header-title strong')?.textContent).toBe('Research crew')
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))

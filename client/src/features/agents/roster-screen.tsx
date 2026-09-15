@@ -1,13 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
-
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 import { $connection } from '~/state/store'
 
-import { $groupChats } from '~/features/groups/group-store'
-import { groupChatRoomKey } from '~/features/groups/groups-sync'
-import { $groups } from '~/features/groups/groups-store'
+import { useGroupRooms } from '~/features/groups/group-engine'
 
 import { createAgentsApi, mergeAgentRoster, type AgentRosterEntry } from './agents-api'
 import { displayNameFor } from './agent-labels'
@@ -61,29 +57,9 @@ export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = 
       })
     : connection.status?.profiles
   const agents = mergeAgentRoster(statusProfiles, roster.data?.entries)
-  const localGroups = useStore($groups)
-  const localRooms = useStore($groupChats)
-  const groups = useMemo(() => {
-    const merged = new Map((roster.data?.groups ?? []).map(group => [group.key, group]))
-    for (const room of Object.values(localRooms)) {
-      if (room.log.length === 0 && (!room.roomId || room.members.length === 0)) continue
-      const key = groupChatRoomKey(room.name, room)
-      if (!merged.has(key)) {
-        merged.set(key, {
-          key,
-          ...(room.image ? { image: room.image } : {}),
-          log: room.log,
-          members: room.members,
-          name: room.name,
-          ...(room.roomId ? { roomId: room.roomId } : {})
-        })
-      }
-    }
-    for (const group of localGroups) {
-      if (!merged.has(group.key)) merged.set(group.key, group)
-    }
-    return [...merged.values()]
-  }, [localGroups, localRooms, roster.data])
+  // The engine owns the known-rooms merge (roster ∪ local rooms, durable
+  // room keys, empty tombstones filtered).
+  const groups = useGroupRooms(roster.data?.groups ?? [])
   const needle = query.trim().toLowerCase()
   const matches = (text: string) => !needle || text.toLowerCase().includes(needle)
   const visible = agents.filter(agent => matches(`${displayNameFor(agent)} ${agent.preview ?? ''}`))
