@@ -1,384 +1,236 @@
-# Deepen the scoped screen scaffold
+# Deepen the Group send engine
 
-Candidate 1 from the architecture review (September 12, 2026). This plan covers only that candidate. The report lives at `/var/folders/th/_8dpnzf515n6h74y89jpky5h0000gn/T/architecture-review-20260912-145341.html`; the design vocabulary (module, interface, seam, depth, locality, leverage) comes from the codebase-design skill; domain terms come from `CONTEXT.md`.
+Candidate 1 from the architecture review (September 15, 2026). This plan covers only that candidate. The report lives at `/var/folders/th/_8dpnzf515n6h74y89jpky5h0000gn/T/architecture-review-20260915-225230.html`; the design vocabulary (module, interface, implementation, depth, seam, adapter, leverage, locality) comes from the codebase-design skill; domain terms come from `CONTEXT.md`, which this plan extends with the Group entries (already applied — see *Side effects applied*).
 
 ## Problem
 
-Every feature screen re-wires the same data interface by hand:
+The group send engine — the only part of the app that autonomously sends turns at a live gateway — has no interface. Its control plane is scattered across eight files and two mutable globals:
 
-```tsx
-const preferences = useStore($preferences)
-const key = gatewayScopeKey({ connectionKey: preferences.remoteURL, profile }, 'settings', 'providers')
-const providers = useQuery({ queryFn: ({ signal }) => settings.oauthProviders(signal), queryKey: [...key, 'oauth'] })
-// + a useScopedTask and manual isCurrent() → invalidateQueries after every mutation
-// + classifyGatewayError(error).message rendered into an error-banner / unsupported-card ternary
-// + useEffect(() => { ...reset local state... }, [preferences.profile, preferences.remoteURL])
-```
+- **The GatewayController reaches in through three globals.** `gateway-controller.ts` imports seven group symbols: `setGroupEngineRequest` (`group-engine.ts:21`), `setGroupSyncScheduler` (`group-store.ts:189`), and five sync functions from `groups-sync.ts` (`handleGatewayTransition`, `pullGroupChatState`, `scheduleGroupChatSync`, `startGroupChatSync`, `stopGroupChatSync`). It calls them eleven times across `dispose()` (:339-341), `teardownGatewayScope()` (:377-380), and `installGroupEngine()` (:397-400) — twelve call expressions counting the `scheduleGroupChatSync` inside the scheduler callback (:399). Both setters exist only to break import cycles; neither is a seam, they are global mutable slots.
+- **`group-store.ts` is shallow: interface as wide as implementation.** 25 exports (6 limit constants, 3 types, 2 atoms, 14 functions) mix the room record shape, identity minting (`mintGroupThreadId`, `mintGroupRoomId`), name uniqueness, UI copy (`normalizeGroupChatText`; its `GROUP_EMPTY_FRIENDLY` companion is private), member keys, log trimming, localStorage persistence, the mirror-sync scheduler slot, and the two atoms — with no test file. The duplicate-append guard (#93127), `GROUP_LOG_RETAIN` trimming with watermark adjustment, and the durable persistence shape all ship untested.
+- **`groups-store.ts` fails the deletion test.** It is a 9-line file holding one atom, `$groups`, written by `group-screen.tsx:50-52` (an effect) and `app.tsx:222` (a synchronous write inside the `openCreatedGroup` handler, not an effect), and read back by `roster-screen.tsx:64-86` and `create-group-chat-dialog.tsx:125-133` as a redundant source beside their own re-merge of the same data. The known-rooms merge (roster snapshot ∪ local rooms by durable key) is duplicated nearly line-for-line in `roster-screen.tsx:66-86` and `group-screen.tsx:34-52`; the empty-room filter exists only in the roster-screen copy (see *Behavior deltas accepted* 2).
+- **Engine wiring is global callback registries, untested.** `setGroupEngineRequest` and `setGroupSyncScheduler` are two parallel mutable globals the controller installs and tears down; `group-engine.ts:81` re-exports `$groupNeedsYou` (defined at `group-store.ts:57`) explicitly to dodge an import cycle. `group-store.ts` and `group-engine.ts` have zero tests; the full round (send → rounds → member turns → replies → mirror flush) has no test anywhere.
+- **Dead code.** `harvestRoomStranded` (`groups-sync.ts:808`, with its dynamic-import cycle workaround) and `clearGroupNeedsYou` (`group-engine.ts:83`) have no callers.
 
-The reset idiom appears 7 times in `settings-administration-screen.tsx` alone and 15 more times across the other migrated screens: 12 across cron (4), models (1), and capabilities (7), plus one each in `memory-settings.tsx`, `config-section-screen.tsx`, and the `mcp-server-editor` form. The kind-based error-render ternary (`kind === 'unsupported' ? 'unsupported-card' : 'error-banner'`) is re-implemented 9 times — seven plain sites (cron jobs, cron delivery targets, skills, toolsets, toolset-detail config, mcp servers, memory status) plus two richer private clones in `remote-resource.tsx` and `memory-settings.tsx` — beside a third idiom, the always-unavailable phrase card (`X is unavailable: {message}`), 5 times. The mutation side already runs on `useScopedMutation` in 11 screens; `settings-administration-screen.tsx` still hand-rolls `useScopedTask` + manual `invalidateQueries` after every mutation, and the query side has no hook anywhere. The deletion test is unambiguous: delete the copy-paste and complexity vanishes; it earns no keep. The scoped-fetch pattern has no seam, so no test can hit it once.
+Deletion-test verdicts: delete `$groups` → complexity vanishes (derived pass-through). Delete the two setters → complexity vanishes (the controller is their only production caller; the three unit suites also seed the transport through `setGroupEngineRequest` — see *Tests*). Delete `group-store` → complexity reappears in N callers (it earns its keep, but its interface must shrink to what callers actually need).
 
 ## Goal
 
-One home for the scoped screen pattern, inside the scoped-operation toolkit that `CONTEXT.md` already names:
+One home for the group send engine, inside `features/groups/`, with the interface in `group-engine.ts` — the name the domain already uses ("group send engine", commit 80f0150). After the refactor:
 
-- `useScopeKey`, `useScopedQuery`, `useScopeReset` in `client/src/gateway/scope-guard.ts`
-- `GatewayErrorBanner` in a new `client/src/gateway/gateway-error-banner.tsx`
+- The GatewayController touches exactly two verbs: `startGroupEngine(transport)` on connect, `stopGroupEngine()` on scope teardown and dispose.
+- Screens act through five room actions and read through one hook plus the engine's atoms.
+- The known-rooms merge lives in one pure function behind one hook; `$groups` and `groups-store.ts` are deleted.
+- The room store, mirror sync, and round drive become internal seams, each testable alone; the injected transport remains the engine's only seam to the wire (two adapters justify it: the real runtime RPC in production, a scripted fake in tests).
 
-After the migration a screen reads: derive the key, run the query, render the error, reset on scope change. Four calls, no hand-wiring. Route vocabulary (domain, parts, fetcher, gates) and what-to-reset stay with the call site, exactly as `CONTEXT.md` splits toolkit plumbing from call-site policy.
+A screen reads: `useGroupRooms(rosterGroups)` for the list, `useGroupEngineState(name)`-style atom reads for one room, `sendToGroupChat` / `stopGroupThread` / `answerGroupPrompt` to act. Which room to open and what to draft stay with the screens, exactly as `CONTEXT.md` splits engine plumbing from call-site policy.
 
-## Decisions
+## Side effects applied
 
-The user authorized recommended answers for all clarification questions. The grilling tree, walked and settled:
+- `CONTEXT.md` gained four domain terms (this was done before writing the plan, as the grilling side effect): **Group chat**, **Group send engine**, **Group mirror**, **Known rooms**. No existing terms were changed.
+- `plan.md` (the September 12 review's candidate plan, landed) was deleted at the user's request before writing this file.
 
-**Q1. Where do the new hooks live?**
-Recommended: extend `gateway/scope-guard.ts`, the module `CONTEXT.md` declares as owning the scoped-operation toolkit. A query-side counterpart belongs beside `useScopedMutation`, not in a sibling file. The banner goes next to `gateway-error.ts`, whose classification it renders.
-Settled: yes.
+## Decisions (grilling tree, settled)
 
-**Q2. Does `useScopedQuery` derive the cache key internally, or accept it?**
-Option A: `useScopedQuery({ domain, parts, queryFn })` derives internally; invalidation sites call a second hook with repeated arguments. Option B: `useScopeKey(domain, parts)` returns the key; `useScopedQuery(key, { queryFn })` accepts it.
-Recommended: B. Twelve screens need the key anyway, for `invalidateQueries` prefixes and `useScopedMutation` optimistic configs. One derivation per domain feeds query, invalidation, and optimistic config. The seam is the `GatewayScopeKey`, already the shared cache vocabulary of `cancelGatewayQueries`, `clearGatewayQueries`, and `useScopedMutation.optimistic`. Two consumer families make it a real seam, not a hypothetical one.
+The user authorized recommended answers for all clarification questions. The tree, walked and settled:
+
+**Q1. Where does the deepened module's interface live?**
+Options: (A) a new `group-send-engine.ts` facade beside the existing files; (B) `group-engine.ts` becomes the interface, with the runtime state it hosts today moving to a new internal `group-runtime.ts`; (C) `group-store.ts` becomes the interface.
+Recommended: **B**. The file already bears the engine's name and holds the transport slot; a facade importing `groups-sync` + `group-rounds` + `group-turns` + `group-store` becomes acyclic precisely once the transport slot and the activity/prompt atoms leave it. (C) would make a store the engine — the wrong seam. (A) adds a file when the name already exists.
 Settled: B.
 
-**Q3. Does the hook classify errors at runtime?**
-Recommended: yes. Wrap the fetcher, classify on throw, type the result `UseQueryResult<TData, GatewayError>`. Callers stop importing `classifyGatewayError` for query errors; the interface carries the classified error, not an `unknown`.
-Consequence to accept: the shared client's retry policy (`query-client.ts`: retry when `error.retryable`, max 2) starts working for queries. Today raw fetch errors carry no `retryable` flag, so queries never retry; after migration, network and server kinds retry. This matches the intent already written in `query-client.ts`. Call sites that opt out pass `retry: false` (the memory OAuth status query does).
-Settled: yes, classify in the hook.
+**Q2. What is the exact external interface?**
+Recommended (the full surface, below in *The deepened module*):
+- Lifecycle: `startGroupEngine(transport)` / `stopGroupEngine()` — controller-only.
+- Actions: `openGroupRoom(room)`, `createGroupChat(baseName, members, takenNames)`, `sendToGroupChat(...)`, `stopGroupThread(...)`, `answerGroupPrompt(...)` (renamed from `answerGroupClarify` — it answers clarify *and* approval prompts; `GroupPrompt` is the existing domain noun).
+- Reads: `useGroupRooms(rosterGroups?)` hook owning the known-rooms projection; the pure `groupRoomsView(rosterGroups, localRooms)` beside it; the atoms `$groupChats`, `$groupActivity`, `$groupPrompts`, `$groupNeedsYou` re-exported, plus `getGroupRoom` (group-screen's engineRoom fallback) and `GROUP_CHAT_MAX_MEMBERS` (the dialog's member cap) so screens and the dialog keep the one-import-path rule.
+- Types: `GroupEngineTransport` (the existing `GroupEngineRequest` alias renamed at the interface), `GroupChatRoom`, `GroupPrompt`, `GroupActivityEntry`.
+The bodies of `sendToGroupChat` / `stopGroupThread` / `answerGroupPrompt` stay in `group-rounds.ts` / `group-turns.ts` and are re-exported by the facade — moving ~1,100 lines of tested-adjacent engine logic buys nothing.
+Settled: as listed.
 
-**Q4. Does the toolkit own the reset-on-scope-change idiom?**
-Recommended: yes, as `useScopeReset(reset, ...extraDeps)`. The toolkit owns when (Scope changed: connection or profile), the caller owns what (the reset body, optionally returning a cleanup). This preserves the declared split: capture/check plumbing in the toolkit, policy at the call site.
+**Q3. What happens to the two mutable globals and the eleven controller calls?**
+Recommended: the setters stop being interface. `setEngineTransport` moves to `group-runtime.ts` (file-exported so the facade can reach it, never re-exported); `setGroupSyncScheduler` stays in `group-store.ts` under the same discipline. The controller's `installGroupEngine()` body becomes `startGroupEngine((method, params) => this.runtime.rpc(method, params))`; `dispose()` and `teardownGatewayScope()` each call `stopGroupEngine()`. Eleven calls across three methods (twelve counting the scheduler callback) become two verbs.
 Settled: yes.
 
-**Q5. How much render policy does `GatewayErrorBanner` absorb?**
-Recommended: every query-error render site. The seven kind-based clones (cron jobs, cron delivery targets, skills, toolsets, toolset-detail config, mcp servers, memory status), the two rich clones (remote-resource, models MoA), the nine plain message banners (archived chats, provider endpoints, config + schema, cron run history, skill content, skill-hub search, mcp catalog, cron blueprints), and five "always unavailable" phrase cards that opt in via a prop (billing, OAuth providers, credential management, plugins, memory provider editor). Soft-fail muted lines (gateway health, toolset models, voice catalog) and mutation-driven local error strings stay call-site policy.
+**Q4. What happens to `$groups` and the duplicated known-rooms merge?**
+Options: (a) delete `$groups` and have every consumer derive from the hook; (b) keep an engine-internal `$knownRooms` atom that `useGroupRooms(rosterGroups)` publishes.
+Recommended: **(b), with the atom internal (never exported)**. Callers holding roster data (`roster-screen`, `group-screen`, `create-group-chat-dialog`) call `useGroupRooms(rosterGroups)` — the hook runs the one merge and publishes it; provider-free callers (the app header) call `useGroupRooms()` and read the last published view. This preserves the deep-link header behavior — `app-navigation.test.tsx:143-152` exercises exactly this flow (fallback title, then the room name once the published view lands; `RosterScreen` is always mounted, verified: `mobile-shell.tsx` renders the roster unconditionally) — while the merge exists in exactly one place. Pure option (a) would regress the app-header name for a mirror-only room reached by deep link. The two residual deltas (one-frame name lag on create, ghost-row fix on the roster) are recorded in *Behavior deltas accepted*.
+Settled: (b).
+
+**Q5. What happens to the dead exports?**
+Recommended: delete `harvestRoomStranded` (`groups-sync.ts:808`) and `clearGroupNeedsYou` (`group-engine.ts:83`) — both caller-free; the dynamic `import('./group-turns')` cycle workaround dies with the first.
+Settled: delete both.
+
+**Q6. What does `startGroupEngine` / `stopGroupEngine` actually do?**
+Recommended — byte-for-byte today's choreography:
+- `startGroupEngine(transport)`: install the transport (`setEngineTransport(transport)`), `startGroupChatSync()`, register the scheduler (`setGroupSyncScheduler(changedRoom => scheduleGroupChatSync({ changedRooms: [changedRoom] }))`), and fire the initial pull `void pullGroupChatState().catch(() => undefined)` — the receive half of the sync contract, before any local publish, exactly as the current `installGroupEngine()` comment requires.
+- `stopGroupEngine()`: `setEngineTransport(null)`, `setGroupSyncScheduler(null)`, `handleGatewayTransition()` (bump every room's epoch so live loops bail at their next member boundary), `stopGroupChatSync()`.
+Consequence accepted: `dispose()` today does *not* call `handleGatewayTransition`; unifying stop adds the epoch bump on dispose. That is a safety improvement (a StrictMode remount's stale drive loop now bails instead of failing RPCs), not a regression — see *Behavior deltas accepted*.
 Settled: yes.
 
-**Q6. Migration scope?**
-Recommended: every feature screen and `features/shared/remote-resource.tsx`. Excluded: `state/gateway-controller.ts` (its sessions query is module-internal, deep, and tested), `features/models/model-editing.ts` (builds keys from explicit params inside the model-editing module), `components/files-screen.tsx` (no direct `useQuery`), the chat surface, OAuth poll loops (candidate 2), model write queues (candidate 3).
-Settled: full screen migration, one PR, staged commits.
+**Q7. What is the test surface, and which tests survive?**
+Recommended (per the DEEPENING rule — replace, don't layer; the interface is the test surface):
+- Survive unchanged (verified): `group-model.test.ts`, `group-screen.test.tsx` (mocks the gateway, not the hooks), `roster-screen.test.tsx` (seeds `$groupChats`; its just-created-room seed carries `roomId` + members, so it passes the new uniform empty-stub filter), `gateway-controller.test.ts` (zero group references).
+- Adjusted — the three transport-seeding unit suites re-point the raw setter (verified: `groups-sync.test.ts` import at :4, seeds at :328/:358/:402; `group-rounds.test.ts` import at :15, seeds at :62/:389; `group-turns.test.ts` import at :3, nine seed sites plus a `setGroupEngineRequest(null)` teardown at :41). They import `setEngineTransport` from `./group-runtime` — the file seam, NOT `startGroupEngine`, which would also arm the sync scheduler and fire the initial pull and change what these suites exercise. Only the new engine suite drives the interface.
+- Adjusted — atom-seeding swaps: `create-group-chat-dialog.test.tsx` (delete the `$groups.set([])` at line 23; `$groupChats.set({})` already runs at :22) and `app-navigation.test.tsx` (`$groups` seeds at :71 and :151 — see the seed-shape warning in *Tests*).
+- New: `group-engine.test.ts` — lifecycle, full-round integration through the injected fake transport, scope-teardown semantics, `groupRoomsView`.
+- New: `group-store.test.ts` — duplicate-append guard, trimming, persistence shape, adopt idempotence, needs-you on append.
+- Nothing existing is deleted; no test is written past the interface (rounds/turns internals stay reachable through scripted transport behavior, not by poking internals).
+Settled: as listed.
 
-**Q7. Test strategy?**
-Per the codebase-design principle that the interface is the test surface: write tests at the new interface, keep existing screen tests passing unchanged. Screen tests already drive a `MemoryGateway` behaviorally, so they survive the refactor; that is the point of them.
-Settled: interface tests for the three hooks and the banner; screen suites must stay green without edits except where they pin normalized copy.
+**Q8. Naming.**
+Recommended: the deepened module is **the Group send engine**; the wire projection is **the Group mirror**; the rendered list is **Known rooms**; the room concept is a **Group chat** / **Group room**. All four now in `CONTEXT.md`. No existing term changed.
+Settled: yes.
 
-## Interfaces
+## The deepened module
 
-### `client/src/gateway/scope-guard.ts` (additions)
+### External interface (`group-engine.ts` — the only import path for callers outside `features/groups/`; one verified carve-out: `features/agents/agents-api.ts` consumes `groupRoomsFromRoster` and the `GroupRoom` type from the shared `group-model.ts` leaf, unchanged)
 
 ```ts
-import { useEffect } from 'react'                      // add to existing react import
-import { useStore } from '@nanostores/react'           // new import
-import { useQuery, type UseQueryResult } from '@tanstack/react-query'  // extend existing import
+// Lifecycle — the GatewayController is the only caller.
+export function startGroupEngine(transport: GroupEngineTransport): void
+export function stopGroupEngine(): void
 
-/** Derive the scope-keyed cache key for one domain of route vocabulary. */
-export function useScopeKey(
-  domain: string,
-  parts?: readonly unknown[],
-  opts?: { unscoped?: boolean }
-): GatewayScopeKey {
-  const preferences = useStore($preferences)
-  return gatewayScopeKey(
-    { connectionKey: preferences.remoteURL, profile: opts?.unscoped ? null : preferences.profile },
-    domain,
-    ...(parts ?? [])
-  )
-}
+// Actions — call-site policy (which room, which draft) stays with screens.
+export function openGroupRoom(room: GroupRoom): void
+  // adoptMirrorRoom + pullGroupChatState + stranded harvest — the body of the
+  // group-screen open effect moves here.
+export function createGroupChat(
+  baseName: string,
+  members: GroupMember[],
+  takenNames: ReadonlySet<string>
+): GroupRoom            // mintGroupRoomId + uniqueGroupChatName + updateGroupChat; throws when no free name
+export function sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string   // re-exported from group-rounds.ts
+export function stopGroupThread(group: string, thread: null | string, members?: EngineMember[] | null): Promise<void           // re-exported from group-rounds.ts
+export function answerGroupPrompt(entry: GroupPrompt, member: GroupMember, answers: Record<string, string> | string | undefined): Promise<void   // renamed from answerGroupClarify (group-turns.ts), re-exported
 
-export interface ScopedQueryOptions<TData> {
-  queryFn: (signal: AbortSignal) => Promise<TData>
-  enabled?: boolean
-  retry?: boolean | number
-}
+// Reads.
+export function useGroupRooms(rosterGroups?: GroupRoom[]): GroupRoom[]
+  // Runs groupRoomsView(rosterGroups ?? [], $groupChats.get()); when called WITH
+  // rosterGroups it publishes the merged view to the internal $knownRooms atom
+  // (an effect, replacing today's writers at group-screen.tsx:50-52 and
+  // app.tsx:222). Key the merge memo and the publish effect on a CONTENT
+  // signature of rosterGroups (the room-key list), never array identity —
+  // callers pass freshly built `roster.data?.groups ?? []` arrays (see Risks).
+export function groupRoomsView(rosterGroups: GroupRoom[], localRooms: Record<string, GroupChatRoom>): GroupRoom[]   // pure; the one merge
+export function getGroupRoom(group: string): GroupChatRoom   // re-exported from group-store; group-screen's engineRoom fallback reads it
 
-export type ScopedQueryResult<TData> = UseQueryResult<TData, GatewayError>
+// Read surface (re-exported atoms + the one action constant — writers stay inside the engine).
+export { $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_MEMBERS } from './group-store'
+export { $groupActivity, $groupPrompts } from './group-runtime'
 
-/** Run one scope-keyed query; failures are classified before they reach the caller. */
-export function useScopedQuery<TData>(
-  key: QueryKey,
-  options: ScopedQueryOptions<TData>
-): ScopedQueryResult<TData> {
-  return useQuery<TData, GatewayError>({
-    enabled: options.enabled,
-    queryKey: key,
-    queryFn: async ({ signal }) => {
-      try {
-        return await options.queryFn(signal)
-      } catch (caught) {
-        throw classifyGatewayError(caught)
-      }
-    },
-    retry: options.retry
-  })
-}
-
-/** Reset call-site local state whenever the Scope changes; the caller owns what to reset. */
-export function useScopeReset(
-  reset: () => void | (() => void),
-  ...extraDeps: readonly unknown[]
-): void {
-  const preferences = useStore($preferences)
-  // Dependency list is explicit by design: Scope fields plus caller extras.
-  useEffect(() => reset(), [preferences.remoteURL, preferences.profile, ...extraDeps])
-}
+// Types.
+export type { GroupEngineTransport, GroupChatRoom, GroupPrompt, GroupActivityEntry }
 ```
 
-Notes:
-- The additions above list only genuinely new imports; extend the existing `'./gateway-scope'` import with `gatewayScopeKey` and `type GatewayScopeKey` (`QueryKey`, `classifyGatewayError`, and `$preferences` are already imported).
-- No memoization needed; `gatewayScopeKey` is pure and React Query compares keys structurally.
-- `useScopeKey` with no parts returns the domain prefix `['gateway', connection, profile, domain]`, which is exactly what `invalidateQueries` wants for a domain-wide invalidation.
-- `unscoped: true` pins the key's profile slot to `'default'` (via `gatewayScopeKey`'s `profile ?? 'default'`), so process-scoped routes keep one cache entry per connection. It changes only the key; the fetch route stays call-site vocabulary.
-- The key parameter is typed `QueryKey`, so sub-keys built by spreading (`[...key, 'runs']`) typecheck. The `['gateway', connection]` prefix discipline is preserved because every key starts from `useScopeKey`; `cancelGatewayQueries` and `clearGatewayQueries` keep matching.
-- `retry: undefined` falls through to the shared client default (classified, retryable-aware). That is the behavior change accepted in Q3.
+`GroupEngineTransport` is today's `GroupEngineRequest`: `(method: string, params?: Record<string, unknown>) => Promise<unknown>`. One adapter in production (the controller's `runtime.rpc` closure), one in tests (a scripted fake) — a real seam.
 
-### `client/src/gateway/gateway-error-banner.tsx` (new)
+### Internal seams (file-exported, never re-exported by the facade)
 
-```tsx
-import { classifyGatewayError } from './gateway-error'
+- `group-store.ts` — rooms only: record shape, minting/identity helpers, name uniqueness, message-normalization copy, trimming, localStorage persistence, `updateGroupChat`/`getGroupRoom`/`replaceGroupChats`/`appendGroupChatEntry`/`adoptMirrorRoom`, `$groupChats`/`$groupNeedsYou`, `setGroupSyncScheduler`. The durable-shape part of persistence is extracted as a pure `durableGroupChatRooms(all)` so tests need no import gymnastics (see Tests).
+- `group-runtime.ts` (new) — the engine's runtime state: the transport slot (`setEngineTransport` + `groupEngineRequest`), `$groupActivity` + `recordGroupActivity`, `$groupPrompts`. Moved verbatim out of today's `group-engine.ts`.
+- `groups-sync.ts` — the mirror protocol (sizes, keys, v1→v3 normalization, snapshot build/merge, merge-into-rooms) and the flush job (debounced read-merge-CAS-write with read-back, retry ladder). `startGroupChatSync`/`stopGroupChatSync`/`handleGatewayTransition` stay file-exports; only the facade imports them.
+- `group-rounds.ts`, `group-turns.ts` — the drive; imports re-pointed from `group-engine` to `group-runtime`; no logic changes.
 
-const DEFAULT_UNSUPPORTED_TEXT = 'This gateway does not provide this optional capability.'
+### Import map (acyclic by construction)
 
-export interface GatewayErrorBannerProps {
-  /** Raw query error, GatewayError, or an unclassified value (plain Error, message string). */
-  error: unknown
-  /** Rich mode lead: "Could not load {subject}" / "{subject} unavailable". */
-  subject?: string
-  /** Copy shown when the classified kind is 'unsupported'. */
-  unsupportedText?: string
-  /** Declare the capability unavailable on any failure: unsupported-card with "{phrase}: {message}". */
-  unavailablePhrase?: string
-  role?: 'alert' | 'status'
-}
-
-export function GatewayErrorBanner({ error, subject, role = 'alert', unsupportedText, unavailablePhrase }: GatewayErrorBannerProps) {
-  if (error == null || error === '') return null
-  const classified = classifyGatewayError(error)
-  if (unavailablePhrase) {
-    return <div className="unsupported-card" role={role}>{unavailablePhrase}: {classified.message}</div>
-  }
-  if (classified.kind === 'unsupported') {
-    const text = unsupportedText ?? DEFAULT_UNSUPPORTED_TEXT
-    return subject
-      ? <div className="unsupported-card" role={role}><strong>{subject} unavailable</strong><p>{text}</p></div>
-      : <div className="unsupported-card" role={role}>{text}</div>
-  }
-  return subject
-    ? <div className="error-banner" role={role}><strong>Could not load {subject}</strong><p>{classified.message}</p></div>
-    : <div className="error-banner" role={role}>{classified.message}</div>
-}
+```
+group-model.ts      ← nothing                (shared model leaf: types + parseGroupSnapshot/groupRoomsFromRoster)
+group-store.ts      → group-model (types)
+group-runtime.ts    → group-store            (recordGroupActivity reads the room epoch)
+groups-sync.ts      → group-store, group-runtime
+group-turns.ts      → group-store, group-runtime
+group-rounds.ts     → group-store, group-runtime, group-turns
+group-engine.ts     → all of the above       (facade: interface only)
+gateway-controller / screens / dialog / app.tsx → group-engine only (GroupRoom types from group-model)
 ```
 
-Render rules, in order: falsy error renders nothing; `unavailablePhrase` forces the unavailable card; otherwise the classified kind picks the card and `subject` upgrades it to the rich two-part form. Unclassified inputs go through the same classify path — a plain `Error` lands as kind `server`; a string renders its message unless the text itself matches a kind pattern. No string branch exists because no call site passes a ready string, and mutation-driven strings stay call-site policy per Q5.
+Today's cycles are gone structurally: the scheduler slot is registered by the facade (which imports both `group-store` and `groups-sync`), and the transport slot lives beside the atoms that read it.
 
-## File-by-file migration
+## Implementation
 
-Domain and parts come straight from the key each screen builds today, so cache entries keep their exact identity. `conn` below means `preferences.remoteURL`.
+Ordered so every step typechecks and the suite stays green. `npm run typecheck && npm run test` after each batch.
 
-### `features/settings/settings-administration-screen.tsx`
+**Batch 1 — extract `group-runtime.ts` (pure move).**
+1. Create `client/src/features/groups/group-runtime.ts` with the transport slot (`GroupEngineRequest` type alias kept here; `setEngineTransport` replacing the exported `setGroupEngineRequest`; `groupEngineRequest` unchanged) and, moved verbatim from `group-engine.ts`: `GroupActivityEntry`, `$groupActivity`, `recordGroupActivity` (with its `getRoomEpoch` read of `$groupChats`), `GroupPrompt`, `$groupPrompts`.
+2. Re-point EVERY importer of the moved symbols in this batch — the `setGroupEngineRequest` → `setEngineTransport` rename means the old name no longer exists, so anything still importing it breaks the batch's typecheck guarantee. Source files: `groups-sync.ts` (`groupEngineRequest`), `group-rounds.ts` (`groupEngineRequest`, `recordGroupActivity`), `group-turns.ts` (`$groupPrompts`, `groupEngineRequest`, `recordGroupActivity`, `GroupPrompt`), `gateway-controller.ts` (`setGroupEngineRequest` at :339/:377/:397 → `setEngineTransport`). Test files (verified consumers of the raw setter): `group-turns.test.ts` (import :3; sites :22/:41/:218/:252/:298/:321/:364/:390/:428/:446), `group-rounds.test.ts` (import :15; sites :62/:389), `groups-sync.test.ts` (import :4; sites :328/:358/:402) — import from `./group-runtime` and rename the calls; a null teardown stays a null teardown. `group-store.ts` keeps `$groupNeedsYou` where it is (written by the append path; re-exported by the facade).
+3. Delete the moved declarations from `group-engine.ts`. The file keeps only the `$groupNeedsYou` re-export (:81) and `clearGroupNeedsYou` (:83, deleted in Batch 2) so it still typechecks; no re-exports of the moved symbols are needed — every importer was re-pointed in step 2.
 
-| Sub-screen | Keys today | After |
-|---|---|---|
-| BillingSettings | `gatewayScopeKey({conn, profile: null}, 'settings', 'billing')`; queries `[...billingKey, 'state']`, `[...billingKey, 'subscription']`; invalidates `billingKey` | `const billingKey = useScopeKey('settings', ['billing'], { unscoped: true })`; queries via `useScopeKey('settings', ['billing', 'state'], { unscoped: true })` and `['billing', 'subscription']`; invalidation unchanged, key from `useScopeKey` |
-| GatewaySettings | `gatewayScopeKey({conn, profile: null}, 'settings', 'gateway')` | `useScopeKey('settings', ['gateway'], { unscoped: true })`; the muted health line stays bespoke |
-| ProvidersSettings | `'settings', 'providers'`; queries `[...key, 'oauth']`, `[...key, 'endpoints']`; invalidates `[...key, 'endpoints']` | `useScopeKey('settings', ['providers'])` with sub-keys `useScopeKey('settings', ['providers', 'oauth'])` and `['providers', 'endpoints']` (the endpoints key serves the activate-endpoint invalidation); `providers.error` renders `<GatewayErrorBanner error={providers.error} unavailablePhrase="OAuth providers are unavailable" />`; `endpoints.error` renders `<GatewayErrorBanner error={endpoints.error} />` |
-| CustomEndpointForm | reset on `[endpoint?.id, profile, remoteURL]` | `useScopeReset(reset, endpoint?.id)` |
-| ToolsKeysSettings | `'settings', 'env'`; invalidates `key`; reset on `[connection.phase, profile, remoteURL]` with timer cleanup | `useScopeKey('settings', ['env'])`; `useScopeReset(reset, connection.phase)` (reset body returns the timer cleanup); `variables.error` renders `<GatewayErrorBanner error={variables.error} unavailablePhrase="Credential management is unavailable" />` |
-| ArchivedChatsSettings | `'settings', 'archived-chats'`; invalidates `key` | `useScopeKey('settings', ['archived-chats'])`; `sessions.error` renders the banner |
-| PluginsSettings | `'settings', 'plugins'` with `profile: null`; `enabled: supportsPluginManagement` | `useScopeKey('settings', ['plugins'], { unscoped: true })` + `enabled` pass-through; `plugins.error` renders `<GatewayErrorBanner error={plugins.error} unavailablePhrase="Plugin management is unavailable" />` |
+**Batch 2 — build the facade in `group-engine.ts`.**
+1. Implement `startGroupEngine(transport)` / `stopGroupEngine()` per Q6 (the facade imports `setEngineTransport` from `group-runtime`, `setGroupSyncScheduler` + `updateGroupChat` from `group-store`, and `handleGatewayTransition`/`startGroupChatSync`/`stopGroupChatSync`/`scheduleGroupChatSync`/`pullGroupChatState` from `groups-sync`).
+2. Move the known-rooms merge into the facade: `groupRoomsView(rosterGroups, localRooms)` — the roster-first union by `groupChatRoomKey` with the empty-stub filter (`log.length === 0 && (!roomId || members.length === 0)`), then `useGroupRooms(rosterGroups?)` = `useStore($groupChats)` + merge + (when `rosterGroups !== undefined`) an effect publishing the view to the internal `$knownRooms` atom (replacing `group-screen.tsx:50-52` and the `openCreatedGroup` write at `app.tsx:222`). Key both the memo and the effect on a content signature of `rosterGroups`, not identity (see Risks). `groupChatRoomKey` stays owned by `groups-sync.ts`; the facade imports it.
+3. Add `openGroupRoom(room)` — the whole body of the `group-screen.tsx:113-124` effect moves here: `adoptMirrorRoom`, `void pullGroupChatState().catch(() => undefined)`, and the stranded-harvest guard + `Promise.all(harvestStrandedGroupReply …)` (the guard moves inside so the screen imports nothing from `group-turns`). And `createGroupChat(baseName, members, takenNames)` (the minting/write of `create-group-chat-dialog.tsx:72-77`, returning `GroupRoom` with `key: 'id:<roomId>'`); widen `uniqueGroupChatName`'s `taken` param to `ReadonlySet<string>` (it only calls `.has`) so the facade can accept a `ReadonlySet`.
+4. Re-export the read surface and the round/turn actions per Q2; rename `answerGroupClarify` → `answerGroupPrompt` in `group-turns.ts` (update its test import).
+5. Delete `clearGroupNeedsYou` (the setters no longer exist as exports after Batch 1's re-point — nothing to stop re-exporting).
 
-All seven reset effects (Billing, Gateway, Providers, CustomEndpointForm, ToolsKeys, ArchivedChats, Plugins) become `useScopeReset` calls. Billing's always-unavailable card becomes `<GatewayErrorBanner error={billing.error ?? subscription.error} unavailablePhrase="Billing is unavailable" />`.
+**Batch 3 — re-point consumers; delete the pass-through.**
+1. `gateway-controller.ts`: imports collapse to `{ startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'`; `installGroupEngine()` → `startGroupEngine((method, params) => this.runtime.rpc(method, params))`; `dispose()` and `teardownGatewayScope()` call `stopGroupEngine()`; the five `groups-sync` imports and the two setter imports go — seven imported symbols collapse into the two verbs.
+2. `group-screen.tsx`: delete the local `useGroupRooms` hook (:29-54) and the `$groups` effect (:50-52); the screen calls the engine's `useGroupRooms(roster.data?.groups ?? [])` (its roster query stays — route vocabulary with the call site); the open effect (:113-124) shrinks to the `pulledRef` mount-once guard + `openGroupRoom(room)`; imports of `adoptMirrorRoom`/`pullGroupChatState`/`groupChatRoomKey`/`harvestStrandedGroupReply`/`answerGroupClarify` go — `getGroupRoom` stays for the `engineRoom ?? getGroupRoom(room.name)` fallback, now imported from the facade, and `answerGroupPrompt` replaces the renamed import.
+3. `roster-screen.tsx`: the hand-rolled merge (:64-86 — three sources: roster, `$groupChats`, `$groups`) becomes `useGroupRooms(roster.data?.groups ?? [])` (two sources; the stale-`$groups` fallback term goes — see delta 6); drop the `groupChatRoomKey` and `$groupChats` imports.
+4. `create-group-chat-dialog.tsx`: `useStoreGroupNames` (:125-133) becomes `useGroupRooms(roster.data?.groups ?? [])` → names; the create path (:72-77) calls `createGroupChat(...)`; drop `mintGroupRoomId`/`uniqueGroupChatName`/`updateGroupChat`/`$groups`/`$groupChats` imports; `GROUP_CHAT_MAX_MEMBERS` re-points to the facade re-export.
+5. `app.tsx`: `const groups = useGroupRooms()` (replaces `useStore($groups)`); `openCreatedGroup` keeps the dialog closes + `pushRoute` and drops the `$groups.set(...)` write — the room is already in `$groupChats` (the dialog wrote it at create-group-chat-dialog.tsx:76), so the published view picks it up one painted frame later (delta 5).
+6. Delete `groups-store.ts`.
 
-### `features/settings/memory-settings.tsx`
+**Batch 4 — dead-code sweep + interface shrink inside the cluster.** Delete `harvestRoomStranded` (`groups-sync.ts:808`). Consumer check (verified by grep): `groupThreadOf`, `mintGroupThreadId`, `groupSpeakerLabel` → `group-rounds.ts`; `groupMemberKey` → `group-rounds.ts` + `group-turns.ts`; limits → `group-rounds.ts` (`GROUP_CHAT_HISTORY_LIMIT`, `GROUP_CHAT_MAX_*`) with `GROUP_CHAT_MAX_MEMBERS` re-exported by the facade for the dialog; `mintGroupRoomId`/`uniqueGroupChatName` → the facade's `createGroupChat` only (after Batch 3). `normalizeGroupChatText` and `trimGroupChatLog` have no consumers outside `group-store.ts` — un-export both (the store test exercises trimming through `updateGroupChat` and normalization through `appendGroupChatEntry`). Keep `GROUP_LOG_RETAIN` exported for the store test. Everything kept stays exported from `group-store.ts` for those in-cluster files only.
 
-- `statusKey` becomes `useScopeKey('settings', ['memory'])` (the current `useMemo` wrapper is unnecessary; the hook returns a fresh structurally-equal array).
-- `config` query: `useScopeKey('settings', ['memory', 'provider', providerKey])`, keep `enabled: Boolean(providerKey)`.
-- `oauth` query: `useScopeKey('settings', ['memory', 'oauth', providerKey])`, keep `enabled` and keep today's existing `retry: false`.
-- `MemoryError` local component is deleted; `status.error` renders `<GatewayErrorBanner error={status.error} unsupportedText="Memory management is unavailable on this gateway." />`.
-- `MemoryProviderEditor`'s always-unavailable card becomes `<GatewayErrorBanner error={error} unavailablePhrase="Provider settings unavailable" />`.
-- Reset effect becomes `useScopeReset`.
+**Batch 5 — tests** (next section), then full verification.
 
-### `features/settings/config-section-screen.tsx`
+## Tests
 
-- `key` becomes `useScopeKey('settings', ['config'])`; `schema` query uses `useScopeKey('settings', ['config', 'schema'])`. The bespoke save queue keeps using `queryClient.setQueryData(key, ...)` and `invalidateQueries({ queryKey: key })`.
-- Reset effect (with cleanup and extra deps `[category, settings]`) becomes `useScopeReset(reset, category, settings)`.
-- `config.error` and `schema.error` render the banner.
-- `VoiceProviderResources`: voices query uses `useScopeKey('settings', ['voice', 'elevenlabs'])`; the muted soft-fail line stays bespoke.
+New files under `client/src/features/groups/`. Store tests reset modules + `localStorage.clear()` in `beforeEach` (the store hydrates `$groupChats` at import time).
 
-### `features/cron/cron-screen.tsx`
+**`group-store.test.ts`** (new — the store earns tests at its write API):
+- Duplicate-append guard #93127: same member text back-to-back within the 10-minute window returns the prior entry and leaves the log unchanged; a user entry is never deduped; the same text after the window is kept; different thread is kept.
+- `updateGroupChat` at `GROUP_LOG_RETAIN` (96): log is bounded and every watermark shifts by the drop, staying index-consistent (`trimGroupChatLog` is private after Batch 4; exercised through `updateGroupChat`).
+- Persistence: `updateGroupChat` writes the durable shape via `durableGroupChatRooms` (extracted pure helper — `running: false`, `turn: null`, empty-log stubs without identity dropped); `adoptMirrorRoom` is idempotent and seeds watermarks at zero.
+- `appendGroupChatEntry` sets `$groupNeedsYou` for member entries addressing `@user` and never for user entries.
 
-- `scopeKey` becomes `useScopeKey('cron', ['jobs'])`.
-- The kind-based ternary becomes `<GatewayErrorBanner error={jobs.error} unsupportedText="Cron Jobs are unavailable on this gateway." />`.
-- Reset effect becomes `useScopeReset`.
+**`group-engine.test.ts`** (new — the interface is the test surface):
+- Lifecycle: `startGroupEngine(fakeTransport)`; a subsequent `updateGroupChat(...)` (debounce 350 ms, fake timers) reaches the gateway through the injected transport — `profiles.list` read, `profiles.configure` CAS write, read-back. `stopGroupEngine()` clears pending work and the transport; a later `groupEngineRequest` throws `'Group engine transport is not connected.'`.
+- Scope teardown: a room with `running: true`, `epoch: 5` → `stopGroupEngine()` → `running: false`, `epoch: 6`.
+- Full round, scripted transport (session.create/session.resume/prompt.submit fixtures): `sendToGroupChat(group, members, 'hello @ada')` → the member's reply lands in the log, watermarks advance, activity records queued → working → replied → settled, and the mirror flush fires; a `"(pass)"` reply records `passed` and appends nothing.
+- `stopGroupThread`: epoch bump, every member held, `running` false, `session.interrupt` sent with the member's profile in the params.
+- `groupRoomsView`: roster ∪ local union keyed by durable key, no duplicate rows for shared keys, empty stubs filtered, just-created rooms (roomId + members, empty log) retained.
+- `useGroupRooms`: rendering through `@nanostores/react` — with rosterGroups it publishes `$knownRooms`; without, it reads the last published view (covers the app-header contract).
 
-### `features/cron/cron-job-detail.tsx`
+**Adjusted** (mechanical; the transport-seeding re-points happen in Batch 1):
+- `groups-sync.test.ts` — import :4 and seeds :328/:358/:402 → `setEngineTransport` from `./group-runtime` (NOT `startGroupEngine` — that would arm the scheduler and fire the initial pull, changing what the suite exercises).
+- `group-rounds.test.ts` — same re-point (import :15, sites :62/:389).
+- `group-turns.test.ts` — verified it seeds via the raw setter (import :3; nine seeding sites plus a `setGroupEngineRequest(null)` teardown at :41): same re-point; atom-seeded cases stay.
+- `create-group-chat-dialog.test.tsx` — delete the `$groups.set([])` at line 23 (`$groupChats.set({})` already runs at :22); assertions on `onCreated` unchanged.
+- `app-navigation.test.tsx` — `$groups` seeds at lines 71 and 151 → seed `$groupChats`. The :151 room must carry `roomId: 'r-crew'` (so `groupChatRoomKey` yields the asserted `id:r-crew`) and a non-empty `members` array — an empty-log room with neither is dropped by the uniform empty-stub filter and the header-name assertion (:152) would fail. The fallback-then-name flow at :148-152 already models the effect-based publish.
 
-- `key` becomes `useScopeKey('cron', ['job', jobId])`; `runs` uses `useScopeKey('cron', ['job', jobId, 'runs'])`.
-- The action's `onSettled` invalidates the domain prefix via `useScopeKey('cron')`.
-- `runs.error` renders the banner; reset becomes `useScopeReset(reset, jobId)`.
+**Deleted:** none — the surviving suites describe behaviour that does not change.
 
-### `features/cron/cron-blueprints-screen.tsx`
+## Behavior deltas accepted
 
-- Key `'cron', 'blueprints'` with `profile: null` becomes `useScopeKey('cron', ['blueprints'], { unscoped: true })`; keep the `enabled: defaultProfile` pass-through — dropping it would fire the query on named profiles.
-- The plain error banner becomes `<GatewayErrorBanner error={blueprints.error} />` behind the existing `defaultProfile &&` gate; reset becomes `useScopeReset`.
-
-### `features/cron/cron-job-editor.tsx`
-
-- `targets` query key `'cron', 'delivery-targets'` with `profile: null` and `enabled: defaultProfile` becomes `useScopeKey('cron', ['delivery-targets'], { unscoped: true })` plus the `enabled` pass-through.
-- The kind-based ternary on `targets.error` becomes `<GatewayErrorBanner error={targets.error} unsupportedText="Delivery targets are unavailable on this gateway." />`.
-- Reset effect becomes `useScopeReset(reset, job?.id)`.
-
-### `features/models/models-screen.tsx`
-
-- `scopeKey` becomes `useScopeKey('models')`; the five queries use `useScopeKey('models', ['info'])`, `['options']`, `['auxiliary']`, `['config']`, `['moa']` (today's `keyFor(domain)` shape, unchanged).
-- The MoA optimistic callbacks passed to `MoaEditor` keep their `beginScopedTask` guards (that is candidate 3 territory) but take the MoA key from `useScopeKey('models', ['moa'])`.
-- The `moa.error` IIFE becomes `<GatewayErrorBanner error={moa.error} subject="Mixture of Agents" unsupportedText="This gateway does not provide the MoA endpoint. The rest of Models still works." role="status" />`.
-- The load error becomes `<GatewayErrorBanner error={loadError} subject="Models" />`. Copy normalizes: the lead becomes "Could not load Models", and an `unsupported` kind now renders the unavailable card (consistent with sibling screens). Verified: no test pins the load-error lead; `models-screen.test.tsx` pins the MoA copy ('Mixture of Agents unavailable' plus the unsupported paragraph), which the banner reproduces verbatim — no test edit needed.
-- Reset effect becomes `useScopeReset`.
-
-### `features/capabilities/skills-screen.tsx`
-
-- `queryKey` becomes `useScopeKey('skills', ['list'])`; the toggle's optimistic config and the `SkillDetail` archived invalidation reuse it (the `beginScopedTask` guard there stays).
-- The kind-based ternary becomes `<GatewayErrorBanner error={skills.error} unsupportedText="Skills are unavailable on this gateway." />`.
-- Reset effect becomes `useScopeReset`.
-
-### `features/capabilities/skill-detail.tsx`
-
-- The content query uses `useScopeKey('skills', ['content', skill.name])`.
-- `content.error` renders `<GatewayErrorBanner error={content.error} />`; reset becomes `useScopeReset(reset, skill.name)`.
-- Keep the exported `skillDetailQueryKey(connectionKey, profile, name)` helper untouched; it is module vocabulary for cross-screen invalidation with explicit params.
-
-### `features/capabilities/skill-hub-screen.tsx`
-
-- `scopeKey` becomes `useScopeKey('skills', ['hub'])`; `sources` uses `useScopeKey('skills', ['hub', 'sources'])`, `search` uses `useScopeKey('skills', ['hub', 'search', submitted, source])` with its `enabled` gate kept, and the install mutation invalidates the hub key.
-- `search.error` renders `<GatewayErrorBanner error={search.error} />`; reset becomes `useScopeReset`.
-
-### `features/capabilities/toolsets-screen.tsx`
-
-- `queryKey` becomes `useScopeKey('tools', ['list'])`; the toggle's optimistic config reuses it.
-- The kind-based ternary becomes `<GatewayErrorBanner error={toolsets.error} unsupportedText="Toolsets are unavailable on this gateway." />`.
-- Reset effect becomes `useScopeReset`.
-
-### `features/capabilities/toolset-detail.tsx`
-
-- `config` query: `useScopeKey('tools', [toolset.name, 'config'])`; `models` query: `useScopeKey('tools', [toolset.name, 'models', selectedProvider])` with `enabled: Boolean(selectedProvider)`.
-- The toggle invalidates the domain prefix via `useScopeKey('tools')`.
-- The kind-based ternary on `config.error` becomes `<GatewayErrorBanner error={config.error} unsupportedText="Toolset setup is unavailable on this gateway." />`; the muted models line stays bespoke.
-- Reset becomes `useScopeReset(reset, toolset.name)`.
-
-### `features/capabilities/mcp-screen.tsx`
-
-- `queryKey` becomes `useScopeKey('mcp', ['servers'])`. The OAuth poll loop is untouched (candidate 2).
-- The kind-based ternary on `servers.error` becomes `<GatewayErrorBanner error={servers.error} unsupportedText="MCP is unavailable on this gateway." />`; reset becomes `useScopeReset`.
-
-### `features/capabilities/mcp-catalog-screen.tsx`
-
-- `scopeKey` becomes `useScopeKey('mcp', ['catalog'])`; the install mutation invalidates it.
-- `catalog.error` renders `<GatewayErrorBanner error={catalog.error} />`; reset becomes `useScopeReset`.
-
-### `features/capabilities/mcp-server-editor.tsx`
-
-- No query and no query key here; only the reset effect becomes `useScopeReset(reset, server?.name)` so gate 3 can demand zero hand-wired reset effects.
-
-### `features/shared/remote-resource.tsx`
-
-- The query becomes `useScopedQuery(useScopeKey(definition.id, undefined, { unscoped: !isProfileScoped }), { enabled: !isUnavailableForProfile, queryFn: ... })`; the fetcher keeps choosing `api.request` vs `api.unscoped`.
-- `ResourceError` is deleted; the banner renders `<GatewayErrorBanner error={error} subject={definition.title} />`. Copy normalizes: the unsupported lead "Unavailable" becomes "{title} unavailable". The existing test asserts the profile-gate card ("Unavailable for this profile"), which is a different element and unaffected.
-
-## Behavior changes to accept
-
-1. Queries retry on retryable failures. Classified network and server errors now satisfy the shared client's retry policy (max 2). Aligned with the intent documented in `query-client.ts`. Call sites needing the old behavior pass `retry: false` (memory OAuth status).
-2. Small copy normalization on migrated banners: remote-resource's unsupported lead gains the subject; models' load-error lead capitalizes to "Could not load Models"; an `unsupported` kind in models' load error now renders the unavailable card. Deliberate, consistent with sibling screens.
-3. Four formerly role-less cards gain `role="alert"` when they become banner call sites (OAuth providers, credential management, plugins, memory provider editor). Every kind-based site already carries `role="alert"`, models' MoA card keeps `role="status"` via the prop, and billing's card already carries `role="alert"`.
-4. Cache keys keep their exact shape (`['gateway', connection, profileKey, domain, ...parts]`), so `cancelGatewayQueries`, `clearGatewayQueries`, and existing cached entries are unaffected.
-
-## Test plan
-
-New tests at the interface, following the harness in `gateway/scope-guard.test.tsx` (renderHook, QueryClientProvider wrapper, `bumpProfile` on `$preferences`, clients built with `retry: false`).
-
-`gateway/scope-guard.test.tsx`, describe "scoped query scaffold":
-
-1. `useScopeKey` derives `['gateway', connection, profile, domain, ...parts]` from the active preferences.
-2. `useScopeKey` re-derives when the profile changes (renderHook + `bumpProfile`, assert the tuple changes).
-3. `useScopeKey` with `unscoped: true` pins the profile slot to `'default'` and stays stable across profile flips.
-4. `useScopedQuery` resolves data on the happy path.
-5. `useScopedQuery` classifies failures: a fetcher throwing `TypeError('Failed to fetch')` lands as `GatewayError` with kind `'network'` and `retryable: true` on `result.error`.
-6. `useScopedQuery` with `enabled: false` never calls the fetcher.
-7. `useScopedQuery` keeps per-scope cache entries: fetch under profile A, flip to B, wait for the refetch under B's key, assert profile A's cache entry is untouched.
-8. `useScopeReset` runs once on mount, again on profile or remoteURL change, not on unrelated rerenders.
-9. `useScopeReset` fires on extra-dep changes and invokes a returned cleanup on scope change and unmount.
-
-`gateway/gateway-error-banner.test.tsx` (plain render, no query client):
-
-1. `null`, `undefined`, and `''` render nothing.
-2. A string error renders `error-banner` with that message and `role="alert"`; `role="status"` is honored. (Strings ride the same classify path — no special branch.)
-3. An `unsupported` GatewayError renders `unsupported-card` with the default text; `unsupportedText` replaces it.
-4. `subject` + `unsupported` renders the rich card: strong "{subject} unavailable" plus the unsupported text.
-5. `subject` + a network error renders `error-banner` with strong "Could not load {subject}" plus the classified message.
-6. `unavailablePhrase` renders `unsupported-card` with "{phrase}: {message}" for any failure kind.
-7. A plain `Error` (unclassified input) renders `error-banner` with its message (classified as `server`).
-
-Existing screen suites must pass unchanged; they test through `MemoryGateway` and assert behavior, not wiring. No pinned copy changes: no test asserts the models load-error lead, and the pinned MoA copy is reproduced verbatim by the banner.
-
-## Rollout
-
-Seven commits, each leaving `npm run typecheck` and `npm test` green. Working directory for all commands: `client/`.
-
-1. `feat(gateway): add useScopeKey, useScopedQuery, and useScopeReset to the scope-guard module` plus the hook tests. `CONTEXT.md` already carries the Scoped query term (added when the decision settled); adjust the wording here if the implementation drifts.
-2. `feat(gateway): add GatewayErrorBanner` plus its tests.
-3. `refactor(settings): run settings screens on the scoped query scaffold` (settings-administration-screen, memory-settings, config-section-screen).
-4. `refactor(cron): run cron screens on the scoped query scaffold` (cron-screen, cron-job-detail, cron-blueprints-screen, cron-job-editor).
-5. `refactor(models): run the Models screen on the scoped query scaffold`.
-6. `refactor(capabilities): run capability and remote-resource screens on the scoped query scaffold` (skills-screen, skill-detail, skill-hub-screen, toolsets-screen, toolset-detail, mcp-screen, mcp-catalog-screen, mcp-server-editor's scope reset, features/shared/remote-resource).
-7. `chore: sweep the scoped screen scaffold` with the grep gates below and a full build.
-
-## Verification
-
-```sh
-cd client
-npm run typecheck
-npm test
-npm run build        # typecheck + vite build, final gate
-```
-
-Grep gates (from the repo root):
-
-```sh
-# 1. Only module-internal key builders may remain outside gateway/
-rg -n "gatewayScopeKey\(" client/src/features client/src/components
-#    expected survivors: features/models/model-editing.ts, features/capabilities/skill-detail.tsx (exported helper)
-
-# 2. classifyGatewayError remains only at deliberate soft-fail renders and mutation/poll error munging
-rg -n "classifyGatewayError" client/src/features
-#    expected survivors:
-#    soft-fail muted renders: gateway health line (settings-administration), toolset-detail models
-#      line, config-section voice line
-#    classified kind check: memory-settings startOAuth ('unsupported' → OAuth copy)
-#    mutation and poll munging (stay by design): every useScopedMutation onError handler
-#      (memory-settings ×4, skill-detail, skill-hub, mcp-catalog, mcp-screen ×5, toolsets, skills,
-#      toolset-detail ×5, cron-blueprints), the memory/provider-authorization/MCP poll loops' catch,
-#      config-section's save-queue catch, cron-job-editor's formatCronError (also drives
-#      cron-job-detail's job.error render), models-screen's MoA optimistic error path,
-#      and features/models/model-editing.ts
-
-# 3. No migrated file hand-wires the scope reset idiom (anchored on the effect dep-array tail:
-#    catches the plain shape and the extras shapes like [endpoint?.id, …], [connection.phase, …],
-#    [job?.id, …], and config-section's [category, settings] suffix)
-rg -n "\}, \[.*remoteURL.*\]" client/src/features
-#    expected: no matches — today this hits exactly the 22 reset-effect dep arrays; after migration
-#    they all come from useScopeReset. The memory statusKey useMemo also becomes useScopeKey (a
-#    leftover there is caught by gate 1, since the memo still calls gatewayScopeKey). Note the
-#    GatewaySettings form-state line `const [remoteURL, setRemoteURL] = useState(preferences.remoteURL)`
-#    is not a reset effect and does not match this pattern.
-```
+1. `dispose()` now bumps room epochs (unified `stopGroupEngine()`). A stale drive loop from a torn-down controller bails at its next boundary instead of failing RPCs; no user-visible change.
+2. The known-rooms view applies the empty-stub filter uniformly (today `group-screen`'s copy omits it). Log-empty rooms with neither `roomId` nor members stop rendering in the room list — the create dialog always sets both, so no real room is affected.
+3. `answerGroupClarify` is renamed `answerGroupPrompt` at the interface (same behavior, honest name).
+4. The app header's room-name lookup reads the engine's published known-rooms view instead of the `$groups` atom — same data, one writer fewer, same freshness (`RosterScreen` is always mounted; verified: `mobile-shell.tsx` renders the roster unconditionally).
+5. The header name for a just-created room lags one painted frame behind today: `openCreatedGroup` currently writes `$groups` synchronously (name on first paint); after the change the name arrives when `RosterScreen`'s `useGroupRooms` effect republishes `$knownRooms`. One frame of the `'Group chat'` fallback — the same two-step flow the deep-link test already asserts (`app-navigation.test.tsx:148-152`).
+6. `roster-screen` drops its `$groups` fallback term (the third merge source). A room deleted gateway-side and tombstoned locally could ghost-render from a stale `$groups` publish until the next group-screen mount republished; the two-source view removes the ghost. Strictly narrower — it can only drop rooms absent from both live sources.
 
 ## Risks
 
-1. Retry goes live and a screen test with a transient fake-gateway failure now retries. Mitigation: hook tests and screen tests already build clients with `retry: false`; keep that convention.
-2. The dependency spread in `useScopeReset` trips `react-hooks/exhaustive-deps` in editors. The repo has no lint script; the justifying comment in the hook covers it.
-3. A screen overlooked in the checklist still hand-wires keys. Mitigation: grep gate 1 catches it before the final commit.
-4. Sub-key drift: a screen spreading `[...key, 'sub']` from a `useScopeKey` base keeps the `['gateway', connection, profile]` prefix by construction, so cache clearing and invalidation prefixes stay correct. No drift path exists as long as keys start from `useScopeKey`.
+- **Import cycles** — the whole point of the two globals today. Mitigation: the import map above is acyclic; after Batch 2, run `npx madge --circular client/src` (or equivalent) once as a guard.
+- **Store hydration in tests** — `$groupChats` hydrates from localStorage at module import; every store-touching test must reset modules and clear storage, or seeds leak across cases.
+- **Debounce timing** — the flush job's 350 ms debounce and retry ladder need `vi.useFakeTimers()` in the lifecycle test; advance timers rather than flushing manually.
+- **Hook in a `.ts` facade** — `useGroupRooms` needs no JSX; `group-engine.ts` stays `.ts`. No change to the render layer.
+- **Publish loop on unstable roster-array identity** — callers pass `roster.data?.groups ?? []`, a fresh array every render while the roster query is pending (and forever on error, since `retry: false`; the dialog's query is `enabled: open`, so its pending window coincides with being mounted). An identity-keyed merge memo + publish effect would emit a new view each render; the `$knownRooms.set` notifies the app header, whose re-render re-renders the publisher, spinning the effect loop until the query resolves. Key both on a content signature (`rosterGroups?.map(room => room.key).join('|') ?? ''`) holding a stable identity for equal signatures.
+
+## Verification
+
+Per batch: `npm run typecheck && npm run test` (vitest). After Batch 5:
+
+1. `npm run typecheck` — clean.
+2. `npm run test` — full suite green, including the two new suites.
+3. Cycle guard — no `features/groups/*` import cycle (madge or manual check against the map).
+4. Manual smoke (needs a gateway with Bot Mode): `npm run dev` against the Hermes gateway; open a group chat, send `hello @<bot>`, watch the round run and the mirror publish (second client sees the reply); stop the thread; switch profile and confirm the room stops and re-arms on return. The desktop should still see the same rooms — the mirror protocol is untouched.
 
 ## Out of scope
 
-- Candidate 2 (OAuth flow module), candidate 3 (model write queues), candidate 6 (`$chat` read seam).
-- The chat surface, `components/files-screen.tsx`, `state/gateway-controller.ts`, `features/models/model-editing.ts` internals.
-- `gateway-scope.ts`, `gateway-error.ts`, and `query-client.ts` are read-only for this work.
-- Dead-directory cleanup (`mobile-push-delivery/`) is noted in the review but is a separate one-line commit; do it independently if desired.
+- The mirror protocol itself (v1→v3 migration, CAS, byte budget) — unchanged, still covered by `groups-sync.test.ts`.
+- The round-drive logic (`group-rounds.ts`, `group-turns.ts`) beyond the rename and import re-pointing — pure helpers already tested.
+- Workspace navigation (candidate 2), the chat-viewport scroller seam (candidate 3), and the error-banner sweep (candidate 4).
+- Desktop Bot Mode parity — the PWA stays protocol-compatible byte-for-byte.
