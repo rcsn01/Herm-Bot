@@ -87,7 +87,7 @@ export function CronBlueprintsScreen({ onCreated }: { onCreated(job: CronJob): v
 
   return (
     <PageShell
-      eyebrow="Cron Jobs"
+      eyebrow="Cron jobs"
       subtitle="Choose a gateway blueprint, then configure it for this bot."
       title="Blueprints"
     >

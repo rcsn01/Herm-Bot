@@ -1,6 +1,65 @@
 import { describe, expect, it } from 'vitest'
 
-import { mergeAgentRoster, parseAgentRoster } from '~/features/agents/agents-api'
+import { createAgentsApi, mergeAgentRoster, parseAgentRoster } from '~/features/agents/agents-api'
+import { createGatewayApi } from '~/gateway/gateway-api'
+import { MemoryGateway } from '~/test/memory-gateway'
+
+describe('agent profiles API', () => {
+  it('creates a profile through the unscoped profiles.create RPC', async () => {
+    const gateway = new MemoryGateway().handle('profiles.create', params => {
+      expect(params).toEqual({ name: 'new-bot' })
+      return { name: 'new-bot', ok: true, path: '/profiles/new-bot' }
+    })
+    const api = createAgentsApi(createGatewayApi(gateway, 'work'))
+
+    await expect(api.create('new-bot')).resolves.toEqual({ name: 'new-bot', ok: true, path: '/profiles/new-bot' })
+    expect(gateway.calls).toEqual([{ kind: 'rpc', method: 'profiles.create', value: { name: 'new-bot' } }])
+  })
+
+  it('keeps profile mutations explicitly named and routes large avatars through asset RPCs', async () => {
+    const gateway = new MemoryGateway()
+      .handle('profiles.create', params => params)
+      .handle('profiles.describe', () => ({ name: 'work', model: { default: 'fixture/deep', provider: 'fixture' } }))
+      .handle('profiles.configure', params => ({ applied: Object.fromEntries(Object.keys(params as object).map(key => [key, true])), ok: true }))
+      .handle('profiles.get_asset', () => ({ asset: 'avatar', data: 'data:image/png;base64,AA==', found: true, size: 2 }))
+      .handle('profiles.set_asset', params => ({ ...(params as Record<string, unknown>), ok: true }))
+      .handle('model.options', () => ({ providers: [{ models: ['fixture/deep'], slug: 'fixture' }] }))
+      .handle('mcp.catalog', () => ({ servers: [] }))
+      .handle('image.generate', () => ({ image_data: 'data:image/png;base64,AA==', success: true }))
+      .handle('cli.exec', () => ({ code: 0, ok: true }))
+    const api = createAgentsApi(createGatewayApi(gateway, 'work'))
+
+    await api.create({ clone_all: true, clone_from: 'default', description: 'An operator', name: 'new-bot', no_skills: true, provider: 'fixture', model: 'fixture/deep' })
+    await api.describe('work')
+    await api.configure({ description: 'Updated', name: 'work', ui_meta: { 'hermes-bots': { title: 'Work' } } })
+    await api.getAsset('work')
+    await api.setAsset('work', { data: 'data:image/png;base64,AA==' })
+    await api.clearModel('work')
+    await api.delete('work')
+    await api.modelOptions()
+    await api.mcpCatalog('work')
+    await api.generateAvatar('A fox')
+
+    expect(gateway.calls.map(call => call.method)).toEqual([
+      'profiles.create', 'profiles.describe', 'profiles.configure', 'profiles.get_asset', 'profiles.set_asset',
+      'cli.exec', 'cli.exec', 'model.options', 'mcp.catalog', 'image.generate'
+    ])
+    expect(gateway.calls[0]?.value).toEqual({ clone_all: true, clone_from: 'default', description: 'An operator', name: 'new-bot', no_skills: true, provider: 'fixture', model: 'fixture/deep' })
+    expect(gateway.calls[5]?.value).toEqual({ argv: ['--profile', 'work', 'config', 'unset', 'model'] })
+    expect(gateway.calls[6]?.value).toEqual({ argv: ['profile', 'delete', 'work', '--yes'] })
+    expect(gateway.calls[8]?.value).toEqual({ profile: 'work' })
+  })
+
+  it('hydrates a server-side avatar when profiles.list only advertises has_avatar', async () => {
+    const gateway = new MemoryGateway()
+      .handle('profiles.list', () => ({ profiles: [{ has_avatar: true, name: 'work' }] }))
+      .handle('profiles.get_asset', params => ({ asset: 'avatar', data: `data:image/png;base64,${(params as { name: string }).name}`, found: true }))
+    const api = createAgentsApi(createGatewayApi(gateway, null))
+
+    await expect(api.list()).resolves.toMatchObject({ entries: [{ avatar: 'data:image/png;base64,work', hasAvatar: true, name: 'work' }] })
+    expect(gateway.calls.map(call => call.method)).toEqual(['profiles.list', 'profiles.get_asset'])
+  })
+})
 
 describe('agent roster parsing', () => {
   it('normalizes rich profiles.list items from an array body', () => {

@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { IconChevronLeft, IconMenu2, IconSearch, IconSettings } from '@tabler/icons-react'
+import { IconChevronLeft, IconMenu2, IconPlus, IconSearch, IconSettings } from '@tabler/icons-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
+import { CreateOptionsDialog } from '~/components/create-options-dialog'
 import { BotWorkspaceHeader } from '~/components/bot-workspace-header'
 import { BotWorkspaceNavigation, type BotWorkspaceDestination } from '~/components/bot-workspace-navigation'
 import { ChatScreen } from '~/components/chat-screen'
@@ -11,9 +12,16 @@ import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
 import { SessionsMenu } from '~/components/sessions-menu'
 import { displayNameFor } from '~/features/agents/agent-labels'
+import type { AgentRosterEntry } from '~/features/agents/agents-api'
+import { DeleteProfileDialog } from '~/features/agents/delete-profile-dialog'
+import { EditProfileDialog } from '~/features/agents/edit-profile-dialog'
+import { ProfileActionsDialog } from '~/features/agents/profile-actions-dialog'
+import { CreateGroupChatDialog } from '~/features/groups/create-group-chat-dialog'
 import { GroupChatScreen } from '~/features/groups/group-screen'
+import type { GroupRoom } from '~/features/groups/group-model'
 import { $groups } from '~/features/groups/groups-store'
 import { applyTheme } from '~/features/settings/settings-screen'
+import { CreateProfileDialog, PROFILE_NAME_MAX_LENGTH } from '~/features/agents/create-profile-dialog'
 import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { CronScreen } from '~/features/cron/cron-screen'
@@ -75,6 +83,14 @@ export function App() {
   const chat = useStore($chat)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
+  const [createOptionsOpen, setCreateOptionsOpen] = useState(false)
+  const [createProfileOpen, setCreateProfileOpen] = useState(false)
+  const [createGroupOpen, setCreateGroupOpen] = useState(false)
+  const [duplicateOptions, setDuplicateOptions] = useState<{ initialCloneAll: boolean; initialCloneFrom: string; initialColor: null | string; initialDescription: string; initialImage: null | string; initialName: string; initialShape: string; initialTitle: string } | null>(null)
+  const [editingProfile, setEditingProfile] = useState<AgentRosterEntry | null>(null)
+  const [actionsProfile, setActionsProfile] = useState<AgentRosterEntry | null>(null)
+  const [deletingProfile, setDeletingProfile] = useState<AgentRosterEntry | null>(null)
+  const [profileNotice, setProfileNotice] = useState<string | null>(null)
   const [returnTab, setReturnTab] = useState<MobileTab | null>(null)
   const initialNavigationRestoredRef = useRef(false)
   const menuOriginRef = useRef<MobileTab | null>(null)
@@ -184,7 +200,32 @@ export function App() {
     clearMenuReturn()
     setTab('roster')
   }
+  const closeCreateProfile = () => {
+    setCreateProfileOpen(false)
+    setDuplicateOptions(null)
+  }
+  const openCreateProfile = () => {
+    setDuplicateOptions(null)
+    setCreateOptionsOpen(true)
+  }
+  const chooseCreateBot = () => {
+    setCreateOptionsOpen(false)
+    setCreateProfileOpen(true)
+  }
+  const chooseCreateGroup = () => {
+    setCreateOptionsOpen(false)
+    setCreateGroupOpen(true)
+  }
+  const openCreatedGroup = (room: GroupRoom) => {
+    setCreateOptionsOpen(false)
+    setCreateGroupOpen(false)
+    $groups.set([...$groups.get().filter(existing => existing.key !== room.key), room])
+    pushRoute('roster', { roomId: room.key, tab: 'roster', type: 'group-room' })
+  }
   const openSettingsFrom = () => {
+    closeCreateProfile()
+    setCreateOptionsOpen(false)
+    setCreateGroupOpen(false)
     clearMenuReturn()
     resetTabRoutes('settings')
     setTab('settings')
@@ -231,13 +272,49 @@ export function App() {
     }
     if (popRoute(navigation.activeTab) === undefined) exitDestination()
   }
+  const manageAgent = (agent: AgentRosterEntry) => {
+    setActionsProfile(agent)
+    setProfileNotice(null)
+  }
+  const editAgent = () => {
+    if (!actionsProfile) return
+    setEditingProfile(actionsProfile)
+    setActionsProfile(null)
+  }
+  const duplicateAgent = () => {
+    if (!actionsProfile) return
+    const source = actionsProfile
+    const suffix = '-2'
+    const initialName = `${source.name.slice(0, Math.max(1, PROFILE_NAME_MAX_LENGTH - suffix.length))}${suffix}`
+    setDuplicateOptions({
+      initialCloneAll: true,
+      initialCloneFrom: source.name,
+      initialColor: source.meta?.color ?? null,
+      initialDescription: source.description ?? '',
+      initialImage: source.meta?.image ?? source.avatar ?? null,
+      initialName,
+      initialShape: source.meta?.shape ?? 'blobatar',
+      initialTitle: source.meta?.title ? `${source.meta.title} (copy)` : ''
+    })
+    setActionsProfile(null)
+    setCreateProfileOpen(true)
+  }
+  const deleteAgent = () => {
+    if (!actionsProfile || actionsProfile.isDefault) return
+    setDeletingProfile(actionsProfile)
+    setActionsProfile(null)
+  }
   const rosterHeader = (
     <header className="app-header">
       <div className="header-search">
         <IconSearch aria-hidden size={17} />
         <Input aria-label="Search bots" onChange={event => setRosterQuery(event.target.value)} placeholder="Search bots" type="search" value={rosterQuery} />
       </div>
-      <Button aria-label="Open settings" className="header-gear-button" onClick={openSettingsFrom} variant="ghost"><IconSettings className="size-6" /></Button>
+      <div className="header-actions">
+        <Button aria-label="Create profile" className="header-add-button" onClick={openCreateProfile} variant="ghost"><IconPlus aria-hidden="true" className="size-6" /></Button>
+        <Button aria-label="Open settings" className="header-gear-button" onClick={openSettingsFrom} variant="ghost"><IconSettings aria-hidden="true" className="size-6" /></Button>
+      </div>
+      {profileNotice && <p className="profile-notice" role="status">{profileNotice}</p>}
     </header>
   )
   const foregroundHeader = !foregroundVisible
@@ -297,9 +374,30 @@ export function App() {
         onRefresh={refresh}
         reconnecting={reconnecting}
         refreshing={refreshing}
-        roster={<RosterScreen onOpenAgent={openAgent} onOpenGroup={roomId => pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })} query={rosterQuery} />}
+        roster={<RosterScreen onManageAgent={manageAgent} onOpenAgent={openAgent} onOpenGroup={roomId => pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })} query={rosterQuery} />}
         rosterHeader={rosterHeader}
       />
+      <CreateOptionsDialog onCancel={() => setCreateOptionsOpen(false)} onNewBot={chooseCreateBot} onNewGroup={chooseCreateGroup} open={createOptionsOpen} />
+      {createGroupOpen && <CreateGroupChatDialog onCancel={() => setCreateGroupOpen(false)} onCreated={openCreatedGroup} open />}
+      {createProfileOpen && <CreateProfileDialog
+        initialCloneAll={duplicateOptions?.initialCloneAll}
+        initialCloneFrom={duplicateOptions?.initialCloneFrom}
+        initialColor={duplicateOptions?.initialColor}
+        initialDescription={duplicateOptions?.initialDescription}
+        initialImage={duplicateOptions?.initialImage}
+        initialName={duplicateOptions?.initialName}
+        initialShape={duplicateOptions?.initialShape}
+        initialTitle={duplicateOptions?.initialTitle}
+        onCancel={closeCreateProfile}
+        onCreated={(name, warning) => setProfileNotice(warning || `Created profile ${name}.`)}
+        open
+      />}
+      <ProfileActionsDialog bot={actionsProfile} onCancel={() => setActionsProfile(null)} onDelete={deleteAgent} onDuplicate={duplicateAgent} onEdit={editAgent} />
+      {editingProfile && <EditProfileDialog bot={editingProfile} onCancel={() => setEditingProfile(null)} onSaved={name => setProfileNotice(`Updated profile ${name}.`)} open />}
+      {deletingProfile && <DeleteProfileDialog bot={deletingProfile} onCancel={() => setDeletingProfile(null)} onDeleted={name => {
+        if (preferences.profile === name) void controller.openProfile(null)
+        setProfileNotice(`Deleted profile ${name}.`)
+      }} open />}
     </GatewayProvider>
   )
 }

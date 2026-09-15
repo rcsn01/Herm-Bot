@@ -17,7 +17,7 @@ import {
 } from './group-store'
 import { $groupActivity, $groupNeedsYou, $groupPrompts, type GroupActivityEntry, type GroupPrompt } from './group-engine'
 import { answerGroupClarify, harvestStrandedGroupReply } from './group-turns'
-import { pullGroupChatState } from './groups-sync'
+import { groupChatRoomKey, pullGroupChatState } from './groups-sync'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { $groups } from './groups-store'
 
@@ -30,7 +30,23 @@ export function useGroupRooms(): GroupRoom[] {
   const api = useApi(createAgentsApi)
   const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
   const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
-  const rooms = useMemo(() => roster.data?.groups ?? [], [roster.data])
+  const localRooms = useStore($groupChats)
+  const rooms = useMemo(() => {
+    const merged = new Map((roster.data?.groups ?? []).map(room => [room.key, room]))
+    for (const room of Object.values(localRooms)) {
+      const key = groupChatRoomKey(room.name, room)
+      if (merged.has(key)) continue
+      merged.set(key, {
+        key,
+        ...(room.image ? { image: room.image } : {}),
+        log: room.log,
+        members: room.members,
+        name: room.name,
+        ...(room.roomId ? { roomId: room.roomId } : {})
+      })
+    }
+    return [...merged.values()]
+  }, [localRooms, roster.data])
   useEffect(() => {
     $groups.set(rooms)
   }, [rooms])

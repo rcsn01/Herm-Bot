@@ -66,6 +66,22 @@ export function mintGroupThreadId(): string {
   return `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
+/** Fresh room identity independent of the editable display name. */
+export function mintGroupRoomId(): string {
+  return `r${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+/** Keep recreated rooms distinct without silently reopening an old room. */
+export function uniqueGroupChatName(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base
+  for (let number = 2; number < 100; number += 1) {
+    const suffix = ` ${number}`
+    const candidate = `${base.slice(0, 64 - suffix.length)}${suffix}`
+    if (!taken.has(candidate)) return candidate
+  }
+  throw new Error('No free name for the group chat.')
+}
+
 function groupChatEntryId(): string {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID().slice(0, 24)
@@ -128,13 +144,18 @@ function persistRooms(all: Record<string, GroupChatRoom>): void {
   try {
     const durable: Record<string, GroupChatRoom> = {}
     for (const [key, room] of Object.entries(all)) {
-      if (!Array.isArray(room.log) || room.log.length === 0) continue
+      const members = Array.isArray(room.members) ? room.members : []
+      // A newly-created room has no transcript yet, but its durable identity
+      // and membership make it a real local room rather than a runtime stub.
+      // Keep it locally; the gateway projection still omits empty rooms until
+      // the first message gives other clients something to mirror.
+      if (!Array.isArray(room.log) || (room.log.length === 0 && (!room.roomId || members.length === 0))) continue
       durable[key] = {
         epoch: room.epoch || 0,
         holds: room.holds || {},
         image: room.image || null,
         log: room.log,
-        members: Array.isArray(room.members) ? room.members : [],
+        members,
         name: room.name,
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         running: false,

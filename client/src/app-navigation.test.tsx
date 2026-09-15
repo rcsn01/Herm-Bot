@@ -101,7 +101,20 @@ describe('App navigation', () => {
     expect(screen.queryByRole('button', { name: 'Open navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Open bot profile' })).toBeNull()
     expect(screen.queryByTestId('sessions-menu')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Create profile' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Open settings' })).not.toBeNull()
+  })
+
+  it('offers bot and group creation from the roster action', () => {
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create profile' }))
+    const dialog = screen.getByRole('dialog', { name: 'Create new' })
+    expect(within(dialog).getByRole('button', { name: 'New bot' })).not.toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'New group chat' })).not.toBeNull()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog', { name: 'Create new' })).toBeNull()
   })
 
   it('enters the tapped agent latest conversation', async () => {

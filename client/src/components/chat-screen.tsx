@@ -9,12 +9,16 @@ import { BrandMark } from '~/components/brand-mark'
 import { useChatViewport } from '~/components/chat-viewport'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
-import { useScopedTask } from '~/gateway/scope-guard'
+import { useScopedTask, useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection } from '~/features/chat/chat-interaction'
+import { createAgentsApi } from '~/features/agents/agents-api'
+import { displayNameFor } from '~/features/agents/agent-labels'
+import { BotFace } from '~/features/agents/bot-face'
+import { useApi } from '~/gateway/gateway-api-hooks'
 import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection } from '~/state/store'
+import { $connection, $preferences } from '~/state/store'
 
 interface ChatScreenProps {
   active?: boolean
@@ -117,11 +121,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
                 <p role="status">Setting up the conversation.</p>
               </>
             ) : (
-              <>
-                <BrandMark small />
-                <h2>What can Hermes do for you?</h2>
-                <p>This conversation runs on {connection.status?.version ? `Hermes ${connection.status.version}` : 'your remote gateway'}.</p>
-              </>
+              <EmptyChat />
             )}
           </div>
         )}
@@ -259,6 +259,28 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         </div>
       </div>
     </section>
+  )
+}
+
+function EmptyChat() {
+  const preferences = useStore($preferences)
+  const api = useApi(createAgentsApi)
+  const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
+  const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
+  const profileName = preferences.profile || 'default'
+  const profile = roster.data?.entries.find(entry => entry.name === profileName)
+  const image = profile?.meta?.image ?? profile?.avatar
+  const displayName = displayNameFor({ name: profileName })
+
+  return (
+    <>
+      <div aria-hidden="true" className="empty-chat-avatar">
+        {image
+          ? <img alt="" src={image} />
+          : <BotFace color={profile?.meta?.color} name={profileName} shape={profile?.meta?.shape} size={64} />}
+      </div>
+      <h2>What can {displayName} do for you?</h2>
+    </>
   )
 }
 

@@ -24,7 +24,7 @@ export function BotWorkspaceNavigation({ active, onSelect }: { active: BotWorksp
           type="button"
           variant="ghost"
         >
-          <destination.icon aria-hidden="true" size={21} />
+          <destination.icon aria-hidden="true" size={20} />
           <span>{destination.label}</span>
         </Button>
       ))}

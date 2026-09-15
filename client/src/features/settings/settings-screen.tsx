@@ -84,7 +84,7 @@ function NotificationsSettings({ onBack }: { onBack(): void }) {
 }
 
 function KeyboardShortcutsSettings({ onBack }: { onBack(): void }) {
-  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Keyboard Shortcuts"><div className="data-card"><h3>Implemented mobile commands</h3><ul><li>Send and stop from the composer</li><li>Open navigation</li><li>Pull to refresh the active screen</li></ul><p className="muted">Shortcut rebinding is not available in Mobile. Mobile does not reuse the Desktop renderer keybinding registry.</p></div></SettingsPageShell>
+  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Keyboard shortcuts"><div className="data-card"><h3>Implemented mobile commands</h3><ul><li>Send and stop from the composer</li><li>Open navigation</li><li>Pull to refresh the active screen</li></ul><p className="muted">Shortcut rebinding is not available in Mobile. Mobile does not reuse the Desktop renderer keybinding registry.</p></div></SettingsPageShell>
 }
 
 export function applyTheme(theme: ThemeMode) {

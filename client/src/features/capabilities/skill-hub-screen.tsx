@@ -108,7 +108,7 @@ export function SkillHubScreen({ onBack }: { onBack(): void }) {
       {sources.isPending && <Skeleton className="mt-3 h-20 w-full" />}
       {search.isFetching && <Skeleton className="mt-3 h-20 w-full" />}
       {search.error && <GatewayErrorBanner error={search.error} />}
-      <div className="settings-list capability-list">
+      <div className="settings-list capability-list filtered-list">
         {search.data?.results.map(result => (
           <article className="hub-result" key={result.identifier}>
             <div><strong>{result.name}</strong><small>{result.description || result.identifier}</small><small>{result.source} · {result.trust_level || 'community'}</small></div>

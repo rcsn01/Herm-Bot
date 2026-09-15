@@ -11,6 +11,7 @@ import { useScopeKey, useScopedQuery, useScopeReset } from '~/gateway/scope-guar
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { getConfigValue, setConfigValue } from '~/features/models/helpers'
+import { sentenceCaseLabel } from '~/lib/labels'
 import type { ConfigFieldSchema, HermesConfigRecord } from '~/lib/types'
 import { createSettingsApi } from './settings-api'
 import { ConfigField } from './config-field'
@@ -148,5 +149,5 @@ function VoiceProviderResources() {
 
 function fieldLabel(path: string): string {
   const key = path.split('.').at(-1) ?? path
-  return key.replaceAll('_', ' ').replace(/\b\w/g, character => character.toUpperCase())
+  return sentenceCaseLabel(key)
 }

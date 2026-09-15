@@ -1,6 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render as testingRender, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { GatewayProvider } from '~/gateway/gateway-context'
+import type { GatewayPort } from '~/gateway/gateway-port'
 
 vi.mock('~/compat/primitives', () => ({
   Badge: ({ children }: React.ComponentProps<'span'>) => <span>{children}</span>,
@@ -13,7 +17,7 @@ import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection } from '~/state/store'
+import { $connection, $preferences } from '~/state/store'
 import { createTranscript } from '~/transcript/transcript'
 import { act } from 'react'
 
@@ -39,6 +43,22 @@ const conversationStub = () => ({
   send: vi.fn()
 }) as unknown as Conversation
 
+function render(ui: React.ReactElement, profiles: unknown[] = []) {
+  const gateway = {
+    close: vi.fn(),
+    connect: vi.fn(),
+    request: vi.fn(),
+    rpc: vi.fn().mockResolvedValue({ profiles }),
+    subscribe: vi.fn(),
+    subscribeState: vi.fn(),
+    upload: vi.fn()
+  } as unknown as GatewayPort
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return testingRender(ui, {
+    wrapper: ({ children }) => <QueryClientProvider client={queryClient}><GatewayProvider gateway={gateway}>{children}</GatewayProvider></QueryClientProvider>
+  })
+}
+
 beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
   vi.stubGlobal('FileReader', class {
@@ -54,6 +74,7 @@ beforeEach(() => {
   })
   $chat.set(emptyChatState())
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
+  $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
 })
 
 afterEach(() => {
@@ -72,6 +93,21 @@ describe('chat interaction wiring', () => {
 
     expect(container.querySelector('.empty-chat')?.textContent).toContain('Connecting')
     expect(container.querySelector('.empty-chat h2')?.textContent).not.toContain('What can Hermes do')
+  })
+
+  it('shows the active profile character and greeting without gateway version details', async () => {
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    $connection.set({ authMode: 'token', error: null, phase: 'connected', status: { version: '0.20.5' } as never })
+
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />, [{
+      name: 'work',
+      ui_meta: { 'hermes-bots': { color: '#123456', shape: 'circle', title: 'Configured Work' } }
+    }])
+
+    expect(screen.getByRole('heading', { name: 'What can Work do for you?' })).not.toBeNull()
+    await waitFor(() => expect(container.querySelector('.empty-chat-avatar svg path')?.getAttribute('fill')).toBe('#123456'))
+    expect(container.querySelector('.empty-chat')?.textContent).not.toContain('This conversation runs on')
+    expect(container.querySelector('.empty-chat')?.textContent).not.toContain('0.20.5')
   })
 
   it('labels bubbles by position, not by a speaker caption', () => {

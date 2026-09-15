@@ -37,11 +37,11 @@ describe('GatewayErrorBanner', () => {
   })
 
   it('renders a rich unsupported card for a subject', () => {
-    const view = render(<GatewayErrorBanner error={unsupported} subject="Mixture of Agents" unsupportedText="The rest of Models still works." />)
+    const view = render(<GatewayErrorBanner error={unsupported} subject="Mixture of agents" unsupportedText="The rest of models still works." />)
     const banner = view.getByRole('alert')
     expect(banner.className).toBe('unsupported-card')
-    expect(banner.querySelector('strong')?.textContent).toBe('Mixture of Agents unavailable')
-    expect(banner.querySelector('p')?.textContent).toBe('The rest of Models still works.')
+    expect(banner.querySelector('strong')?.textContent).toBe('Mixture of agents unavailable')
+    expect(banner.querySelector('p')?.textContent).toBe('The rest of models still works.')
   })
 
   it('renders a rich error banner for a network failure', () => {

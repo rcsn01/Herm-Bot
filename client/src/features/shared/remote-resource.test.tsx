@@ -54,11 +54,11 @@ describe('RemoteResourceScreen', () => {
       provider: 'openrouter'
     })
 
-    expect(await screen.findByText('Available Providers')).toBeTruthy()
+    expect(await screen.findByText('Available providers')).toBeTruthy()
     expect(screen.getByText('openrouter, anthropic')).toBeTruthy()
     expect(screen.getByText('Provider')).toBeTruthy()
     expect(screen.queryByText('Model')).toBeNull()
-    expect(screen.queryByText('Context Length')).toBeNull()
+    expect(screen.queryByText('Context length')).toBeNull()
     expect(gateway.calls.at(-1)?.value).toMatchObject({ path: '/api/model/info?profile=work' })
   })
 
@@ -71,9 +71,9 @@ describe('RemoteResourceScreen', () => {
     })
 
     expect(await screen.findByText('Model')).toBeTruthy()
-    expect(screen.getByText('Context Length')).toBeTruthy()
+    expect(screen.getByText('Context length')).toBeTruthy()
     expect(screen.queryByText('Provider')).toBeNull()
-    expect(screen.queryByText('Available Providers')).toBeNull()
+    expect(screen.queryByText('Available providers')).toBeNull()
   })
 
   it('keeps credentials on the redacted environment route', async () => {
@@ -142,7 +142,7 @@ describe('RemoteResourceScreen', () => {
       title: 'System'
     }, { gateway_running: true, version: '6' })
 
-    expect(await screen.findByText('Gateway Running')).toBeTruthy()
+    expect(await screen.findByText('Gateway running')).toBeTruthy()
     expect(gateway.calls.at(-1)?.value).toMatchObject({ path: '/api/status' })
   })
 })

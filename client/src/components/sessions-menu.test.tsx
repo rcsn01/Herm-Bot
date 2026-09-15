@@ -76,6 +76,8 @@ describe('SessionsMenu', () => {
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
     expect(screen.queryByText('Recent sessions')).toBeNull()
     const newSession = screen.getByRole('button', { name: 'New session' })
+    expect(newSession.firstElementChild?.tagName).toBe('svg')
+    expect(newSession.lastElementChild?.textContent).toBe('New session')
     expect(screen.getByRole('region', { name: 'Sessions' }).firstElementChild).toBe(newSession)
 
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))

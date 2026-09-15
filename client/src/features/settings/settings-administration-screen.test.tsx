@@ -77,7 +77,7 @@ describe('Settings administration profile gates', () => {
   })
 })
 
-describe('Tools & Keys', () => {
+describe('Tools & keys', () => {
   it('sends a secret to the selected profile and clears the draft after saving', async () => {
     const { gateway, getSavedBody } = renderTools()
     const input = await screen.findByLabelText('MOBILE_TEST_KEY secret')

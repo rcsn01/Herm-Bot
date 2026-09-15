@@ -67,6 +67,18 @@ test('ships an installable manifest, icons, and a controlling service worker', a
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
 })
 
+test('uses the active profile character in a new chat without gateway version text', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'New session' }).click()
+
+  const emptyChat = page.locator('.foreground-layer.active .empty-chat:visible').first()
+  await expect(emptyChat.getByRole('heading', { name: 'What can Hermes do for you?' })).toBeVisible()
+  await expect(emptyChat.locator('.bot-face')).toBeVisible()
+  await expect(emptyChat).not.toContainText('This conversation runs on')
+  await expect(emptyChat).not.toContainText('0.20.5')
+})
+
 test('keeps the bottom status row clear of screen corners until the keyboard opens', async ({ page }) => {
   await login(page)
   const metadata = page.locator('.composer-meta')
@@ -218,7 +230,7 @@ test('runtime screen and navigation routes stay out of the browser URL', async (
   await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
   await expect(page).toHaveURL(rootURL)
   const automationList = page.locator('.cron-job-list')
-  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Cron jobs' })).toHaveCount(0)
   const newAutomation = automationList.locator(':scope > :first-child')
   await expect(newAutomation).toHaveAccessibleName('New automations')
   await expect(page.getByRole('button', { name: 'Refresh cron jobs' })).toHaveCount(0)
@@ -235,11 +247,16 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
 
+  const menuNavigation = page.getByTestId('sessions-menu').getByRole('navigation', { name: 'Bot workspace' })
+  await expect(menuNavigation.locator('.bot-workspace-tab span')).toHaveCount(4)
+  await expect(menuNavigation.locator('.bot-workspace-tab span').first()).toBeHidden()
+
   const sessionsList = page.getByRole('region', { name: 'Sessions' })
   await expect(page.getByText('Recent sessions')).toHaveCount(0)
   const newSessionRow = sessionsList.locator(':scope > :first-child')
   await expect(newSessionRow).toHaveAccessibleName('New session')
   const newSessionBackground = await newSessionRow.evaluate(element => getComputedStyle(element).backgroundColor)
+  const newSessionHeight = await newSessionRow.evaluate(element => element.getBoundingClientRect().height)
   const sessionBackground = await sessionsList.locator('.session-main').first().evaluate(element => getComputedStyle(element).backgroundColor)
   expect(newSessionBackground).toBe(sessionBackground)
 
@@ -250,6 +267,8 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
   expect(sessionIdentity).toBeTruthy()
 
   await page.getByRole('button', { name: 'Automations' }).click()
+  const foregroundNavigation = page.locator('.foreground-layer.active').getByRole('navigation', { name: 'Bot workspace' })
+  await expect(foregroundNavigation.locator('.bot-workspace-tab span').first()).toBeHidden()
   for (const destination of [
     { button: 'Automations', subtitle: 'Automations' },
     { button: 'Capabilities', subtitle: 'Capabilities' },
@@ -260,6 +279,12 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
     }
     const header = page.locator('.foreground-layer.active > .bot-workspace-header')
     await expect(header.locator('.header-bot-button small')).toHaveText(destination.subtitle)
+    if (destination.button === 'Automations') {
+      const newAutomation = page.locator('.foreground-layer.active .cron-new-automation')
+      await expect(newAutomation).toBeVisible()
+      const newAutomationHeight = await newAutomation.evaluate(element => element.getBoundingClientRect().height)
+      expect(newAutomationHeight).toBe(newSessionHeight)
+    }
     await expect(header.getByRole('button', { name: 'Open navigation' })).toHaveCount(0)
     const contentTopPadding = await page.locator('.foreground-layer.active .page-screen').evaluate(element => getComputedStyle(element).paddingTop)
     expect(contentTopPadding).toBe(sessionTopPadding)
@@ -430,7 +455,7 @@ test('reloading resets a runtime screen to the startup route', async ({ page }) 
   await page.reload()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('searchbox', { name: 'Search bots' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Cron Jobs' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Cron jobs' })).toHaveCount(0)
 })
 
 test('a screen URL is consumed as a cold-start input', async ({ page }) => {

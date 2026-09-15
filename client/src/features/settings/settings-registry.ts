@@ -27,7 +27,7 @@ export const BACKEND_SETTINGS_SECTIONS: readonly MobileSettingsSection[] = [
   { id: 'browser', label: 'Browser', keys: ['browser.use_real_profile', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls'] },
   {
     id: 'memory',
-    label: 'Memory & Context',
+    label: 'Memory & context',
     keys: ['memory.memory_enabled', 'memory.user_profile_enabled', 'memory.memory_char_limit', 'memory.user_char_limit', 'memory.provider', 'context.engine', 'compression.enabled', 'compression.threshold', 'compression.target_ratio', 'compression.protect_last_n']
   },
   {
@@ -79,10 +79,10 @@ export const SETTINGS_ENTRIES: readonly SettingsEntry[] = [
   { description: 'Plan, entitlement, balance, and usage.', id: 'billing', kind: 'administration', label: 'Billing' },
   { description: 'Provider accounts, OAuth, keys, and endpoints.', id: 'providers', kind: 'administration', label: 'Providers' },
   { description: 'Remote gateway, profiles, and connection controls.', id: 'gateway', kind: 'administration', label: 'Gateways' },
-  { category: 'keyboard-shortcuts', description: 'Implemented mobile shortcuts and unsupported rebinding.', id: 'keyboard-shortcuts', kind: 'local', label: 'Keyboard Shortcuts' },
-  { description: 'Redacted credentials and tool provider setup.', id: 'tools-keys', kind: 'administration', label: 'Tools & Keys' },
+  { category: 'keyboard-shortcuts', description: 'Implemented mobile shortcuts and unsupported rebinding.', id: 'keyboard-shortcuts', kind: 'local', label: 'Keyboard shortcuts' },
+  { description: 'Redacted credentials and tool provider setup.', id: 'tools-keys', kind: 'administration', label: 'Tools & keys' },
   { description: 'Installed plugin inventory and supported actions.', id: 'plugins', kind: 'administration', label: 'Plugins' },
-  { description: 'Archived sessions for this profile.', id: 'archived-chats', kind: 'administration', label: 'Archived Chats' },
+  { description: 'Archived sessions for this profile.', id: 'archived-chats', kind: 'administration', label: 'Archived chats' },
   { description: 'Mobile, gateway, contract, and support information.', id: 'about', kind: 'local', label: 'About' }
 ]
 

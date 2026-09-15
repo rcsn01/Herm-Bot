@@ -46,11 +46,11 @@ export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBac
   return (
     <PageShell heading={false} title="Automations">
       <div className="search-box"><IconCalendarClock aria-hidden="true" size={17} /><Input aria-label="Search cron jobs" onChange={event => setSearch(event.target.value)} placeholder="Search jobs" value={search} /></div>
-      <div className="filter-row"><label>Status<select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label></div>
+      <div className="filter-row"><label><select aria-label="Cron job status" onChange={event => setStatus(event.target.value as typeof status)} value={status}><option value="all">All</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Needs attention</option></select></label></div>
       {jobs.isFetching && jobs.data && <p className="muted" role="status">Refreshing…</p>}
       {jobs.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-2 h-20 w-full" /></div>}
-      {jobs.error && <GatewayErrorBanner error={jobs.error} unsupportedText="Cron Jobs are unavailable on this gateway." />}
-      <div className="cron-job-list">
+      {jobs.error && <GatewayErrorBanner error={jobs.error} unsupportedText="Cron jobs are unavailable on this gateway." />}
+      <div className="cron-job-list filtered-list">
         <Button className="cron-new-automation" onClick={() => setShowCreateOptions(true)} type="button" variant="ghost"><IconPlus aria-hidden="true" size={18} /><span>New automations</span></Button>
         {jobs.data && filtered.length === 0 && <div className="empty-panel">{jobs.data.length === 0 ? 'No cron jobs exist for this profile.' : 'No cron jobs match these filters.'}</div>}
         {filtered.map(job => <CronJobCard job={job} key={job.id} onOpen={() => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-detail' })} />)}

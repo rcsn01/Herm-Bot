@@ -259,7 +259,7 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
         }}>
           <div aria-label="Sessions" className="session-list navigation-session-list" role="region">
             <Button className="navigation-new-session" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} type="button" variant="ghost">
-              <span>New session</span><IconPlus aria-hidden="true" size={20} />
+              <IconPlus aria-hidden="true" size={20} /><span>New session</span>
             </Button>
             {filtered.map(session => {
               const revealed = swipedId === session.id

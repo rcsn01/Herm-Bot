@@ -135,8 +135,10 @@ describe('cron jobs', () => {
     const { container } = render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ tab: 'cron', type: 'cron-root' }} onNavigate={onNavigate} /></GatewayProvider></QueryClientProvider>)
 
     expect(await screen.findByText('Morning briefing')).not.toBeNull()
-    expect(screen.queryByRole('heading', { name: 'Cron Jobs' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Cron jobs' })).toBeNull()
     const newAutomation = screen.getByRole('button', { name: 'New automations' })
+    expect(newAutomation.firstElementChild?.tagName).toBe('svg')
+    expect(newAutomation.lastElementChild?.textContent).toBe('New automations')
     expect(container.querySelector('.cron-job-list')?.firstElementChild).toBe(newAutomation)
     expect(screen.queryByRole('button', { name: 'Blueprints' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Refresh cron jobs' })).toBeNull()

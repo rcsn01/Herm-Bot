@@ -89,6 +89,13 @@ export function isBlobShape(shape: null | string | undefined): boolean {
   return shape === 'blobatar' || (typeof shape === 'string' && shape.startsWith('blobatar:'))
 }
 
+/** Build the desktop-compatible blobatar shape string. An empty seed follows
+ * the profile name; an empty kind leaves the silhouette on automatic mode. */
+export function blobShapeString(seedPart: string, kind: string): string {
+  if (kind) return `blobatar:${seedPart}:${kind}`
+  return seedPart ? `blobatar:${seedPart}` : 'blobatar'
+}
+
 export interface ParsedBlobShape {
   /** A BlobKind when the silhouette is pinned, else empty. */
   kind: string

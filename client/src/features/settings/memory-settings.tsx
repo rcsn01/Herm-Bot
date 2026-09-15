@@ -157,7 +157,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     })
   }
 
-  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Provider configuration and memory files belong to the selected gateway profile. Changes apply to new sessions." title="Memory & Context">
+  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Provider configuration and memory files belong to the selected gateway profile. Changes apply to new sessions." title="Memory & context">
     {error && <div className="error-banner" role="alert">{error}</div>}
     {!profileSupportsMemoryManagement && <section className="unsupported-card" role="alert"><strong>Memory management is unavailable for this profile.</strong><p>This gateway's memory status, provider selection, reset, and dependency setup routes are process-scoped. Use the default profile or connect to a gateway dedicated to this profile.</p></section>}
     {profileSupportsMemoryManagement && status.error && <GatewayErrorBanner error={status.error} unsupportedText="Memory management is unavailable on this gateway." />}

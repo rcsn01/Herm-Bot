@@ -17,8 +17,28 @@ const mime = new Map([
   ['.svg', 'image/svg+xml'], ['.webmanifest', 'application/manifest+json; charset=utf-8']
 ])
 const cookie = req => /(?:^|;\s*)fixture_session=([^;]+)/.exec(req.headers.cookie || '')?.[1]
+const initialProfiles = () => [
+  {
+    name: 'default', is_default: true,
+    ui_meta: {
+      'hermes-bots': { custom: true, shape: 'blobatar:12:organic', title: 'Hermes' },
+      'hermes-bots-groups': {
+        version: 3, updatedAt: 1_700_000_000_000,
+        rooms: { 'id:r-crew': {
+          name: 'Research crew', roomId: 'r-crew', revision: 3,
+          members: [{ name: 'codex' }, { name: 'scout' }],
+          log: [
+            { at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Find the specs' },
+            { at: 1_700_000_060_000, from: { kind: 'member', name: 'Codex' }, text: 'Two candidates so far' }
+          ]
+        } }, deleted: {}
+      }
+    }
+  },
+  { name: 'work' }
+]
 const stateFor = id => {
-  if (!clients.has(id)) clients.set(id, { calls: [], messages: new Map() })
+  if (!clients.has(id)) clients.set(id, { assets: new Map(), calls: [], messages: new Map(), profiles: initialProfiles() })
   return clients.get(id)
 }
 const json = (res, status, body, headers = {}) => {
@@ -39,10 +59,13 @@ const initialMessages = id => [
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, origin)
   try {
-    if (url.pathname === '/api/status') return json(res, 200, {
-      auth_required: true, auth_providers: ['password'], desktop_contract: 6,
-      profiles: [{ name: 'default', is_default: true }, { name: 'work' }]
-    })
+    if (url.pathname === '/api/status') {
+      const current = cookie(req)
+      const profiles = current
+        ? stateFor(current).profiles.map(profile => ({ is_default: profile.is_default === true, name: profile.name }))
+        : [{ name: 'default', is_default: true }, { name: 'work' }]
+      return json(res, 200, { auth_required: true, auth_providers: ['password'], desktop_contract: 6, profiles })
+    }
     if (url.pathname === '/api/auth/providers') return json(res, 200, { providers: [
       { name: 'password', display_name: 'Test account', supports_password: true }
     ] })
@@ -161,6 +184,7 @@ sockets.on('connection', (ws, _req, id, profile) => {
     const stored = params.session_id || `created-${profile}`
     const runtime = `runtime-${profile}-${stored}`
     let result
+    let rpcError
     if (request.method === 'session.create' || request.method === 'session.resume') {
       currentStored = stored
       result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: 'fixture/test-model', title: stored } }
@@ -174,29 +198,73 @@ sockets.on('connection', (ws, _req, id, profile) => {
         { id: 'plumb-group', title: 'Group: r-crew', preview: '[Group chat: "Research crew"]', source: 'ios', started_at: 1_700_000_500, message_count: 9 }
       ] }
     } else if (request.method === 'profiles.list') {
-      // The default profile row carries the desktop Bot Mode meta + mirror.
-      result = { profiles: [
-        {
-          name: 'default', is_default: true,
-          // ui_meta['hermes-bots']: the user-named bot title drives the roster
-          // label; the custom shape drives the face. Groups mirror beside it.
-          ui_meta: {
-            'hermes-bots': { custom: true, shape: 'blobatar:12:organic', title: 'Hermes' },
-            'hermes-bots-groups': {
-              version: 3, updatedAt: 1_700_000_000_000,
-              rooms: { 'id:r-crew': {
-                name: 'Research crew', roomId: 'r-crew', revision: 3,
-                members: [{ name: 'codex' }, { name: 'scout' }],
-                log: [
-                  { at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Find the specs' },
-                  { at: 1_700_000_060_000, from: { kind: 'member', name: 'Codex' }, text: 'Two candidates so far' }
-                ]
-              } }, deleted: {}
-            }
-          }
-        },
-        { name: 'work' }
-      ] }
+      result = { profiles: state.profiles }
+    } else if (request.method === 'profiles.create') {
+      const name = typeof params.name === 'string' ? params.name : ''
+      if (!/^[a-z0-9_-]{1,63}$/.test(name)) {
+        rpcError = { code: -32602, message: 'Invalid profile name' }
+      } else if (state.profiles.some(profile => profile.name === name)) {
+        rpcError = { code: -32602, message: 'Profile already exists' }
+      } else {
+        const source = typeof params.clone_from === 'string' ? state.profiles.find(profile => profile.name === params.clone_from) : undefined
+        const created = params.clone_all && source
+          ? structuredClone(source)
+          : { name }
+        created.name = name
+        created.is_default = false
+        if (typeof params.description === 'string') created.description = params.description
+        if (typeof params.model === 'string') created.model = { default: params.model, provider: params.provider || '' }
+        if (typeof params.soul === 'string') created.soul = params.soul
+        state.profiles.push(created)
+        result = { name, ok: true, path: `/profiles/${name}` }
+      }
+    } else if (request.method === 'profiles.describe') {
+      const profile = state.profiles.find(candidate => candidate.name === params.name)
+      if (!profile) rpcError = { code: -32602, message: 'Profile not found' }
+      else result = {
+        description: profile.description || '',
+        mcp_servers: profile.mcp_servers || [{ description: 'Fixture MCP server', enabled: true, name: 'fixture-mcp', transport: 'stdio' }],
+        model: profile.model || { default: '', provider: '' },
+        name: profile.name,
+        skills: profile.skills || [{ description: 'Browse websites', enabled: true, name: 'browser' }, { description: 'Read calendars', enabled: true, name: 'calendar' }],
+        soul: profile.soul || '',
+        toolsets: profile.toolsets || [{ description: 'Search the web', enabled: true, name: 'web_search' }, { description: 'Use a browser', enabled: true, name: 'browser' }]
+      }
+    } else if (request.method === 'mcp.catalog') {
+      result = { servers: [{ description: 'Fixture MCP server', name: 'fixture-mcp', transport: 'stdio' }, { description: 'Catalog-only server', name: 'catalog-mcp', transport: 'http' }] }
+    } else if (request.method === 'model.options') {
+      result = { providers: [{ authenticated: true, models: ['fixture/fast', 'fixture/deep'], name: 'Fixture AI', slug: 'fixture' }, { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }] }
+    } else if (request.method === 'profiles.configure') {
+      const profile = state.profiles.find(candidate => candidate.name === params.name)
+      if (!profile) rpcError = { code: -32602, message: 'Profile not found' }
+      else {
+        if (typeof params.description === 'string') profile.description = params.description
+        if (typeof params.soul === 'string') profile.soul = params.soul
+        if (Array.isArray(params.disabled_skills)) profile.disabled_skills = params.disabled_skills
+        if (Array.isArray(params.enabled_toolsets)) profile.enabled_toolsets = params.enabled_toolsets
+        if (Array.isArray(params.enabled_mcp_servers)) profile.enabled_mcp_servers = params.enabled_mcp_servers
+        if (params.model !== undefined) profile.model = { default: params.model, provider: params.provider || '' }
+        if (params.ui_meta) profile.ui_meta = { ...(profile.ui_meta || {}), ...params.ui_meta }
+        result = { applied: Object.fromEntries(Object.keys(params).filter(key => key !== 'name').map(key => [key, true])), ok: true }
+      }
+    } else if (request.method === 'profiles.get_asset') {
+      const data = state.assets.get(params.name)
+      result = data ? { asset: 'avatar', data, found: true, mime: 'image/png', size: data.length } : { asset: 'avatar', found: false }
+    } else if (request.method === 'profiles.set_asset') {
+      if (params.clear) state.assets.delete(params.name)
+      else if (typeof params.data === 'string') state.assets.set(params.name, params.data)
+      const profile = state.profiles.find(candidate => candidate.name === params.name)
+      if (profile) profile.has_avatar = !params.clear
+      result = { asset: 'avatar', found: !params.clear, ok: true }
+    } else if (request.method === 'image.generate') {
+      result = { image_data: 'data:image/png;base64,AA==', success: true }
+    } else if (request.method === 'cli.exec') {
+      const argv = Array.isArray(params.argv) ? params.argv : []
+      if (argv[0] === 'profile' && argv[1] === 'delete' && typeof argv[2] === 'string') {
+        state.profiles = state.profiles.filter(profile => profile.name !== argv[2])
+        state.assets.delete(argv[2])
+      }
+      result = { code: 0, ok: true }
     } else if (request.method === 'commands.catalog') result = { commands: [] }
     else if (request.method === 'model.info') result = { model: 'fixture/test-model' }
     else if (request.method === 'session.events.since') result = { events: [] }
@@ -207,7 +275,7 @@ sockets.on('connection', (ws, _req, id, profile) => {
       state.messages.set(currentStored, messages)
       result = { accepted: true }
     } else result = {}
-    ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }))
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
     if (request.method === 'prompt.submit') {
       ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: params.session_id, payload: { delta: `Fixture answer: ${params.text}` } } }))
       ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.complete', session_id: params.session_id, payload: {} } }))

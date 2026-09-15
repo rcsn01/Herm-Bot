@@ -179,77 +179,80 @@ export function ModelsScreen({ onBack: _onBack, showBack: _showBack = true }: Mo
   return (
     <PageShell
       heading={false}
-      subtitle={`Current model, assignments, and model capabilities for the ${profile || 'default'} profile.`}
       title="Models"
     >
       {loading && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-20 w-full" /><Skeleton className="mt-3 h-32 w-full" /></div>}
       {loadError && <GatewayErrorBanner error={loadError} subject="Models" />}
 
       <section className="models-section" aria-label="Main model">
-        <h3>Main model</h3>
-        <div className="models-card">
-          <p className="models-meta">
-            {mainModel ? (
-              <>Applied: <span className="models-mono">{mainModel.provider || 'unknown'} · {mainModel.model || 'unknown'}</span></>
-            ) : (
-              'No model applied yet.'
-            )}
-          </p>
-          <div className="models-controls">
-            <ModelSelect
-              ariaLabel="Provider"
-              disabled={mainEditing.applying}
-              onChange={value => { setSelectedProvider(value); setSelectedModel('') }}
-              options={providerSelectOptions}
-              placeholder="Provider"
-              value={selectedProvider}
-            />
-            <ModelSelect
-              ariaLabel="Model"
-              disabled={mainEditing.applying || !selectedProvider}
-              onChange={setSelectedModel}
-              options={ensureOption(modelOptions(selectedProviderModels), selectedModel)}
-              placeholder="Model"
-              value={selectedModel}
-            />
-          </div>
-          <div className="models-controls">
-            <Button
-              disabled={!selectedProvider || !selectedModel || mainEditing.applying}
-              onClick={() => mainEditing.apply({
-                model: selectedModel,
-                provider: selectedProvider,
-                ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
-              })}
-              size="sm"
-              variant="default"
-            >
-              {mainEditing.applying ? 'Applying…' : 'Apply'}
-            </Button>
-            {mainEditing.declined && !mainEditing.applying && <Badge variant="muted">Model change cancelled</Badge>}
+        <h3>Main Model</h3>
+        <div className="models-card models-main-card">
+          <div className="models-selection">
+            <div className="models-picker-grid">
+              <label className="models-field">
+                <span>Provider</span>
+                <ModelSelect
+                  ariaLabel="Provider"
+                  disabled={mainEditing.applying}
+                  onChange={value => { setSelectedProvider(value); setSelectedModel('') }}
+                  options={providerSelectOptions}
+                  placeholder="Provider"
+                  value={selectedProvider}
+                />
+              </label>
+              <label className="models-field">
+                <span>Model</span>
+                <ModelSelect
+                  ariaLabel="Model"
+                  disabled={mainEditing.applying || !selectedProvider}
+                  onChange={setSelectedModel}
+                  options={ensureOption(modelOptions(selectedProviderModels), selectedModel)}
+                  placeholder="Model"
+                  value={selectedModel}
+                />
+              </label>
+            </div>
+            <div className="models-actions">
+              <Button
+                disabled={!selectedProvider || !selectedModel || mainEditing.applying}
+                onClick={() => mainEditing.apply({
+                  model: selectedModel,
+                  provider: selectedProvider,
+                  ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
+                })}
+                size="sm"
+                variant="default"
+              >
+                {mainEditing.applying ? 'Applying…' : 'Apply'}
+              </Button>
+              {mainEditing.declined && !mainEditing.applying && <Badge variant="muted">Model change cancelled</Badge>}
+            </div>
           </div>
           {mainEditing.error && <div className="error-banner" role="alert">{mainEditing.error}</div>}
 
           {configData && mainModel && (reasoningSupported || fastSupported) && (
-            <div className="models-controls" aria-label="Profile defaults">
-              {reasoningSupported && (
-                <label className="models-field-label">
-                  <span>Reasoning</span>
-                  <ModelSelect
-                    ariaLabel="Default reasoning effort"
-                    onChange={configEditing.setReasoningEffort}
-                    options={REASONING_OPTIONS}
-                    placeholder="Reasoning"
-                    value={effortValue}
-                  />
-                </label>
-              )}
-              {fastSupported && (
-                <label className="models-field-label models-toggle">
-                  <span>Fast tier</span>
-                  <Switch checked={fastOn} onCheckedChange={configEditing.setFastTier} />
-                </label>
-              )}
+            <div className="models-defaults" aria-label="Profile defaults">
+              <h4>Profile defaults</h4>
+              <div className="models-defaults-grid">
+                {reasoningSupported && (
+                  <label className="models-field-label">
+                    <span>Reasoning</span>
+                    <ModelSelect
+                      ariaLabel="Default reasoning effort"
+                      onChange={configEditing.setReasoningEffort}
+                      options={REASONING_OPTIONS}
+                      placeholder="Reasoning"
+                      value={effortValue}
+                    />
+                  </label>
+                )}
+                {fastSupported && (
+                  <label className="models-field-label models-toggle">
+                    <span>Fast tier</span>
+                    <Switch checked={fastOn} onCheckedChange={configEditing.setFastTier} />
+                  </label>
+                )}
+              </div>
             </div>
           )}
           {configEditing.error && <div className="error-banner" role="alert">{configEditing.error}</div>}
@@ -258,7 +261,6 @@ export function ModelsScreen({ onBack: _onBack, showBack: _showBack = true }: Mo
 
       <section className="models-section" aria-label="Auxiliary models">
         <h3>Auxiliary models</h3>
-        <p className="muted">Helper tasks run on their own model when pinned, otherwise on the main model.</p>
         {staleWarning.length > 0 && (
           <div className="warning-banner" role="status">
             <p>
@@ -270,47 +272,58 @@ export function ModelsScreen({ onBack: _onBack, showBack: _showBack = true }: Mo
             <Button disabled={auxiliaryEditing.applying || !mainModel} onClick={() => void resetAuxiliary()} size="sm" variant="secondary">Reset all to main</Button>
           </div>
         )}
-        <div className="models-card">
-          {AUX_TASKS.map(({ key, label, hint }) => {
+        <div className="models-card models-auxiliary-card">
+          <div className="models-auxiliary-grid">
+            {AUX_TASKS.map(({ key, label, hint }) => {
             const current = auxiliary.data?.tasks.find(entry => entry.task === key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
             const isEditing = editingTask === key
             return (
               <div className="models-slot" key={key} aria-label={`Auxiliary ${label}`}>
-                <div className="models-controls">
+                <div className="models-slot-summary">
                   <span className="models-slot-title">{label}</span>
-                  {!isEditing && (
-                    <>
-                      <Button disabled={!mainModel || auxiliaryEditing.applying} onClick={() => void submitAuxiliary({ model: mainModel!.model, provider: mainModel!.provider, task: key })} size="sm" variant="secondary">Set to main</Button>
-                      <Button disabled={!providers.length || auxiliaryEditing.applying} onClick={() => beginAuxiliaryEdit(key)} size="sm" variant="secondary">Change</Button>
-                    </>
-                  )}
+                  <div className="models-slot-model models-meta">
+                    <span>{isAuto
+                      ? 'auto'
+                      : `${current!.provider} · ${current!.model || 'provider default'}`}</span>
+                    {!isAuto && <small>{hint}</small>}
+                  </div>
                 </div>
-                <p className="models-meta">{isAuto ? 'Uses the main model' : `${current!.provider} · ${current!.model || 'provider default'}`}{!isAuto && ` — ${hint}`}</p>
+                {!isEditing && (
+                  <div className="models-slot-actions">
+                    <Button disabled={!mainModel || auxiliaryEditing.applying} onClick={() => void submitAuxiliary({ model: '', provider: 'auto', task: key })} size="sm" variant="secondary">Set to main</Button>
+                    <Button disabled={!providers.length || auxiliaryEditing.applying} onClick={() => beginAuxiliaryEdit(key)} size="sm" variant="secondary">Change</Button>
+                  </div>
+                )}
                 {isEditing && (
-                  <div className="models-controls">
-                    <ModelSelect
-                      ariaLabel={`Provider for ${label}`}
-                      onChange={value => setAuxDraft(prev => ({ model: '', provider: value }))}
-                      options={ensureOption(providerOptions(providers), auxDraft.provider)}
-                      placeholder="Provider"
-                      value={auxDraft.provider}
-                    />
-                    <ModelSelect
-                      ariaLabel={`Model for ${label}`}
-                      onChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                      options={modelOptions(auxDraftProviderModels)}
-                      placeholder="Model"
-                      value={auxDraft.model}
-                    />
-                    <Button disabled={!auxDraft.provider || !auxDraft.model || auxiliaryEditing.applying} onClick={() => void submitAuxiliary({ model: auxDraft.model, provider: auxDraft.provider, task: key })} size="sm" variant="default">{auxiliaryEditing.applying ? 'Applying…' : 'Apply'}</Button>
-                    <Button onClick={() => setEditingTask(null)} size="sm" variant="secondary">Cancel</Button>
+                  <div className="models-slot-edit">
+                    <div className="models-picker-grid">
+                      <ModelSelect
+                        ariaLabel={`Provider for ${label}`}
+                        onChange={value => setAuxDraft(prev => ({ model: '', provider: value }))}
+                        options={ensureOption(providerOptions(providers), auxDraft.provider)}
+                        placeholder="Provider"
+                        value={auxDraft.provider}
+                      />
+                      <ModelSelect
+                        ariaLabel={`Model for ${label}`}
+                        onChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                        options={modelOptions(auxDraftProviderModels)}
+                        placeholder="Model"
+                        value={auxDraft.model}
+                      />
+                    </div>
+                    <div className="models-actions models-slot-edit-actions">
+                      <Button disabled={!auxDraft.provider || !auxDraft.model || auxiliaryEditing.applying} onClick={() => void submitAuxiliary({ model: auxDraft.model, provider: auxDraft.provider, task: key })} size="sm" variant="default">{auxiliaryEditing.applying ? 'Applying…' : 'Apply'}</Button>
+                      <Button onClick={() => setEditingTask(null)} size="sm" variant="secondary">Cancel</Button>
+                    </div>
                   </div>
                 )}
               </div>
             )
-          })}
-          <div className="models-controls">
+            })}
+          </div>
+          <div className="models-controls models-auxiliary-actions">
             <Button disabled={!mainModel || auxiliaryEditing.applying} onClick={() => void resetAuxiliary()} size="sm" variant="secondary">Reset all to main</Button>
           </div>
           {(auxiliaryEditing.error || moaError) && <div className="error-banner" role="alert">{auxiliaryEditing.error || moaError}</div>}
@@ -339,21 +352,26 @@ export function ModelsScreen({ onBack: _onBack, showBack: _showBack = true }: Mo
           providers={providers}
         />
       )}
-      {moa.error && <GatewayErrorBanner error={moa.error} subject="Mixture of Agents" unsupportedText="This gateway does not provide the MoA endpoint. The rest of Models still works." role="status" />}
+      {moa.error && <GatewayErrorBanner error={moa.error} subject="Mixture of agents" unsupportedText="This gateway does not provide the MoA endpoint. The rest of models still works." role="status" />}
 
       {configData && (
-        <section className="models-section" aria-label="Context and fallbacks">
-          <ContextWindowField
-            autoDetected={info.data?.auto_context_length}
-            effective={info.data?.effective_context_length}
-            onWrite={configEditing.setContextLength}
-            value={typeof getConfigValue(configData, 'model_context_length') === 'number' ? Number(getConfigValue(configData, 'model_context_length')) : 0}
-          />
-          <FallbackField
-            onWrite={configEditing.setFallbacks}
-            providers={providers}
-            value={getConfigValue(configData, 'fallback_providers')}
-          />
+        <section className="models-section models-advanced-section" aria-label="Context and fallbacks">
+          <div className="models-section-heading">
+            <h3>Session model settings</h3>
+          </div>
+          <div className="models-advanced-grid">
+            <ContextWindowField
+              autoDetected={info.data?.auto_context_length}
+              effective={info.data?.effective_context_length}
+              onWrite={configEditing.setContextLength}
+              value={typeof getConfigValue(configData, 'model_context_length') === 'number' ? Number(getConfigValue(configData, 'model_context_length')) : 0}
+            />
+            <FallbackField
+              onWrite={configEditing.setFallbacks}
+              providers={providers}
+              value={getConfigValue(configData, 'fallback_providers')}
+            />
+          </div>
         </section>
       )}
 

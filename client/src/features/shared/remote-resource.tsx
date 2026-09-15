@@ -5,6 +5,7 @@ import { Badge, Button, Skeleton } from '~/compat/primitives'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
+import { sentenceCaseLabel } from '~/lib/labels'
 
 export type RemoteResourcePresentation = 'credentials' | 'models' | 'providers' | 'summary'
 
@@ -97,4 +98,4 @@ function emptyMessage(presentation: RemoteResourcePresentation): string {
   return 'The gateway returned this capability without a summary.'
 }
 
-const friendlyLabel = (key: string) => key.replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase())
+const friendlyLabel = (key: string) => sentenceCaseLabel(key)

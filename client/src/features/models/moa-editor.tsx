@@ -237,16 +237,16 @@ export function MoaEditor({ connectionKey, moa, onMoaChange, onError, onSaved, p
     return (
       <div className="error-banner" role="alert">
         <strong>MoA presets are empty.</strong>
-        <p>The gateway returned a Mixture of Agents config without presets.</p>
+        <p>The gateway returned a mixture of agents config without presets.</p>
       </div>
     )
   }
 
   return (
     <>
-      <section className="models-section" aria-label="Mixture of Agents">
-      <h3>Mixture of Agents</h3>
-      <p className="muted">Presets appear as models under the Mixture of Agents provider. The aggregator is the acting model.</p>
+      <section className="models-section" aria-label="Mixture of agents">
+      <h3>Mixture of agents</h3>
+      <p className="muted">Presets appear as models under the mixture of agents provider. The aggregator is the acting model.</p>
 
       <div className="models-card">
         <div className="models-controls">

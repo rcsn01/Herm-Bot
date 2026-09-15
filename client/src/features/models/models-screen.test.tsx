@@ -168,21 +168,24 @@ const moaPutBodies = (gateway: MemoryGateway) => putBodies(gateway, '/api/model/
 
 async function loadedScreen(gateway: MemoryGateway) {
   mountScreen(gateway)
-  await screen.findByText('Applied:')
+  await waitFor(() => {
+    expect((screen.getByRole('combobox', { name: 'Provider' }) as HTMLSelectElement).value).toBe('openrouter')
+    expect((screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement).value).toBe(modelInfo.model)
+  })
 }
 
 describe('ModelsScreen', () => {
   it('reads every models surface through the profile-scoped routes', async () => {
     const gateway = baseGateway()
-    mountScreen(gateway)
+    await loadedScreen(gateway)
 
-    expect(await screen.findByText('Applied:')).not.toBeNull()
     expect(screen.queryByRole('heading', { name: 'Models' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Refresh models' })).toBeNull()
     for (const path of READ_PATHS) {
       expect(gateway.calls.some(call => call.kind === 'request' && (call.value as { path: string }).path === path)).toBe(true)
     }
-    expect(screen.getAllByText(/openrouter · anthropic\/claude-opus-4\.8/i).length).toBeGreaterThan(0)
+    expect((screen.getByRole('combobox', { name: 'Provider' }) as HTMLSelectElement).value).toBe('openrouter')
+    expect((screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement).value).toBe(modelInfo.model)
   })
 
   it('applies a main assignment for the selected provider and model', async () => {
@@ -275,6 +278,28 @@ describe('ModelsScreen', () => {
       expect(posts.some(call => (call.value as { body: { task?: string } }).body.task === '__reset__')).toBe(true)
       const reset = posts.find(call => (call.value as { body: { task?: string } }).body.task === '__reset__')!
       expect((reset.value as { body: Record<string, unknown> }).body).toMatchObject({ model: 'anthropic/claude-opus-4.8', provider: 'openrouter', scope: 'auxiliary', task: '__reset__' })
+    })
+  })
+
+  it('shows auto for an auxiliary task using the automatic main-model assignment', async () => {
+    const gateway = baseGateway({ auxiliary: { vision: { model: '', provider: 'auto' } } })
+    await loadedScreen(gateway)
+
+    const vision = within(screen.getByLabelText('Auxiliary Vision'))
+    expect(vision.getByText('auto', { exact: true })).not.toBeNull()
+  })
+
+  it('sets one auxiliary task back to the automatic main-model assignment', async () => {
+    const gateway = baseGateway({ auxiliary: { vision: { model: 'old-model', provider: 'old-provider' } } })
+    await loadedScreen(gateway)
+
+    const vision = within(screen.getByLabelText('Auxiliary Vision'))
+    fireEvent.click(vision.getByRole('button', { name: 'Set to main' }))
+
+    await waitFor(() => {
+      const post = postCalls(gateway).find(call => (call.value as { body: { task?: string } }).body.task === 'vision')
+      expect(post).toBeTruthy()
+      expect((post!.value as { body: Record<string, unknown> }).body).toEqual({ model: '', provider: 'auto', scope: 'auxiliary', task: 'vision' })
     })
   })
 
@@ -591,8 +616,8 @@ describe('ModelsScreen', () => {
       .handle('/api/model/moa?profile=work', () => { throw new Error('Method not found') })
     mountScreen(gateway)
 
-    expect(await screen.findByText('Mixture of Agents unavailable')).not.toBeNull()
-    expect(screen.getByText('This gateway does not provide the MoA endpoint. The rest of Models still works.')).not.toBeNull()
+    expect(await screen.findByText('Mixture of agents unavailable')).not.toBeNull()
+    expect(screen.getByText('This gateway does not provide the MoA endpoint. The rest of models still works.')).not.toBeNull()
     expect(screen.getByRole('combobox', { name: 'Provider' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Apply' })).not.toBeNull()
   })
