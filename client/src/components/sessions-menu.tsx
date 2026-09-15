@@ -12,7 +12,7 @@ import { displayNameFor } from '~/features/agents/agent-labels'
 import { humanSessions } from '~/features/sessions/api'
 import type { StoredSession } from '~/lib/types'
 import type { MobileTab } from '~/navigation/routes'
-import type { NavigationPageDismissIntent } from '~/navigation/use-navigation-page-controller'
+import { workspaceMenuIntent, type WorkspaceMenuIntent } from '~/navigation/workspace-navigation'
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
@@ -21,7 +21,7 @@ import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store
 
 interface SessionsMenuProps {
   controller: GatewayController
-  onDismissRequest(intent?: NavigationPageDismissIntent): void
+  onDismissRequest(intent?: WorkspaceMenuIntent): void
   open: boolean
 }
 
@@ -199,11 +199,6 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
     onDismissRequest({ type: 'tab', tab })
   }
 
-  const navigateModel = () => {
-    if (actionPendingRef.current) return
-    onDismissRequest({ type: 'model' })
-  }
-
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault()
@@ -297,9 +292,8 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
           </section>
         </div>
         <BotWorkspaceNavigation active="sessions" onSelect={destination => {
-          if (destination === 'sessions') return
-          if (destination === 'model') navigateModel()
-          else navigate(destination)
+          if (destination === 'sessions' || actionPendingRef.current) return
+          onDismissRequest(workspaceMenuIntent(destination))
         }} />
         {remove && <ConfirmDialog confirmLabel="Delete" description={`Delete ${remove.title}? This cannot be undone.`} onCancel={() => setRemove(null)} onConfirm={() => { const id = remove.id; setRemove(null); void deleteSession(id) }} title="Delete session" />}
       </main>

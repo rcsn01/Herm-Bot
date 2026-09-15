@@ -6,7 +6,7 @@ import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
 import { CreateOptionsDialog } from '~/components/create-options-dialog'
 import { BotWorkspaceHeader } from '~/components/bot-workspace-header'
-import { BotWorkspaceNavigation, type BotWorkspaceDestination } from '~/components/bot-workspace-navigation'
+import { BotWorkspaceNavigation } from '~/components/bot-workspace-navigation'
 import { ChatScreen } from '~/components/chat-screen'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
@@ -26,13 +26,11 @@ import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { CronScreen } from '~/features/cron/cron-screen'
 import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
-import type { CapabilitiesRoute, CronRoute, MobileRoute, MobileTab, SettingsRoute } from '~/navigation/routes'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
-import { restoreInitialNavigation } from '~/navigation/initial-navigation'
-import { $activeRoute, $navigation, applyPathState, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
-import { useNavigationPageController } from '~/navigation/use-navigation-page-controller'
-import { ROOT_ROUTES } from '~/navigation/routes'
+import { $activeRoute, $navigation, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
+import { useWorkspaceNavigation } from '~/navigation/use-workspace-navigation'
+import { narrowRoute, restoreWorkspacePath, workspaceBackLabel, workspaceDestinationFor, workspaceRouteTitle, workspaceTabTitle } from '~/navigation/workspace-navigation'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
 import { GatewayController } from '~/state/gateway-controller'
@@ -40,36 +38,6 @@ import { $connection, $preferences, $profileSwitching } from '~/state/store'
 
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
-
-const DESTINATION_TITLES = {
-  capabilities: 'Capabilities',
-  cron: 'Automations',
-  roster: 'Hermes',
-  settings: 'Settings',
-  sessions: 'Sessions'
-} as const
-
-const BOT_CONFIGURATION_TITLES = {
-  capabilities: 'Capabilities',
-  cron: 'Automations',
-  model: 'Models'
-} as const
-
-function botWorkspaceRouteTitle(destination: 'capabilities' | 'cron' | 'model', route: MobileRoute): string {
-  if (route.type === 'cron-job-detail') return 'Job details'
-  if (route.type === 'cron-job-editor') return route.jobId ? 'Edit job' : 'New job'
-  if (route.type === 'cron-blueprints') return 'Blueprints'
-  if (route.type === 'capabilities-section') return route.section === 'mcp' ? 'MCP' : route.section === 'skills' ? 'Skills' : 'Tools'
-  if (route.type === 'capability-detail') {
-    if (route.capabilityId === 'skills-hub') return 'Skill hub'
-    if (route.capabilityId === 'mcp-catalog') return 'MCP catalog'
-    if (route.capabilityId === 'mcp:new') return 'Add server'
-    if (route.capabilityId.startsWith('skill:')) return route.capabilityId.slice(6) || 'Skill'
-    if (route.capabilityId.startsWith('toolset:')) return route.capabilityId.slice(8) || 'Toolset'
-    if (route.capabilityId.startsWith('mcp:')) return route.capabilityId.slice(4) || 'MCP server'
-  }
-  return BOT_CONFIGURATION_TITLES[destination]
-}
 
 export function App() {
   const connection = useStore($connection)
@@ -91,32 +59,8 @@ export function App() {
   const [actionsProfile, setActionsProfile] = useState<AgentRosterEntry | null>(null)
   const [deletingProfile, setDeletingProfile] = useState<AgentRosterEntry | null>(null)
   const [profileNotice, setProfileNotice] = useState<string | null>(null)
-  const [returnTab, setReturnTab] = useState<MobileTab | null>(null)
   const initialNavigationRestoredRef = useRef(false)
-  const menuOriginRef = useRef<MobileTab | null>(null)
-  const menuOriginStackRef = useRef<MobileRoute[] | null>(null)
-  const returnStackRef = useRef<MobileRoute[] | null>(null)
-  const navigationPage = useNavigationPageController({
-    onDismissed: intent => {
-      const origin = menuOriginRef.current
-      const originStack = menuOriginStackRef.current
-      menuOriginRef.current = null
-      menuOriginStackRef.current = null
-      if (intent.type === 'tab') {
-        if (origin === intent.tab) return
-        setReturnTab(origin)
-        returnStackRef.current = originStack
-        openDestination(intent.tab)
-      } else if (intent.type === 'model') {
-        const originRoute = originStack?.at(-1)
-        if (origin === 'settings' && originRoute?.type === 'settings-category' && originRoute.category === 'model') return
-        setReturnTab(origin)
-        returnStackRef.current = originStack
-        openModelSettings()
-      }
-    }
-  })
-  const navigationPageOpen = navigationPage.isOpen
+  const workspace = useWorkspaceNavigation()
 
   useEffect(() => {
     applyTheme(preferences.theme)
@@ -128,7 +72,7 @@ export function App() {
     if (initialNavigationRestoredRef.current) return
     initialNavigationRestoredRef.current = true
     const pathname = window.location.pathname
-    restoreInitialNavigation(pathname)
+    restoreWorkspacePath(pathname)
     if (pathname !== '/' && !parseHermesDeepLink(window.location.href)) {
       history.replaceState(null, '', '/')
     }
@@ -167,38 +111,12 @@ export function App() {
     await Promise.allSettled([controller.conversation.reconcileHistory(), controller.refreshSessions()])
     setRefreshing(false)
   }
-  const clearMenuReturn = () => {
-    setReturnTab(null)
-    returnStackRef.current = null
-  }
   const openAgent = (profile: null | string) => {
     // Enter the destination first; the wire work (profile switch, session
     // resume) streams into the already-visible chat shell.
-    clearMenuReturn()
+    workspace.clearReturn()
     setTab('sessions')
     void controller.openProfile(profile)
-  }
-  /** In-app back pops the active in-memory route stack; at its root the
-   *  caller's destination fallback runs instead. */
-  const goBackOr = (fallback: () => void) => {
-    if (popRoute(navigation.activeTab) === undefined) fallback()
-  }
-  const exitDestination = (fallback: MobileTab = 'roster') => {
-    const destination = returnTab ?? fallback
-    const returnStack = returnStackRef.current
-    const reopenMenu = returnTab !== null && returnStack !== null
-    clearMenuReturn()
-    if (returnStack) applyPathState(destination, returnStack)
-    else setTab(destination)
-    if (reopenMenu) {
-      menuOriginRef.current = destination
-      menuOriginStackRef.current = returnStack
-      navigationPage.openNavigationPage()
-    }
-  }
-  const backToRoster = () => {
-    clearMenuReturn()
-    setTab('roster')
   }
   const closeCreateProfile = () => {
     setCreateProfileOpen(false)
@@ -227,51 +145,33 @@ export function App() {
     closeCreateProfile()
     setCreateOptionsOpen(false)
     setCreateGroupOpen(false)
-    clearMenuReturn()
+    workspace.clearReturn()
     resetTabRoutes('settings')
     setTab('settings')
   }
-  const openNavigationPage = () => {
-    menuOriginRef.current = navigation.activeTab
-    menuOriginStackRef.current = [...navigation.stacks[navigation.activeTab]] as MobileRoute[]
-    navigationPage.openNavigationPage()
-  }
-  const selectBotWorkspaceDestination = (destination: BotWorkspaceDestination) => {
-    if (destination === 'sessions') {
-      openNavigationPage()
-      return
-    }
-    if (destination === 'model') openModelSettings()
-    else openDestination(destination)
-  }
   const nestedRoute = navigation.stacks[navigation.activeTab].length > 1
-  const activeBotConfiguration = activeBotConfigurationDestination(navigation.activeTab, activeRoute)
-  const modelReturnsToSurface = navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab
-  const backDestinationLabel = nestedRoute && !modelReturnsToSurface
-    ? 'Back'
-    : returnTab
-      ? 'Back to menu'
-      : 'Back to bots'
+  const activeBotConfiguration = workspaceDestinationFor(navigation.activeTab, activeRoute)
+  const backDestinationLabel = workspaceBackLabel(nestedRoute, activeBotConfiguration, workspace.returnOrigin !== null)
   const botName = displayNameFor({ name: preferences.profile || 'default' })
-  const headerTitle = DESTINATION_TITLES[navigation.activeTab]
+  const headerTitle = workspaceTabTitle(navigation.activeTab)
   /** Chat shows the current session beneath the bot identity. */
   const headerSubtitle = (chat.info as { title?: string } | null)?.title || 'New conversation'
   const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
   const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
   const backFromForeground = () => {
     if (activeGroupId) {
-      if (popRoute('roster') === undefined) backToRoster()
+      workspace.backOr('roster', workspace.closeToRoster)
       return
     }
     if (navigation.activeTab === 'sessions') {
-      backToRoster()
+      workspace.closeToRoster()
       return
     }
-    if (navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && returnTab) {
-      exitDestination()
+    if (navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && workspace.returnOrigin) {
+      workspace.exitToReturnOrigin()
       return
     }
-    if (popRoute(navigation.activeTab) === undefined) exitDestination()
+    workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin())
   }
   const manageAgent = (agent: AgentRosterEntry) => {
     setActionsProfile(agent)
@@ -321,7 +221,7 @@ export function App() {
   const foregroundHeader = !foregroundVisible
     ? null
     : activeBotConfiguration
-      ? <BotWorkspaceHeader backLabel={backDestinationLabel} botName={botName} onBack={backFromForeground} subtitle={botWorkspaceRouteTitle(activeBotConfiguration, activeRoute)} />
+      ? <BotWorkspaceHeader backLabel={backDestinationLabel} botName={botName} onBack={backFromForeground} subtitle={workspaceRouteTitle(activeBotConfiguration, activeRoute)} />
       : (
           <header className="app-header">
             {activeGroupId ? (
@@ -340,7 +240,7 @@ export function App() {
               <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
             ) : null}
             {inProfile && (
-              <Button aria-controls="sessions-menu" aria-expanded={navigationPageOpen} aria-label="Open navigation" className="header-menu-button" onClick={openNavigationPage} variant="ghost"><IconMenu2 className="size-6" /></Button>
+              <Button aria-controls="sessions-menu" aria-expanded={workspace.menuOpen} aria-label="Open navigation" className="header-menu-button" onClick={workspace.openMenu} variant="ghost"><IconMenu2 className="size-6" /></Button>
             )}
           </header>
         )
@@ -350,21 +250,21 @@ export function App() {
         <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
       </div>
       {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onNavigate={route => pushRoute('capabilities', route)} route={routeForCapabilities(activeRoute)} />}
-      {navigation.activeTab === 'cron' && <CronScreen onBack={() => goBackOr(() => exitDestination('sessions'))} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); clearMenuReturn(); setTab('sessions') }} route={routeForCron(activeRoute)} />}
-      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => goBackOr(() => exitDestination())} onNavigate={route => pushRoute('settings', route)} route={routeForSettings(activeRoute)} showModelBack={!returnTab} />}
+      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin('sessions'))} onNavigate={route => pushRoute('capabilities', route)} route={narrowRoute('capabilities', activeRoute)} />}
+      {navigation.activeTab === 'cron' && <CronScreen onBack={() => workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin('sessions'))} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.clearReturn(); setTab('sessions') }} route={narrowRoute('cron', activeRoute)} />}
+      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin())} onNavigate={route => pushRoute('settings', route)} route={narrowRoute('settings', activeRoute)} showModelBack={!workspace.returnOrigin} />}
     </>
   )
 
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
-        navigationPage={navigationPageOpen || inProfile ? <SessionsMenu controller={controller} onDismissRequest={navigationPage.requestDismiss} open={navigationPageOpen} /> : null}
-        navigationPageOpen={navigationPageOpen}
+        navigationPage={workspace.menuOpen || inProfile ? <SessionsMenu controller={controller} onDismissRequest={workspace.dismissMenu} open={workspace.menuOpen} /> : null}
+        navigationPageOpen={workspace.menuOpen}
         foreground={foregroundContent}
         foregroundDismissible={foregroundDismissible}
         foregroundHeader={foregroundHeader}
-        foregroundNavigation={activeBotConfiguration ? <BotWorkspaceNavigation active={activeBotConfiguration} onSelect={selectBotWorkspaceDestination} /> : null}
+        foregroundNavigation={activeBotConfiguration ? <BotWorkspaceNavigation active={activeBotConfiguration} onSelect={workspace.openWorkspaceDestination} /> : null}
         foregroundVisible={foregroundVisible}
         onDismissForeground={() => {
           // A committed swipe always dismisses the whole foreground to the
@@ -403,37 +303,6 @@ export function App() {
   )
 }
 
-function activeBotConfigurationDestination(tab: MobileTab, route: MobileRoute): 'capabilities' | 'cron' | 'model' | null {
-  if (tab === 'capabilities' || tab === 'cron') return tab
-  if (tab === 'settings' && route.type === 'settings-category' && route.category === 'model') return 'model'
-  return null
-}
-
-function routeForCapabilities(route: ReturnType<typeof $activeRoute.get>): CapabilitiesRoute {
-  return route.tab === 'capabilities' ? route : ROOT_ROUTES.capabilities
-}
-
 function routeForGroupRoom(route: ReturnType<typeof $activeRoute.get>): string | null {
   return route.tab === 'roster' && route.type === 'group-room' ? route.roomId : null
-}
-
-function routeForCron(route: ReturnType<typeof $activeRoute.get>): CronRoute {
-  return route.tab === 'cron' ? route : ROOT_ROUTES.cron
-}
-
-function routeForSettings(route: ReturnType<typeof $activeRoute.get>): SettingsRoute {
-  return route.tab === 'settings' ? route : ROOT_ROUTES.settings
-}
-
-function openDestination(tab: MobileTab) {
-  resetTabRoutes(tab)
-  setTab(tab)
-}
-
-function openModelSettings() {
-  setTab('settings')
-  const current = $navigation.get().stacks.settings.at(-1)
-  if (current?.type === 'settings-category' && current.category === 'model') return
-  resetTabRoutes('settings')
-  pushRoute('settings', { category: 'model', tab: 'settings', type: 'settings-category' })
 }

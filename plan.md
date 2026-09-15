@@ -1,236 +1,246 @@
-# Deepen the Group send engine
+# Deepen the Workspace navigation
 
-Candidate 1 from the architecture review (September 15, 2026). This plan covers only that candidate. The report lives at `/var/folders/th/_8dpnzf515n6h74y89jpky5h0000gn/T/architecture-review-20260915-225230.html`; the design vocabulary (module, interface, implementation, depth, seam, adapter, leverage, locality) comes from the codebase-design skill; domain terms come from `CONTEXT.md`, which this plan extends with the Group entries (already applied — see *Side effects applied*).
+Candidate 1 from the second architecture review (September 15, 2026). The report lives at `/var/folders/th/_8dpnzf515n6h74y89jpky5h0000gn/T/architecture-review-20260915-235331.html`; the design vocabulary (module, interface, implementation, depth, seam, adapter, leverage, locality) comes from the codebase-design skill; domain terms come from `CONTEXT.md`, which this plan extends (see *Side effects applied*). The plan that previously lived in this file — the Group send engine deepening — has landed (e0705e9); it was deleted to make room for this one.
 
 ## Problem
 
-The group send engine — the only part of the app that autonomously sends turns at a live gateway — has no interface. Its control plane is scattered across eight files and two mutable globals:
+The workspace navigation module is missing, so its policy is scattered across a fan of shallow edits. Adding or moving one screen touches ~7 sites in 5 files:
 
-- **The GatewayController reaches in through three globals.** `gateway-controller.ts` imports seven group symbols: `setGroupEngineRequest` (`group-engine.ts:21`), `setGroupSyncScheduler` (`group-store.ts:189`), and five sync functions from `groups-sync.ts` (`handleGatewayTransition`, `pullGroupChatState`, `scheduleGroupChatSync`, `startGroupChatSync`, `stopGroupChatSync`). It calls them eleven times across `dispose()` (:339-341), `teardownGatewayScope()` (:377-380), and `installGroupEngine()` (:397-400) — twelve call expressions counting the `scheduleGroupChatSync` inside the scheduler callback (:399). Both setters exist only to break import cycles; neither is a seam, they are global mutable slots.
-- **`group-store.ts` is shallow: interface as wide as implementation.** 25 exports (6 limit constants, 3 types, 2 atoms, 14 functions) mix the room record shape, identity minting (`mintGroupThreadId`, `mintGroupRoomId`), name uniqueness, UI copy (`normalizeGroupChatText`; its `GROUP_EMPTY_FRIENDLY` companion is private), member keys, log trimming, localStorage persistence, the mirror-sync scheduler slot, and the two atoms — with no test file. The duplicate-append guard (#93127), `GROUP_LOG_RETAIN` trimming with watermark adjustment, and the durable persistence shape all ship untested.
-- **`groups-store.ts` fails the deletion test.** It is a 9-line file holding one atom, `$groups`, written by `group-screen.tsx:50-52` (an effect) and `app.tsx:222` (a synchronous write inside the `openCreatedGroup` handler, not an effect), and read back by `roster-screen.tsx:64-86` and `create-group-chat-dialog.tsx:125-133` as a redundant source beside their own re-merge of the same data. The known-rooms merge (roster snapshot ∪ local rooms by durable key) is duplicated nearly line-for-line in `roster-screen.tsx:66-86` and `group-screen.tsx:34-52`; the empty-room filter exists only in the roster-screen copy (see *Behavior deltas accepted* 2).
-- **Engine wiring is global callback registries, untested.** `setGroupEngineRequest` and `setGroupSyncScheduler` are two parallel mutable globals the controller installs and tears down; `group-engine.ts:81` re-exports `$groupNeedsYou` (defined at `group-store.ts:57`) explicitly to dodge an import cycle. `group-store.ts` and `group-engine.ts` have zero tests; the full round (send → rounds → member turns → replies → mirror flush) has no test anywhere.
-- **Dead code.** `harvestRoomStranded` (`groups-sync.ts:808`, with its dynamic-import cycle workaround) and `clearGroupNeedsYou` (`group-engine.ts:83`) have no callers.
+- **Route vocabulary** (`navigation/routes.ts`): typed route unions, `MOBILE_TABS` (5 tabs), `SETTINGS_CATEGORIES` (12), `SETTINGS_ADMINISTRATION_PAGES` (16), `ROOT_ROUTES`. This part is healthy — pure data, widely imported as types.
+- **URL parse** (`navigation/screen-url.ts:32-91`): per-head `if (head === 'group'|'sessions'|'capabilities'|'cron'|'settings')` branches. `screen-url.test.ts:50-51` pins that `/bot` and `/bot/extra` are rejected.
+- **Service-worker allowlist** (`pwa/policy.ts:18-19`): a second, independent regex — `^\/(?:bot|group|sessions|capabilities|cron|settings|navigation)` — that accepts `bot` and `navigation` heads the parser rejects. `policy.test.ts:14` pins both legacy heads as allowed. The two vocabularies drifted and nothing can catch it.
+- **Titles** (`app.tsx:44-73`): `DESTINATION_TITLES`, `BOT_CONFIGURATION_TITLES`, and `botWorkspaceRouteTitle` (cron detail/editor/blueprints; capabilities-section; capability-detail special ids `skills-hub`, `mcp-catalog`, `mcp:new`, `skill:`, `toolset:`, `mcp:` prefixes).
+- **Destination lists, duplicated**: `routes.ts:1` `MOBILE_TABS` vs `bot-workspace-navigation.tsx:7-12` its own `destinations` array with a `'model'` id that exists nowhere else.
+- **Destination→action mapping, duplicated**: `app.tsx:239-245` `selectBotWorkspaceDestination` (sessions→menu, model→model settings, else openDestination) vs `sessions-menu.tsx:299-303` (sessions→no-op, model→intent, else intent — the pending-guarded `navigate`/`navigateModel` emitters at 197-205).
+- **Return-origin choreography** (`app.tsx:94-115, 170-202, 234-249, 261-274`): `returnTab` state + `menuOriginRef`, `menuOriginStackRef`, `returnStackRef` refs; `openNavigationPage` captures the origin; the `onDismissed` intent closure resolves tab/model intents with origin-equality short-circuits; `exitDestination` restores the return stack and reopens the menu; `clearMenuReturn`, `backToRoster`, `backFromForeground` branch tree; `modelReturnsToSurface`.
+- **Menu open/close latch** (`navigation/use-navigation-page-controller.ts`, 40 lines): boolean latch + `NavigationPageDismissIntent`, one caller. Shallow — the deletion test moves complexity, it doesn't concentrate it.
+- **Cold-start glue** (`navigation/initial-navigation.ts`, 10 lines): a pass-through over `navigationFromPath` + `applyPathState`, one caller. Fails the deletion test outright.
+- **Per-tab narrowers and derivations** (`app.tsx:406-439`): `activeBotConfigurationDestination` (`'model'` special case), `routeForCapabilities/Cron/Settings/GroupRoom`, `openModelSettings` (idempotent model-category open), `openDestination`.
 
-Deletion-test verdicts: delete `$groups` → complexity vanishes (derived pass-through). Delete the two setters → complexity vanishes (the controller is their only production caller; the three unit suites also seed the transport through `setGroupEngineRequest` — see *Tests*). Delete `group-store` → complexity reappears in N callers (it earns its keep, but its interface must shrink to what callers actually need).
+The test surface pays too: `app-navigation.test.tsx` (462 lines) mocks nine modules just to exercise the choreography — evidence the seam sits at the wrong layer. `routeFor*` fallbacks (dead at runtime — a stack only ever holds same-tab routes) and settings-administration navigation have no direct coverage at all; the menu reopen-over-origin path is pinned at the UI level (the witness's capabilities and model round trips assert the menu reopens over the restored origin, and e2e walks all three destinations) but nowhere at the interface level.
+
+Deletion-test verdicts: `initial-navigation.ts` — complexity vanishes (pass-through). `use-navigation-page-controller.ts` — complexity vanishes into its one caller. The title maps, the return-origin refs, and the URL vocabularies — complexity reappears in N callers; they earn a module, they just don't have one.
 
 ## Goal
 
-One home for the group send engine, inside `features/groups/`, with the interface in `group-engine.ts` — the name the domain already uses ("group send engine", commit 80f0150). After the refactor:
+One **Workspace navigation** module inside `client/src/navigation/`, with the interface in `workspace-navigation.ts` and the React entry in `use-workspace-navigation.ts`. After the refactor:
 
-- The GatewayController touches exactly two verbs: `startGroupEngine(transport)` on connect, `stopGroupEngine()` on scope teardown and dispose.
-- Screens act through five room actions and read through one hook plus the engine's atoms.
-- The known-rooms merge lives in one pure function behind one hook; `$groups` and `groups-store.ts` are deleted.
-- The room store, mirror sync, and round drive become internal seams, each testable alone; the injected transport remains the engine's only seam to the wire (two adapters justify it: the real runtime RPC in production, a scripted fake in tests).
+- `app.tsx` loses ~100 lines of choreography: no title maps, no origin refs, no latch, no dismiss-intent closure, no `openDestination`/`openModelSettings`/`exitDestination`/`backToRoster`/`clearMenuReturn`/`goBackOr`/`routeFor*`/`activeBotConfigurationDestination`. It keeps composition: which screens render, which dialogs open, and the roster/group back policy (`backFromForeground`, swipe-dismiss reset) — now expressed through module verbs.
+- Adding a screen touches the route union in `routes.ts` and one screen file; titles, URL parse, allowlist, and back fallbacks come from the module.
+- The service-worker allowlist and the URL parser read one head table; the `bot`/`navigation` drift becomes an explicit, tested legacy entry instead of a second regex.
+- `initial-navigation.ts`, `use-navigation-page-controller.ts`, and `screen-url.ts` are deleted; their coverage moves to the module's interface tests.
+- Zero user-visible behavior change. `app-navigation.test.tsx` and `pwa/policy.test.ts` pass untouched as the witness.
 
-A screen reads: `useGroupRooms(rosterGroups)` for the list, `useGroupEngineState(name)`-style atom reads for one room, `sendToGroupChat` / `stopGroupThread` / `answerGroupPrompt` to act. Which room to open and what to draft stay with the screens, exactly as `CONTEXT.md` splits engine plumbing from call-site policy.
+## Design
 
-## Side effects applied
+### The seam
 
-- `CONTEXT.md` gained four domain terms (this was done before writing the plan, as the grilling side effect): **Group chat**, **Group send engine**, **Group mirror**, **Known rooms**. No existing terms were changed.
-- `plan.md` (the September 12 review's candidate plan, landed) was deleted at the user's request before writing this file.
+Two files, one module. The core is DOM-free so the service-worker bundle (`pwa/sw.ts` → `pwa/policy.ts`) can share its vocabulary without dragging React or the app into the worker bundle.
 
-## Decisions (grilling tree, settled)
+```
+src/navigation/workspace-navigation.ts   ← the interface (DOM-free; imports only ~/navigation/*)
+src/navigation/use-workspace-navigation.ts ← the React entry (core + navigation-store + React)
+```
 
-The user authorized recommended answers for all clarification questions. The tree, walked and settled:
+What the module does **not** own (stays put): `navigation-store.ts` (the route-stack engine — deep, tested), `DeepLinkCoordinator` + `parseHermesDeepLink` (session deep links), `MobileShell`/`BotWorkspaceHeader`/`BotWorkspaceNavigation` (presentation), and the roster/group back policy in `app.tsx`.
 
-**Q1. Where does the deepened module's interface live?**
-Options: (A) a new `group-send-engine.ts` facade beside the existing files; (B) `group-engine.ts` becomes the interface, with the runtime state it hosts today moving to a new internal `group-runtime.ts`; (C) `group-store.ts` becomes the interface.
-Recommended: **B**. The file already bears the engine's name and holds the transport slot; a facade importing `groups-sync` + `group-rounds` + `group-turns` + `group-store` becomes acyclic precisely once the transport slot and the activity/prompt atoms leave it. (C) would make a store the engine — the wrong seam. (A) adds a file when the name already exists.
-Settled: B.
-
-**Q2. What is the exact external interface?**
-Recommended (the full surface, below in *The deepened module*):
-- Lifecycle: `startGroupEngine(transport)` / `stopGroupEngine()` — controller-only.
-- Actions: `openGroupRoom(room)`, `createGroupChat(baseName, members, takenNames)`, `sendToGroupChat(...)`, `stopGroupThread(...)`, `answerGroupPrompt(...)` (renamed from `answerGroupClarify` — it answers clarify *and* approval prompts; `GroupPrompt` is the existing domain noun).
-- Reads: `useGroupRooms(rosterGroups?)` hook owning the known-rooms projection; the pure `groupRoomsView(rosterGroups, localRooms)` beside it; the atoms `$groupChats`, `$groupActivity`, `$groupPrompts`, `$groupNeedsYou` re-exported, plus `getGroupRoom` (group-screen's engineRoom fallback) and `GROUP_CHAT_MAX_MEMBERS` (the dialog's member cap) so screens and the dialog keep the one-import-path rule.
-- Types: `GroupEngineTransport` (the existing `GroupEngineRequest` alias renamed at the interface), `GroupChatRoom`, `GroupPrompt`, `GroupActivityEntry`.
-The bodies of `sendToGroupChat` / `stopGroupThread` / `answerGroupPrompt` stay in `group-rounds.ts` / `group-turns.ts` and are re-exported by the facade — moving ~1,100 lines of tested-adjacent engine logic buys nothing.
-Settled: as listed.
-
-**Q3. What happens to the two mutable globals and the eleven controller calls?**
-Recommended: the setters stop being interface. `setEngineTransport` moves to `group-runtime.ts` (file-exported so the facade can reach it, never re-exported); `setGroupSyncScheduler` stays in `group-store.ts` under the same discipline. The controller's `installGroupEngine()` body becomes `startGroupEngine((method, params) => this.runtime.rpc(method, params))`; `dispose()` and `teardownGatewayScope()` each call `stopGroupEngine()`. Eleven calls across three methods (twelve counting the scheduler callback) become two verbs.
-Settled: yes.
-
-**Q4. What happens to `$groups` and the duplicated known-rooms merge?**
-Options: (a) delete `$groups` and have every consumer derive from the hook; (b) keep an engine-internal `$knownRooms` atom that `useGroupRooms(rosterGroups)` publishes.
-Recommended: **(b), with the atom internal (never exported)**. Callers holding roster data (`roster-screen`, `group-screen`, `create-group-chat-dialog`) call `useGroupRooms(rosterGroups)` — the hook runs the one merge and publishes it; provider-free callers (the app header) call `useGroupRooms()` and read the last published view. This preserves the deep-link header behavior — `app-navigation.test.tsx:143-152` exercises exactly this flow (fallback title, then the room name once the published view lands; `RosterScreen` is always mounted, verified: `mobile-shell.tsx` renders the roster unconditionally) — while the merge exists in exactly one place. Pure option (a) would regress the app-header name for a mirror-only room reached by deep link. The two residual deltas (one-frame name lag on create, ghost-row fix on the roster) are recorded in *Behavior deltas accepted*.
-Settled: (b).
-
-**Q5. What happens to the dead exports?**
-Recommended: delete `harvestRoomStranded` (`groups-sync.ts:808`) and `clearGroupNeedsYou` (`group-engine.ts:83`) — both caller-free; the dynamic `import('./group-turns')` cycle workaround dies with the first.
-Settled: delete both.
-
-**Q6. What does `startGroupEngine` / `stopGroupEngine` actually do?**
-Recommended — byte-for-byte today's choreography:
-- `startGroupEngine(transport)`: install the transport (`setEngineTransport(transport)`), `startGroupChatSync()`, register the scheduler (`setGroupSyncScheduler(changedRoom => scheduleGroupChatSync({ changedRooms: [changedRoom] }))`), and fire the initial pull `void pullGroupChatState().catch(() => undefined)` — the receive half of the sync contract, before any local publish, exactly as the current `installGroupEngine()` comment requires.
-- `stopGroupEngine()`: `setEngineTransport(null)`, `setGroupSyncScheduler(null)`, `handleGatewayTransition()` (bump every room's epoch so live loops bail at their next member boundary), `stopGroupChatSync()`.
-Consequence accepted: `dispose()` today does *not* call `handleGatewayTransition`; unifying stop adds the epoch bump on dispose. That is a safety improvement (a StrictMode remount's stale drive loop now bails instead of failing RPCs), not a regression — see *Behavior deltas accepted*.
-Settled: yes.
-
-**Q7. What is the test surface, and which tests survive?**
-Recommended (per the DEEPENING rule — replace, don't layer; the interface is the test surface):
-- Survive unchanged (verified): `group-model.test.ts`, `group-screen.test.tsx` (mocks the gateway, not the hooks), `roster-screen.test.tsx` (seeds `$groupChats`; its just-created-room seed carries `roomId` + members, so it passes the new uniform empty-stub filter), `gateway-controller.test.ts` (zero group references).
-- Adjusted — the three transport-seeding unit suites re-point the raw setter (verified: `groups-sync.test.ts` import at :4, seeds at :328/:358/:402; `group-rounds.test.ts` import at :15, seeds at :62/:389; `group-turns.test.ts` import at :3, nine seed sites plus a `setGroupEngineRequest(null)` teardown at :41). They import `setEngineTransport` from `./group-runtime` — the file seam, NOT `startGroupEngine`, which would also arm the sync scheduler and fire the initial pull and change what these suites exercise. Only the new engine suite drives the interface.
-- Adjusted — atom-seeding swaps: `create-group-chat-dialog.test.tsx` (delete the `$groups.set([])` at line 23; `$groupChats.set({})` already runs at :22) and `app-navigation.test.tsx` (`$groups` seeds at :71 and :151 — see the seed-shape warning in *Tests*).
-- New: `group-engine.test.ts` — lifecycle, full-round integration through the injected fake transport, scope-teardown semantics, `groupRoomsView`.
-- New: `group-store.test.ts` — duplicate-append guard, trimming, persistence shape, adopt idempotence, needs-you on append.
-- Nothing existing is deleted; no test is written past the interface (rounds/turns internals stay reachable through scripted transport behavior, not by poking internals).
-Settled: as listed.
-
-**Q8. Naming.**
-Recommended: the deepened module is **the Group send engine**; the wire projection is **the Group mirror**; the rendered list is **Known rooms**; the room concept is a **Group chat** / **Group room**. All four now in `CONTEXT.md`. No existing term changed.
-Settled: yes.
-
-## The deepened module
-
-### External interface (`group-engine.ts` — the only import path for callers outside `features/groups/`; one verified carve-out: `features/agents/agents-api.ts` consumes `groupRoomsFromRoster` and the `GroupRoom` type from the shared `group-model.ts` leaf, unchanged)
+### Core interface — `workspace-navigation.ts`
 
 ```ts
-// Lifecycle — the GatewayController is the only caller.
-export function startGroupEngine(transport: GroupEngineTransport): void
-export function stopGroupEngine(): void
+export type WorkspaceDestination = 'sessions' | 'cron' | 'capabilities' | 'model'
+export type BotConfigurationDestination = 'capabilities' | 'cron' | 'model'
 
-// Actions — call-site policy (which room, which draft) stays with screens.
-export function openGroupRoom(room: GroupRoom): void
-  // adoptMirrorRoom + pullGroupChatState + stranded harvest — the body of the
-  // group-screen open effect moves here.
-export function createGroupChat(
-  baseName: string,
-  members: GroupMember[],
-  takenNames: ReadonlySet<string>
-): GroupRoom            // mintGroupRoomId + uniqueGroupChatName + updateGroupChat; throws when no free name
-export function sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string   // re-exported from group-rounds.ts
-export function stopGroupThread(group: string, thread: null | string, members?: EngineMember[] | null): Promise<void           // re-exported from group-rounds.ts
-export function answerGroupPrompt(entry: GroupPrompt, member: GroupMember, answers: Record<string, string> | string | undefined): Promise<void   // renamed from answerGroupClarify (group-turns.ts), re-exported
+/** Dismiss intents emitted by the sessions menu (moved verbatim from
+ *  use-navigation-page-controller.ts). */
+export type WorkspaceMenuIntent =
+  | { type: 'close' }
+  | { type: 'model' }
+  | { type: 'tab'; tab: MobileTab }
 
-// Reads.
-export function useGroupRooms(rosterGroups?: GroupRoom[]): GroupRoom[]
-  // Runs groupRoomsView(rosterGroups ?? [], $groupChats.get()); when called WITH
-  // rosterGroups it publishes the merged view to the internal $knownRooms atom
-  // (an effect, replacing today's writers at group-screen.tsx:50-52 and
-  // app.tsx:222). Key the merge memo and the publish effect on a CONTENT
-  // signature of rosterGroups (the room-key list), never array identity —
-  // callers pass freshly built `roster.data?.groups ?? []` arrays (see Risks).
-export function groupRoomsView(rosterGroups: GroupRoom[], localRooms: Record<string, GroupChatRoom>): GroupRoom[]   // pure; the one merge
-export function getGroupRoom(group: string): GroupChatRoom   // re-exported from group-store; group-screen's engineRoom fallback reads it
+/** Single source for the bottom-nav destinations and their labels, in the
+ *  current order (sessions, cron, capabilities, model — e2e asserts DOM
+ *  order). 'model' is a pseudo-destination: it opens the settings-category
+ *  route, not a tab. bot-workspace-navigation maps ids to icons locally.
+ *  Header titles stay in the two absorbed title tables (label and title
+ *  coincide for every destination today, so no second field here). */
+export const WORKSPACE_DESTINATIONS: readonly { id: WorkspaceDestination; label: string }[]
 
-// Read surface (re-exported atoms + the one action constant — writers stay inside the engine).
-export { $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_MEMBERS } from './group-store'
-export { $groupActivity, $groupPrompts } from './group-runtime'
+/** Plain destination header title (DESTINATION_TITLES absorbed). */
+export function workspaceTabTitle(tab: MobileTab): string
 
-// Types.
-export type { GroupEngineTransport, GroupChatRoom, GroupPrompt, GroupActivityEntry }
+/** Bot-configuration header title: detail-route titles for cron/capability
+ *  routes, else the destination title (BOT_CONFIGURATION_TITLES +
+ *  botWorkspaceRouteTitle absorbed). */
+export function workspaceRouteTitle(destination: BotConfigurationDestination, route: MobileRoute): string
+
+/** Which bot-configuration destination the active surface shows, or null
+ *  (activeBotConfigurationDestination absorbed, incl. the 'model' rule). */
+export function workspaceDestinationFor(tab: MobileTab, route: MobileRoute): BotConfigurationDestination | null
+
+/** Narrow the active-route union to a tab's route type; the tab root is the
+ *  fallback. Total — never throws (replaces the three routeFor* helpers). */
+export function narrowRoute<Tab extends MobileTab>(tab: Tab, route: MobileRoute): RouteForTab<Tab>
+
+/** The sessions menu's dismiss intent for a destination tap
+ *  (model → {type:'model'}, else {type:'tab', tab}). 'sessions' callers
+ *  guard it as a no-op themselves, exactly as today. */
+export function workspaceMenuIntent(destination: WorkspaceDestination): WorkspaceMenuIntent
+
+/** Back-label policy: nested detail wins — except the model surface with a
+ *  return origin, which reads 'Back to menu' (today's modelReturnsToSurface
+ *  suppression; the witness asserts it on the model round trip) — then
+ *  menu-origin return, then roster. Pass surface =
+ *  workspaceDestinationFor(tab, route). */
+export function workspaceBackLabel(nested: boolean, surface: BotConfigurationDestination | null, hasReturnOrigin: boolean): 'Back' | 'Back to menu' | 'Back to bots'
+
+/** Cold start only: parse a screen path and apply it to the in-memory router.
+ *  Returns false — store untouched — for unknown, malformed, and /session/*
+ *  paths (those belong to the DeepLinkCoordinator). '/' parses to the roster
+ *  root and applies, like today's restoreInitialNavigation (a value-identical
+ *  store write the cold-start effect ignores). Call once per cold start,
+ *  before any user navigation. (Absorbs initial-navigation.ts.) */
+export function restoreWorkspacePath(pathname: string): boolean
+
+/** Service-worker screen-path allowlist. Derived from the same head table the
+ *  parser uses: parseable heads {group, sessions, capabilities, cron, settings}
+ *  plus legacy served-only heads {bot, navigation} — preserved byte-for-byte,
+ *  pinned by pwa/policy.test.ts:14. First-segment prefix semantics, exactly
+ *  today's regex (`^/head(?:/|$)` per served head), NOT parse success:
+ *  malformed subpaths under a served head still serve the shell (e.g.
+ *  '/group/a/b', '/sessions/x'), and '/session/…' stays excluded because the
+ *  head 'session' is not in the table. (Absorbs pwa/policy.ts's private regex.) */
+export function isAppShellScreenPath(pathname: string): boolean
 ```
 
-`GroupEngineTransport` is today's `GroupEngineRequest`: `(method: string, params?: Record<string, unknown>) => Promise<unknown>`. One adapter in production (the controller's `runtime.rpc` closure), one in tests (a scripted fake) — a real seam.
+Internal implementation: the per-head parser (absorbed from `screen-url.ts`, private), the head table `SCREEN_URL_HEADS` (`{ head, parsable, served, legacy? }`), and the title/destination tables.
 
-### Internal seams (file-exported, never re-exported by the facade)
+### React entry — `use-workspace-navigation.ts`
 
-- `group-store.ts` — rooms only: record shape, minting/identity helpers, name uniqueness, message-normalization copy, trimming, localStorage persistence, `updateGroupChat`/`getGroupRoom`/`replaceGroupChats`/`appendGroupChatEntry`/`adoptMirrorRoom`, `$groupChats`/`$groupNeedsYou`, `setGroupSyncScheduler`. The durable-shape part of persistence is extracted as a pure `durableGroupChatRooms(all)` so tests need no import gymnastics (see Tests).
-- `group-runtime.ts` (new) — the engine's runtime state: the transport slot (`setEngineTransport` + `groupEngineRequest`), `$groupActivity` + `recordGroupActivity`, `$groupPrompts`. Moved verbatim out of today's `group-engine.ts`.
-- `groups-sync.ts` — the mirror protocol (sizes, keys, v1→v3 normalization, snapshot build/merge, merge-into-rooms) and the flush job (debounced read-merge-CAS-write with read-back, retry ladder). `startGroupChatSync`/`stopGroupChatSync`/`handleGatewayTransition` stay file-exports; only the facade imports them.
-- `group-rounds.ts`, `group-turns.ts` — the drive; imports re-pointed from `group-engine` to `group-runtime`; no logic changes.
-
-### Import map (acyclic by construction)
-
-```
-group-model.ts      ← nothing                (shared model leaf: types + parseGroupSnapshot/groupRoomsFromRoster)
-group-store.ts      → group-model (types)
-group-runtime.ts    → group-store            (recordGroupActivity reads the room epoch)
-groups-sync.ts      → group-store, group-runtime
-group-turns.ts      → group-store, group-runtime
-group-rounds.ts     → group-store, group-runtime, group-turns
-group-engine.ts     → all of the above       (facade: interface only)
-gateway-controller / screens / dialog / app.tsx → group-engine only (GroupRoom types from group-model)
+```ts
+export interface WorkspaceNavigation {
+  menuOpen: boolean                 // the navigation-page latch (StrictMode-safe, idempotent open)
+  returnOrigin: MobileTab | null    // today's returnTab: drives back labels and showModelBack
+  openMenu(): void                  // captures origin tab + origin stack, then opens
+  dismissMenu(intent?: WorkspaceMenuIntent): void
+  openWorkspaceDestination(destination: WorkspaceDestination): void
+  exitToReturnOrigin(fallback?: MobileTab): void  // default fallback 'roster'
+  clearReturn(): void                             // today's clearMenuReturn: origin + stack, as a pair
+  backOr(tab: MobileTab, fallback(): void): void
+  closeToRoster(): void
+}
+export function useWorkspaceNavigation(): WorkspaceNavigation
 ```
 
-Today's cycles are gone structurally: the scheduler slot is registered by the facade (which imports both `group-store` and `groups-sync`), and the transport slot lives beside the atoms that read it.
+Verbs, mapped one-to-one from today's `app.tsx` handlers:
 
-## Implementation
+- `openWorkspaceDestination('sessions')` → `openMenu()`; `'model'` → idempotent model-category open (`setTab('settings')` first; keep an existing model-category stack top — the check precedes the reset — else `resetTabRoutes('settings')` + push; today's `openModelSettings`); else → `resetTabRoutes(tab)` + `setTab(tab)` (today's `openDestination`).
+- `dismissMenu(intent)` — latch closes, then: intent `tab` with `origin === intent.tab` → close only; intent `model` with origin already on the model category → close only; otherwise stash `{ returnOrigin: origin, returnStack: originStack }` and apply the action (today's `onDismissed` closure, verbatim).
+- `exitToReturnOrigin(fallback)` — today's `exitDestination`: destination = returnOrigin ?? fallback; if a menu-originated return exists, `applyPathState(destination, returnStack)` and reopen the menu over it (recapturing the origin); otherwise `setTab(destination)`; always clear the return state as a pair, before the move, as today.
+- `clearReturn()` — today's `clearMenuReturn` (returnOrigin + return stack, as a pair) without navigating.
+- `backOr(tab, fallback)` — today's `goBackOr`: `popRoute(tab) === undefined` → run fallback.
+- `closeToRoster()` — today's `backToRoster` + `clearMenuReturn`.
 
-Ordered so every step typechecks and the suite stays green. `npm run typecheck && npm run test` after each batch.
+Implementation notes: `useState` for `menuOpen`/`returnOrigin`, refs for the origin/return stacks — the same shape `app.tsx` and the latch use today, so StrictMode and double-mount behavior carry over unchanged. No new atoms; `App` is the only consumer, so hook-local state suffices.
 
-**Batch 1 — extract `group-runtime.ts` (pure move).**
-1. Create `client/src/features/groups/group-runtime.ts` with the transport slot (`GroupEngineRequest` type alias kept here; `setEngineTransport` replacing the exported `setGroupEngineRequest`; `groupEngineRequest` unchanged) and, moved verbatim from `group-engine.ts`: `GroupActivityEntry`, `$groupActivity`, `recordGroupActivity` (with its `getRoomEpoch` read of `$groupChats`), `GroupPrompt`, `$groupPrompts`.
-2. Re-point EVERY importer of the moved symbols in this batch — the `setGroupEngineRequest` → `setEngineTransport` rename means the old name no longer exists, so anything still importing it breaks the batch's typecheck guarantee. Source files: `groups-sync.ts` (`groupEngineRequest`), `group-rounds.ts` (`groupEngineRequest`, `recordGroupActivity`), `group-turns.ts` (`$groupPrompts`, `groupEngineRequest`, `recordGroupActivity`, `GroupPrompt`), `gateway-controller.ts` (`setGroupEngineRequest` at :339/:377/:397 → `setEngineTransport`). Test files (verified consumers of the raw setter): `group-turns.test.ts` (import :3; sites :22/:41/:218/:252/:298/:321/:364/:390/:428/:446), `group-rounds.test.ts` (import :15; sites :62/:389), `groups-sync.test.ts` (import :4; sites :328/:358/:402) — import from `./group-runtime` and rename the calls; a null teardown stays a null teardown. `group-store.ts` keeps `$groupNeedsYou` where it is (written by the append path; re-exported by the facade).
-3. Delete the moved declarations from `group-engine.ts`. The file keeps only the `$groupNeedsYou` re-export (:81) and `clearGroupNeedsYou` (:83, deleted in Batch 2) so it still typechecks; no re-exports of the moved symbols are needed — every importer was re-pointed in step 2.
+### Callers after the refactor
 
-**Batch 2 — build the facade in `group-engine.ts`.**
-1. Implement `startGroupEngine(transport)` / `stopGroupEngine()` per Q6 (the facade imports `setEngineTransport` from `group-runtime`, `setGroupSyncScheduler` + `updateGroupChat` from `group-store`, and `handleGatewayTransition`/`startGroupChatSync`/`stopGroupChatSync`/`scheduleGroupChatSync`/`pullGroupChatState` from `groups-sync`).
-2. Move the known-rooms merge into the facade: `groupRoomsView(rosterGroups, localRooms)` — the roster-first union by `groupChatRoomKey` with the empty-stub filter (`log.length === 0 && (!roomId || members.length === 0)`), then `useGroupRooms(rosterGroups?)` = `useStore($groupChats)` + merge + (when `rosterGroups !== undefined`) an effect publishing the view to the internal `$knownRooms` atom (replacing `group-screen.tsx:50-52` and the `openCreatedGroup` write at `app.tsx:222`). Key both the memo and the effect on a content signature of `rosterGroups`, not identity (see Risks). `groupChatRoomKey` stays owned by `groups-sync.ts`; the facade imports it.
-3. Add `openGroupRoom(room)` — the whole body of the `group-screen.tsx:113-124` effect moves here: `adoptMirrorRoom`, `void pullGroupChatState().catch(() => undefined)`, and the stranded-harvest guard + `Promise.all(harvestStrandedGroupReply …)` (the guard moves inside so the screen imports nothing from `group-turns`). And `createGroupChat(baseName, members, takenNames)` (the minting/write of `create-group-chat-dialog.tsx:72-77`, returning `GroupRoom` with `key: 'id:<roomId>'`); widen `uniqueGroupChatName`'s `taken` param to `ReadonlySet<string>` (it only calls `.has`) so the facade can accept a `ReadonlySet`.
-4. Re-export the read surface and the round/turn actions per Q2; rename `answerGroupClarify` → `answerGroupPrompt` in `group-turns.ts` (update its test import).
-5. Delete `clearGroupNeedsYou` (the setters no longer exist as exports after Batch 1's re-point — nothing to stop re-exporting).
+- **`app.tsx`** — `const workspace = useWorkspaceNavigation()`. Cold-start effect: `restoreWorkspacePath(pathname)` (the `history.replaceState` and `parseHermesDeepLink` check stay app-side — they need the deep-link coordinator). Headers read `workspaceTabTitle`/`workspaceRouteTitle`/`workspaceBackLabel(nestedRoute, activeBotConfiguration, workspace.returnOrigin !== null)`/`workspace.returnOrigin` (and `showModelBack={!workspace.returnOrigin}`); bottom nav reads `workspaceDestinationFor`; handlers become `workspace.openWorkspaceDestination(...)`, `workspace.backOr(...)`, `workspace.exitToReturnOrigin(...)`, `workspace.closeToRoster()` — capabilities/cron keep their `'sessions'` exit fallback, settings the `'roster'` default. `openAgent`, `openSettingsFrom`, and the cron `onOpenSession` call `workspace.clearReturn()` before switching (today's `clearMenuReturn` at app.tsx:177, 230, 354 — without it a stale returnOrigin survives on the roster and mislabels back labels or reopens the menu on the next root exit). `SessionsMenu` receives `onDismissRequest={workspace.dismissMenu}`. `backFromForeground` keeps its full branch tree (group-room pop-or-roster, sessions→roster, model surface with returnOrigin → exit, generic pop-or-exit — reading `workspace.returnOrigin` for the model branch), delegating to `closeToRoster`/`exitToReturnOrigin`/`backOr`; `onDismissForeground` keeps its swipe reset to the roster.
+- **`sessions-menu.tsx`** — imports `WorkspaceMenuIntent` from the module; its onSelect becomes `if (destination === 'sessions' || actionPendingRef.current) return; onDismissRequest(workspaceMenuIntent(destination))` — the sessions no-op precedes the pending guard, and the model/tab intents keep `navigate`/`navigateModel`'s pending guard exactly as today (dropping it would dismiss the menu mid-action). The menu's other intent emitters (identity click, session-row open, post-resume, requestClose, edge swipe) are unchanged.
+- **`bot-workspace-navigation.tsx`** — derives its list from `WORKSPACE_DESTINATIONS` (id + label) over a local icon map; `BotWorkspaceDestination` becomes an alias of `WorkspaceDestination`.
+- **`pwa/policy.ts`** — its private `isScreenPath` delegates to `isAppShellScreenPath`; the rest unchanged. The SW bundle chain stays DOM-free: `sw.ts → policy.ts → workspace-navigation.ts → routes.ts + navigation-store.ts` (nanostores — no React, no app code).
+- **Screens** — untouched: they keep `route` + `onNavigate`/`onBack` props and their `~/navigation/routes` type imports.
 
-**Batch 3 — re-point consumers; delete the pass-through.**
-1. `gateway-controller.ts`: imports collapse to `{ startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'`; `installGroupEngine()` → `startGroupEngine((method, params) => this.runtime.rpc(method, params))`; `dispose()` and `teardownGatewayScope()` call `stopGroupEngine()`; the five `groups-sync` imports and the two setter imports go — seven imported symbols collapse into the two verbs.
-2. `group-screen.tsx`: delete the local `useGroupRooms` hook (:29-54) and the `$groups` effect (:50-52); the screen calls the engine's `useGroupRooms(roster.data?.groups ?? [])` (its roster query stays — route vocabulary with the call site); the open effect (:113-124) shrinks to the `pulledRef` mount-once guard + `openGroupRoom(room)`; imports of `adoptMirrorRoom`/`pullGroupChatState`/`groupChatRoomKey`/`harvestStrandedGroupReply`/`answerGroupClarify` go — `getGroupRoom` stays for the `engineRoom ?? getGroupRoom(room.name)` fallback, now imported from the facade, and `answerGroupPrompt` replaces the renamed import.
-3. `roster-screen.tsx`: the hand-rolled merge (:64-86 — three sources: roster, `$groupChats`, `$groups`) becomes `useGroupRooms(roster.data?.groups ?? [])` (two sources; the stale-`$groups` fallback term goes — see delta 6); drop the `groupChatRoomKey` and `$groupChats` imports.
-4. `create-group-chat-dialog.tsx`: `useStoreGroupNames` (:125-133) becomes `useGroupRooms(roster.data?.groups ?? [])` → names; the create path (:72-77) calls `createGroupChat(...)`; drop `mintGroupRoomId`/`uniqueGroupChatName`/`updateGroupChat`/`$groups`/`$groupChats` imports; `GROUP_CHAT_MAX_MEMBERS` re-points to the facade re-export.
-5. `app.tsx`: `const groups = useGroupRooms()` (replaces `useStore($groups)`); `openCreatedGroup` keeps the dialog closes + `pushRoute` and drops the `$groups.set(...)` write — the room is already in `$groupChats` (the dialog wrote it at create-group-chat-dialog.tsx:76), so the published view picks it up one painted frame later (delta 5).
-6. Delete `groups-store.ts`.
+## Why this shape (design-it-twice)
 
-**Batch 4 — dead-code sweep + interface shrink inside the cluster.** Delete `harvestRoomStranded` (`groups-sync.ts:808`). Consumer check (verified by grep): `groupThreadOf`, `mintGroupThreadId`, `groupSpeakerLabel` → `group-rounds.ts`; `groupMemberKey` → `group-rounds.ts` + `group-turns.ts`; limits → `group-rounds.ts` (`GROUP_CHAT_HISTORY_LIMIT`, `GROUP_CHAT_MAX_*`) with `GROUP_CHAT_MAX_MEMBERS` re-exported by the facade for the dialog; `mintGroupRoomId`/`uniqueGroupChatName` → the facade's `createGroupChat` only (after Batch 3). `normalizeGroupChatText` and `trimGroupChatLog` have no consumers outside `group-store.ts` — un-export both (the store test exercises trimming through `updateGroupChat` and normalization through `appendGroupChatEntry`). Keep `GROUP_LOG_RETAIN` exported for the store test. Everything kept stays exported from `group-store.ts` for those in-cluster files only.
+Three interfaces were designed in parallel. All converged on the same seam — a DOM-free core plus one React hook, screens staying prop-bound — and differed in genericity:
 
-**Batch 5 — tests** (next section), then full verification.
+- **Minimal interface** (1–3 entry points): cleanest seam, but left the exit/back verb choreography half in `app.tsx`.
+- **Declarative registry** (per-destination metadata, parse, action): buys one-line destination additions for screens that mostly don't exist; honest self-verdict: over-engineering for a five-tab app. Only its static vocabulary-table idea earns its keep.
+- **Common-caller-first**: same two-file seam, plus the hook owning the back/exit verbs so `app.tsx`'s refs and closures leave entirely; screens untouched.
 
-## Tests
+Chosen: the hybrid — the minimal design's file shape and shared head table, the common-caller design's ownership of the return-origin and back policy, the registry design's static table only. No runtime registration machinery: with four static destinations, a registration API would be a shallow module's interface ahead of its implementation. One adapter justifies no seam; today there is exactly one SW consumer and one app consumer of the vocabulary — they share the table without a port.
 
-New files under `client/src/features/groups/`. Store tests reset modules + `localStorage.clear()` in `beforeEach` (the store hydrates `$groupChats` at import time).
+## Decisions (grilling rounds, self-answered)
 
-**`group-store.test.ts`** (new — the store earns tests at its write API):
-- Duplicate-append guard #93127: same member text back-to-back within the 10-minute window returns the prior entry and leaves the log unchanged; a user entry is never deduped; the same text after the window is kept; different thread is kept.
-- `updateGroupChat` at `GROUP_LOG_RETAIN` (96): log is bounded and every watermark shifts by the drop, staying index-consistent (`trimGroupChatLog` is private after Batch 4; exercised through `updateGroupChat`).
-- Persistence: `updateGroupChat` writes the durable shape via `durableGroupChatRooms` (extracted pure helper — `running: false`, `turn: null`, empty-log stubs without identity dropped); `adoptMirrorRoom` is idempotent and seeds watermarks at zero.
-- `appendGroupChatEntry` sets `$groupNeedsYou` for member entries addressing `@user` and never for user entries.
+1. **Module ownership** — route policy only; the store, deep links, and presentation stay put. *(chosen)*
+2. **Dependency category** — in-process; the SW bundle is a build-time constraint, handled by keeping the core DOM-free. *(chosen)*
+3. **SW drift** — preserve behavior byte-for-byte via per-head flags (`parsable`/`served`/`legacy`); tightening the allowlist is a future one-line change with a test to update, not a silent one here. *(chosen)*
+4. **Deletion-test failures** — `initial-navigation.ts` and `use-navigation-page-controller.ts` are absorbed and deleted. *(chosen)*
+5. **Behavior deltas** — none accepted. *(chosen)*
+6. **Naming** — "Workspace navigation" in `CONTEXT.md`, with the sessions-menu overlay named in the same entry. *(chosen)*
+7. **Test strategy** — replace, don't layer: module tests at the interface supersede the absorbed files' tests; `app-navigation.test.tsx` and `policy.test.ts` stay untouched as the zero-change witness. *(chosen)*
+8. **Back policy** — the hook owns the return-origin stack and the back verbs; roster/group policy (`backFromForeground`'s group-room branch, swipe-dismiss reset) stays in `app.tsx` because it is not workspace policy. *(chosen)*
+9. **Rollout** — one commit, sequenced in reviewable steps (below), tests green at each step. *(chosen)*
 
-**`group-engine.test.ts`** (new — the interface is the test surface):
-- Lifecycle: `startGroupEngine(fakeTransport)`; a subsequent `updateGroupChat(...)` (debounce 350 ms, fake timers) reaches the gateway through the injected transport — `profiles.list` read, `profiles.configure` CAS write, read-back. `stopGroupEngine()` clears pending work and the transport; a later `groupEngineRequest` throws `'Group engine transport is not connected.'`.
-- Scope teardown: a room with `running: true`, `epoch: 5` → `stopGroupEngine()` → `running: false`, `epoch: 6`.
-- Full round, scripted transport (session.create/session.resume/prompt.submit fixtures): `sendToGroupChat(group, members, 'hello @ada')` → the member's reply lands in the log, watermarks advance, activity records queued → working → replied → settled, and the mirror flush fires; a `"(pass)"` reply records `passed` and appends nothing.
-- `stopGroupThread`: epoch bump, every member held, `running` false, `session.interrupt` sent with the member's profile in the params.
-- `groupRoomsView`: roster ∪ local union keyed by durable key, no duplicate rows for shared keys, empty stubs filtered, just-created rooms (roomId + members, empty log) retained.
-- `useGroupRooms`: rendering through `@nanostores/react` — with rosterGroups it publishes `$knownRooms`; without, it reads the last published view (covers the app-header contract).
+## Behavior preserved verbatim (known quirks included)
 
-**Adjusted** (mechanical; the transport-seeding re-points happen in Batch 1):
-- `groups-sync.test.ts` — import :4 and seeds :328/:358/:402 → `setEngineTransport` from `./group-runtime` (NOT `startGroupEngine` — that would arm the scheduler and fire the initial pull, changing what the suite exercises).
-- `group-rounds.test.ts` — same re-point (import :15, sites :62/:389).
-- `group-turns.test.ts` — verified it seeds via the raw setter (import :3; nine seeding sites plus a `setGroupEngineRequest(null)` teardown at :41): same re-point; atom-seeded cases stay.
-- `create-group-chat-dialog.test.tsx` — delete the `$groups.set([])` at line 23 (`$groupChats.set({})` already runs at :22); assertions on `onCreated` unchanged.
-- `app-navigation.test.tsx` — `$groups` seeds at lines 71 and 151 → seed `$groupChats`. The :151 room must carry `roomId: 'r-crew'` (so `groupChatRoomKey` yields the asserted `id:r-crew`) and a non-empty `members` array — an empty-log room with neither is dropped by the uniform empty-stub filter and the header-name assertion (:152) would fail. The fallback-then-name flow at :148-152 already models the effect-based publish.
+- History is never touched by navigation: runtime routes stay in memory; cold-start screen URLs rewrite the document to `/` (`app.tsx:128-134`; menu verbs pinned no-history by `app-navigation.test.tsx:389-405` and `use-navigation-page-controller.test.tsx:17-28` — the latter's assertions move into the hook tests; the cold-start rewrite itself is pinned by e2e 'a screen URL is consumed as a cold-start input' and 'cold session deep links switch profile and normalize the URL').
+- The sessions-tab quirk: the header back label reads "Back to menu" while `back()` routes to the roster after an identity-click return. Preserved verbatim by the zero-change constraint; recorded here as a follow-up candidate once constraints loosen.
+- `openModelSettings` idempotence: an existing model-category stack top is kept, not reset.
+- The menu reopen-over-origin path (`exitDestination` with `returnTab !== null && returnStack !== null`) — already exercised: the witness asserts the menu reopens over the restored origin in the capabilities and model round trips, and e2e 'bot configuration destinations return to the sessions menu' walks it for all three destinations; the hook tests pin it at the interface level.
 
-**Deleted:** none — the surviving suites describe behaviour that does not change.
+## Test plan
 
-## Behavior deltas accepted
+**New — the interface is the test surface:**
 
-1. `dispose()` now bumps room epochs (unified `stopGroupEngine()`). A stale drive loop from a torn-down controller bails at its next boundary instead of failing RPCs; no user-visible change.
-2. The known-rooms view applies the empty-stub filter uniformly (today `group-screen`'s copy omits it). Log-empty rooms with neither `roomId` nor members stop rendering in the room list — the create dialog always sets both, so no real room is affected.
-3. `answerGroupClarify` is renamed `answerGroupPrompt` at the interface (same behavior, honest name).
-4. The app header's room-name lookup reads the engine's published known-rooms view instead of the `$groups` atom — same data, one writer fewer, same freshness (`RosterScreen` is always mounted; verified: `mobile-shell.tsx` renders the roster unconditionally).
-5. The header name for a just-created room lags one painted frame behind today: `openCreatedGroup` currently writes `$groups` synchronously (name on first paint); after the change the name arrives when `RosterScreen`'s `useGroupRooms` effect republishes `$knownRooms`. One frame of the `'Group chat'` fallback — the same two-step flow the deep-link test already asserts (`app-navigation.test.tsx:148-152`).
-6. `roster-screen` drops its `$groups` fallback term (the third merge source). A room deleted gateway-side and tombstoned locally could ghost-render from a stale `$groups` publish until the next group-screen mount republished; the two-source view removes the ghost. Strictly narrower — it can only drop rooms absent from both live sources.
+- `navigation/workspace-navigation.test.ts`:
+  - parser vectors, superseding `screen-url.test.ts` (all existing vectors incl. `/bot` rejection, `/session/*` rejection, malformed paths, cron/capabilities/settings branches, trailing-slash and encoded segments) plus `restoreWorkspacePath` apply/reject vectors from `initial-navigation.test.ts` (`/settings/model` applies; `/unknown` and `/session/saved-work?profile=work` reject) plus `/` → true with the roster root applied, as today;
+  - title table: every `botWorkspaceRouteTitle` branch (cron detail/editor/blueprints, capabilities-section, capability-detail ids and prefixes, fallbacks);
+  - `workspaceDestinationFor` (tabs, model category, null);
+  - `workspaceMenuIntent` mapping;
+  - `workspaceBackLabel` mapping (nested detail; the model-surface suppression of 'Back' when a return origin exists; menu-origin return; roster fallback);
+  - `isAppShellScreenPath`: parseable heads, legacy `bot`/`navigation`, unknown rejection, malformed subpaths under served heads still allowed (`/group/a/b`, `/sessions/x`), `/session/…` still rejected;
+  - the invariant **every parsable head is served** (the drift class, closed by assertion);
+  - a DOM-free guard: the module's import specifiers stay within `~/navigation/*` (a source scan, so the SW bundle can't silently gain React).
+- `navigation/use-workspace-navigation.test.tsx`:
+  - latch: idempotent open, no-op close when closed, StrictMode double-mount;
+  - zero history calls across every verb;
+  - `dismissMenu` intent policy: origin-equality short-circuits (tab and model), return-origin stash, non-origin destinations;
+  - `exitToReturnOrigin`: stack restore via `applyPathState`, menu reopen + origin recapture, fallback when no return origin;
+  - `openWorkspaceDestination` mapping (sessions→menu, model idempotence, cron/capabilities reset+select);
+  - `backOr` pop-or-fallback; `clearReturn` clears origin and stack as a pair without navigating; `closeToRoster`.
+
+**Deleted (replace, don't layer):** `screen-url.test.ts`, `initial-navigation.test.ts`, `use-navigation-page-controller.test.tsx` — superseded by the module tests above.
+
+**Untouched:** `app-navigation.test.tsx` (the witness — must pass unchanged), `navigation-store.test.ts`, `navigation/deep-links.test.ts`, `native/deep-links.test.ts`, `pwa/policy.test.ts` (pins the legacy heads).
+
+## File-by-file changes
+
+| File | Change |
+|---|---|
+| `src/navigation/workspace-navigation.ts` | **new** — core interface + absorbed parser, head table, titles, intents |
+| `src/navigation/use-workspace-navigation.ts` | **new** — hook: latch, origin capture, dismiss policy, back verbs |
+| `src/navigation/workspace-navigation.test.ts` | **new** |
+| `src/navigation/use-workspace-navigation.test.tsx` | **new** |
+| `src/navigation/screen-url.ts` | **deleted** — parser absorbed, private |
+| `src/navigation/initial-navigation.ts` | **deleted** — deletion-test failure |
+| `src/navigation/use-navigation-page-controller.ts` | **deleted** — latch absorbed |
+| `src/navigation/screen-url.test.ts`, `initial-navigation.test.ts`, `use-navigation-page-controller.test.tsx` | **deleted** — superseded |
+| `src/app.tsx` | title maps, refs, latch handler, openDestination/openModelSettings/exitDestination/backToRoster/clearMenuReturn/goBackOr/routeFor*/activeBotConfigurationDestination/botWorkspaceRouteTitle leave; module verbs and queries replace them (~100 lines out) |
+| `src/components/sessions-menu.tsx` | intent import + onSelect mapping → `workspaceMenuIntent`, keeping the pending guard and the unconditional sessions no-op |
+| `src/components/bot-workspace-navigation.tsx` | destinations derived from `WORKSPACE_DESTINATIONS`; local icon map stays |
+| `src/pwa/policy.ts` | private regex → `isAppShellScreenPath` import |
+| `CONTEXT.md` | Workspace navigation + Sessions menu entries added (done — see *Side effects applied*) |
+
+## Steps
+
+1. **Land the core.** Add `workspace-navigation.ts` + its test (parser vectors first, then titles/intents/table). No consumers yet. Checkpoint: `vitest run src/navigation/workspace-navigation.test.ts` green.
+2. **Land the hook.** Add `use-workspace-navigation.ts` + its test, replicating the latch and choreography semantics exactly (origin capture ordering, StrictMode, no-history). Checkpoint: hook tests green.
+3. **Bridge the SW.** `pwa/policy.ts` delegates to `isAppShellScreenPath`. Checkpoint: `pwa/policy.test.ts` green, unchanged.
+4. **Migrate `app.tsx`.** Replace the maps, refs, latch, and helpers with the module. Checkpoint: `app-navigation.test.tsx` passes **unmodified** — that is the zero-behavior-change proof.
+5. **Migrate the two components.** `sessions-menu.tsx` intents; `bot-workspace-navigation.tsx` destination list. Checkpoint: `app-navigation.test.tsx` still green.
+6. **Delete the absorbed files and their tests.** Checkpoint: full `tsc` + `vitest run` green; no dangling imports.
+7. **End-to-end verification.** `npx playwright test` — the whole suite, not just pwa-foundation: the cron-blueprints and cron-editor specs also drive the sessions menu; then a manual browser pass: cold-start URLs (`/cron/job-1/edit`, `/group/…`, `/settings/model`), menu round trip (open → Automations → back to menu → back), model destination round trip from both surfaces, offline reload of `/bot` still serving the shell, back labels in every surface.
 
 ## Risks
 
-- **Import cycles** — the whole point of the two globals today. Mitigation: the import map above is acyclic; after Batch 2, run `npx madge --circular client/src` (or equivalent) once as a guard.
-- **Store hydration in tests** — `$groupChats` hydrates from localStorage at module import; every store-touching test must reset modules and clear storage, or seeds leak across cases.
-- **Debounce timing** — the flush job's 350 ms debounce and retry ladder need `vi.useFakeTimers()` in the lifecycle test; advance timers rather than flushing manually.
-- **Hook in a `.ts` facade** — `useGroupRooms` needs no JSX; `group-engine.ts` stays `.ts`. No change to the render layer.
-- **Publish loop on unstable roster-array identity** — callers pass `roster.data?.groups ?? []`, a fresh array every render while the roster query is pending (and forever on error, since `retry: false`; the dialog's query is `enabled: open`, so its pending window coincides with being mounted). An identity-keyed merge memo + publish effect would emit a new view each render; the `$knownRooms.set` notifies the app header, whose re-render re-renders the publisher, spinning the effect loop until the query resolves. Key both on a content signature (`rosterGroups?.map(room => room.key).join('|') ?? ''`) holding a stable identity for equal signatures.
+- **Menu reopen semantics** — the reopen-over-origin path is gesture-adjacent; the witness and e2e already exercise it, the hook tests pin it at the interface level, and step 7 exercises it by hand.
+- **StrictMode double-mount** — the latch must stay idempotent; the `isOpenRef` pattern carries over.
+- **SW bundle regression** — the DOM-free guard test plus `policy.test.ts` plus the sw build gate it.
+- **Silent policy drift returns** — prevented structurally: one head table, one title table, one intent mapping; each asserted by a test.
+- **Scope creep** — no runtime registration, no URI scheme changes, no new destinations. The registry-shaped extension is a deliberate non-goal for a five-tab app (YAGNI); revisit only when a second wave of destinations actually lands.
 
-## Verification
+## Side effects applied
 
-Per batch: `npm run typecheck && npm run test` (vitest). After Batch 5:
-
-1. `npm run typecheck` — clean.
-2. `npm run test` — full suite green, including the two new suites.
-3. Cycle guard — no `features/groups/*` import cycle (madge or manual check against the map).
-4. Manual smoke (needs a gateway with Bot Mode): `npm run dev` against the Hermes gateway; open a group chat, send `hello @<bot>`, watch the round run and the mirror publish (second client sees the reply); stop the thread; switch profile and confirm the room stops and re-arms on return. The desktop should still see the same rooms — the mirror protocol is untouched.
-
-## Out of scope
-
-- The mirror protocol itself (v1→v3 migration, CAS, byte budget) — unchanged, still covered by `groups-sync.test.ts`.
-- The round-drive logic (`group-rounds.ts`, `group-turns.ts`) beyond the rename and import re-pointing — pure helpers already tested.
-- Workspace navigation (candidate 2), the chat-viewport scroller seam (candidate 3), and the error-banner sweep (candidate 4).
-- Desktop Bot Mode parity — the PWA stays protocol-compatible byte-for-byte.
+- `CONTEXT.md` gained two domain terms: **Workspace navigation** and **Sessions menu** (appended after the Group entries; no existing terms changed).
+- The previous `plan.md` (Group send engine, landed as e0705e9) was deleted to make room for this plan, as directed.

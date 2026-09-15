@@ -1,33 +1,37 @@
 import { IconBolt, IconCalendarClock, IconMessages, IconRobot } from '@tabler/icons-react'
 
 import { Button } from '~/compat/primitives'
+import { WORKSPACE_DESTINATIONS, type WorkspaceDestination } from '~/navigation/workspace-navigation'
 
-export type BotWorkspaceDestination = 'sessions' | 'cron' | 'capabilities' | 'model'
+export type BotWorkspaceDestination = WorkspaceDestination
 
-const destinations = [
-  { icon: IconMessages, id: 'sessions', label: 'Sessions' },
-  { icon: IconCalendarClock, id: 'cron', label: 'Automations' },
-  { icon: IconBolt, id: 'capabilities', label: 'Capabilities' },
-  { icon: IconRobot, id: 'model', label: 'Models' }
-] as const satisfies ReadonlyArray<{ icon: typeof IconMessages; id: BotWorkspaceDestination; label: string }>
+const ICONS = {
+  sessions: IconMessages,
+  cron: IconCalendarClock,
+  capabilities: IconBolt,
+  model: IconRobot
+} as const satisfies Record<WorkspaceDestination, typeof IconMessages>
 
 export function BotWorkspaceNavigation({ active, onSelect }: { active: BotWorkspaceDestination; onSelect(destination: BotWorkspaceDestination): void }) {
   return (
     <nav aria-label="Bot workspace" className="bot-workspace-navigation">
-      {destinations.map(destination => (
-        <Button
-          aria-current={active === destination.id ? 'page' : undefined}
-          aria-label={destination.label}
-          className="bot-workspace-tab"
-          key={destination.id}
-          onClick={() => onSelect(destination.id)}
-          type="button"
-          variant="ghost"
-        >
-          <destination.icon aria-hidden="true" size={20} />
-          <span>{destination.label}</span>
-        </Button>
-      ))}
+      {WORKSPACE_DESTINATIONS.map(destination => {
+        const Icon = ICONS[destination.id]
+        return (
+          <Button
+            aria-current={active === destination.id ? 'page' : undefined}
+            aria-label={destination.label}
+            className="bot-workspace-tab"
+            key={destination.id}
+            onClick={() => onSelect(destination.id)}
+            type="button"
+            variant="ghost"
+          >
+            <Icon aria-hidden="true" size={20} />
+            <span>{destination.label}</span>
+          </Button>
+        )
+      })}
     </nav>
   )
 }
