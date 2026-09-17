@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import source from './workspace-navigation.ts?raw'
 
-import { $navigation, resetNavigation } from './navigation-store'
+import { $navigation, applyPathState, resetNavigation } from './navigation-store'
 import { ROOT_ROUTES } from './routes'
 import {
   isAppShellScreenPath,
+  narrowRoute,
   restoreWorkspacePath,
   SCREEN_URL_HEADS,
   workspaceBackLabel,
@@ -15,6 +16,28 @@ import {
   workspaceTabTitle,
   WORKSPACE_DESTINATIONS
 } from './workspace-navigation'
+
+const VALID_SCREEN_PATHS: Record<string, string> = {
+  group: '/group/id%3Ar-crew',
+  sessions: '/sessions',
+  capabilities: '/capabilities/mcp',
+  cron: '/cron/job-1/edit',
+  settings: '/settings/model'
+}
+
+const REJECTED_SCREEN_PATHS = [
+  '/session/abc',
+  '/session/abc?profile=work',
+  '/nope',
+  '/bot',
+  '/bot/extra',
+  '/capabilities/nope',
+  '/capabilities/%',
+  '/group',
+  '/group/a/b',
+  '/settings/nope',
+  '/unknown'
+]
 
 beforeEach(() => resetNavigation())
 
@@ -80,6 +103,22 @@ describe('workspaceDestinationFor', () => {
     expect(workspaceDestinationFor('settings', { type: 'settings-administration', tab: 'settings', page: 'profiles' })).toBeNull()
     expect(workspaceDestinationFor('roster', { type: 'roster-root', tab: 'roster' })).toBeNull()
     expect(workspaceDestinationFor('sessions', { type: 'sessions-root', tab: 'sessions' })).toBeNull()
+  })
+})
+
+describe('narrowRoute', () => {
+  it('passes matching routes through and falls back to each tab root for foreign routes', () => {
+    const capabilitiesRoute = { section: 'mcp', tab: 'capabilities', type: 'capabilities-section' } as const
+    const cronRoute = { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' } as const
+    const settingsRoute = { page: 'profiles', tab: 'settings', type: 'settings-administration' } as const
+
+    expect(narrowRoute('capabilities', capabilitiesRoute)).toBe(capabilitiesRoute)
+    expect(narrowRoute('cron', cronRoute)).toBe(cronRoute)
+    expect(narrowRoute('settings', settingsRoute)).toBe(settingsRoute)
+
+    expect(narrowRoute('capabilities', cronRoute)).toEqual(ROOT_ROUTES.capabilities)
+    expect(narrowRoute('cron', capabilitiesRoute)).toEqual(ROOT_ROUTES.cron)
+    expect(narrowRoute('settings', capabilitiesRoute)).toEqual(ROOT_ROUTES.settings)
   })
 })
 
@@ -181,19 +220,32 @@ describe('restoreWorkspacePath', () => {
   })
 
   it('rejects session deep links and malformed paths, leaving the store untouched', () => {
-    expect(restoreWorkspacePath('/session/abc')).toBe(false)
-    expect(restoreWorkspacePath('/session/abc?profile=work')).toBe(false)
-    expect(restoreWorkspacePath('/nope')).toBe(false)
-    expect(restoreWorkspacePath('/bot')).toBe(false)
-    expect(restoreWorkspacePath('/bot/extra')).toBe(false)
-    expect(restoreWorkspacePath('/capabilities/nope')).toBe(false)
-    expect(restoreWorkspacePath('/capabilities/%')).toBe(false)
-    expect(restoreWorkspacePath('/group')).toBe(false)
-    expect(restoreWorkspacePath('/group/a/b')).toBe(false)
-    expect(restoreWorkspacePath('/settings/nope')).toBe(false)
-    expect(restoreWorkspacePath('/unknown')).toBe(false)
+    for (const pathname of REJECTED_SCREEN_PATHS) {
+      expect(restoreWorkspacePath(pathname)).toBe(false)
+    }
     expect($navigation.get().activeTab).toBe('roster')
     expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron])
+  })
+
+  it('does not change a populated navigation state when a path is rejected', () => {
+    applyPathState('cron', [
+      ROOT_ROUTES.cron,
+      { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }
+    ])
+    applyPathState('capabilities', [
+      ROOT_ROUTES.capabilities,
+      { section: 'mcp', tab: 'capabilities', type: 'capabilities-section' }
+    ])
+    applyPathState('settings', [
+      ROOT_ROUTES.settings,
+      { category: 'model', tab: 'settings', type: 'settings-category' }
+    ])
+    const before = structuredClone($navigation.get())
+
+    for (const pathname of REJECTED_SCREEN_PATHS) {
+      expect(restoreWorkspacePath(pathname)).toBe(false)
+      expect($navigation.get()).toEqual(before)
+    }
   })
 
   it('parses a trailing slash into the section route', () => {
@@ -206,9 +258,13 @@ describe('restoreWorkspacePath', () => {
 })
 
 describe('isAppShellScreenPath', () => {
-  it('serves the parseable heads', () => {
-    for (const pathname of ['/group/id%3Ar-crew', '/sessions', '/capabilities/mcp', '/capabilities/skills/x%2Fy', '/cron', '/cron/blueprints', '/cron/job-1/edit', '/settings/model']) {
-      expect(isAppShellScreenPath(pathname)).toBe(true)
+  it('parses and serves an explicit valid path for every parsable head', () => {
+    for (const head of SCREEN_URL_HEADS) {
+      if (!head.parsable) continue
+      const pathname = VALID_SCREEN_PATHS[head.head]
+      expect(pathname, `missing valid parser vector for ${head.head}`).toBeDefined()
+      expect(restoreWorkspacePath(pathname!)).toBe(true)
+      expect(isAppShellScreenPath(pathname!)).toBe(true)
     }
   })
 
