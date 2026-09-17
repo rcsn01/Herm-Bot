@@ -458,6 +458,33 @@ test('reloading resets a runtime screen to the startup route', async ({ page }) 
   await expect(page.getByRole('heading', { name: 'Cron jobs' })).toHaveCount(0)
 })
 
+test('autosaves a Chat setting through the profile-scoped config adapter', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: /^Chat/ }).click()
+
+  const personality = page.getByLabel('Personality')
+  await expect(personality).toHaveValue('default')
+  await personality.fill('concise')
+  await expect(personality).toHaveValue('concise')
+
+  await expect.poll(async () => {
+    const calls = (await fixtureCalls(page)).calls
+    return calls.filter(call => call.kind === 'http' && call.method === 'PUT' && call.path === '/api/config')
+  }).toEqual([
+    expect.objectContaining({
+      body: { config: { display: { personality: 'concise' } } },
+      query: { profile: 'default' }
+    })
+  ])
+
+  await page.reload()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: /^Chat/ }).click()
+  await expect(page.getByLabel('Personality')).toHaveValue('concise')
+})
+
 test('a screen URL is consumed as a cold-start input', async ({ page }) => {
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Continue' }).click()

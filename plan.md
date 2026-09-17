@@ -1,606 +1,402 @@
-# Deepen the Profile mutation workflow
+# Deepen settings autosave persistence
 
 ## Goal
 
-Create one deep Profile workflow module for Profile creation, duplication, and editing. The module will concentrate remote loading, draft-to-wire mapping, operation ordering, model confirmation, avatar persistence, partial-save policy, Scope guarding, and roster cache refresh behind one interface.
+Create one deep settings autosave module for profile-default configuration fields. The module will concentrate debounce timing, one-at-a-time remote writes, per-field revision handling, optimistic React Query updates, last-confirmed baselines, rollback, Scope and category guards, request abort, cache invalidation, and error classification behind a small React-facing interface.
 
-The dialogs will retain rendering, accessibility, field drafts, touched flags, focus, and open/close behavior. `AgentsApi` will remain the remote adapter seam and the only module that knows RPC names. Its existing typed method inputs and results remain the wire vocabulary consumed by the workflow.
+`ConfigSectionScreen` will retain configuration and schema queries, category lookup, field selection, labels, rendering, refresh controls, and navigation. `SettingsApi.savePartial` will remain the remote adapter seam and the only settings module involved in config-route vocabulary.
 
-This refactor should remove the current duplication without changing normal-path user-visible behavior, accepted-response compatibility, or gateway payload semantics. It deliberately fixes four race defects: completion uses the frozen submitted name rather than later input state; a fresh roster result can replace an obsolete cached duplicate-name suggestion; stale Scope work stops before later RPCs; and late advanced/avatar reads cannot overwrite edits made while they were pending. Existing unknown-avatar no-clear behavior remains intact.
+This is primarily an architecture refactor, but it should correct two persistence defects exposed by moving the behavior behind a direct test seam:
+
+1. If one same-field write succeeds and the next write fails, rollback must restore the first confirmed value, not the value from before both writes.
+2. Category, Profile, remote Gateway, and unmount cleanup must not leave an unsaved optimistic value in an old query cache or permit a delayed write to start.
+
+No unrelated settings administration, Model editing, field rendering, or route behavior should move into this module.
 
 ## Why this work is needed
 
-The current workflow is split across several callers:
+`client/src/features/settings/config-section-screen.tsx` currently combines two different responsibilities:
 
-- `client/src/features/agents/create-profile-dialog.tsx` binds `AgentsApi`, loads the roster and advanced Profile data, validates Profile names and model pairs, builds create/configuration payloads, applies best-effort follow-up mutations, generates and persists avatars, guards the Scope, invalidates the roster, and renders the form.
-- `client/src/features/agents/edit-profile-dialog.tsx` repeats advanced loading and avatar generation, separately loads the existing avatar asset, maps edit payloads, clears inherited models through the CLI fallback, handles expensive-model confirmation, persists appearance and avatar changes, guards the Scope, invalidates the roster, and renders the form.
-- `client/src/features/agents/profile-advanced-fields.tsx` owns Profile draft types and persistence rules such as toolset normalization, but it also renders controls and starts the model-options query.
-- `client/src/app.tsx` constructs duplicate mode through eight independent `initial*` props. That makes the dialog interface nearly as complex as the duplicate seed itself.
+- rendering one settings category from schema and config queries;
+- implementing a 450 ms autosave state machine with timers, pending and active maps, revisions, optimistic cache writes, partial payload construction, serialized requests, abort controllers, rollback, Scope/category generations, and user-facing failures.
 
-This loses locality. A change to Profile capabilities, asset semantics, model confirmation, or cache policy currently requires coordinated edits in several modules. Tests mostly exercise the dialogs, so workflow behavior and rendering behavior share the same test surface.
+The six current screen tests exercise persistence policy by rendering fields and waiting on real time: partial payload/profile binding, rejection rollback, different-field serialization, a newer same-field edit behind an active write, pre-debounce Profile cleanup, and stale in-flight rejection suppression. This proves the behavior exists, but makes the screen the only test seam for concurrency and cleanup. The test suite does not directly pin category changes, remote-URL changes, unmount teardown, active-request abort, cache restoration after returning to an old Scope, `{ ok: false }`, rollback to the most recently confirmed same-field value, or a cache update that lands while a draft exists.
 
-The deletion test supports the refactor: deleting the proposed workflow module after migration would spread the same payload, ordering, Scope, and partial-save rules back across both dialogs and App.
+The deletion test supports this deepening. If the proposed module were removed after migration, the complete autosave state machine would have to return to `ConfigSectionScreen`; its complexity would not disappear.
 
 ## Decisions made
 
-These choices use the recommended answers to the design questions.
+These choices use the recommended answers to the interface and testing questions.
 
-### 1. Scope of the module
+### 1. Choose a dedicated React hook, not a generic autosave framework
 
-Include:
+Create `client/src/features/settings/use-config-autosave.ts` as the module interface and implementation. It will be a headless React hook because its work is inherently coupled to React Query subscriptions, React lifecycle cleanup, browser timers, and Scope-aware hooks.
 
-- fresh Profile creation, including the existing option to clone selected configuration;
-- Profile duplication, as the seeded presentation mode of creation;
-- Profile editing;
-- Profile name validation and duplicate-name suggestion;
-- advanced Profile loading through `profiles.describe` plus best-effort `mcp.catalog`;
-- model-option loading;
-- edit-avatar baseline loading;
-- avatar generation normalization;
-- create/edit mutation orchestration;
-- expensive-model confirmation for edit;
-- Scope checks and stale-result discard;
-- roster invalidation after a completed save.
+Do not add a DOM-free engine with public clock, cache, draft, and callback ports. That alternative exposes most implementation mechanics through its interface and becomes shallow. Do not add generic `AutosaveCache<K, V, T>` and `AutosaveAdapter<K, V, T>` types. There is one current caller, and Model editing already has a deep module with materially different immediate/debounced and per-field queue policy.
 
-Exclude:
+The dedicated hook gives the current caller the highest leverage: the screen states an edit and asks for the displayed value; the implementation owns everything else.
 
-- Profile deletion. It has a separate destructive confirmation and CLI lifecycle, and there is no duplication proving that it belongs behind this seam yet.
-- Profile action-menu rendering.
-- avatar file reading, resizing, and preview rendering. These are browser concerns already localized in `ProfileAvatarPicker`.
-- form state or a global Profile draft store.
-- changes to `AgentsApi` wire behavior.
+### 2. Keep the seam inside the settings feature
 
-### 2. Module shape
+The module sits between `ConfigSectionScreen` and these existing dependencies:
 
-Use the same split already established for Workspace navigation:
+- `SettingsApi.savePartial` as the remote-owned production adapter;
+- a narrow fake writer as the test adapter;
+- React Query as the local cache adapter;
+- `beginScopedTask` and `useScopeReset` as the existing Scope toolkit;
+- `getConfigValue` and `setConfigValue` as the existing safe nested-config helpers.
 
-1. `client/src/features/agents/profile-workflow.ts` will be the DOM-free core. It will own domain types, validation, normalization, payload mapping, remote operation ordering, response checks, warnings, and mode-specific policy.
-2. `client/src/features/agents/use-profile-workflow.ts` will be the React entry. It will bind `AgentsApi`, React Query, Scope utilities, confirmation presentation state, and roster invalidation to the core.
+Do not define a second transport port around `SettingsApi`. Production and tests already vary at the existing adapter seam. Do not change `settings-api.ts`, `gateway-api.ts`, `scope-guard.ts`, or `MemoryGateway` unless a failing contract test proves an existing defect.
 
-This gives the core a direct test interface while keeping React and cache mechanics out of the domain implementation. Do not add a generic workflow engine, public step registry, event bus, or new dependency.
+### 3. Preserve screen ownership
 
-### 3. Adapter strategy
+`ConfigSectionScreen` continues to own:
 
-Keep `AgentsApi` in `client/src/features/agents/agents-api.ts` as the remote adapter seam. The core should depend on a narrow `Pick<AgentsApi, ...>` rather than define a second transport abstraction.
+- `useApi(createSettingsApi)` binding;
+- the scoped config and schema query keys and queries;
+- category registry lookup and field filtering;
+- loading, query-error, empty-category, and voice-resource rendering;
+- `ConfigField` rendering and field labels;
+- the manual config/schema refresh button;
+- back navigation and Profile badge.
 
-The production adapter remains `createAgentsApi(createGatewayApi(...))`. Core policy tests use a small in-memory `AgentsApi` adapter. Contract tests use `MemoryGateway` through the production adapter for exact RPC payload and ordering evidence. No new port is needed beyond this proven production/test seam.
+The autosave module owns only edit persistence and the value overlay needed to keep optimistic drafts stable while background cache work occurs.
 
-### 4. Preserve mode-specific behavior
+### 4. Use one hook-local write lane
 
-Do not homogenize policies merely because the implementation becomes shared.
+Keep one active remote write per mounted autosave hook, matching current behavior. Every field has an independent debounce reservation, but all ready writes enter one insertion-ordered lane.
 
-- Fresh creation and duplication must preserve the current `profiles.create` payload. Description, clone flags, auth flags, credentials, provider/model, and SOUL retain their exact touched/dirty inclusion rules. Do not move model assignment into a follow-up request or introduce a new confirmation path for creation.
-- "Duplicate" is a seeded UI mode, not a permanent wire invariant. It starts with the selected source and `cloneAll: true`, but the user can still choose "Start with gateway defaults" before saving. Conversely, a dialog opened as fresh creation can select a clone source. The initial mode continues to control the title, busy label, initial touched flags, and untouched `share_auth` behavior.
-- After successful creation, advanced capability configuration, appearance configuration, and avatar persistence remain independent best-effort steps. Failures become the existing aggregate warning, the newly created Profile remains committed, the roster refreshes, and the dialog closes.
-- Edit remains fail-closed. A failed requested edit step leaves the dialog open with an error. Do not convert edit failures into a successful close with warnings in this refactor.
-- Edit continues to use the verified `cli.exec --profile <name> config unset model` fallback when the user explicitly clears provider and model.
-- Edit alone handles `confirm_required` and retries the same frozen draft with `confirm_expensive_model: true` after approval.
-- No cross-RPC rollback will be added. The gateway does not provide a transaction, and a guessed rollback could overwrite concurrent changes.
+Do not introduce a module-global queue. Only one config category screen is mounted at a time, category changes reset the lifecycle, and a global registry would add cross-instance retention without a proven caller. Do not coordinate this lane with `useModelConfigEditing`; Model editing is already a separate deep module and has different immediate/debounced and per-field queue policy. The two modules also use distinct existing query keys for the same remote config: `['gateway', connection, profile, 'settings', 'config']` here and `['gateway', connection, profile, 'models', 'config']` in Model editing. Preserve those keys and do not add cross-domain invalidation in this refactor. The nearby Model tests are regression coverage, not a claim that the two caches become synchronized.
 
-These differences must be expressed as policy inside the workflow implementation, not as duplicated caller code.
+### 5. Roll back to the last confirmed field value
 
-### 5. Cache and Scope policy
+Maintain a field record whose confirmed baseline advances after every successful write, even when a newer edit for the same path is already pending. A failure of the newest current revision restores that confirmed baseline. An older failed revision never rolls back or reports an error over a newer draft.
 
-- Keep the roster key byte-for-byte compatible with `useScopeKey('agents', ['roster'], { unscoped: true })`. This key currently has seven production constructors: the two Profile dialogs, `RosterScreen`, `ChatScreen`, `DeleteProfileDialog`, `CreateGroupChatDialog`, and `GroupScreen`. Migration removes the two dialog constructors and adds the hook constructor, leaving six.
-- Keep model options under the existing unscoped `useScopeKey('agents', ['model-options'], { unscoped: true })` key. `ProfileAdvancedFields` is its only current constructor; the hook replaces it.
-- Key advanced Profile data as `useScopeKey('agents', ['profile-advanced', mode, source], { unscoped: true })` and avatar baselines as `useScopeKey('agents', ['profile-avatar', name], { unscoped: true })`. Advanced normalization suppresses provider/model/SOUL outside edit, so mode is part of that result's identity. Both reads include the gateway connection and explicit Profile name but not the active conversation Profile.
-- Use `useScopedQuery` for all remote reads and `useScopedTask` for generation and mutation work.
-- The hook combines the scoped task's `isCurrent` predicate with a dialog-operation generation captured at submit. Increment that generation on close, mode change, edit target-name change, unmount, and Scope reset. Pass the combined predicate into the core operation. Check it before and after sequential remote calls, before opening confirmation, before invalidating caches, and before reporting completion.
-- If the Scope changes, do not start another sequential step. Discard completion, errors, confirmation, and cache effects. An RPC already accepted by the gateway cannot be undone.
-- Do not add optimistic roster updates. Multi-step mutations can partially persist, so rollback would be misleading.
+This deliberately fixes the current stale-baseline behavior. It does not add cross-field or cross-request transactionality; the Gateway accepts partial config patches independently.
 
-### 6. Avatar policy
+### 6. Treat cleanup as persistence policy
 
-Preserve the current safety rules and make them explicit:
+On category change, Profile change, remote-URL change, or unmount, the hook must:
 
-- An inline avatar from `bot.meta.image` or `bot.avatar` is a known baseline and avoids another fetch.
-- If edit receives only `hasAvatar: true`, load `profiles.get_asset` before enabling save. Save becomes available after either a known baseline or a terminal unknown-baseline result; it stays disabled only while the fetch is pending.
-- A failed asset load, `found: true` without nonempty `data`, or a response that does not explicitly establish presence or absence means the remote baseline is unknown, not absent.
-- An appearance-only title, color, or shape update must never clear an avatar asset. Selecting a character while a photo is present is different: `ProfileAvatarPicker` calls `onImage(null)`, so that action is an explicit image removal as well as a shape change.
-- An explicit image removal clears the asset only when the workflow knows a saved asset existed.
-- Replacing an unknown saved asset with a new image is safe and remains allowed.
-- A generated-avatar response must contain a truthy `image_data` or `image`; `success: true` without image data is an error. Preserve the current rejection message when `success === false` and the current no-image message otherwise.
-- Duplication continues to use the avatar data already hydrated into the roster row. Do not add another duplicate-only asset fetch in this refactor.
+- increment its lifecycle epoch;
+- clear every debounce timer;
+- remove pending work;
+- abort the active request;
+- suppress late success and failure effects;
+- clear draft and error state while mounted;
+- restore unconfirmed optimistic field values only when the cached path is still `Object.is`-equal to the exact value written by this hook;
+- invalidate the captured query with `refetchType: 'none'` when an active request may have reached the Gateway or the outgoing lifecycle already has deferred invalidation work.
+
+Category changes and Scope changes do not have the same cache shape. Every config category shares the same settings config key, while Profile and remote-URL changes produce distinct keys. Cleanup nevertheless uses one invalidation rule: mark the captured key stale without starting a refetch during abort teardown. An old Scope refetches when it mounts again. A category change keeps observing the same stale key and the restored confirmed baseline; it does not invent a second cache entry or claim an immediate authoritative refetch after an uncertain abort.
+
+The cleanup function captured by the previous render must operate on the previous query key, field records, and adapter lifecycle. It must not read only the newest options. It may clear React state when a new mounted lifecycle replaces the old one, but the returned unmount cleanup must only mutate refs, cache, timers, and abort controllers.
 
 ## Proposed interface
 
-Implement the following responsibilities and information flow.
-
-### DOM-free core
-
-`profile-workflow.ts` should export domain values rather than wire payloads:
+Create `client/src/features/settings/use-config-autosave.ts` with a small settings-specific interface:
 
 ```ts
-export const PROFILE_NAME_MAX_LENGTH = 63
+import type { QueryKey } from '@tanstack/react-query'
 
-export type ProfileWorkflowMode = 'create' | 'duplicate' | 'edit'
+import type { HermesConfigRecord } from '~/lib/types'
+import type { SettingsApi } from './settings-api'
 
-export interface ProfileAppearanceDraft {
-  color: string | null
-  created?: number
-  shape: string
-  title: string
-  touched: boolean
+export interface UseConfigAutosaveOptions {
+  category: string
+  config: HermesConfigRecord | undefined
+  queryKey: QueryKey
+  settings: Pick<SettingsApi, 'savePartial'>
 }
 
-export type ProfileAvatarBaseline =
-  | { status: 'known'; image: string | null }
-  | { status: 'unknown' }
-
-export interface ProfileAvatarDraft {
-  baseline: ProfileAvatarBaseline
-  current: string | null
+export interface ConfigAutosave {
+  error: string | null
+  valueFor(path: string): unknown
+  change(path: string, value: unknown): void
 }
 
-export interface ProfileCreateSeed {
-  cloneAll: boolean
-  cloneFrom: string
-  color: string | null
-  description: string
-  image: string | null
-  name: string
-  shape: string
-  title: string
-}
-
-export interface CreateProfileCommand {
-  mode: 'create' | 'duplicate'
-  name: string
-  description: string
-  descriptionTouched: boolean
-  appearance: ProfileAppearanceDraft
-  image: string | null
-  advanced: ProfileAdvancedState
-  advancedTouched: boolean
-  cloneFrom: string
-  cloneAll: boolean
-  noSkills: boolean
-  shareAuth: boolean
-  shareAuthTouched: boolean
-  mirrorCredentials: boolean
-  mirrorCredentialsTouched: boolean
-}
-
-export interface EditProfileCommand {
-  mode: 'edit'
-  name: string
-  description: string
-  descriptionTouched: boolean
-  appearance: ProfileAppearanceDraft
-  avatar: ProfileAvatarDraft
-  advanced: ProfileAdvancedState
-}
-
-export type ProfileSaveCommand = CreateProfileCommand | EditProfileCommand
-
-export type ProfileSaveResult =
-  | { status: 'saved'; name: string; warning?: string }
-  | { status: 'cancelled'; reason: 'model-confirmation-declined' }
+export function useConfigAutosave(
+  options: UseConfigAutosaveOptions
+): ConfigAutosave
 ```
 
-The core factory should expose the smallest useful behavior set:
+The interface includes `category` only as a caller-owned lifecycle identity. Scope identity remains hidden in `useScopeReset` and `beginScopedTask`. `queryKey` and `config` are values the screen already owns for rendering, and the module needs them to update the same cache entry. The caller does not receive reset, flush, retry, queue, timer, revision, abort, or invalidation controls.
 
-```ts
-export interface ProfileWorkflow {
-  loadAdvanced(input: {
-    mode: ProfileWorkflowMode
-    source: string
-    signal?: AbortSignal
-  }): Promise<ProfileAdvancedState>
+Return the classified message string, matching the screen's current error state and `<div className="error-banner" role="alert">` rendering. The hook still classifies caught failures internally, but it does not expose classification metadata that no caller consumes or change a save failure into `GatewayErrorBanner`'s special unsupported-capability presentation. `change` remains synchronous: it applies the optimistic value immediately and schedules persistence. There is no caller-visible save promise because debounce and replacement mean a single edit call does not map cleanly to one remote completion.
 
-  loadAvatar(input: {
-    hasAsset: boolean
-    inlineImage: string | null
-    name: string
-    signal?: AbortSignal
-  }): Promise<ProfileAvatarBaseline>
+The intended caller becomes:
 
-  generateAvatar(prompt: string, signal?: AbortSignal): Promise<string>
+```tsx
+const autosave = useConfigAutosave({
+  category,
+  config: config.data,
+  queryKey: key,
+  settings
+})
 
-  save(
-    command: ProfileSaveCommand,
-    context: {
-      confirmModel(message: string): Promise<boolean>
-      isCurrent(): boolean
-    }
-  ): Promise<ProfileSaveResult>
-}
+{autosave.error && <div className="error-banner" role="alert">{autosave.error}</div>}
 
-export function createProfileWorkflow(
-  agents: Pick<AgentsApi,
-    | 'clearModel'
-    | 'configure'
-    | 'create'
-    | 'describe'
-    | 'generateAvatar'
-    | 'getAsset'
-    | 'mcpCatalog'
-    | 'setAsset'
-  >
-): ProfileWorkflow
+<ConfigField
+  onChange={value => autosave.change(path, value)}
+  value={autosave.valueFor(path)}
+  // existing schema and description props
+/>
 ```
 
-Use `Date.now()` directly for fresh Profile metadata and `vi.setSystemTime(...)` in the timestamp test. A production clock option solely for one test would enlarge the interface without adding a real adapter. Do not expose private payload builders or remote step types.
+Do not export internal queue records, lifecycle epochs, debounce constants, or helper functions solely for tests. The interface is the test surface.
 
-The core should also export:
+## Internal behavior
 
-- `validateProfileName(value)` as the single submit and UI validation rule;
-- `duplicateProfileSeed(agent)` to map `description ?? ''`, `meta.color ?? null`, `meta.shape ?? 'blobatar'`, `meta.image ?? avatar ?? null`, `meta.title ? meta.title + ' (copy)' : ''`, `cloneAll: true`, the source name, and the initial `-2` name. It does not copy `meta.created`;
-- `suggestDuplicateProfileName(sourceName, existingNames)` for the existing `-2` through `-99` search and truncation. If all 98 candidates are occupied, return the initial `-2` candidate and let `profiles.create` report the collision, matching the current behavior;
-- `emptyAdvancedProfileState()` and the `ProfileAdvancedState` type;
-- `advancedStateFromDescribe(...)` for loaded draft normalization;
-- keep toolset persistence normalization private. The renderer does not need it after migration.
+### Field records
 
-### React entry
+Keep one private record per edited path with:
 
-`use-profile-workflow.ts` should expose one headless hook for the two dialogs:
+- the last Gateway-confirmed value;
+- the latest local revision number;
+- the current draft value, if any;
+- the latest pending operation, if any;
+- the current debounce timer, if any.
 
-```ts
-export function useProfileWorkflow(options: {
-  advancedOpen: boolean
-  advancedSource: string | null
-  avatar: null | {
-    hasAsset: boolean
-    inlineImage: string | null
-    name: string
-  }
-  mode: ProfileWorkflowMode
-  onSaved(result: { name: string; warning?: string }): void
-  open: boolean
-}): {
-  advanced: {
-    data: ProfileAdvancedState | null
-    error: string | null
-    loading: boolean
-  }
-  avatar: {
-    baseline: ProfileAvatarBaseline | null
-    loading: boolean
-  }
-  modelOptions: {
-    data: AgentModelOptionsResult | undefined
-    error: string | null
-    loading: boolean
-  }
-  roster: {
-    data: AgentRosterPage | undefined
-    error: string | null
-    loading: boolean
-  }
-  generateAvatar(prompt: string): Promise<string | null>
-  mutation: {
-    busy: boolean
-    clearError(): void
-    confirmation: string | null
-    error: string | null
-    submit(command: ProfileSaveCommand): void
-    confirm(): void
-    declineConfirmation(): void
-  }
-}
-```
+Capture the confirmed baseline from `queryClient.getQueryData(queryKey)`, falling back to `options.config`, only when the field first becomes dirty in the current lifecycle. `undefined` is a valid confirmed baseline. Never replace that baseline from a background refetch while the field has a draft.
 
-The hook reports completion through the required `onSaved` callback:
+The schema query can finish before the config query, and the current screen renders fields in that state. If `change` runs before either the cache or `options.config` contains a config record, keep the draft and send the partial write, but do not synthesize a partial record as successful query data. At that boundary, `valueFor` uses the draft overlay while the original config query continues. This preserves query loading semantics instead of turning an incomplete optimistic object into the config query result.
 
-- completion reports only `{ name, warning? }`;
-- the hook must own busy/error/confirmation lifecycle; `clearError()` lets the create dialog preserve its current clear-on-name-edit behavior;
-- confirmation must resume a frozen command, not reconstruct a command from current React state;
-- the hook must invalidate the roster only after a saved result and only while the captured Scope is current;
-- pending confirmation and errors must reset when the dialog closes, its target changes, or the Scope changes.
+### Edit path
 
-Do not expose `QueryClient`, query keys, raw `GatewayError`, RPC response fields, `confirm_expensive_model`, or `ScopedTask` through this interface.
+For every `change(path, value)` call:
 
-## Detailed implementation steps
+1. Read or create the field record.
+2. Increment that path's revision.
+3. Replace its pending operation with the newest value while preserving the confirmed baseline.
+4. Store the draft so `valueFor(path)` remains stable across query invalidation or refetch.
+5. Apply the nested value optimistically when the cache or `options.config` contains a full config record; otherwise leave the query data absent and rely on the draft overlay.
+6. Clear only the previous timer for that path.
+7. Start a new 450 ms timer associated with the current lifecycle epoch, revision, category, and Scoped task.
+8. Do not start remote work if that timer later proves stale by revision, lifecycle, or Scope.
 
-### Step 1: Add the Profile workflow domain term
+Preserve the existing safe nested-path rules by using `setConfigValue`; do not duplicate its prototype-pollution checks.
 
-Update `CONTEXT.md` with a concise **Profile workflow** entry:
+### Queue and request path
 
-- name the module files;
-- state that it owns create, duplicate, and edit orchestration;
-- list payload mapping, advanced/avatar loading, model confirmation, Scope guarding, partial-save policy, and roster refresh as implementation responsibilities;
-- state that dialogs own rendering and drafts;
-- state that `AgentsApi` remains the adapter seam;
-- explicitly exclude Profile deletion.
+When a current timer expires, mark that path's latest operation ready and drain the lane:
 
-This prevents later architecture reviews from moving the seam back into the dialogs or incorrectly folding deletion into it.
+1. Return immediately if another request is active.
+2. Choose the first ready operation in the pending map's insertion order. Replacing a pre-debounce operation for an existing path retains that path's current map position; inserting a newer operation after its predecessor became active gives it a new position behind already-pending paths.
+3. Remove it from pending work and mark it active.
+4. Build a one-field patch with `setConfigValue({}, path, value)`.
+5. Call `settings.savePartial(patch, abortController.signal)`.
+6. Treat an aborted signal or stale lifecycle/Scope as silent cancellation.
+7. Treat `{ ok: false }` as `The gateway rejected this setting.` and classify it through `classifyGatewayError`.
+8. On success, advance that field's confirmed baseline to the submitted value even if a newer revision exists.
+9. If success is also the newest revision, remove the draft and clear the current autosave error.
+10. If failure belongs to the newest revision, restore only that path to its confirmed value when the cached value is still `Object.is`-equal to the submitted value, remove its draft, and publish the classified error. If the cache differs, leave it untouched and request deferred invalidation.
+11. If failure belongs to an older revision, leave the newer draft, cache, and error state untouched.
+12. Release the active slot in `finally` and drain the next ready operation only while lifecycle and Scope remain current.
 
-### Step 2: Build the DOM-free core and direct tests
+At no time may two `savePartial` calls from the same hook overlap.
+
+### Cache policy
+
+Apply optimistic values immediately when full query data exists, but defer ordinary query invalidation until the lane is fully idle: no active request, pending operation, or debounce timer remains. This prevents a refetch after one field succeeds from overwriting another field's unsaved optimistic cache value.
+
+Maintain one private `needsInvalidation` flag. Set it after any successful request and when rollback declines to overwrite a cache value the hook no longer owns. When the lane becomes idle, consume the flag and invalidate the config query once. A mixed batch with one failure and one success still invalidates because a success occurred. Keep local drafts until their own newest write succeeds, so a refetch cannot visibly regress another edited field.
+
+A normal current failure whose ownership check permits rollback does not invalidate by itself; the cache is already restored to the module's confirmed baseline. Cleanup marks the captured query stale with `refetchType: 'none'` if an active request was aborted or `needsInvalidation` was already set. The first condition covers an uncertain Gateway commit; the second preserves deferred success or ownership-mismatch invalidation when lifecycle teardown prevents the ordinary idle drain.
+
+### Error policy
+
+- Keep one displayed error. A failure may publish only when it is the newest revision for its path and its lifecycle and Scope are current.
+- Suppress abort and stale Scope/category errors.
+- Preserve the current rejection message for `{ ok: false }`.
+- Clear the error when a newest-revision current save succeeds. Do not clear it merely because the user starts another edit, and do not add automatic retry.
+- An older same-field operation must not clear or replace state belonging to its newer draft.
+
+## Detailed implementation sequence
+
+Use vertical red-green slices. Do not write all tests before all implementation.
+
+### Step 1: Document the module
+
+Update `CONTEXT.md` with a concise **Settings autosave** entry:
+
+- name `features/settings/use-config-autosave.ts` as the deep module;
+- state that it owns debounce, global-within-screen ordering, confirmed baselines, optimistic config cache updates, rollback, error classification, invalidation, abort, and Scope/category lifecycle;
+- state that `ConfigSectionScreen` owns queries, category selection, schema interpretation, and rendering;
+- state that `SettingsApi.savePartial` remains the remote adapter seam;
+- distinguish it from the existing Model editing module.
+
+This prevents future work from merging two persistence policies merely because both write `/api/config`.
+
+### Step 2: Add the smallest tracer test and hook
 
 Create:
 
-- `client/src/features/agents/profile-workflow.ts`
-- `client/src/features/agents/profile-workflow.test.ts`
+- `client/src/features/settings/use-config-autosave.ts`
+- `client/src/features/settings/use-config-autosave.test.tsx`
 
-Move or implement in the core:
+Start with one fake-timer hook test that supplies a real `QueryClient`, a loaded config cache, and a narrow fake `savePartial` adapter. Assert that:
 
-1. Profile name constants and validation currently in `create-profile-dialog.tsx`.
-2. `ProfileAdvancedState`, `emptyAdvancedProfileState`, and `advancedStateFromDescribe` currently in `profile-advanced-fields.tsx`.
-3. Toolset persistence normalization currently exposed as `enabledToolsetNames`.
-4. Duplicate seed and unique-name suggestion currently split between `App` and the create dialog effect. Preserve suffixes 2 through 99, the 63-character limit, source names that already end in a suffix, and the exhausted-range behavior.
-5. Advanced data loading:
-   - run `describe(source)` and `mcpCatalog(source)` in parallel with the same signal;
-   - treat `describe` as required;
-   - treat an ordinary catalog failure as nonfatal and preserve configured MCP entries; if the shared signal is aborted, propagate the abort rather than convert it to a catalog miss;
-   - for `edit`, include the described provider, model, and SOUL;
-   - for `create` and `duplicate`, preserve the current `includeModel = false` behavior, which suppresses both described model fields and described SOUL while still loading capabilities. Do not describe this flag as model-only.
-6. Avatar baseline loading and generated-image response normalization. Return known-present for an inline image or explicit `found: true` plus truthy data, known-absent for `hasAsset: false` or explicit `found: false`, and unknown for an ordinary fetch failure or indeterminate result. If the supplied signal is aborted, rethrow the abort instead of caching it as an unknown baseline.
-7. Private create, advanced-configuration, edit-configuration, appearance, and avatar mappers.
-8. Ordered create/duplicate and edit executors. Use `command.name`, not mutable dialog state, for every RPC and completion result.
-9. Response compatibility through the existing rules:
-   - create fails only when `created.ok === false`, as it does now;
-   - configuration uses `isSuccessfulProfileConfiguration`, which accepts omitted `ok` and `applied` fields unless an explicit negative value appears;
-   - avatar writes fail only when `result.ok === false`;
-   - model clearing uses `isSuccessfulCliResult` and therefore requires `code === 0`.
-   Do not tighten these legacy-compatible optional result envelopes in this refactor.
-10. A private stale-work sentinel that stops the executor without presenting an error when `isCurrent()` becomes false.
+- `change('display.personality', 'concise')` updates `valueFor` and the loaded query cache immediately;
+- no request starts before 450 ms;
+- the request contains only `{ display: { personality: 'concise' } }`;
+- success removes the draft and leaves the confirmed value visible.
 
-Execute saves in these exact orders:
+Add the boundary case where schema-backed UI calls `change` while both cache data and `options.config` are absent. The draft must render and save, but the hook must not seed the config query with a partial object.
 
-- create/duplicate: validate the name and model pair before remote work; call `create`; then attempt advanced configuration, appearance configuration, and avatar write in that order. Check Scope before each call and immediately after each await, including rejection paths, before interpreting a result or adding a warning. Each attempted follow-up continues after a thrown or explicit-negative result and appends `advanced settings`, `appearance`, or `avatar image` in operation order. Return the unchanged sentence `Profile created, but ${labels.join(' and ')} could not be saved.`
-- edit: validate the model pair before remote work; clear an explicitly emptied model first; send the combined description/SOUL/capability/model configuration second; send appearance third; then replace or clear the avatar. Skip every empty step. Check Scope before and immediately after every awaited step, including errors. If the combined configuration requests confirmation, stop, check Scope, await the semantic decision, check Scope again, and either return cancelled or retry that same configuration once with only `confirm_expensive_model: true` added. Continue to appearance and avatar only after successful retry.
+Implement only enough hook state, timer handling, partial-patch construction, and success handling to pass this slice.
 
-Core tests should use the public `ProfileWorkflow` interface. They should not import private builders.
+### Step 3: Add independent debounce and serialization
 
-### Step 3: Add the React hook and hook tests
+Add tests one at a time for:
 
-Create:
+1. Repeated edits to one path before 450 ms send only the newest value.
+2. Two paths debounce independently.
+3. Once both are ready, the second request does not start until the first settles.
+4. Ready work drains in pending-map insertion order, including replacement before debounce and reinsertion behind other fields after a same-field predecessor becomes active.
 
-- `client/src/features/agents/use-profile-workflow.ts`
-- `client/src/features/agents/use-profile-workflow.test.tsx`
+Then add per-path timers, revisions, the pending map, and the single active slot. Use Vitest fake timers rather than 500 ms sleeps.
 
-The hook should:
+### Step 4: Add confirmed-baseline semantics
 
-1. Bind `useApi(createAgentsApi)` once.
-2. Own the existing unscoped roster and model-options keys. Load the roster only for an open create/duplicate dialog whose advanced section is open, matching the current clone-selector behavior; `loadRoster` is not a caller option. Load model options only while the open dialog's Advanced section is open, matching the renderer's current mount behavior.
-3. Start advanced loading only when the dialog and advanced section are open and a source exists. Pass `mode` to the core so edit alone hydrates described provider, model, and SOUL. For create and duplicate, the dialog passes `cloneFrom || 'default'` as `advancedSource`, exactly as the current effect does.
-4. Treat advanced and fetched-avatar reads as loading while React Query is fetching, even when cache data exists. Hydrate from the post-fetch result, not an immediately returned stale cache entry; the current dialogs clear and reload these drafts each time they open.
-5. For edit, return a known-absent avatar baseline without a query when `hasAsset` is false, and return a known-present baseline without a query when inline data exists. Query only when no inline image exists and `hasAsset` is true. Expose unknown after a terminal failure or indeterminate result so the dialog can re-enable save safely. Preserve the current silent asset-load failure; the hook does not expose or render an avatar-load error.
-6. Wrap generation and save in `useScopedTask`. Avatar generation keeps its busy/error presentation in `ProfileAvatarPicker`; the hook normalizes the result, rejects with the current message while Scope is current, and returns `null` without touching the draft when Scope is stale.
-7. Maintain a dialog-operation generation in a ref. Capture it at submit and pass `() => task.isCurrent() && generation === capturedGeneration` into every core save. Increment it and reset local mutation state on close, mode change, edit avatar target-name change, unmount, and Scope reset. Do not increment it when a create dialog's `advancedSource` changes; that is a draft edit, and an already submitted frozen command must continue. Guard busy/error callbacks with the same generation so an old save cannot update a new target in the same gateway Scope.
-8. Hold the frozen command and model-confirmation resolver privately.
-9. Resolve confirmation from `ConfirmDialog` actions without exposing wire retry details.
-10. Clear pending confirmation on decline, close, target change, unmount, or Scope reset.
-11. Invalidate the unscoped roster key after `saved`, including a create result with warnings.
-12. Avoid invalidation and caller callbacks after a stale Scope.
-13. Convert classified query and mutation errors to the user-facing messages the dialogs already render. Do not add a second generation error state; `ProfileAvatarPicker` already owns it.
+Add vertical tests for:
 
-Use `useScopeReset` rather than adding another Scope listener. Ensure unresolved confirmation promises are settled during cleanup so no mutation remains hung after unmount or Scope change. The hook owns remote read state, but it does not hydrate dialog drafts; one-time hydration remains a dialog responsibility.
+1. A latest current failure restores the original confirmed field and preserves an unrelated optimistic field.
+2. A first same-field write succeeds, a second same-field write fails, and rollback restores the first submitted value.
+3. An older same-field write fails while a newer edit exists; the newer draft remains visible and no stale error appears.
+4. `{ ok: false }` follows the same rollback path with the existing rejection message.
+5. A background cache replacement during a draft prevents rollback from overwriting that replacement; the hook removes its draft, reports the save failure, and invalidates when idle.
 
-### Step 4: Turn `ProfileAdvancedFields` into a renderer
+Implement field records whose confirmed value advances on each success. Guard rollback with both lifecycle and revision checks. Use `Object.is` for ownership, which recognizes the exact primitive or array/object reference placed in the cache by this hook and conservatively treats an equivalent cloned value as externally replaced.
 
-Modify `client/src/features/agents/profile-advanced-fields.tsx`:
+### Step 5: Add invalidation and refetch safety
 
-- import `ProfileAdvancedState` from `profile-workflow.ts`;
-- remove its `AgentsApi` dependency;
-- remove `useScopeKey` and `useScopedQuery`;
-- accept model-provider data plus loading/error state as props;
-- keep capability filtering, checkboxes, selects, textareas, and immutable draft updates;
-- keep manual provider/model input when model options are unavailable;
-- remove persistence helpers that moved to the core.
+Spy on `queryClient.invalidateQueries` and test that:
 
-Move the toolset normalization assertion out of `edit-profile-dialog.test.tsx` and into `profile-workflow.test.ts`. A rendering test should not own a gateway persistence invariant.
+- successful idle completion invalidates once;
+- completion of the first serialized field does not invalidate while another field remains debounced, pending, or active;
+- a mixed failure/success lane still performs the success-driven invalidation once at idle;
+- a rollback ownership mismatch performs one deferred invalidation;
+- a background cache update cannot replace `valueFor` while a draft exists;
+- after the draft succeeds, `valueFor` falls back to the query result.
 
-### Step 5: Migrate fresh creation and duplication
+Implement one deferred invalidation flag and settle it only when the entire lane is idle. Do not expose invalidation through the hook interface.
 
-Modify `client/src/features/agents/create-profile-dialog.tsx`:
+### Step 6: Add Scope, category, and unmount lifecycle
 
-- replace the eight `initial*` props with one optional `seed: ProfileCreateSeed`;
-- use an empty seed for fresh creation and `seed.cloneFrom` to select duplicate mode;
-- consume roster, advanced, model-options, generation, mutation, busy, error, and completion behavior from `useProfileWorkflow`;
-- keep local field values, touched flags, name-edited tracking, focus, advanced expansion, and dialog rendering;
-- hydrate advanced local state once per loaded source. When the selected source changes, reset the source-specific draft and allow one hydration for the new source. A background refresh of the same source must not overwrite a draft after any advanced field was edited;
-- construct and submit one frozen domain `CreateProfileCommand`; create carries only its current `image`, not an edit-only avatar baseline. Use its trimmed name for the RPC and later completion callback even if an enabled input changes while the request is in flight;
-- remove direct imports and use of `useQueryClient`, `useScopeKey`, `useScopedQuery`, `useScopedTask`, `AgentProfileCreateInput`, `AgentProfileConfigureInput`, `botMetaForProfile`, and response predicates;
-- remove local advanced-loading and avatar-generation implementations;
-- preserve the existing warning string and `onCreated(name, warning)` behavior;
-- preserve disabled buttons, busy labels, and close behavior.
+Use `renderHook` rerenders plus `$preferences` changes to cover:
 
-For duplicate naming and mode behavior:
+- category change before debounce prevents the old request and restores the shared config cache;
+- category change during an active request aborts its signal, suppresses both late success and late failure, and marks the same settings config key stale with `refetchType: 'none'`;
+- Profile change before debounce prevents the old request and clears the draft;
+- remote-URL change before debounce prevents the old request and clears the draft;
+- Profile or remote-URL change during an active request aborts its signal, suppresses both late outcomes, and invalidates the captured old key with `refetchType: 'none'`;
+- changing Scope away and back does not reveal the old unsaved optimistic value;
+- unmount before debounce clears timers and prevents delayed requests;
+- unmount during an active request aborts its signal, marks the captured key stale without a state update, and produces no state-update warning;
+- switching away and back to the same Scope still rejects old work through the Scope generation.
 
-- use `duplicateProfileSeed` when App opens the dialog;
-- track the last automatically suggested value separately from user edits. When either cached or refreshed roster data arrives, recompute from the full roster if the user has not edited the name. This allows fresh data to advance an earlier cached suggestion rather than getting blocked by the current `name === initialName` guard;
-- search suffixes `-2` through `-99` inclusive. Truncate the source so the whole candidate is at most 63 characters. If the range is exhausted, retain the initial `-2` candidate;
-- let `profiles.create` remain authoritative if another client races the suggestion;
-- require a nonempty source to construct a duplicate seed, but do not require `cloneFrom` to remain nonempty at submit time. The duplicate dialog currently lets the user choose gateway defaults. Keep the duplicate title and busy label after that choice;
-- keep fresh mode capable of selecting a clone source from Advanced settings;
-- preserve initial-mode touched rules. Duplicate starts with description and advanced touched; fresh starts untouched. Untouched `share_auth` is omitted in duplicate mode but opening Advanced in fresh mode causes the current default `share_auth: true` inclusion. `mirror_credentials` remains omitted until its checkbox is touched.
+For the category tests, assert that the query key is unchanged. For Profile and remote-URL tests, assert that old and new keys differ and inspect both cache entries.
 
-Modify `client/src/app.tsx`:
+Use `useScopeReset` for the lifecycle and capture `beginScopedTask()` in each `change` call, before scheduling its timer. The hook's private lifecycle epoch handles category changes, while the shared Scope generation handles connection/Profile changes, including a switch away and back before React effects can make old work current again.
 
-- replace `duplicateOptions` with `createProfileSeed: ProfileCreateSeed | null`;
-- build duplicate mode through `duplicateProfileSeed(actionsProfile)`; the helper must reject an empty source name, though normalized roster entries already guarantee a nonempty one;
-- pass the seed object to `CreateProfileDialog`;
-- keep create/close/open dialog behavior and notices unchanged;
-- do not alter unrelated App navigation or group creation logic.
+### Step 7: Migrate `ConfigSectionScreen`
 
-### Step 6: Migrate editing
+Modify `client/src/features/settings/config-section-screen.tsx`:
 
-Modify `client/src/features/agents/edit-profile-dialog.tsx`:
+- import and call `useConfigAutosave` after creating `settings`, `key`, and the config query;
+- replace `valueFor` and `save` with `autosave.valueFor` and `autosave.change`;
+- render `autosave.error` through the existing save-error `<div className="error-banner" role="alert">`, preserving current save-failure presentation;
+- delete `SAVE_DELAY_MS`, `PendingConfigSave`, drafts, timers, pending/active/revision/generation refs, local Scope comparison, drain, reset, and save implementations;
+- remove imports used only by the deleted implementation, including direct `useQueryClient`, `useRef`, `useState`, `useScopeReset`, `getConfigValue`, `setConfigValue`, and `HermesConfigRecord` where no longer needed;
+- preserve all query, field, voice-resource, refresh, and page-shell behavior.
 
-- consume advanced, model-options, avatar baseline, generation, mutation, busy, error, and confirmation behavior from `useProfileWorkflow`;
-- keep local drafts, touched flags, focus, rendering, and `ConfirmDialog` presentation;
-- add a dialog-local image-touched ref, separate from appearance-touched, to protect hydration. `ProfileAvatarPicker.onImage` sets both; title and color set appearance only; selecting a character calls `onImage(null)` and is therefore an explicit removal. Do not put this UI hydration flag in `ProfileAvatarDraft`; persistence is determined by `baseline` plus `current`;
-- hydrate the avatar draft from the workflow baseline only if the image has not been touched. A known baseline initializes `current`; an unknown baseline leaves the current image alone and records only the baseline status;
-- construct an `EditProfileCommand` on submit;
-- let the hook freeze that command before a confirmation round trip;
-- wire `ConfirmDialog` confirm and cancel actions to the hook's semantic confirmation actions;
-- remove direct imports and use of `useQueryClient`, `beginScopedTask`, `useScopeKey`, `useScopedTask`, `botMetaForProfile`, response predicates, and direct mutation methods;
-- remove the local advanced and asset loading effects;
-- preserve save-button disabling until a required avatar baseline finishes loading;
-- preserve error-open and success-close behavior;
-- keep `onSaved(name)` unchanged. The dialog adapts the hook's `{ name }` completion to that callback; edit never returns create-style warnings.
+Do not modify `ConfigField`; it already reports semantic values through `onChange` and does not know persistence timing.
 
-### Step 7: Remove migrated duplication
+### Step 8: Replace screen orchestration tests
 
-After both dialogs use the new interface:
+Refocus `client/src/features/settings/config-section-screen.test.tsx` on the screen-to-hook integration seam:
 
-- delete local `CreateResult` and `SaveResult` types;
-- delete duplicate `generateAvatar` functions;
-- delete duplicate `describe`/`mcpCatalog` effects;
-- delete dialog-level payload mapping and best-effort helpers;
-- delete dialog-level cache invalidation;
-- remove dead imports;
-- keep `ProfileAvatarPicker`, `AgentsApi`, and gateway Scope utilities focused on their existing responsibilities;
-- do not move adapter response types out of `agents-api.ts` unless the workflow only needs a type import.
+- retain one production-composition happy path with `GatewayProvider`, `MemoryGateway`, and the real hook to prove a rendered field produces the profile-scoped partial PUT;
+- retain the visible rollback/error case and assert that the existing alert displays the hook's classified message through the rendered screen;
+- add the currently missing rendering case for a config category whose schema exposes none of its registered fields;
+- remove the four detailed concurrency and Scope orchestration cases after equivalent or stronger assertions pass in `use-config-autosave.test.tsx`.
 
-The resulting dependency direction should be:
+The screen file therefore ends with three cases: production-composition happy path, visible rollback/error, and empty-category rendering. This follows replace-don't-layer testing: direct interface tests become authoritative for autosave policy, while screen tests prove composition and visible output.
 
-```text
-App
-  -> CreateProfileDialog / EditProfileDialog
-    -> useProfileWorkflow
-      -> profile-workflow
-        -> AgentsApi
-          -> GatewayApi / GatewayPort
-```
+### Step 9: Add one browser persistence path
 
-`ProfileAdvancedFields` and `ProfileAvatarPicker` should remain renderers called by the dialogs. They must not regain remote mutation policy.
+Extend `client/e2e/server.mjs` with the smallest deterministic config fixture:
+
+- initialize per-session config with only `display.personality: 'default'`;
+- return a `/api/config/schema` GET response that exposes only `display.personality`, the sole field this test consumes;
+- return current config for `/api/config` GET;
+- on `/api/config` PUT, record the body, merge the partial nested config into fixture state, and return `{ ok: true }`;
+- preserve the selected `profile` query in the existing call record;
+- do not add a generic fixture-control route.
+
+Add one case to `client/e2e/pwa-foundation.spec.ts` that logs in, opens Settings, opens Chat, changes Personality, waits for the debounced save, and asserts through `/api/fixture-calls` that exactly one profile-scoped PUT carries the nested partial patch. Reload or leave and re-enter Chat, then assert the confirmed value is returned by the fixture.
+
+The hook tests remain authoritative for races and cleanup. The browser case proves the changed user-visible flow and production adapter composition.
 
 ## Required behavior matrix
 
-### Fresh create
+### Debounce and ordering
 
-- Invalid names fail before remote work.
-- A provider without a model, or a model without a provider, fails before remote work.
-- Untouched optional values remain omitted.
-- Touched empty description and SOUL retain their current clear/write meaning.
-- `profiles.create` failure is fatal and keeps the dialog open.
-- `ok: false` is not treated as success. Preserve acceptance of legacy success responses that omit optional status fields; do not invent stricter response-envelope requirements here.
-- Capability, appearance, and avatar follow-ups execute after successful creation.
-- Each optional follow-up failure adds its existing label to the aggregate warning and does not block remaining optional steps.
-- A Scope, dialog target, or open-state change suppresses warning, close, notice, and invalidation callbacks from the old operation.
-- Successful or warning-bearing create invalidates the roster once.
+- Each field has an independent 450 ms debounce.
+- Repeated pre-debounce edits collapse to the newest value.
+- Ready writes across fields execute one at a time in insertion order.
+- A newer same-field edit waits behind its active predecessor.
+- No caller can force a flush or bypass ordering.
 
-### Duplicate
+### Optimistic state and confirmation
 
-- Opening duplicate mode requires an explicit source seed. Submit may omit `clone_from` and `clone_all` after the user chooses gateway defaults, while the dialog remains in duplicate presentation mode.
-- When a source remains selected, `clone_from` and `clone_all` match the current payload. Fresh mode may also send them after the user selects a source.
-- Share-auth and mirror-credential inclusion rules remain byte-compatible: untouched duplicate omits both; fresh Advanced mode includes default `share_auth: true`; either mode includes a checkbox value after that checkbox is touched.
-- Source title, description, shape, color, and hydrated image seed the dialog.
-- The duplicate seed and client appearance follow-up neither carry the source `created` value nor invent a fresh one. The gateway remains free to copy metadata as part of `clone_all`. Fresh presentation mode adds `Date.now()` when appearance is touched, even if the user selected a clone source; duplicate presentation mode omits it even after the user selects gateway defaults.
-- Suggested names use `-2` through `-99`, with the existing 63-character maximum. If all candidates exist, the dialog retains `-2` and allows the authoritative create call to fail.
-- An unavailable source avatar does not trigger a duplicate-specific asset fetch or block duplication. The ordinary roster query may still hydrate `hasAvatar` rows through `AgentsApi.list`, as it does now.
+- The edited value renders immediately.
+- A loaded query cache mirrors the optimistic draft; an absent config query remains absent and the draft overlay carries the value.
+- A successful write advances that path's confirmed baseline.
+- Newer drafts remain visible while older writes settle.
+- Ordinary invalidation waits until all current timers, pending operations, and requests settle; any success or rollback ownership mismatch requests one idle invalidation.
 
-### Edit
+### Failure
 
-- Every operation carries the explicit target Profile name.
-- Untouched description and advanced fields generate no configuration entry. A fully untouched edit generates no RPC and still completes, matching current behavior.
-- Touched empty description clears it through configuration.
-- Dirty skills, toolsets, MCP servers, SOUL, provider, and model map exactly as they do now.
-- All-enabled and all-disabled toolsets map to the unpinned empty list; partial selection maps to enabled names.
-- Clearing both provider and model uses the verified CLI fallback and requires explicit `code === 0`.
-- A partial provider/model pair fails before remote work.
-- `confirm_required` stops before appearance and avatar work.
-- Approval retries the frozen configuration exactly once with `confirm_expensive_model: true` and then continues.
-- Decline performs no later steps, leaves the dialog open, and clears confirmation state.
-- An old confirmation or ordinary save cannot produce later work or UI/cache effects after Scope change, target change, close, or remount.
-- Appearance metadata preserves the existing `created` value.
-- Title-only, color-only, and programmatic shape-only edits do not clear an avatar. Choosing a character while a photo exists is an explicit image removal because the picker emits `onImage(null)`.
-- Explicit removal clears a known-present asset. No clear RPC is sent for a known-absent baseline.
-- Failed or indeterminate asset loading never becomes an automatic clear.
-- Avatar replacement remains possible after an asset-load failure.
-- Any thrown error or explicit negative result from a requested edit step leaves the dialog open with the existing error behavior. Preserve the existing optional-envelope compatibility for configure and asset responses.
-- Full success invalidates the roster once and closes the dialog.
+- A latest failure restores only its path.
+- Rollback uses the last successful same-field value.
+- Unrelated optimistic fields survive rollback.
+- An older failure cannot remove a newer draft or publish an error.
+- `{ ok: false }` is a failure, not success.
+- Abort and stale work are silent.
 
-## Test changes
+### Lifecycle
 
-### New core tests
+- Category, Profile, and remote Gateway changes cancel timers and active work.
+- Cleanup after any active abort marks the captured settings config key stale without refetch; category changes reuse that key, while Scope changes create a new one.
+- Old results cannot change values, errors, baselines, or invalidation state after reset.
+- Returning to an old Scope cannot expose an unsaved cache value as confirmed.
+- Unmount leaves no timer, request, draft, or React state update behind.
+- The shared Scope generation rejects work after a switch away and back.
 
-Add focused cases in `profile-workflow.test.ts` for:
+### Compatibility
 
-- every validation branch: empty and whitespace-only; a trimmed valid slug; exactly 63 valid characters; 64 characters; uppercase, spaces, punctuation, and non-ASCII input; and each reserved name (`default`, `hermes`, `root`, `sudo`, `test`, `tmp`). This includes all five current validator cases and adds the uncovered boundaries;
-- duplicate seed mapping; suffixes `-2`, `-3`, and `-99`; collision handling; a 63-character source; a source already ending in a suffix; and exhaustion of all 98 candidates;
-- fresh create payload omission rules;
-- duplicate payload rules;
-- model-pair validation;
-- description and SOUL empty/touched semantics;
-- skill, MCP, and toolset mapping;
-- fresh versus duplicate metadata timestamps with `vi.setSystemTime`;
-- required create failure;
-- explicit `ok: false` create/configure/asset results, thrown failures, and compatibility responses with omitted optional status fields;
-- best-effort create steps continuing after individual failures;
-- stable aggregate warning text and ordering;
-- edit mapping and operation order;
-- verified model clearing;
-- expensive-model confirmation approval and decline;
-- no appearance/avatar calls before confirmation;
-- avatar known-absent, unchanged, replacement, explicit clear, ordinary fetch failure, aborted fetch, `found: true` without data, response with no presence fields, and title/color-only cases;
-- stale `isCurrent()` before the first RPC, between every pair of sequential create and edit steps, before presenting confirmation, while confirmation is pending, after approval before retry, before completion, and during each best-effort create failure path.
-
-Test policy through `createProfileWorkflow` with an in-memory `AgentsApi` fake. Use `MemoryGateway` through `createAgentsApi` only for the smaller contract-test set that asserts exact RPC payloads and ordering.
-
-### New hook tests
-
-Add focused cases in `use-profile-workflow.test.tsx` for:
-
-- read enablement based on dialog state and mode, including no roster read for edit or for collapsed fresh Advanced settings;
-- advanced query-key changes by explicit source, `cloneFrom || 'default'` selection, mode-sensitive loaded data, and fresh post-fetch hydration when cached data exists;
-- nonfatal MCP catalog failure;
-- model-option fallback state;
-- avatar fetch only when `hasAsset` lacks inline data;
-- generation result normalization, error propagation to the picker contract, and stale-result suppression. The hook exposes no generation state;
-- roster invalidation after successful and warning-bearing create;
-- no roster invalidation after fatal failure or stale Scope;
-- confirmation command freezing;
-- confirmation cleanup on decline, close, target change, unmount, and Scope change;
-- an ordinary non-confirming save that resolves after close or target change produces no stale busy, completion, error, or invalidation effect.
-
-### Existing dialog tests
-
-Update:
-
-- `client/src/features/agents/create-profile-dialog.test.tsx`
-- `client/src/features/agents/edit-profile-dialog.test.tsx`
-
-Keep them focused on the interface between form rendering and the workflow:
-
-- accessibility and validation rendering;
-- draft values passed by fresh create, duplicate, and edit forms;
-- busy labels and disabled actions;
-- gateway errors leaving dialogs open;
-- create warnings reaching the notice callback;
-- edit confirmation rendering and actions;
-- avatar baseline blocking and explicit removal;
-- avatar generation busy/error rendering and successful image handoff through `ProfileAvatarPicker`; there is no current standalone picker test;
-- dialogs closing only on successful completion.
-
-Remove low-level persistence assertions that are fully covered through the workflow interface. Keep at least one integration-style happy path per mode using `MemoryGateway` so provider composition remains verified. The current create suite has ten executed cases across seven declarations, including the four-row `it.each`; the edit suite has three cases; preserve their accessibility, busy, error-open, roster-refresh, explicitly named edit, and CLI-clear coverage at the appropriate interface instead of silently dropping it.
-
-Keep `client/src/features/agents/agents-api.test.ts` focused on adapter behavior: RPC names, exact wire shapes, roster parsing, and avatar hydration. It currently has ten tests. Do not move workflow ordering assertions into it.
-
-### App integration test
-
-Update `client/src/app-navigation.test.tsx`. Its current `RosterScreen` mock exposes only open-agent actions, so it has no Profile menu or duplicate coverage. Extend that mock narrowly to call `onManageAgent` with a hydrated `work` row. Mock `CreateProfileDialog` with a hoisted prop spy, then assert that App passes one seed containing the copied description, title, shape, color, image, source, `cloneAll`, and `work-2` name. Keep the existing create-options and group-opening tests unchanged.
-
-### Browser coverage
-
-Extend `client/e2e/profile-create.spec.ts` rather than creating a second overlapping suite. It currently has five tests: two create paths, group creation, advanced edit, and duplicate/delete. Add three tests below, for a final total of eight.
-
-1. Keep both fresh create paths, the duplicate and edit paths, and the nearby group-creation regression.
-2. Add an edit expensive-model case. Decline the first confirmation, verify the dialog stays open and no appearance/avatar call follows, submit again, approve, and assert the retry repeats the same configuration with only `confirm_expensive_model: true` added.
-3. Add an avatar replacement case using the fixture's image generator. Assert one `profiles.set_asset` data write and no clear. Also cover a title-only edit of a Profile with an inline image and assert that no asset RPC occurs.
-4. Add a partial create follow-up failure case using title `Reject appearance`. Verify the created Profile remains in the roster, the dialog closes, and the notice reads `Profile created, but appearance could not be saved.`
-
-Modify `client/e2e/server.mjs` to support these cases deterministically. Add `fixture/expensive` to the RPC `model.options` result. When `profiles.configure` receives that model without `confirm_expensive_model: true`, return `{ confirm_message: 'This fixture model is expensive.', confirm_required: true, ok: false }` and do not mutate the Profile. The confirmed call follows the normal success path. Seed `work` with an inline data-URL image. When an appearance configuration contains title `Reject appearance`, return `{ applied: { ui_meta: false }, ok: true }` without applying `ui_meta`; `profiles.create` remains committed. Record all calls as the fixture already does. Do not add a generic fixture-control protocol.
-
-Browser assertions should verify the visible dialog/notice behavior and a bounded set of fixture calls. Core tests remain authoritative for the full operation matrix.
+- PUT payloads remain one-field nested partial config records.
+- Profile binding remains in `createSettingsApi` and `GatewayApi`.
+- Existing query keys remain byte-compatible.
+- The 450 ms delay remains unchanged.
+- Query loading, schema errors, voice resources, refresh, navigation, and field rendering remain unchanged.
+- No new runtime dependency is added.
 
 ## Verification sequence
 
-Run checks from `client/` in increasing breadth:
+Run from `client/` in increasing breadth:
 
-1. Focused core and hook tests:
+1. New hook tests during each red-green slice:
    ```bash
-   npm test -- src/features/agents/profile-workflow.test.ts src/features/agents/use-profile-workflow.test.tsx
+   npm test -- src/features/settings/use-config-autosave.test.tsx
    ```
-2. Profile dialog and adapter tests:
+2. Settings screen and adapter tests:
    ```bash
-   npm test -- src/features/agents/create-profile-dialog.test.tsx src/features/agents/edit-profile-dialog.test.tsx src/features/agents/agents-api.test.ts
+   npm test -- src/features/settings/config-section-screen.test.tsx src/features/settings/settings-api.test.ts
    ```
-3. App integration test because the create-dialog seed interface changes:
+3. Nearby Model editing regression tests, because both modules write profile config but must retain separate policy:
    ```bash
-   npm test -- src/app-navigation.test.tsx
+   npm test -- src/features/models/model-editing.test.tsx src/features/models/models-screen.test.tsx
    ```
 4. Typecheck:
    ```bash
@@ -614,52 +410,51 @@ Run checks from `client/` in increasing breadth:
    ```bash
    npm run build
    ```
-7. Profile browser suite:
+7. Browser settings path in both configured Playwright projects:
    ```bash
-   npm run test:e2e -- profile-create.spec.ts
+   npm run test:e2e -- pwa-foundation.spec.ts --grep "autosaves a Chat setting"
    ```
 
-Exercise the browser flow, not just the test runner output: create a fresh Profile, duplicate `work`, edit advanced settings, decline and then approve an expensive model, replace an avatar, and verify a title-only edit does not write the avatar asset. Check that the roster refreshes, the active bot does not switch, stale dialogs do not reappear, and nearby group creation still opens from the same roster action.
+Exercise the browser flow rather than relying only on typecheck and unit output. Confirm the field changes immediately, one PUT lands after the delay, and the value survives re-entry or reload. Layout and error-banner variants do not change in this refactor, so do not add unrelated browser assertions for them.
 
 ## Acceptance criteria
 
-- `CreateProfileDialog` and `EditProfileDialog` contain no direct Profile mutation sequencing, wire payload construction, response predicate checks, Scope task setup, or roster invalidation.
-- `ProfileAdvancedFields` performs no remote query and owns no persistence normalization.
-- `App` passes one duplicate seed object rather than eight parallel initial-value props.
-- `profile-workflow.ts` is DOM-free and can be tested through its public interface.
-- `use-profile-workflow.ts` is the sole React entry for Profile loading, mutation lifecycle, confirmation state, Scope guarding, and cache refresh.
-- `AgentsApi` remains the only adapter that knows Profile RPC names. The workflow consumes its existing typed wire-shaped inputs and results; dialogs do not.
-- Fresh create, duplicate, and edit gateway payloads and optional response-envelope acceptance remain compatible with current behavior.
-- Create follow-up failures remain warnings; edit failures remain errors.
-- Expensive-model confirmation resumes the frozen edit and cannot survive a Scope or target change.
-- Avatar removal cannot occur from an unknown or known-absent baseline, or from an unrelated title/color edit.
-- Successful and warning-bearing saves refresh the roster without switching the active Profile.
-- No new runtime dependency is added.
-- Focused tests, full tests, typecheck, build, and all eight Profile Playwright tests pass.
-- The pre-existing user modification in `client/src/navigation/workspace-navigation.test.ts` remains untouched.
+- `ConfigSectionScreen` contains no timer, queue, revision, abort, rollback, optimistic mutation, or local Scope-generation implementation.
+- `use-config-autosave.ts` is the only settings module that owns config-field autosave orchestration.
+- The hook interface is limited to category/config/query-key/settings inputs and error/value/change outputs.
+- At most one settings config write is active per mounted hook.
+- Same-field rollback restores the last Gateway-confirmed value.
+- Different-field optimistic values survive each other's success and failure.
+- Category, Profile, remote-URL, and unmount cleanup are directly tested.
+- Old unsaved optimistic cache values do not reappear as confirmed after returning to a Scope.
+- Screen tests prove composition without duplicating the hook's concurrency matrix.
+- The browser fixture proves a real rendered Chat field persists through the production adapter.
+- `CONTEXT.md` records the module ownership and its separation from Model editing.
+- No new dependency, global queue registry, generic autosave framework, or settings-route change is introduced.
+- Focused tests, nearby regressions, typecheck, full tests, build, and the browser case pass.
 
 ## Risks and mitigations
 
-### Draft hydration can overwrite user edits
+### Cleanup can target the new query key accidentally
 
-A cached advanced or avatar result may arrive after the user starts changing the form. The dialogs, not the hook, hydrate each source or target once and track whether the user has touched the corresponding draft before applying remote data. A source change starts a new advanced draft generation; a same-source refetch never replaces edited state.
+React effect cleanup must capture the previous lifecycle's query key, field records, and settings adapter lifecycle. Category rerenders reuse the same key; Profile and remote-URL rerenders create distinct keys. Test both shapes and never perform old-cache cleanup by reading only the newest render's options.
 
-### Confirmation can leave a pending promise
+### Refetch can overwrite an unsaved optimistic field
 
-The semantic confirmation adapter waits for UI input. Resolve it as declined during close, unmount, target change, or Scope reset, then discard the stale workflow result.
+Keep drafts inside the module and make `valueFor` prefer them. Defer invalidation while any timer, pending operation, or active request exists. Test two fields where the first succeeds while the second remains debounced.
 
-### Refactoring can alter gateway payloads or response compatibility accidentally
+### Abort does not prove the Gateway rejected a request
 
-Capture current payloads and result predicates in workflow contract tests before removing dialog code. Compare fresh create, fresh-with-clone, duplicate-with-source, duplicate-after-selecting-defaults, advanced edit, model clear, appearance, and asset calls byte-for-byte. Pin omitted-status success responses as well as explicit negative responses.
+An active request may commit before cancellation reaches the transport. On lifecycle cleanup, suppress its local result and invalidate the captured query without immediate refetch. When an old Scope mounts again, React Query fetches authoritative config. A category change keeps the same key mounted, so cleanup restores the known confirmed baseline and leaves that key stale rather than claiming abort produced an authoritative read.
 
-### Multi-step saves can partially persist
+### Rollback can clobber another writer
 
-Do not claim transactionality and do not add rollback. Preserve create warnings and edit error-open behavior. Edit can therefore leave an earlier configuration step committed when a later appearance or asset step fails. Make that policy explicit in tests.
+Before restoring a path, verify with `Object.is` that the cached value is the exact value written by this hook. If it differs, leave it alone and request invalidation at idle rather than guessing ownership. This is reference-conservative for list values produced by `ConfigField`. Keep Model editing independent and cover its existing suite as a regression check; its cache key is different, so those tests do not establish cross-cache coherence.
 
-### Query-key changes can stop roster refreshes
+### Fake timers can hide promise-order bugs
 
-Reuse the existing unscoped roster and model-options keys exactly. Verify invalidation by rendering `RosterScreen` with the dialogs in integration tests.
+Use `vi.advanceTimersByTimeAsync`, explicit deferred promises, and `act` around timer and settlement transitions. Assert request counts before resolving each deferred response. Keep one `MemoryGateway` screen test and one Playwright path to verify real adapter timing.
 
-### Scope changes cannot undo accepted RPCs
+### The module can become shallow through excessive configurability
 
-Check `isCurrent()` before every later step and every UI/cache effect. Document that stale-effect discard protects the client but cannot reverse remote work already accepted by the gateway.
+Keep the delay private and fixed at 450 ms. Do not expose clock, queue, cache, reset, flush, retry, or lifecycle controls. If a future second caller needs different policy, compare its invariants first rather than widening this interface speculatively.

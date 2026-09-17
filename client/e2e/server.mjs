@@ -41,7 +41,13 @@ const initialProfiles = () => [
   }
 ]
 const stateFor = id => {
-  if (!clients.has(id)) clients.set(id, { assets: new Map(), calls: [], messages: new Map(), profiles: initialProfiles() })
+  if (!clients.has(id)) clients.set(id, {
+    assets: new Map(),
+    calls: [],
+    config: { display: { personality: 'default' } },
+    messages: new Map(),
+    profiles: initialProfiles()
+  })
   return clients.get(id)
 }
 const json = (res, status, body, headers = {}) => {
@@ -122,6 +128,22 @@ const server = http.createServer(async (req, res) => {
         { configured: true, description: 'Search the web', enabled: true, label: 'Web search', name: 'web_search', tools: [] },
         { configured: true, description: 'Use a browser', enabled: true, label: 'Browser', name: 'browser', tools: [] }
       ])
+      if (url.pathname === '/api/config/schema' && req.method === 'GET') return json(res, 200, { fields: {
+        'display.personality': { description: 'Personality', type: 'string' }
+      } })
+      if (url.pathname === '/api/config' && req.method === 'GET') return json(res, 200, state.config)
+      if (url.pathname === '/api/config' && req.method === 'PUT') {
+        const payload = await body(req)
+        state.calls.at(-1).body = payload
+        const patch = payload?.config && typeof payload.config === 'object' ? payload.config : {}
+        const display = patch.display && typeof patch.display === 'object' ? patch.display : undefined
+        state.config = {
+          ...state.config,
+          ...patch,
+          ...(display ? { display: { ...state.config.display, ...display } } : {})
+        }
+        return json(res, 200, { ok: true })
+      }
       if (url.pathname === '/api/model/options' && req.method === 'GET') return json(res, 200, { providers: [
         { authenticated: true, models: ['fixture/fast', 'fixture/deep'], name: 'Fixture AI', slug: 'fixture' },
         { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }
