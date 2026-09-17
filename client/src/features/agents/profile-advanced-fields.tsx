@@ -1,90 +1,15 @@
 import { useMemo, useState } from 'react'
 
 import { Input } from '~/compat/primitives'
-import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
-
-import type {
-  AgentsApi,
-  AgentMcpCatalogResult,
-  AgentModelOptionProvider,
-  AgentProfileDescribeResult,
-  ProfileCapabilityEntry
-} from './agents-api'
-
-export interface ProfileAdvancedState {
-  dirtyMcp: boolean
-  dirtyModel: boolean
-  dirtySkills: boolean
-  dirtySoul: boolean
-  dirtyToolsets: boolean
-  loaded: boolean
-  mcp: ProfileCapabilityEntry[]
-  model: string
-  provider: string
-  skills: ProfileCapabilityEntry[]
-  soul: string
-  source: string
-  toolsets: ProfileCapabilityEntry[]
-}
-
-export function emptyAdvancedProfileState(): ProfileAdvancedState {
-  return {
-    dirtyMcp: false,
-    dirtyModel: false,
-    dirtySkills: false,
-    dirtySoul: false,
-    dirtyToolsets: false,
-    loaded: false,
-    mcp: [],
-    model: '',
-    provider: '',
-    skills: [],
-    soul: '',
-    source: '',
-    toolsets: []
-  }
-}
-
-/** Hermes treats an all-enabled or all-disabled toolset list as the
- * unpinned/default state; only a partial selection is persisted explicitly. */
-export function enabledToolsetNames(items: ProfileCapabilityEntry[]): string[] {
-  const enabled = items.filter(item => item.enabled !== false)
-  return enabled.length === items.length || enabled.length === 0 ? [] : enabled.map(item => item.name)
-}
-
-export function advancedStateFromDescribe(
-  response: AgentProfileDescribeResult,
-  catalog: AgentMcpCatalogResult | null,
-  source: string,
-  includeModel = true
-): ProfileAdvancedState {
-  const configured = response.mcp_servers ?? []
-  const configuredNames = new Set(configured.map(entry => entry.name))
-  const catalogEntries = (catalog?.servers ?? [])
-    .filter(entry => !configuredNames.has(entry.name))
-    .map(entry => ({
-      ...entry,
-      enabled: false,
-      fromCatalog: true
-    }))
-  return {
-    ...emptyAdvancedProfileState(),
-    loaded: true,
-    mcp: [...configured.map(entry => ({ ...entry, enabled: entry.enabled !== false })), ...catalogEntries],
-    model: includeModel ? response.model?.default ?? '' : '',
-    provider: includeModel ? response.model?.provider ?? '' : '',
-    skills: response.skills ?? [],
-    soul: includeModel ? response.soul ?? '' : '',
-    source,
-    toolsets: response.toolsets ?? []
-  }
-}
+import type { AgentModelOptionProvider, AgentModelOptionsResult, ProfileCapabilityEntry } from './agents-api'
+import type { ProfileAdvancedState } from './profile-workflow'
 
 interface ProfileAdvancedFieldsProps {
-  api: Pick<AgentsApi, 'modelOptions'>
   disabledSkills?: boolean
   error?: string | null
   loading?: boolean
+  modelOptions?: AgentModelOptionsResult
+  modelOptionsError?: string | null
   onChange(update: (previous: ProfileAdvancedState) => ProfileAdvancedState): void
   state: ProfileAdvancedState
 }
@@ -133,10 +58,8 @@ function CapabilityList({
   )
 }
 
-export function ProfileAdvancedFields({ api, disabledSkills = false, error, loading = false, onChange, state }: ProfileAdvancedFieldsProps) {
-  const optionsKey = useScopeKey('agents', ['model-options'], { unscoped: true })
-  const options = useScopedQuery(optionsKey, { queryFn: signal => api.modelOptions(signal), retry: false })
-  const providers = options.data?.providers ?? []
+export function ProfileAdvancedFields({ disabledSkills = false, error, loading = false, modelOptions, modelOptionsError, onChange, state }: ProfileAdvancedFieldsProps) {
+  const providers = modelOptions?.providers ?? []
   const selectedProvider = providers.find(provider => provider.slug === state.provider)
   const models = providerModels(selectedProvider)
   const providerChoices = state.provider && !providers.some(provider => provider.slug === state.provider)
@@ -193,7 +116,7 @@ export function ProfileAdvancedFields({ api, disabledSkills = false, error, load
             </label>
           </div>
         )}
-        {options.error && <p className="dialog-help">Model catalog unavailable; enter a provider and model manually.</p>}
+        {modelOptionsError && <p className="dialog-help">Model catalog unavailable; enter a provider and model manually.</p>}
         <p className="dialog-help">Leave both fields empty to inherit the launch profile. A saved explicit model applies to new sessions.</p>
       </section>
 

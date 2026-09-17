@@ -13,6 +13,7 @@ import { MobileShell } from '~/components/mobile-shell'
 import { SessionsMenu } from '~/components/sessions-menu'
 import { displayNameFor } from '~/features/agents/agent-labels'
 import type { AgentRosterEntry } from '~/features/agents/agents-api'
+import { duplicateProfileSeed, type ProfileCreateSeed } from '~/features/agents/profile-workflow'
 import { DeleteProfileDialog } from '~/features/agents/delete-profile-dialog'
 import { EditProfileDialog } from '~/features/agents/edit-profile-dialog'
 import { ProfileActionsDialog } from '~/features/agents/profile-actions-dialog'
@@ -21,7 +22,7 @@ import { GroupChatScreen } from '~/features/groups/group-screen'
 import { useGroupRooms } from '~/features/groups/group-engine'
 import type { GroupRoom } from '~/features/groups/group-model'
 import { applyTheme } from '~/features/settings/settings-screen'
-import { CreateProfileDialog, PROFILE_NAME_MAX_LENGTH } from '~/features/agents/create-profile-dialog'
+import { CreateProfileDialog } from '~/features/agents/create-profile-dialog'
 import { RosterScreen } from '~/features/agents/roster-screen'
 import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
 import { CronScreen } from '~/features/cron/cron-screen'
@@ -54,7 +55,7 @@ export function App() {
   const [createOptionsOpen, setCreateOptionsOpen] = useState(false)
   const [createProfileOpen, setCreateProfileOpen] = useState(false)
   const [createGroupOpen, setCreateGroupOpen] = useState(false)
-  const [duplicateOptions, setDuplicateOptions] = useState<{ initialCloneAll: boolean; initialCloneFrom: string; initialColor: null | string; initialDescription: string; initialImage: null | string; initialName: string; initialShape: string; initialTitle: string } | null>(null)
+  const [createProfileSeed, setCreateProfileSeed] = useState<ProfileCreateSeed | null>(null)
   const [editingProfile, setEditingProfile] = useState<AgentRosterEntry | null>(null)
   const [actionsProfile, setActionsProfile] = useState<AgentRosterEntry | null>(null)
   const [deletingProfile, setDeletingProfile] = useState<AgentRosterEntry | null>(null)
@@ -120,10 +121,10 @@ export function App() {
   }
   const closeCreateProfile = () => {
     setCreateProfileOpen(false)
-    setDuplicateOptions(null)
+    setCreateProfileSeed(null)
   }
   const openCreateProfile = () => {
-    setDuplicateOptions(null)
+    setCreateProfileSeed(null)
     setCreateOptionsOpen(true)
   }
   const chooseCreateBot = () => {
@@ -184,19 +185,7 @@ export function App() {
   }
   const duplicateAgent = () => {
     if (!actionsProfile) return
-    const source = actionsProfile
-    const suffix = '-2'
-    const initialName = `${source.name.slice(0, Math.max(1, PROFILE_NAME_MAX_LENGTH - suffix.length))}${suffix}`
-    setDuplicateOptions({
-      initialCloneAll: true,
-      initialCloneFrom: source.name,
-      initialColor: source.meta?.color ?? null,
-      initialDescription: source.description ?? '',
-      initialImage: source.meta?.image ?? source.avatar ?? null,
-      initialName,
-      initialShape: source.meta?.shape ?? 'blobatar',
-      initialTitle: source.meta?.title ? `${source.meta.title} (copy)` : ''
-    })
+    setCreateProfileSeed(duplicateProfileSeed(actionsProfile))
     setActionsProfile(null)
     setCreateProfileOpen(true)
   }
@@ -281,17 +270,10 @@ export function App() {
       <CreateOptionsDialog onCancel={() => setCreateOptionsOpen(false)} onNewBot={chooseCreateBot} onNewGroup={chooseCreateGroup} open={createOptionsOpen} />
       {createGroupOpen && <CreateGroupChatDialog onCancel={() => setCreateGroupOpen(false)} onCreated={openCreatedGroup} open />}
       {createProfileOpen && <CreateProfileDialog
-        initialCloneAll={duplicateOptions?.initialCloneAll}
-        initialCloneFrom={duplicateOptions?.initialCloneFrom}
-        initialColor={duplicateOptions?.initialColor}
-        initialDescription={duplicateOptions?.initialDescription}
-        initialImage={duplicateOptions?.initialImage}
-        initialName={duplicateOptions?.initialName}
-        initialShape={duplicateOptions?.initialShape}
-        initialTitle={duplicateOptions?.initialTitle}
         onCancel={closeCreateProfile}
         onCreated={(name, warning) => setProfileNotice(warning || `Created profile ${name}.`)}
         open
+        seed={createProfileSeed}
       />}
       <ProfileActionsDialog bot={actionsProfile} onCancel={() => setActionsProfile(null)} onDelete={deleteAgent} onDuplicate={duplicateAgent} onEdit={editAgent} />
       {editingProfile && <EditProfileDialog bot={editingProfile} onCancel={() => setEditingProfile(null)} onSaved={name => setProfileNotice(`Updated profile ${name}.`)} open />}

@@ -35,7 +35,10 @@ const initialProfiles = () => [
       }
     }
   },
-  { name: 'work' }
+  {
+    name: 'work',
+    ui_meta: { 'hermes-bots': { custom: true, image: 'data:image/png;base64,T0xE', imageKind: 'photo', shape: 'circle' } }
+  }
 ]
 const stateFor = id => {
   if (!clients.has(id)) clients.set(id, { assets: new Map(), calls: [], messages: new Map(), profiles: initialProfiles() })
@@ -233,11 +236,16 @@ sockets.on('connection', (ws, _req, id, profile) => {
     } else if (request.method === 'mcp.catalog') {
       result = { servers: [{ description: 'Fixture MCP server', name: 'fixture-mcp', transport: 'stdio' }, { description: 'Catalog-only server', name: 'catalog-mcp', transport: 'http' }] }
     } else if (request.method === 'model.options') {
-      result = { providers: [{ authenticated: true, models: ['fixture/fast', 'fixture/deep'], name: 'Fixture AI', slug: 'fixture' }, { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }] }
+      result = { providers: [{ authenticated: true, models: ['fixture/fast', 'fixture/deep', 'fixture/expensive'], name: 'Fixture AI', slug: 'fixture' }, { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }] }
     } else if (request.method === 'profiles.configure') {
       const profile = state.profiles.find(candidate => candidate.name === params.name)
+      const appearanceTitle = params.ui_meta?.['hermes-bots']?.title
       if (!profile) rpcError = { code: -32602, message: 'Profile not found' }
-      else {
+      else if (params.model === 'fixture/expensive' && params.confirm_expensive_model !== true) {
+        result = { confirm_message: 'This fixture model is expensive.', confirm_required: true, ok: false }
+      } else if (appearanceTitle === 'Reject appearance') {
+        result = { applied: { ui_meta: false }, ok: true }
+      } else {
         if (typeof params.description === 'string') profile.description = params.description
         if (typeof params.soul === 'string') profile.soul = params.soul
         if (Array.isArray(params.disabled_skills)) profile.disabled_skills = params.disabled_skills

@@ -1,110 +1,72 @@
-import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
-import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useApi } from '~/gateway/gateway-api-hooks'
-import { useScopeKey, useScopedQuery, useScopedTask } from '~/gateway/scope-guard'
 
-import {
-  botMetaForProfile,
-  createAgentsApi,
-  isSuccessfulProfileConfiguration,
-  type AgentProfileConfigureInput,
-  type AgentProfileCreateInput
-} from './agents-api'
 import { ProfileAvatarPicker } from './profile-avatar-picker'
+import { ProfileAdvancedFields } from './profile-advanced-fields'
 import {
-  advancedStateFromDescribe,
   emptyAdvancedProfileState,
-  enabledToolsetNames,
-  ProfileAdvancedFields,
-  type ProfileAdvancedState
-} from './profile-advanced-fields'
+  PROFILE_NAME_MAX_LENGTH,
+  suggestDuplicateProfileName,
+  validateProfileName,
+  type CreateProfileCommand,
+  type ProfileAdvancedState,
+  type ProfileCreateSeed
+} from './profile-workflow'
+import { useProfileWorkflow } from './use-profile-workflow'
 
-export const PROFILE_NAME_MAX_LENGTH = 63
-
-const PROFILE_NAME_PATTERN = /^[a-z0-9_-]+$/
-const RESERVED_PROFILE_NAMES = new Set(['default', 'hermes', 'root', 'sudo', 'test', 'tmp'])
 const FRESH_PROFILE = '__fresh__'
 
-export function validateProfileName(value: string): string | null {
-  const name = value.trim()
-  if (!name) return 'Enter a profile name.'
-  if (name.length > PROFILE_NAME_MAX_LENGTH) return `Profile names must be ${PROFILE_NAME_MAX_LENGTH} characters or fewer.`
-  if (!PROFILE_NAME_PATTERN.test(name)) return 'Use lowercase letters, numbers, hyphens, and underscores only.'
-  if (RESERVED_PROFILE_NAMES.has(name)) return 'That profile name is reserved. Choose another name.'
-  return null
-}
-
 interface CreateProfileDialogProps {
-  initialCloneAll?: boolean
-  initialCloneFrom?: string
-  initialColor?: null | string
-  initialDescription?: string
-  initialImage?: null | string
-  initialName?: string
-  initialShape?: string
-  initialTitle?: string
   onCancel(): void
   onCreated?(name: string, warning?: string): void
   open: boolean
+  seed?: ProfileCreateSeed | null
 }
 
-interface CreateResult {
-  warning?: string
-}
+export { PROFILE_NAME_MAX_LENGTH, validateProfileName } from './profile-workflow'
 
-function describeError(caught: unknown): string {
-  return classifyGatewayError(caught).message
-}
-
-export function CreateProfileDialog({
-  initialCloneAll = false,
-  initialCloneFrom = '',
-  initialColor = null,
-  initialDescription = '',
-  initialImage = null,
-  initialName = '',
-  initialShape = 'blobatar',
-  initialTitle = '',
-  onCancel,
-  onCreated,
-  open
-}: CreateProfileDialogProps) {
-  const agents = useApi(createAgentsApi)
-  const queryClient = useQueryClient()
-  const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
+export function CreateProfileDialog({ onCancel, onCreated, open, seed = null }: CreateProfileDialogProps) {
+  const mode = seed ? 'duplicate' as const : 'create' as const
+  const initialCloneFrom = seed?.cloneFrom ?? ''
+  const initialName = seed?.name ?? ''
   const [name, setName] = useState(initialName)
-  const [title, setTitle] = useState(initialTitle)
-  const [description, setDescription] = useState(initialDescription)
-  const [descriptionTouched, setDescriptionTouched] = useState(Boolean(initialCloneFrom))
-  const [shape, setShape] = useState(initialShape)
-  const [color, setColor] = useState<null | string>(initialColor)
-  const [image, setImage] = useState<null | string>(initialImage)
-  const [appearanceTouched, setAppearanceTouched] = useState(Boolean(initialTitle || initialImage || initialColor || initialShape !== 'blobatar'))
-  const [advancedOpen, setAdvancedOpen] = useState(Boolean(initialCloneFrom))
+  const [title, setTitle] = useState(seed?.title ?? '')
+  const [description, setDescription] = useState(seed?.description ?? '')
+  const [descriptionTouched, setDescriptionTouched] = useState(Boolean(seed))
+  const [shape, setShape] = useState(seed?.shape ?? 'blobatar')
+  const [color, setColor] = useState<null | string>(seed?.color ?? null)
+  const [image, setImage] = useState<null | string>(seed?.image ?? null)
+  const [appearanceTouched, setAppearanceTouched] = useState(Boolean(seed?.title || seed?.image || seed?.color || seed?.shape && seed.shape !== 'blobatar'))
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(seed))
   const [cloneFrom, setCloneFrom] = useState(initialCloneFrom)
-  const [cloneAll, setCloneAll] = useState(initialCloneAll)
+  const [cloneAll, setCloneAll] = useState(seed?.cloneAll ?? false)
   const [noSkills, setNoSkills] = useState(false)
   const [shareAuth, setShareAuth] = useState(true)
   const [shareAuthTouched, setShareAuthTouched] = useState(false)
   const [mirrorCredentials, setMirrorCredentials] = useState(true)
   const [mirrorCredentialsTouched, setMirrorCredentialsTouched] = useState(false)
-  const [advancedTouched, setAdvancedTouched] = useState(Boolean(initialCloneFrom || initialCloneAll))
-  const [advancedLoading, setAdvancedLoading] = useState(false)
-  const [advancedError, setAdvancedError] = useState<string | null>(null)
+  const [advancedTouched, setAdvancedTouched] = useState(Boolean(seed?.cloneFrom || seed?.cloneAll))
   const [advancedState, setAdvancedState] = useState<ProfileAdvancedState>(emptyAdvancedProfileState)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const nameEditedRef = useRef(false)
+  const hydratedSourceRef = useRef<string | null>(null)
+  const advancedEditedRef = useRef(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const task = useScopedTask()
-  const profiles = useScopedQuery(rosterKey, {
-    enabled: open && advancedOpen,
-    queryFn: signal => agents.list(signal),
-    retry: false
+  const advancedSource = cloneFrom || 'default'
+  const profile = useProfileWorkflow({
+    advancedOpen,
+    advancedSource,
+    avatar: null,
+    mode,
+    onSaved: result => {
+      onCreated?.(result.name, result.warning)
+      onCancel()
+    },
+    open
   })
+  const busy = profile.mutation.busy
+  const error = submitError || profile.mutation.error
   const dialogTitleId = 'create-profile-dialog-title'
   const nameHintId = 'create-profile-name-hint'
   const nameErrorId = 'create-profile-name-error'
@@ -112,150 +74,84 @@ export function CreateProfileDialog({
   useEffect(() => {
     if (!open) return
     nameEditedRef.current = false
+    hydratedSourceRef.current = null
+    advancedEditedRef.current = false
     setName(initialName)
-    setTitle(initialTitle)
-    setDescription(initialDescription)
-    setDescriptionTouched(Boolean(initialCloneFrom))
-    setShape(initialShape)
-    setColor(initialColor)
-    setImage(initialImage)
-    setAppearanceTouched(Boolean(initialTitle || initialImage || initialColor || initialShape !== 'blobatar'))
-    setAdvancedOpen(Boolean(initialCloneFrom))
+    setTitle(seed?.title ?? '')
+    setDescription(seed?.description ?? '')
+    setDescriptionTouched(Boolean(seed))
+    setShape(seed?.shape ?? 'blobatar')
+    setColor(seed?.color ?? null)
+    setImage(seed?.image ?? null)
+    setAppearanceTouched(Boolean(seed?.title || seed?.image || seed?.color || seed?.shape && seed.shape !== 'blobatar'))
+    setAdvancedOpen(Boolean(seed))
     setCloneFrom(initialCloneFrom)
-    setCloneAll(initialCloneAll)
+    setCloneAll(seed?.cloneAll ?? false)
     setNoSkills(false)
     setShareAuth(true)
     setShareAuthTouched(false)
     setMirrorCredentials(true)
     setMirrorCredentialsTouched(false)
-    setAdvancedTouched(Boolean(initialCloneFrom || initialCloneAll))
-    setAdvancedLoading(false)
-    setAdvancedError(null)
+    setAdvancedTouched(Boolean(seed?.cloneFrom || seed?.cloneAll))
     setAdvancedState(emptyAdvancedProfileState())
-    setError(null)
-    // The dialog is mounted before the focus effect runs, including when it
-    // is opened from the roster header.
+    setSubmitError(null)
     inputRef.current?.focus()
-  }, [initialCloneAll, initialCloneFrom, initialColor, initialDescription, initialImage, initialName, initialShape, initialTitle, open])
+  }, [initialCloneFrom, initialName, open, seed?.cloneAll, seed?.color, seed?.description, seed?.image, seed?.shape, seed?.title])
 
   useEffect(() => {
-    if (!open || !initialCloneFrom || !profiles.data || nameEditedRef.current || name !== initialName) return
-    const existing = new Set(profiles.data.entries.map(profile => profile.name))
-    if (!existing.has(name)) return
-    for (let number = 2; number < 100; number += 1) {
-      const suffix = `-${number}`
-      const candidate = `${initialCloneFrom.slice(0, Math.max(1, PROFILE_NAME_MAX_LENGTH - suffix.length))}${suffix}`
-      if (!existing.has(candidate)) {
-        setName(candidate)
-        return
-      }
-    }
-  }, [initialCloneFrom, initialName, name, open, profiles.data])
-
-  useEffect(() => {
-    if (!open || !advancedOpen) return
-    const source = cloneFrom || 'default'
-    let cancelled = false
-    setAdvancedLoading(true)
-    setAdvancedError(null)
+    hydratedSourceRef.current = null
+    advancedEditedRef.current = false
     setAdvancedState(emptyAdvancedProfileState())
-    void Promise.all([
-      agents.describe(source),
-      agents.mcpCatalog(source).catch(() => null)
-    ]).then(([described, catalog]) => {
-      if (cancelled) return
-      setAdvancedState(advancedStateFromDescribe(described, catalog, source, false))
-    }).catch(caught => {
-      if (cancelled) return
-      setAdvancedError(describeError(caught))
-    }).finally(() => {
-      if (!cancelled) setAdvancedLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [advancedOpen, agents, cloneFrom, open])
+  }, [advancedSource])
+
+  useEffect(() => {
+    const loaded = profile.advanced.data
+    if (!loaded || advancedEditedRef.current || hydratedSourceRef.current === loaded.source) return
+    hydratedSourceRef.current = loaded.source
+    setAdvancedState(loaded)
+  }, [profile.advanced.data])
+
+  useEffect(() => {
+    if (!open || !seed || !profile.roster.data || nameEditedRef.current) return
+    setName(suggestDuplicateProfileName(seed.cloneFrom, profile.roster.data.entries.map(entry => entry.name)))
+  }, [open, profile.roster.data, seed])
 
   if (!open) return null
 
   const validationError = name.length > 0 ? validateProfileName(name) : null
-  const cloneProfiles = (profiles.data?.entries ?? []).filter(profile => profile.name !== name.trim())
+  const cloneProfiles = (profile.roster.data?.entries ?? []).filter(entry => entry.name !== name.trim())
   const changeAdvanced = (update: (previous: ProfileAdvancedState) => ProfileAdvancedState) => {
+    advancedEditedRef.current = true
     setAdvancedTouched(true)
     setAdvancedState(update)
-  }
-
-  const generateAvatar = async (prompt: string): Promise<null | string> => {
-    const result = await agents.generateAvatar(prompt)
-    if (result.success === false) throw new Error(result.error || 'The image service rejected the request.')
-    return result.image_data || result.image || null
   }
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const nextError = validateProfileName(name)
     if (nextError) {
-      setError(nextError)
+      setSubmitError(nextError)
       return
     }
-    if (advancedState.dirtyModel && Boolean(advancedState.provider) !== Boolean(advancedState.model)) {
-      setError('Choose both a model provider and model, or leave both empty to inherit.')
-      return
+    setSubmitError(null)
+    const command: CreateProfileCommand = {
+      advanced: advancedState,
+      advancedTouched,
+      appearance: { color, shape, title, touched: appearanceTouched },
+      cloneAll,
+      cloneFrom,
+      description,
+      descriptionTouched,
+      image,
+      mirrorCredentials,
+      mirrorCredentialsTouched,
+      mode,
+      name: name.trim(),
+      noSkills,
+      shareAuth,
+      shareAuthTouched
     }
-    setError(null)
-    void task.run(async () => {
-      const profileName = name.trim()
-      const payload: AgentProfileCreateInput = { name: profileName }
-      if (descriptionTouched || description.trim()) payload.description = description.trim()
-      if (advancedTouched) {
-        if (cloneFrom) payload.clone_from = cloneFrom
-        if (cloneFrom && cloneAll) payload.clone_all = true
-        if (noSkills) payload.no_skills = true
-        if (shareAuthTouched || (advancedTouched && !initialCloneFrom)) payload.share_auth = shareAuth
-        if (mirrorCredentialsTouched) payload.mirror_credentials = mirrorCredentials
-        if (advancedState.dirtyModel && advancedState.provider && advancedState.model) {
-          payload.provider = advancedState.provider.trim()
-          payload.model = advancedState.model.trim()
-        }
-        if (advancedState.dirtySoul) payload.soul = advancedState.soul
-      }
-      const created = await agents.create(payload)
-      if (created.ok === false) throw new Error('The gateway did not create the profile.')
-
-      const warnings: string[] = []
-      const bestEffort = async (label: string, operation: () => Promise<{ applied?: Record<string, unknown>; ok?: boolean }>) => {
-        try {
-          const result = await operation()
-          if (!isSuccessfulProfileConfiguration(result)) warnings.push(label)
-        } catch {
-          warnings.push(label)
-        }
-      }
-      const advancedConfiguration: AgentProfileConfigureInput = { name: profileName }
-      if (advancedState.dirtySkills) advancedConfiguration.disabled_skills = advancedState.skills.filter(item => item.enabled === false).map(item => item.name)
-      if (advancedState.dirtyToolsets) advancedConfiguration.enabled_toolsets = enabledToolsetNames(advancedState.toolsets)
-      if (advancedState.dirtyMcp) advancedConfiguration.enabled_mcp_servers = advancedState.mcp.filter(item => item.enabled !== false).map(item => item.name)
-      if (Object.keys(advancedConfiguration).length > 1) {
-        await bestEffort('advanced settings', () => agents.configure(advancedConfiguration))
-      }
-      if (appearanceTouched) {
-        await bestEffort('appearance', () => agents.configure({
-          name: profileName,
-          ui_meta: { 'hermes-bots': botMetaForProfile({ color, created: initialCloneFrom ? undefined : Date.now(), image, shape, title }) }
-        }))
-      }
-      if (image) {
-        await bestEffort('avatar image', () => agents.setAsset(profileName, { data: image }))
-      }
-      return { warning: warnings.length > 0 ? `Profile created, but ${warnings.join(' and ')} could not be saved.` : undefined }
-    }, {
-      onBusy: nextBusy => { setBusy(nextBusy); if (nextBusy) setError(null) },
-      onError: classified => setError(classified.message),
-      onSettled: () => undefined
-    }).then(result => {
-      if (!result) return
-      void queryClient.invalidateQueries({ queryKey: rosterKey })
-      onCreated?.(name.trim(), result.warning)
-      onCancel()
-    })
+    profile.mutation.submit(command)
   }
 
   return (
@@ -270,8 +166,8 @@ export function CreateProfileDialog({
         onSubmit={submit}
         role="dialog"
       >
-        <h3 id={dialogTitleId}>{initialCloneFrom ? 'Duplicate profile' : 'Create profile'}</h3>
-        <p className="dialog-help">{initialCloneFrom ? `Create a copy of ${initialCloneFrom}.` : 'Create a fresh Hermes profile. It will not switch the active bot.'}</p>
+        <h3 id={dialogTitleId}>{mode === 'duplicate' ? 'Duplicate profile' : 'Create profile'}</h3>
+        <p className="dialog-help">{mode === 'duplicate' ? `Create a copy of ${seed?.cloneFrom}.` : 'Create a fresh Hermes profile. It will not switch the active bot.'}</p>
         <label htmlFor="create-profile-name">Profile name</label>
         <Input
           aria-describedby={`${nameHintId}${validationError || error ? ` ${nameErrorId}` : ''}`}
@@ -281,7 +177,7 @@ export function CreateProfileDialog({
           autoCorrect="off"
           id="create-profile-name"
           maxLength={PROFILE_NAME_MAX_LENGTH}
-          onChange={event => { nameEditedRef.current = true; setName(event.target.value); setError(null) }}
+          onChange={event => { nameEditedRef.current = true; setName(event.target.value); setSubmitError(null); profile.mutation.clearError() }}
           ref={inputRef}
           spellCheck={false}
           value={name}
@@ -298,7 +194,7 @@ export function CreateProfileDialog({
           image={image}
           name={name}
           onColor={next => { setAppearanceTouched(true); setColor(next) }}
-          onGenerate={generateAvatar}
+          onGenerate={profile.generateAvatar}
           onImage={next => { setAppearanceTouched(true); setImage(next) }}
           onShape={next => { setAppearanceTouched(true); setShape(next) }}
           shape={shape}
@@ -313,25 +209,32 @@ export function CreateProfileDialog({
             <label htmlFor="create-profile-clone">Clone configuration from</label>
             <select id="create-profile-clone" onChange={event => { setCloneFrom(event.target.value === FRESH_PROFILE ? '' : event.target.value); setAdvancedTouched(true) }} value={cloneFrom || FRESH_PROFILE}>
               <option value={FRESH_PROFILE}>Start with gateway defaults</option>
-              {cloneProfiles.map(profile => <option key={profile.name} value={profile.name}>{profile.name}{profile.isDefault ? ' (default)' : ''}</option>)}
+              {cloneProfiles.map(entry => <option key={entry.name} value={entry.name}>{entry.name}{entry.isDefault ? ' (default)' : ''}</option>)}
             </select>
-            {profiles.isPending && <p className="dialog-help" role="status">Loading profiles…</p>}
-            {profiles.error && <p className="dialog-help">Existing profiles could not be loaded; enter the source name only if you know it.</p>}
+            {profile.roster.loading && <p className="dialog-help" role="status">Loading profiles…</p>}
+            {profile.roster.error && <p className="dialog-help">Existing profiles could not be loaded; enter the source name only if you know it.</p>}
             <label className="dialog-checkbox"><input checked={cloneAll} onChange={event => { setCloneAll(event.target.checked); setAdvancedTouched(true) }} type="checkbox" /><span>Clone all configuration and capabilities</span></label>
             <label className="dialog-checkbox"><input checked={noSkills} onChange={event => { setNoSkills(event.target.checked); setAdvancedTouched(true) }} type="checkbox" /><span>Skip bundled skills</span></label>
             <label className="dialog-checkbox"><input checked={shareAuth} onChange={event => { setShareAuth(event.target.checked); setShareAuthTouched(true); setAdvancedTouched(true) }} type="checkbox" /><span>Share keys and accounts with the launch profile</span></label>
             <label className="dialog-checkbox"><input checked={mirrorCredentials} onChange={event => { setMirrorCredentials(event.target.checked); setMirrorCredentialsTouched(true); setAdvancedTouched(true) }} type="checkbox" /><span>Mirror launch-profile credentials</span></label>
-            <ProfileAdvancedFields api={agents} disabledSkills={noSkills} error={advancedError} loading={advancedLoading} onChange={changeAdvanced} state={advancedState} />
+            <ProfileAdvancedFields
+              disabledSkills={noSkills}
+              error={profile.advanced.error}
+              loading={profile.advanced.loading}
+              modelOptions={profile.modelOptions.data}
+              modelOptionsError={profile.modelOptions.error}
+              onChange={changeAdvanced}
+              state={advancedState}
+            />
           </div>
         )}
 
         {(validationError || error) && <p className="dialog-field-error" id={nameErrorId} role="alert">{error || validationError}</p>}
         <div className="button-row">
           <Button disabled={busy} onClick={onCancel} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={busy || Boolean(validateProfileName(name))} type="submit">{busy ? (initialCloneFrom ? 'Duplicating…' : 'Creating…') : (initialCloneFrom ? 'Duplicate profile' : 'Create profile')}</Button>
+          <Button disabled={busy || Boolean(validateProfileName(name))} type="submit">{busy ? (mode === 'duplicate' ? 'Duplicating…' : 'Creating…') : (mode === 'duplicate' ? 'Duplicate profile' : 'Create profile')}</Button>
         </div>
       </form>
     </div>
   )
 }
-

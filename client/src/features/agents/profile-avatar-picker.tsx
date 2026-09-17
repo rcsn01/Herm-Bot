@@ -147,7 +147,10 @@ export function ProfileAvatarPicker({
     setError(null)
     try {
       const generated = await onGenerate(value)
-      if (!generated) throw new Error('The image service returned no image.')
+      // The workflow returns null only when its Scope or dialog target went
+      // stale. The core rejects current malformed responses with the existing
+      // no-image error, so cancellation stays silent here.
+      if (generated === null) return
       onImage(generated)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Avatar generation failed.')

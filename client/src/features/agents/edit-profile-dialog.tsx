@@ -1,27 +1,18 @@
-import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
-import { classifyGatewayError } from '~/gateway/gateway-error'
-import { useApi } from '~/gateway/gateway-api-hooks'
-import { beginScopedTask, useScopeKey, useScopedTask } from '~/gateway/scope-guard'
 
-import {
-  botMetaForProfile,
-  createAgentsApi,
-  isSuccessfulCliResult,
-  isSuccessfulProfileConfiguration,
-  type AgentRosterEntry
-} from './agents-api'
+import type { AgentRosterEntry } from './agents-api'
 import { ProfileAvatarPicker } from './profile-avatar-picker'
+import { ProfileAdvancedFields } from './profile-advanced-fields'
 import {
-  advancedStateFromDescribe,
   emptyAdvancedProfileState,
-  enabledToolsetNames,
-  ProfileAdvancedFields,
-  type ProfileAdvancedState
-} from './profile-advanced-fields'
+  type EditProfileCommand,
+  type ProfileAdvancedState,
+  type ProfileAvatarBaseline
+} from './profile-workflow'
+import { useProfileWorkflow } from './use-profile-workflow'
 
 interface EditProfileDialogProps {
   bot: AgentRosterEntry | null
@@ -30,179 +21,88 @@ interface EditProfileDialogProps {
   open: boolean
 }
 
-interface SaveResult {
-  confirmMessage?: string
-}
-
 export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileDialogProps) {
-  const agents = useApi(createAgentsApi)
-  const queryClient = useQueryClient()
-  const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
-  const task = useScopedTask()
+  const inlineImage = bot?.meta?.image ?? bot?.avatar ?? null
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [descriptionTouched, setDescriptionTouched] = useState(false)
   const [shape, setShape] = useState('blobatar')
   const [color, setColor] = useState<null | string>(null)
   const [image, setImage] = useState<null | string>(null)
-  const [initialImage, setInitialImage] = useState<null | string>(null)
-  const [initialHadAsset, setInitialHadAsset] = useState(false)
-  const [assetLoaded, setAssetLoaded] = useState(true)
-  const [assetLoadFailed, setAssetLoadFailed] = useState(false)
+  const [avatarBaseline, setAvatarBaseline] = useState<ProfileAvatarBaseline | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [advancedLoading, setAdvancedLoading] = useState(false)
-  const [advancedError, setAdvancedError] = useState<string | null>(null)
   const [advancedState, setAdvancedState] = useState<ProfileAdvancedState>(emptyAdvancedProfileState)
   const [appearanceTouched, setAppearanceTouched] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null)
+  const imageTouchedRef = useRef(false)
+  const advancedEditedRef = useRef(false)
+  const hydratedAdvancedRef = useRef<string | null>(null)
   const titleRef = useRef<HTMLInputElement>(null)
+  const profile = useProfileWorkflow({
+    advancedOpen,
+    advancedSource: bot?.name ?? null,
+    avatar: bot ? { hasAsset: Boolean(bot.hasAvatar), inlineImage, name: bot.name } : null,
+    mode: 'edit',
+    onSaved: result => {
+      onSaved?.(result.name)
+      onCancel()
+    },
+    open
+  })
+  const busy = profile.mutation.busy
 
   useEffect(() => {
     if (!open || !bot) return
-    const nextImage = bot.meta?.image ?? bot.avatar ?? null
+    imageTouchedRef.current = false
+    advancedEditedRef.current = false
+    hydratedAdvancedRef.current = null
     setTitle(bot.meta?.title ?? '')
     setDescription(bot.description ?? '')
     setDescriptionTouched(false)
     setShape(bot.meta?.shape ?? 'blobatar')
     setColor(bot.meta?.color ?? null)
-    setImage(nextImage)
-    setInitialImage(nextImage)
-    setInitialHadAsset(Boolean(nextImage || bot.hasAvatar))
-    setAssetLoaded(Boolean(nextImage || !bot.hasAvatar))
-    setAssetLoadFailed(false)
+    setImage(inlineImage)
+    setAvatarBaseline(inlineImage ? { image: inlineImage, status: 'known' } : bot.hasAvatar ? null : { image: null, status: 'known' })
     setAdvancedOpen(false)
-    setAdvancedLoading(false)
-    setAdvancedError(null)
     setAdvancedState(emptyAdvancedProfileState())
     setAppearanceTouched(false)
-    setBusy(false)
-    setError(null)
-    setPendingConfirmation(null)
     titleRef.current?.focus()
-  }, [bot?.avatar, bot?.description, bot?.hasAvatar, bot?.meta?.color, bot?.meta?.image, bot?.meta?.shape, bot?.meta?.title, bot?.name, open])
+  }, [bot?.description, bot?.hasAvatar, bot?.meta?.color, bot?.meta?.shape, bot?.meta?.title, bot?.name, inlineImage, open])
+
+  const workflowBaseline = profile.avatar.baseline
+  const workflowBaselineImage = workflowBaseline?.status === 'known' ? workflowBaseline.image : null
+  useEffect(() => {
+    if (!workflowBaseline) return
+    setAvatarBaseline(workflowBaseline)
+    if (!imageTouchedRef.current && workflowBaseline.status === 'known') setImage(workflowBaseline.image)
+  }, [workflowBaseline?.status, workflowBaselineImage])
 
   useEffect(() => {
-    if (!open || !bot || assetLoaded || assetLoadFailed) return
-    const scopeTask = beginScopedTask()
-    const controller = new AbortController()
-    setAssetLoaded(false)
-    void agents.getAsset(bot.name, controller.signal).then(result => {
-      if (!scopeTask.isCurrent()) return
-      if (result.found && result.data) {
-        setImage(result.data)
-        setInitialImage(result.data)
-        setInitialHadAsset(true)
-      } else {
-        setInitialHadAsset(false)
-      }
-    }).catch(() => {
-      if (scopeTask.isCurrent()) setAssetLoadFailed(true)
-    }).finally(() => {
-      if (scopeTask.isCurrent()) setAssetLoaded(true)
-    })
-    return () => controller.abort()
-  }, [agents, assetLoadFailed, assetLoaded, bot, open])
-
-  useEffect(() => {
-    if (!open || !bot || !advancedOpen) return
-    const source = bot.name
-    let cancelled = false
-    setAdvancedLoading(true)
-    setAdvancedError(null)
-    setAdvancedState(emptyAdvancedProfileState())
-    void Promise.all([
-      agents.describe(source),
-      agents.mcpCatalog(source).catch(() => null)
-    ]).then(([described, catalog]) => {
-      if (!cancelled) setAdvancedState(advancedStateFromDescribe(described, catalog, source))
-    }).catch(caught => {
-      if (!cancelled) setAdvancedError(classifyGatewayError(caught).message)
-    }).finally(() => {
-      if (!cancelled) setAdvancedLoading(false)
-    })
-    return () => { cancelled = true }
-  }, [advancedOpen, agents, bot, open])
+    const loaded = profile.advanced.data
+    if (!loaded || advancedEditedRef.current || hydratedAdvancedRef.current === loaded.source) return
+    hydratedAdvancedRef.current = loaded.source
+    setAdvancedState(loaded)
+  }, [profile.advanced.data])
 
   if (!open || !bot) return null
 
-  const changeAdvanced = (update: (previous: ProfileAdvancedState) => ProfileAdvancedState) => setAdvancedState(update)
-  const generateAvatar = async (prompt: string): Promise<null | string> => {
-    const result = await agents.generateAvatar(prompt)
-    if (result.success === false) throw new Error(result.error || 'The image service rejected the request.')
-    return result.image_data || result.image || null
-  }
-
-  const save = (confirmModel = false) => {
-    if (!bot || busy || !assetLoaded) return
-    setError(null)
-    void task.run<SaveResult>(async () => {
-      const profileName = bot.name
-      const configuration: Parameters<typeof agents.configure>[0] = { name: profileName }
-      if (descriptionTouched) configuration.description = description.trim()
-      if (advancedState.dirtySoul) configuration.soul = advancedState.soul
-      if (advancedState.dirtySkills) configuration.disabled_skills = advancedState.skills.filter(item => item.enabled === false).map(item => item.name)
-      if (advancedState.dirtyToolsets) configuration.enabled_toolsets = enabledToolsetNames(advancedState.toolsets)
-      if (advancedState.dirtyMcp) configuration.enabled_mcp_servers = advancedState.mcp.filter(item => item.enabled !== false).map(item => item.name)
-
-      if (advancedState.dirtyModel) {
-        if (advancedState.provider && advancedState.model) {
-          configuration.provider = advancedState.provider.trim()
-          configuration.model = advancedState.model.trim()
-          if (confirmModel) configuration.confirm_expensive_model = true
-        } else if (advancedState.provider || advancedState.model) {
-          throw new Error('Choose both a model provider and model, or leave both empty to inherit.')
-        } else {
-          const result = await agents.clearModel(profileName)
-          if (!isSuccessfulCliResult(result)) throw new Error(result.hint || 'The inherited model could not be restored.')
-        }
-      }
-
-      if (Object.keys(configuration).length > 1) {
-        const result = await agents.configure(configuration)
-        if (result.confirm_required && !confirmModel) return { confirmMessage: result.confirm_message || 'This model may use paid or external resources. Continue?' }
-        if (!isSuccessfulProfileConfiguration(result)) throw new Error('The gateway did not save the profile configuration.')
-      }
-
-      if (appearanceTouched) {
-        const result = await agents.configure({
-          name: profileName,
-          ui_meta: { 'hermes-bots': botMetaForProfile({ color, created: bot.meta?.created, image, shape, title }) }
-        })
-        if (!isSuccessfulProfileConfiguration(result)) throw new Error('The profile appearance could not be saved.')
-      }
-
-      const hadSavedAsset = Boolean(initialImage || (initialHadAsset && !assetLoadFailed))
-      if (image) {
-        if (image !== initialImage) {
-          const result = await agents.setAsset(profileName, { data: image })
-          if (result.ok === false) throw new Error('The avatar image could not be saved.')
-        }
-      } else if (hadSavedAsset && (appearanceTouched || initialImage !== null)) {
-        const result = await agents.setAsset(profileName, { clear: true })
-        if (result.ok === false) throw new Error('The avatar image could not be removed.')
-      }
-      return {}
-    }, {
-      onBusy: setBusy,
-      onError: classified => setError(classified.message),
-      onSettled: () => undefined
-    }).then(result => {
-      if (!result) return
-      if (result.confirmMessage) {
-        setPendingConfirmation(result.confirmMessage)
-        return
-      }
-      void queryClient.invalidateQueries({ queryKey: rosterKey })
-      onSaved?.(bot.name)
-      onCancel()
-    })
+  const changeAdvanced = (update: (previous: ProfileAdvancedState) => ProfileAdvancedState) => {
+    advancedEditedRef.current = true
+    setAdvancedState(update)
   }
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    save()
+    if (busy || profile.avatar.loading || !avatarBaseline) return
+    const command: EditProfileCommand = {
+      advanced: advancedState,
+      appearance: { color, created: bot.meta?.created, shape, title, touched: appearanceTouched },
+      avatar: { baseline: avatarBaseline, current: image },
+      description,
+      descriptionTouched,
+      mode: 'edit',
+      name: bot.name
+    }
+    profile.mutation.submit(command)
   }
 
   return (
@@ -228,8 +128,8 @@ export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileD
           image={image}
           name={bot.name}
           onColor={next => { setAppearanceTouched(true); setColor(next) }}
-          onGenerate={generateAvatar}
-          onImage={next => { setAppearanceTouched(true); setImage(next) }}
+          onGenerate={profile.generateAvatar}
+          onImage={next => { imageTouchedRef.current = true; setAppearanceTouched(true); setImage(next) }}
           onShape={next => { setAppearanceTouched(true); setShape(next) }}
           shape={shape}
           title={title}
@@ -238,14 +138,27 @@ export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileD
         <button className="profile-advanced-toggle" onClick={() => setAdvancedOpen(value => !value)} type="button" aria-expanded={advancedOpen}>
           <span>Advanced profile settings</span><span aria-hidden>{advancedOpen ? '−' : '+'}</span>
         </button>
-        {advancedOpen && <ProfileAdvancedFields api={agents} error={advancedError} loading={advancedLoading} onChange={changeAdvanced} state={advancedState} />}
-        {error && <p className="dialog-field-error" role="alert">{error}</p>}
+        {advancedOpen && <ProfileAdvancedFields
+          error={profile.advanced.error}
+          loading={profile.advanced.loading}
+          modelOptions={profile.modelOptions.data}
+          modelOptionsError={profile.modelOptions.error}
+          onChange={changeAdvanced}
+          state={advancedState}
+        />}
+        {profile.mutation.error && <p className="dialog-field-error" role="alert">{profile.mutation.error}</p>}
         <div className="button-row">
           <Button disabled={busy} onClick={onCancel} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={busy || !assetLoaded} type="submit">{busy ? 'Saving…' : 'Save changes'}</Button>
+          <Button disabled={busy || profile.avatar.loading || !avatarBaseline} type="submit">{busy ? 'Saving…' : 'Save changes'}</Button>
         </div>
       </form>
-      {pendingConfirmation && <ConfirmDialog confirmLabel="Apply model" description={pendingConfirmation} onCancel={() => setPendingConfirmation(null)} onConfirm={() => { setPendingConfirmation(null); save(true) }} title="Confirm model change" />}
+      {profile.mutation.confirmation && <ConfirmDialog
+        confirmLabel="Apply model"
+        description={profile.mutation.confirmation}
+        onCancel={profile.mutation.declineConfirmation}
+        onConfirm={profile.mutation.confirm}
+        title="Confirm model change"
+      />}
     </div>
   )
 }

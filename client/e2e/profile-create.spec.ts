@@ -98,6 +98,79 @@ test('edits a profile and saves advanced capability settings', async ({ page }) 
   ]))
 })
 
+test('declines and then approves an expensive profile model with a frozen retry', async ({ page }) => {
+  await loginToRoster(page)
+
+  await page.getByRole('button', { name: 'Profile menu' }).nth(1).click()
+  await page.getByRole('dialog', { name: 'Work' }).getByRole('button', { name: 'Edit profile' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Edit profile' })
+  await dialog.getByRole('button', { name: 'Advanced profile settings' }).click()
+  await dialog.getByRole('combobox', { name: 'Profile provider' }).selectOption('fixture')
+  await dialog.getByRole('combobox', { name: 'Profile model' }).selectOption('fixture/expensive')
+  await dialog.getByRole('button', { name: 'Save changes' }).click()
+
+  let confirmation = page.getByRole('alertdialog')
+  await expect(confirmation).toContainText('This fixture model is expensive.')
+  await confirmation.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toBeVisible()
+
+  await dialog.getByRole('button', { name: 'Save changes' }).click()
+  confirmation = page.getByRole('alertdialog')
+  await confirmation.getByRole('button', { name: 'Apply model' }).click()
+  await expect(dialog).toHaveCount(0)
+
+  const calls = await page.evaluate(async () => (await fetch('/api/fixture-calls')).json()) as { calls: Array<Record<string, any>> }
+  const configurations = calls.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.configure' && call.params.model === 'fixture/expensive')
+  expect(configurations).toHaveLength(3)
+  expect(configurations[0].params).toEqual(configurations[1].params)
+  expect(configurations[2].params).toEqual({ ...configurations[1].params, confirm_expensive_model: true })
+})
+
+test('keeps an inline avatar on title-only edit and can replace it with generation', async ({ page }) => {
+  await loginToRoster(page)
+
+  await page.getByRole('button', { name: 'Profile menu' }).nth(1).click()
+  await page.getByRole('dialog', { name: 'Work' }).getByRole('button', { name: 'Edit profile' }).click()
+  let dialog = page.getByRole('dialog', { name: 'Edit profile' })
+  await dialog.getByRole('textbox', { name: 'Title' }).fill('Operator')
+  await dialog.getByRole('button', { name: 'Save changes' }).click()
+  await expect(dialog).toHaveCount(0)
+
+  let calls = await page.evaluate(async () => (await fetch('/api/fixture-calls')).json()) as { calls: Array<Record<string, any>> }
+  expect(calls.calls.some(call => call.kind === 'rpc' && call.method === 'profiles.set_asset')).toBe(false)
+
+  await page.getByRole('button', { name: 'Profile menu' }).nth(1).click()
+  await page.getByRole('dialog', { name: 'Operator' }).getByRole('button', { name: 'Edit profile' }).click()
+  dialog = page.getByRole('dialog', { name: 'Edit profile' })
+  await dialog.getByRole('tab', { name: 'Generate' }).click()
+  await dialog.getByRole('textbox', { name: 'Avatar description' }).fill('A blue operator')
+  await dialog.getByRole('button', { name: 'Generate avatar' }).click()
+  await expect(dialog.getByLabel('Avatar preview: uploaded image')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Save changes' }).click()
+  await expect(dialog).toHaveCount(0)
+
+  calls = await page.evaluate(async () => (await fetch('/api/fixture-calls')).json()) as { calls: Array<Record<string, any>> }
+  const assets = calls.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.set_asset')
+  expect(assets).toHaveLength(1)
+  expect(assets[0].params).toMatchObject({ data: 'data:image/png;base64,AA==', name: 'work' })
+  expect(assets[0].params.clear).toBeUndefined()
+})
+
+test('keeps a created profile when an appearance follow-up fails', async ({ page }) => {
+  await loginToRoster(page)
+
+  await page.getByRole('button', { name: 'Create profile' }).click()
+  await page.getByRole('dialog', { name: 'Create new' }).getByRole('button', { name: 'New bot' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Create profile' })
+  await dialog.getByRole('textbox', { name: 'Profile name' }).fill('warning-profile')
+  await dialog.getByRole('textbox', { name: 'Title' }).fill('Reject appearance')
+  await dialog.getByRole('button', { name: 'Create profile' }).click()
+
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Bots' }).getByRole('button', { exact: true, name: 'Warning Profile' })).toBeVisible()
+  await expect(page.getByRole('status')).toContainText('Profile created, but appearance could not be saved.')
+})
+
 test('duplicates and deletes a non-default profile from the profile menu', async ({ page }) => {
   await loginToRoster(page)
 

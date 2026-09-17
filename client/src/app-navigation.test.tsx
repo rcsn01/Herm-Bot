@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const createProfileDialogProps = vi.hoisted(() => vi.fn())
+
 const controller = vi.hoisted(() => ({
   conversation: {
     reconcileHistory: vi.fn().mockResolvedValue(undefined)
@@ -38,17 +40,27 @@ vi.mock('~/features/agents/roster-screen', async () => {
   // so $groupChats seeds publish through the same path.
   const { useGroupRooms } = await import('~/features/groups/group-engine')
   return {
-    RosterScreen: ({ onOpenAgent }: { onOpenAgent(profile: null | string): void }) => {
+    RosterScreen: ({ onManageAgent, onOpenAgent }: { onManageAgent?(agent: { isDefault: boolean; name: string }): void; onOpenAgent(profile: null | string): void }) => {
       useGroupRooms([])
       return (
         <div>Roster screen
           <button onClick={() => onOpenAgent('work')}>Open agent work</button>
           <button onClick={() => onOpenAgent(null)}>Open agent default</button>
+          <button onClick={() => onManageAgent?.({
+            avatar: 'data:image/png;base64,AA==',
+            description: 'Operator',
+            isDefault: false,
+            meta: { color: '#3b82f6', shape: 'circle', title: 'Work' },
+            name: 'work'
+          } as never)}>Manage work</button>
         </div>
       )
     }
   }
 })
+vi.mock('~/features/agents/create-profile-dialog', () => ({
+  CreateProfileDialog: (props: unknown) => { createProfileDialogProps(props); return <div data-testid="create-profile-dialog" /> }
+}))
 vi.mock('~/features/groups/group-screen', () => ({
   GroupChatScreen: ({ roomId }: { roomId: string }) => <div data-testid="group-instance">Group {roomId}</div>
 }))
@@ -125,6 +137,27 @@ describe('App navigation', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog', { name: 'Create new' })).toBeNull()
+  })
+
+  it('passes one duplicate seed with the hydrated roster metadata', () => {
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage work' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate profile' }))
+
+    expect(screen.getByTestId('create-profile-dialog')).not.toBeNull()
+    expect(createProfileDialogProps).toHaveBeenLastCalledWith(expect.objectContaining({
+      seed: {
+        cloneAll: true,
+        cloneFrom: 'work',
+        color: '#3b82f6',
+        description: 'Operator',
+        image: 'data:image/png;base64,AA==',
+        name: 'work-2',
+        shape: 'circle',
+        title: 'Work (copy)'
+      }
+    }))
   })
 
   it('enters the tapped agent latest conversation', async () => {

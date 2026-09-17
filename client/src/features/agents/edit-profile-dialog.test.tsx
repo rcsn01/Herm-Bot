@@ -13,7 +13,6 @@ import { $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 import { EditProfileDialog } from './edit-profile-dialog'
-import { enabledToolsetNames } from './profile-advanced-fields'
 
 const originalPreferences = $preferences.get()
 const bot = {
@@ -46,12 +45,6 @@ function renderDialog(gateway: MemoryGateway, onCancel = vi.fn()) {
 }
 
 describe('EditProfileDialog', () => {
-  it('uses an empty toolset pin for all-enabled and all-disabled selections', () => {
-    expect(enabledToolsetNames([{ enabled: true, name: 'web' }, { enabled: true, name: 'browser' }])).toEqual([])
-    expect(enabledToolsetNames([{ enabled: false, name: 'web' }, { enabled: false, name: 'browser' }])).toEqual([])
-    expect(enabledToolsetNames([{ enabled: true, name: 'web' }, { enabled: false, name: 'browser' }])).toEqual(['web'])
-  })
-
   it('saves appearance and description to the explicitly named profile', async () => {
     const gateway = new MemoryGateway().handle('profiles.configure', params => {
       if ('description' in (params as object)) expect(params).toMatchObject({ description: 'Updated description', name: 'work' })
