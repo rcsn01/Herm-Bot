@@ -1,251 +1,987 @@
-# Deepen the Workspace navigation
+# Deepen the OAuth flow module
 
-Candidate 1 from the second architecture review (September 15, 2026). The report lives at `/var/folders/th/_8dpnzf515n6h74y89jpky5h0000gn/T/architecture-review-20260915-235331.html`; the design vocabulary (module, interface, implementation, depth, seam, adapter, leverage, locality) comes from the codebase-design skill; domain terms come from `CONTEXT.md`, which this plan extends (see *Side effects applied*). The plan that previously lived in this file — the Group send engine deepening — has landed (e0705e9); it was deleted to make room for this one.
+Option 1 from the architecture review on September 17, 2026. The report lives at `/private/var/folders/th/_8dpnzf515n6h74y89jpky5h0000gn/T/architecture-review-20260917-113711.html`. This plan replaces the previous Workspace navigation plan after that refactor landed in `e3c14b6` and its follow-up documentation landed in `bf4f7ce`.
 
-## Problem
+The architecture vocabulary here uses **module**, **interface**, **implementation**, **depth**, **seam**, **adapter**, **leverage**, and **locality** as defined by the codebase-design guidance. Domain names come from `CONTEXT.md`.
 
-The workspace navigation module is missing, so its policy is scattered across a fan of shallow edits. Adding or moving one screen touches about 7 production sites across 6 files, excluding the screen implementation itself. The Playwright fixture has a separate shell fallback described below:
+## Executive summary
 
-- **Route vocabulary** (`navigation/routes.ts`): typed route unions, `MOBILE_TABS` (5 tabs), `SETTINGS_CATEGORIES` (12), `SETTINGS_ADMINISTRATION_PAGES` (16), `ROOT_ROUTES`. This part is healthy — pure data, widely imported as types.
-- **URL parse** (`navigation/screen-url.ts:32-91`): per-head `if (head === 'group'|'sessions'|'capabilities'|'cron'|'settings')` branches. `screen-url.test.ts:50-51` pins that `/bot` and `/bot/extra` are rejected.
-- **Service-worker allowlist** (`pwa/policy.ts:18-19`): a second, independent regex, `^\/(?:bot|group|sessions|capabilities|cron|settings|navigation)(?:\/|$)`, that accepts `bot` and `navigation` heads the parser rejects. `policy.test.ts:14` pins both legacy heads as allowed. The two production vocabularies drifted and nothing can catch it.
-- **Titles** (`app.tsx:44-73`): `DESTINATION_TITLES`, `BOT_CONFIGURATION_TITLES`, and `botWorkspaceRouteTitle` (cron detail/editor/blueprints; capabilities-section; capability-detail special ids `skills-hub`, `mcp-catalog`, `mcp:new`, `skill:`, `toolset:`, `mcp:` prefixes).
-- **Destination vocabularies, distinct but overlapping**: `routes.ts:1` `MOBILE_TABS` is the five app tabs, while `bot-workspace-navigation.tsx:7-12` has four workspace destinations. Its `'model'` id is intentionally a settings pseudo-destination, not a missing mobile tab. The workspace list remains a separate ownership point, and extracting it does not make new destinations automatic.
-- **Destination→action mapping, duplicated**: `app.tsx:239-245` `selectBotWorkspaceDestination` (sessions→menu, model→model settings, else openDestination) vs `sessions-menu.tsx:299-303` (sessions→no-op, model→intent, else intent — the pending-guarded `navigate`/`navigateModel` emitters at 197-205).
-- **Playwright shell fallback** (`client/e2e/server.mjs:145-147`): a third, test-fixture regex serves `/session` deep links plus the seven screen heads so direct e2e navigations receive `index.html`. It is not the production policy and is not included in the shared table, so a future served head requires a fixture update too.
-- **Return-origin choreography** (`app.tsx:94-115, 170-202, 234-249, 261-274`): `returnTab` state + `menuOriginRef`, `menuOriginStackRef`, `returnStackRef` refs; `openNavigationPage` captures the origin; the `onDismissed` intent closure resolves tab/model intents with origin-equality short-circuits; `exitDestination` restores the return stack and reopens the menu; `clearMenuReturn`, `backToRoster`, `backFromForeground` branch tree; `modelReturnsToSurface`.
-- **Menu open/close latch** (`navigation/use-navigation-page-controller.ts`, 40 lines): boolean latch + `NavigationPageDismissIntent`, one caller. Shallow. The deletion test moves complexity, it doesn't concentrate it.
-- **Cold-start glue** (`navigation/initial-navigation.ts`, 10 lines): a pass-through over `navigationFromPath` + `applyPathState`, one caller. Fails the deletion test outright.
-- **Per-tab narrowers and derivations** (`app.tsx:406-439`): `activeBotConfigurationDestination` (`'model'` special case), `routeForCapabilities/Cron/Settings/GroupRoom`, `openModelSettings` (idempotent model-category open), `openDestination`.
+Create the missing `client/src/gateway/oauth-flow.ts` module already described in `CONTEXT.md`. It will own the shared OAuth lifecycle end to end:
 
-The test surface pays too: `app-navigation.test.tsx` (462 lines) mocks nine modules just to exercise the choreography, evidence the seam sits at the wrong layer. The three screen-narrower fallbacks (`routeForCapabilities`, `routeForCron`, and `routeForSettings`) are dead at runtime because `navigation-store.ts` rejects foreign routes, and they have no direct coverage. `routeForGroupRoom` is a live roster derivation and stays in App. Application-level settings-administration navigation also has no direct coverage. The replacement `narrowRoute` must test both matching and foreign-route fallback cases. The menu reopen-over-origin path is pinned at the UI level (the witness's capabilities and model round trips assert the menu reopens over the restored origin, and e2e walks all three destinations) but nowhere at the interface level.
+1. capture the current Scope;
+2. call a feature-owned start adapter;
+3. normalize and publish the first flow state;
+4. launch a safe external authorization URL without blocking polling when the initial waiting state has one;
+5. poll through the existing `runRemoteAction` engine;
+6. normalize waiting, approved, denied, expired, and error phases;
+7. suppress stale or aborted effects;
+8. classify bounded polling as `GatewayError` code `OAUTH_TIMEOUT`.
 
-Deletion-test verdicts: `initial-navigation.ts` means the complexity vanishes because it is a pass-through. `use-navigation-page-controller.ts` means the complexity vanishes into its one caller. The title lookups, generic route narrowing, and four-item workspace list are shallow on their own. They stay with the module's real policy for locality, not because each earns a separate seam. The return-origin state machine and parser/SW policy would otherwise remain split across App, the menu, the parser, and the service worker.
+Provider, memory-provider, and MCP route vocabulary stays in their feature modules. Each feature supplies a small adapter that maps its wire shapes to the normalized OAuth flow state. Device-code submission, explicit remote cancellation, cache invalidation, navigation, and fallback/rendering copy remain caller policy, matching the ownership recorded in `CONTEXT.md`. Adapters may preserve a wire-provided message or supply the feature-specific waiting/timeout text needed after raw statuses are normalized away.
 
-## Goal
+This preserves valid-flow behavior and makes six corrections at boundaries the current screens mishandle: every OAuth timeout receives the stable code `OAUTH_TIMEOUT`; malformed provider/MCP start handles fail before polling; memory `connected: true`, `state: 'error'`, and post-start `state: 'idle'` are interpreted consistently; memory success invalidates the actual OAuth query key instead of a nonexistent derived key; changing the selected memory provider aborts rather than retargets an in-flight run; and one screen cannot own two active OAuth runs.
 
-One **Workspace navigation** module inside `client/src/navigation/`, with the interface in `workspace-navigation.ts` and the React entry in `use-workspace-navigation.ts`. After the refactor:
+## Why this work is needed
 
-- `app.tsx` loses about 130 lines of choreography: no title maps, origin refs, latch, dismiss-intent closure, `openNavigationPage`/destination selection, `openDestination`/`openModelSettings`/`exitDestination`/`backToRoster`/`clearMenuReturn`/`goBackOr`/`routeForCapabilities`/`routeForCron`/`routeForSettings`/`activeBotConfigurationDestination`. `routeForGroupRoom` remains with the roster/group policy. It keeps composition: which screens render, which dialogs open, and the roster/group back policy (`backFromForeground`, swipe-dismiss reset), now expressed through module verbs.
-- The module centralizes titles, production URL policy, destination-to-action policy, and back fallbacks. It does not make screen registration automatic: a new route or destination still requires the route union, parser grammar and a valid URL vector when URL-addressable, the screen/app render branch, and for a new workspace destination the local icon map/list entry.
-- The production service-worker allowlist and URL parser consult one head table. That removes their duplicated head list, while per-head parser grammar and the Playwright fixture's fallback regex remain separate. The `bot`/`navigation` drift becomes an explicit, tested legacy entry instead of a second production regex.
-- `initial-navigation.ts`, `use-navigation-page-controller.ts`, and `screen-url.ts` are deleted; their coverage moves to the module's interface tests.
-- Zero user-visible behavior change is the target. `app-navigation.test.tsx` and `pwa/policy.test.ts` pass untouched as regression witnesses for the covered flows, not as complete proof.
+The repository already names an **OAuth flow** domain concept, but its implementation file does not exist. Three screens repeat the protocol choreography:
 
-## Design
+### Provider accounts
 
-### The seam
+`client/src/features/settings/settings-administration-screen.tsx` currently splits one flow across `ProvidersSettings` and `ProviderOAuthFlow`:
 
-Two files, one module. The core is DOM-free so the service-worker bundle (`pwa/sw.ts` → `pwa/policy.ts`) can share its vocabulary without dragging React or the app into the worker bundle. This accepts the DOM-free `navigation-store`/nanostores dependency pulled by the shared file; the production build must keep React and app code out of the worker.
+- `ProvidersSettings.startOAuth` starts the provider route, stores its raw response, and opens the returned URL.
+- `ProviderOAuthFlow` captures a Scope, creates an `AbortController`, calls `runRemoteAction`, polls the provider route, maps terminal states, and reports timeout or transport errors.
+- Device-code submission and cancellation are separate handlers with important secret-clearing behavior.
+- Mutable refs keep callbacks and the one-shot code current while polling runs.
 
-```
-src/navigation/workspace-navigation.ts   ← the interface (DOM-free; imports only sibling navigation modules)
-src/navigation/use-workspace-navigation.ts ← the React entry (core + navigation-store + React)
-```
+The provider flow supports two start shapes:
 
-What the module does **not** own (stays put): `navigation-store.ts` (the route-stack engine — deep, tested), `DeepLinkCoordinator` + `parseHermesDeepLink` (session deep links), `MobileShell`/`BotWorkspaceHeader`/`BotWorkspaceNavigation` (presentation), and the roster/group back policy in `app.tsx`, including `routeForGroupRoom`.
+- PKCE: `auth_url`, `session_id`, `expires_in`.
+- Device code: `verification_url`, `user_code`, `session_id`, `poll_interval`, `expires_in`.
 
-### Core interface — `workspace-navigation.ts`
+### Memory-provider authorization
+
+`client/src/features/settings/memory-settings.tsx` owns another copy:
+
+- `startMemoryOAuth` may return `connected` immediately or `pending`.
+- A `useEffect` watches `oauthPending`, captures a Scope, creates an `AbortController`, invokes `runRemoteAction`, and polls `memoryOAuthStatus`.
+- Completion invalidates memory status and attempts to invalidate OAuth status, but the latter currently constructs a key that does not match the query's actual `useScopeKey` value.
+- There is no remote cancellation route. Unmount and Scope teardown only stop local polling.
+
+### MCP authorization
+
+`client/src/features/capabilities/mcp-screen.tsx` owns the third copy:
+
+- `mcpApi.auth` returns a flow id and an optional authorization URL.
+- The screen opens the URL when present.
+- A `useEffect` captures a Scope, creates an `AbortController`, invokes `runRemoteAction`, and polls the process-scoped flow route.
+- The screen maps `starting`, `authorization_required`, `approved`, and `error` itself.
+- It uses string matching against the generic timeout message to produce MCP-specific copy.
+- Explicit cancellation calls the process-scoped delete route; dismiss only stops local polling and clears the card.
+
+### Current test gap
+
+`client/src/gateway/remote-action.test.ts` thoroughly tests the generic polling engine. Feature route tests pin provider and MCP unscoped poll/cancel paths. The screen tests do not cover the complete OAuth choreography:
+
+- `settings-administration-screen.test.tsx` has no provider OAuth tests.
+- `memory-settings.test.tsx` covers configuration and Scope-discarded mutations, but not OAuth.
+- There is no `mcp-screen.test.tsx`.
+
+The result is low locality. Bugs in start-to-poll ordering, external URL opening, terminal mapping, Scope changes, or cancellation can differ across three callers even though they are one domain protocol.
+
+### Verified baseline inventory
+
+The plan's scope was rebuilt from source rather than inherited from the architecture report:
+
+| Area | Verified current sites and counts |
+|---|---|
+| Generic engine | Four production invocations: one inside `runGatewayAction` plus one OAuth invocation in each of the three screens. `runRemoteAction` itself is defined in `gateway/remote-action.ts`; six files mention the symbol when its test file is included. |
+| Unused transport parameter | All four production callbacks ignore the engine's `GatewayPort` argument. The only four `api.gateway` reads are the engine call in `runGatewayAction` and the three OAuth screen calls. |
+| Provider routes | Five methods in `SettingsApi`: profile-bound list/start/submit, unscoped poll/cancel. The screen uses all five. `OAuthStartResponse` has exactly two response variants; `OAuthProvider.flow` also allows `external`, so the adapter must discriminate on the response. `OAuthPollResponse` has five statuses. |
+| Memory routes | Two profile-bound methods in `SettingsApi`: start and status. The status type has four states plus an independent `connected` boolean. There is no memory cancel method or route. |
+| MCP routes | Three methods in `McpApi`: profile-bound auth start and unscoped status/cancel by encoded flow id. `McpOAuthFlow` has four statuses and a nullable URL. |
+| Scope/abort sites | Each OAuth screen currently owns one controller and one raw `beginScopedTask` around polling. The provider child also owns mounted/callback/code refs. `runRemoteAction` already owns a second effective controller, caller-listener cleanup, delay cancellation, and post-start/post-poll Scope assertions. |
+| Timeout sites | The engine has one generic bounded-poll throw. MCP has the only OAuth timeout substring match. No provider or memory custom timeout exists. |
+| Current tests | `remote-action.test.ts`: 18 tests, 12 for the generic engine and 6 for gateway actions. `settings-api.test.ts`: 11 tests, including one provider poll/cancel scope test. `mcp-api.test.ts`: 2 tests, including one cancel-scope test. Provider screen: 3 unrelated tests. Memory screen: 4 unrelated tests. MCP screen: no test file. |
+| URL safety | `PlatformActions.openExternal` delegates to `validatedExternalURL`; its test pins HTTP/HTTPS-only and credential rejection. No feature screen should duplicate that validation. |
+| Browser fixture | Zero matching OAuth REST handlers and zero MCP fixture rows with `auth: 'oauth'`; unmatched API routes return 404. |
+| Repository state | `plan.md` and `client/src/navigation/workspace-navigation.test.ts` were already modified. The navigation test is outside this work and must remain untouched. |
+
+## Deletion test
+
+The proposed module passes the deletion test. If `oauth-flow.ts` were deleted after this refactor, the following complexity would immediately reappear in all three callers:
+
+- Scope capture and stale-effect guards;
+- start-before-poll ordering;
+- nonblocking external URL opening and late-opener suppression;
+- bounded polling through `runRemoteAction`;
+- normalized phase publication;
+- timeout classification;
+- suppression of expected abort errors.
+
+The feature adapters do not try to pass the deletion test independently. They remain intentionally small because wire vocabulary belongs beside `SettingsApi` and `McpApi`. Their leverage comes from allowing one deep OAuth flow implementation to work across three real adapters.
+
+## Scope
+
+### In scope
+
+- Add the shared OAuth flow module and direct interface tests.
+- Remove `runRemoteAction`'s unused `GatewayPort` pass-through and add a stable timeout-error hook without changing polling behavior.
+- Add provider, memory, and MCP OAuth adapters beside their feature route modules.
+- Migrate all three screens to the shared module.
+- Add targeted feature and screen tests for the migrated behavior.
+- Preserve route scoping, secret hygiene, user-visible states, and cancellation distinctions.
+- Record the checked-in browser fixture's verified inability to exercise these OAuth routes; do not substitute typechecking or JSDOM for popup verification.
+
+### Out of scope
+
+- Changing gateway routes or wire payloads.
+- Adding OAuth providers or new authorization modes.
+- Persisting active OAuth flow state.
+- Resuming a flow after reload.
+- Adding a remote cancellation route for memory-provider OAuth.
+- Moving device-code submission into the shared module.
+- Automatically invoking provider or MCP remote cancellation during unmount.
+- Changing React Query cache keys outside the OAuth success paths.
+- Reworking the broad `SettingsApi` interface.
+- Replacing `runRemoteAction` or changing its retry/backoff algorithm.
+- Reworking browser sign-in handled by `GatewayController.login`; that is gateway authentication, not the provider/memory/MCP OAuth flow defined in `CONTEXT.md`.
+
+## Design decisions
+
+The grilling branches are resolved with the recommended answers below.
+
+### Decision 1: cover all three feature flows now
+
+Provider, memory, and MCP OAuth are included in one refactor. Implementing only provider OAuth would leave one adapter at the seam and would not establish a real shared module. Three existing callers justify the seam.
+
+### Decision 2: keep the core DOM-free and imperative
+
+Use one async `runOAuthFlow` entry point in `gateway/oauth-flow.ts`. Do not make the deep module a React hook.
+
+Reasons:
+
+- The protocol has no React-specific behavior.
+- Direct interface tests are simpler and faster than hook tests.
+- A React hook would make adapter identity and effect dependency rules part of the interface.
+- Screens still own when a flow starts, what they render, and what happens after approval.
+- The imperative shape matches `runGatewayAction` and keeps the module usable outside React.
+
+React callers keep one local `AbortController` to tie the run to unmount, dismiss, explicit cancellation, or a replacement run. `runRemoteAction` already creates the effective controller, forwards the caller signal, removes its listener, aborts its timer in `finally`, and passes its signal to start/poll callbacks. `runOAuthFlow` must not duplicate that controller layer.
+
+### Decision 3: use normalized feature adapters
+
+Each feature adapter returns normalized OAuth flow state instead of exposing raw provider, memory, or MCP responses to the core.
+
+This keeps wire vocabulary local while giving the core enough information to own the protocol. The adapter maps:
+
+- its opaque context, such as a provider session id or MCP flow id;
+- the normalized phase;
+- an optional authorization URL;
+- an optional user code;
+- an optional feature message. This carries wire errors/details and, where normalization removes a user-visible substate, its existing instruction text.
+
+### Decision 4: leave submit and remote cancel with callers
+
+Do not add generic `submit` or `cancel` methods to the OAuth flow interface.
+
+- Only provider device-code flows submit a one-shot code.
+- Provider and MCP have different remote cancellation routes.
+- Memory has no remote cancellation route.
+- Provider code clearing before and after submit/cancel is credential policy, not polling policy.
+- Dismiss and remote cancel are different user actions for MCP.
+
+Generalizing these operations would widen the interface to represent capabilities most adapters do not have. Local polling abort remains part of the runner through `AbortSignal`.
+
+### Decision 5: opening an external URL is best effort and nonblocking
+
+After publishing an initial `waiting` state with a non-empty authorization URL, the module launches `openExternal` once without awaiting it before polling. It classifies and reports an opener failure only while that run remains active. A pending opener must not delay the first poll or terminal resolution, and an opener rejection after abort, Scope change, or terminal completion is ignored.
+
+This matches the current React scheduling: provider and MCP publish flow state, their polling effect can start, and the separately awaited opener does not gate that effect. A popup blocker or native opener failure must not destroy a gateway flow that the user may complete in another browser. Missing MCP URLs and URLs on already-terminal start states produce no opener call.
+
+### Decision 6: terminal wire states are outcomes, not transport failures
+
+`approved`, `denied`, `expired`, and wire-level `error` are normalized terminal states. They do not throw. Their optional message travels in the state.
+
+Start failures, poll transport failures, malformed required start data, and bounded polling failures are classified `GatewayError` instances.
+
+### Decision 7: Scope changes and aborts are silent
+
+Unmount, explicit local abort, a superseding flow, and a stale Scope resolve `undefined`. They do not call `onUpdate` or `onError` after becoming stale and do not render an error banner.
+
+This matches the repository’s Scoped operation contract.
+
+### Decision 8: simplify the polling engine interface and add typed timeout creation
+
+Remove `RemoteActionOptions.gateway` and the unused `GatewayPort` argument from its `start` and `poll` callbacks. All three current OAuth callers name that argument `_gateway` or `_transport`, and `runGatewayAction` also ignores it. The generic engine schedules callbacks; feature closures already own their route adapters. Remove the now-unused `GatewayApi.gateway` escape hatch too. This narrows both interfaces rather than carrying a transport through two modules that never use it.
+
+Also extend `RemoteActionOptions` with an optional timeout factory. The default remains the current generic classified timeout. OAuth supplies a non-retryable `GatewayError` with code `OAUTH_TIMEOUT` and adapter-specific copy.
+
+Do not inspect error message text. MCP’s current `message.includes('timed out')` branch is deleted.
+
+### Decision 9: preserve current polling cadence
+
+Keep the current values during the refactor:
+
+- provider and MCP: 1 second initial interval, 5 second ceiling, 60 attempts;
+- memory: 2 second initial interval, 10 second ceiling, 60 attempts.
+
+Do not begin interpreting provider `poll_interval` or `expires_in` as part of this change. That would alter behavior and needs a separate contract decision.
+
+## Alternatives considered
+
+### A. Minimal imperative runner, selected
+
+One `runOAuthFlow` entry point accepts a feature adapter, external opener, abort signal, and guarded callbacks.
+
+- **Depth:** high. It hides the complete shared lifecycle.
+- **Locality:** high. Wire states stay in feature adapters; lifecycle stays in one module.
+- **Interface:** small enough for direct tests.
+- **Cost:** each React caller retains a small amount of local state and cleanup wiring.
+
+### B. React-first `useOAuthFlow` hook, rejected
+
+A hook could expose `state`, `start`, and `abort`.
+
+- It makes common screen usage short.
+- It also couples the protocol to React, adds adapter memoization rules, and moves the test surface into hook rendering.
+- Non-React callers would need another entry point later.
+- The extra abstraction is not needed for three current callers.
+
+### C. Capability-rich port with generic submit and cancel, rejected
+
+A broad interface could include `start`, `poll`, `submit`, `cancel`, and `open`.
+
+- It is flexible.
+- It is shallow for this repository because memory cannot cancel and only provider device code can submit.
+- Callers would need optional-method checks and generic payloads.
+- It blurs the explicit ownership in `CONTEXT.md`.
+
+### D. Put all wire routes in `gateway/oauth-flow.ts`, rejected
+
+This would remove adapter code but make the gateway module understand provider ids, memory-provider names, MCP flow ids, profile scoping, and unscoped status routes.
+
+That seam has poor locality. Backend route changes would touch the shared protocol module, and the feature route modules would stop owning their vocabulary.
+
+## Target module interface
+
+Add `client/src/gateway/oauth-flow.ts` with the following public shape. Exact comments may be refined during implementation, but the semantics are fixed by this plan.
 
 ```ts
-export type WorkspaceDestination = 'sessions' | 'cron' | 'capabilities' | 'model'
-export type BotConfigurationDestination = 'capabilities' | 'cron' | 'model'
+import type { GatewayError } from './gateway-error'
 
-/** Dismiss intents emitted by the sessions menu (moved verbatim from
- *  use-navigation-page-controller.ts). */
-export type WorkspaceMenuIntent =
-  | { type: 'close' }
-  | { type: 'model' }
-  | { type: 'tab'; tab: MobileTab }
+export type OAuthFlowPhase =
+  | 'waiting'
+  | 'approved'
+  | 'denied'
+  | 'expired'
+  | 'error'
 
-/** Single source for the workspace bottom-nav destinations and their labels, in the
- *  current order (sessions, cron, capabilities, model; the interface test
- *  pins this array order and the component renders it in that order). 'model' is a pseudo-destination: it opens the settings-category
- *  route, not a tab. bot-workspace-navigation maps ids to icons locally.
- *  Header titles stay in the two absorbed title tables (label and title
- *  coincide for every destination today, so no second field here). */
-export const WORKSPACE_DESTINATIONS: readonly { id: WorkspaceDestination; label: string }[]
-
-/** Plain destination header title (DESTINATION_TITLES absorbed). */
-export function workspaceTabTitle(tab: MobileTab): string
-
-/** Bot-configuration header title: detail-route titles for cron/capability
- *  routes, else the destination title (BOT_CONFIGURATION_TITLES +
- *  botWorkspaceRouteTitle absorbed). */
-export function workspaceRouteTitle(destination: BotConfigurationDestination, route: MobileRoute): string
-
-/** Which bot-configuration destination the active surface shows, or null
- *  (activeBotConfigurationDestination absorbed, incl. the 'model' rule). */
-export function workspaceDestinationFor(tab: MobileTab, route: MobileRoute): BotConfigurationDestination | null
-
-/** Narrow the active-route union to a tab's route type; the tab root is the
- *  fallback. Total — never throws (replaces the three routeFor* helpers). */
-export function narrowRoute<Tab extends MobileTab>(tab: Tab, route: MobileRoute): RouteForTab<Tab>
-
-/** The sessions menu's dismiss intent for a destination tap
- *  (model → {type:'model'}, else {type:'tab', tab}). 'sessions' callers
- *  guard it as a no-op themselves, exactly as today. */
-export function workspaceMenuIntent(destination: WorkspaceDestination): WorkspaceMenuIntent
-
-/** Back-label policy: nested detail wins — except the model surface with a
- *  return origin, which reads 'Back to menu' (today's modelReturnsToSurface
- *  suppression; the witness asserts it on the model round trip) — then
- *  menu-origin return, then roster. Pass surface =
- *  workspaceDestinationFor(tab, route). */
-export function workspaceBackLabel(nested: boolean, surface: BotConfigurationDestination | null, hasReturnOrigin: boolean): 'Back' | 'Back to menu' | 'Back to bots'
-
-/** Cold start only: parse a screen path and apply it to the in-memory router.
- *  Returns false — store untouched — for unknown, malformed, and /session/*
- *  paths (those belong to the DeepLinkCoordinator). '/' parses to the roster
- *  root and applies, like today's restoreInitialNavigation (a value-identical
- *  store write the cold-start effect ignores). Call once per cold start,
- *  before any user navigation. (Absorbs initial-navigation.ts.) */
-export function restoreWorkspacePath(pathname: string): boolean
-
-/** Service-worker screen-path allowlist. Derived from the same head table the
- *  parser uses: parseable heads {group, sessions, capabilities, cron, settings}
- *  plus legacy served-only heads {bot, navigation} — preserved byte-for-byte,
- *  pinned by pwa/policy.test.ts:14. First-segment prefix semantics, exactly
- *  today's regex (`^/head(?:/|$)` per served head), NOT parse success:
- *  malformed subpaths under a served head still serve the shell (e.g.
- *  '/group/a/b', '/sessions/x'), and '/session/…' stays excluded because the
- *  head 'session' is not in the table. (Absorbs pwa/policy.ts's private regex.) */
-export function isAppShellScreenPath(pathname: string): boolean
-```
-
-Implementation detail: the per-head parser is private and absorbed from `screen-url.ts`. `SCREEN_URL_HEADS` (`{ head, parsable, served, legacy? }`) is exported only for the structural invariant test; no production caller consumes it directly. Its parser check admits a known parsable head but does not supply that head's branch grammar, so every parsable head still needs a positive parser vector. The title tables remain private; `WORKSPACE_DESTINATIONS` is the intended public static workspace list consumed by the presentation component.
-
-### React entry — `use-workspace-navigation.ts`
-
-```ts
-export interface WorkspaceNavigation {
-  menuOpen: boolean                 // the navigation-page latch (StrictMode-safe, idempotent open)
-  returnOrigin: MobileTab | null    // today's returnTab: drives back labels and showModelBack
-  openMenu(): void                  // captures origin tab + origin stack, then opens
-  dismissMenu(intent?: WorkspaceMenuIntent): void
-  openWorkspaceDestination(destination: WorkspaceDestination): void
-  exitToReturnOrigin(fallback?: MobileTab): void  // default fallback 'roster'
-  clearReturn(): void                             // today's clearMenuReturn: origin + stack, as a pair
-  backOr(tab: MobileTab, fallback(): void): void
-  closeToRoster(): void
+export interface OAuthFlowState<TContext> {
+  /** Opaque feature context retained for submit/cancel policy. */
+  context: TContext
+  phase: OAuthFlowPhase
+  authorizationUrl: string | null
+  userCode: string | null
+  message: string | null
 }
-export function useWorkspaceNavigation(): WorkspaceNavigation
+
+export interface OAuthFlowPolling {
+  intervalMs: number
+  maxAttempts: number
+  maxIntervalMs: number
+  timeoutMessage: string
+}
+
+export interface OAuthFlowAdapter<TContext> {
+  /** Feature route vocabulary. Returns normalized start state. */
+  start(signal: AbortSignal): Promise<OAuthFlowState<TContext>>
+  /** Feature status vocabulary. Called only while phase is waiting. */
+  poll(context: TContext, signal: AbortSignal): Promise<OAuthFlowState<TContext>>
+  polling: OAuthFlowPolling
+}
+
+export interface RunOAuthFlowOptions<TContext> {
+  adapter: OAuthFlowAdapter<TContext>
+  openExternal(url: string): Promise<void>
+  signal?: AbortSignal
+  /** Guarded publication of start and poll states. */
+  onUpdate?(state: OAuthFlowState<TContext>): void
+  /** Guarded classified error reporting. Opener errors are nonfatal. */
+  onError?(error: GatewayError): void
+}
+
+/**
+ * Runs one OAuth flow. Resolves with the current terminal state. Resolves
+ * undefined after abort, stale Scope, or a handled start/poll failure.
+ */
+export function runOAuthFlow<TContext>(
+  options: RunOAuthFlowOptions<TContext>
+): Promise<OAuthFlowState<TContext> | undefined>
 ```
 
-Verbs, mapped one-to-one from today's `app.tsx` handlers:
+### Interface invariants
 
-- `openWorkspaceDestination('sessions')` → `openMenu()`; `'model'` → idempotent model-category open (`setTab('settings')` first; keep an existing model-category stack top — the check precedes the reset — else `resetTabRoutes('settings')` + push; today's `openModelSettings`); else → `resetTabRoutes(tab)` + `setTab(tab)` (today's `openDestination`).
-- `dismissMenu(intent)` — latch closes, then: intent `tab` with `origin === intent.tab` → close only; intent `model` with origin already on the model category → close only; otherwise stash `{ returnOrigin: origin, returnStack: originStack }` and apply the action (today's `onDismissed` closure, verbatim).
-- `exitToReturnOrigin(fallback)` — today's `exitDestination`: destination = returnOrigin ?? fallback; if a menu-originated return exists, `applyPathState(destination, returnStack)` and reopen the menu over it (recapturing the origin); otherwise `setTab(destination)`; always clear the return state as a pair, before the move, as today.
-- `clearReturn()` — today's `clearMenuReturn` (returnOrigin + return stack, as a pair) without navigating.
-- `backOr(tab, fallback)` — today's `goBackOr`: `popRoute(tab) === undefined` → run fallback.
-- `closeToRoster()` — today's `backToRoster` (`clearMenuReturn` followed by `setTab('roster')`).
+1. `runOAuthFlow` captures `beginScopedTask()` before calling the adapter.
+2. The adapter’s `start` is called exactly once.
+3. Every adapter call receives the runner’s effective abort signal.
+4. The first normalized state is published before an external URL is launched.
+5. `openExternal` is called only when `authorizationUrl.trim()` is non-empty on the initial `waiting` state. The original string is passed to the opener for authoritative URL validation. A missing/blank URL or an already-terminal start state does not invoke it.
+6. External opening is attempted at most once automatically per run. A URL first returned by polling is exposed to the caller but is not auto-opened.
+7. Opening runs concurrently with polling. A pending opener cannot delay polling or terminal resolution.
+8. An opener failure calls guarded `onError` only if the run is still active; polling continues. A rejection after abort, Scope change, or terminal completion is silent.
+9. Only `waiting` states poll.
+10. `approved`, `denied`, `expired`, and `error` are terminal.
+11. Poll delay, backoff, transient-network retry, and attempt bounds come only from `runRemoteAction`.
+12. `onUpdate` and `onError` run only while the captured Scope remains current, the caller signal is not aborted, and the run has not reached a terminal result.
+13. Abort and stale Scope are silent and resolve `undefined`.
+14. A timeout reports `GatewayError` with `code === 'OAUTH_TIMEOUT'`, `retryable === false`, and attempt details.
+15. Other start/poll failures are reported as classified `GatewayError` values; `classifyGatewayError` preserves an existing `GatewayError` instance.
+16. The module never imports React, `GatewayPort`, `PlatformActions`, `SettingsApi`, or `McpApi`.
+17. The module never calls remote submit or cancel routes.
 
-Implementation notes: `useState` for `menuOpen`/`returnOrigin`, refs for the origin/return stacks — the same shape `app.tsx` and the latch use today, so StrictMode and double-mount behavior carry over unchanged. No new atoms; `App` is the only consumer, so hook-local state suffices.
+## Feature adapters
 
-### Callers after the refactor
+### Provider adapter in `features/settings/settings-api.ts`
 
-- **`app.tsx`** — `const workspace = useWorkspaceNavigation()`. Cold-start effect: `restoreWorkspacePath(pathname)` (the `history.replaceState` and `parseHermesDeepLink` check stay app-side — they need the deep-link coordinator). Headers read `workspaceTabTitle`/`workspaceRouteTitle`/`workspaceBackLabel(nestedRoute, activeBotConfiguration, workspace.returnOrigin !== null)`/`workspace.returnOrigin` (and `showModelBack={!workspace.returnOrigin}`); bottom nav reads `workspaceDestinationFor`; handlers become `workspace.openWorkspaceDestination(...)`, `workspace.backOr(...)`, `workspace.exitToReturnOrigin(...)`, `workspace.closeToRoster()` — capabilities/cron keep their `'sessions'` exit fallback, settings the `'roster'` default. `openAgent`, `openSettingsFrom`, and the cron `onOpenSession` call `workspace.clearReturn()` before switching (today's `clearMenuReturn` at app.tsx:177, 230, 354 — without it a stale returnOrigin survives on the roster and mislabels back labels or reopens the menu on the next root exit). `SessionsMenu` receives `onDismissRequest={workspace.dismissMenu}`. `backFromForeground` keeps its full branch tree (group-room pop-or-roster, sessions→roster, model surface with returnOrigin → exit, generic pop-or-exit — reading `workspace.returnOrigin` for the model branch), delegating to `closeToRoster`/`exitToReturnOrigin`/`backOr`; `onDismissForeground` keeps its swipe reset to the roster.
-- **`sessions-menu.tsx`** — imports `WorkspaceMenuIntent` from the module; its onSelect becomes `if (destination === 'sessions' || actionPendingRef.current) return; onDismissRequest(workspaceMenuIntent(destination))` — the sessions no-op precedes the pending guard, and the model/tab intents keep `navigate`/`navigateModel`'s pending guard exactly as today (dropping it would dismiss the menu mid-action). The menu's other intent emitters (identity click, session-row open, post-resume, requestClose, edge swipe) are unchanged.
-- **`bot-workspace-navigation.tsx`** — derives its list from `WORKSPACE_DESTINATIONS` (id + label) over a local icon map; `BotWorkspaceDestination` becomes an alias of `WorkspaceDestination`.
-- **`pwa/policy.ts`** — imports `isAppShellScreenPath` and ORs it with the unchanged `/session/...` deep-link rule; the rest of the policy is unchanged. The SW bundle chain stays DOM-free: `sw.ts → policy.ts → workspace-navigation.ts → routes.ts + navigation-store.ts` (nanostores, no React or app code). The Playwright fixture server (`client/e2e/server.mjs:145-147`) retains its separate app-shell regex, including `/session`, and must be updated separately when a new served head is added.
-- **Screens** — untouched: they keep `route` + `onNavigate`/`onBack` props and their `~/navigation/routes` type imports.
+Add a provider adapter factory beside the provider OAuth route vocabulary.
 
-## Why this shape (design-it-twice)
+```ts
+export interface ProviderOAuthContext {
+  flow: 'device_code' | 'pkce'
+  providerId: string
+  sessionId: string
+}
 
-Three interfaces were designed in parallel. All converged on the same seam — a DOM-free core plus one React hook, screens staying prop-bound — and differed in genericity:
+export function createProviderOAuthAdapter(
+  settings: SettingsApi,
+  provider: OAuthProvider
+): OAuthFlowAdapter<ProviderOAuthContext>
+```
 
-- **Minimal interface** (1–3 entry points): cleanest seam, but left the exit/back verb choreography half in `app.tsx`.
-- **Declarative registry** (per-destination metadata, parse, action): buys one-line destination additions for screens that mostly don't exist; honest self-verdict: over-engineering for a five-tab app. Only its static vocabulary-table idea earns its keep.
-- **Common-caller-first**: same two-file seam, plus the hook owning the back/exit verbs so `app.tsx`'s refs and closures leave entirely; screens untouched.
+Start mapping:
 
-Chosen: the hybrid — the minimal design's file shape and shared head table, the common-caller design's ownership of the return-origin and back policy, the registry design's static workspace table only. The workspace table is intentionally distinct from `MOBILE_TABS`; it does not provide automatic registration. No runtime registration machinery: with four static destinations, a registration API would be a shallow module's interface ahead of its implementation. One adapter justifies no seam; today there is exactly one SW consumer and one app consumer of the production head vocabulary, so they share the table without a port.
+- call `settings.oauthStart(provider.id, signal)`;
+- require `session_id.trim()` to be non-empty before any poll can use it, but retain the original nonblank value because the handle is opaque;
+- use the response discriminant, not `provider.flow`, for the actual run: PKCE maps `auth_url` to `authorizationUrl`, `userCode` to `null`, and phase to `waiting`; device code maps `verification_url`, `user_code`, and phase `waiting`;
+- retain `provider.id`, the original `session_id`, and the response flow kind in context;
+- pass URL strings to `PlatformActions` unchanged. URL scheme, credentials, and parse validation remain in `validatedExternalURL`, and a rejected opener remains nonfatal.
 
-## Decisions (grilling rounds, self-answered)
+Poll mapping:
 
-1. **Module ownership** — route policy only; the store, deep links, and presentation stay put. *(chosen)*
-2. **Dependency category** — in-process; the SW bundle is a build-time constraint, handled by keeping the core DOM-free. *(chosen)*
-3. **SW drift** — preserve production behavior byte-for-byte via per-head flags (`parsable`/`served`/`legacy`); the shared table removes parser/SW head-list duplication, but parser branch grammar still needs positive vectors and the Playwright fixture regex remains separate. Tightening the allowlist is a future one-line change with a test to update, not a silent one here. *(chosen)*
-4. **Deletion-test failures** — `initial-navigation.ts` and `use-navigation-page-controller.ts` are absorbed and deleted. *(chosen)*
-5. **Behavior deltas** — none accepted. *(chosen)*
-6. **Naming** — "Workspace navigation" in `CONTEXT.md`, with the sessions-menu overlay named in the same entry. *(chosen)*
-7. **Test strategy** — replace, don't layer: module tests at the interface supersede the absorbed files' tests; `app-navigation.test.tsx` and `policy.test.ts` stay untouched as regression witnesses for their covered behavior. *(chosen)*
-8. **Back policy** — the hook owns the return-origin stack and the back verbs; roster/group policy (`backFromForeground`'s group-room branch, swipe-dismiss reset) stays in `app.tsx` because it is not workspace policy. *(chosen)*
-9. **Rollout** — one commit, sequenced in reviewable steps (below), tests green at each step. *(chosen)*
+- call `settings.oauthPoll(context.providerId, context.sessionId, signal)`;
+- `pending` → `waiting`;
+- `approved` → `approved`;
+- `denied` → `denied`;
+- `expired` → `expired`;
+- `error` → `error`;
+- copy `error_message` into `message` when present;
+- retain the exact start context, authorization URL, and user code on every poll state. Poll responses do not carry those fields, and the provider card needs them for reopen and device-code display.
 
-## Behavior preserved verbatim (known quirks included)
+Polling configuration remains 1,000 ms / 60 attempts / 5,000 ms ceiling. Timeout copy: `Provider authorization timed out. Start the connection again.`
 
-- History is never touched by runtime navigation: runtime routes stay in memory; cold-start screen URLs rewrite the document to `/` (`app.tsx:128-134`; menu verbs pinned no-history by `app-navigation.test.tsx:389-405` and `use-navigation-page-controller.test.tsx:17-28`, whose assertions move into the hook tests; the cold-start rewrite itself is pinned by e2e 'a screen URL is consumed as a cold-start input' and 'cold session deep links switch profile and normalize the URL').
-- The sessions-tab quirk: the header back label reads "Back to menu" while `back()` routes to the roster after an identity-click return. Preserved verbatim by the zero-change constraint; recorded here as a follow-up candidate once constraints loosen.
-- `openModelSettings` idempotence: an existing model-category stack top is kept, not reset.
-- The menu reopen-over-origin path (`exitDestination` with `returnTab !== null && returnStack !== null`) — already exercised: the witness asserts the menu reopens over the restored origin in the capabilities and model round trips, and e2e 'bot configuration destinations return to the sessions menu' walks it for all three destinations; the hook tests pin it at the interface level.
+### Memory adapter in `features/settings/settings-api.ts`
+
+```ts
+export interface MemoryOAuthContext {
+  provider: string
+}
+
+export function createMemoryOAuthAdapter(
+  settings: SettingsApi,
+  provider: string
+): OAuthFlowAdapter<MemoryOAuthContext>
+```
+
+Start and poll use one total mapping over the declared `MemoryProviderOAuthStatus` shape:
+
+- call `settings.startMemoryOAuth(provider, signal)` for start and `settings.memoryOAuthStatus(context.provider, signal)` for poll;
+- `connected === true` or `state === 'connected'` maps to `approved`, including a contradictory payload whose boolean is true but state is stale;
+- `state === 'error'` while not connected maps to `error` with `detail`;
+- `pending` and `idle` while not connected map to `waiting`;
+- authorization URL and user code remain `null`, context always retains the requested provider, and `detail` becomes the normalized message.
+
+The `idle` case is intentionally waiting only inside a run. The screen's ordinary status query may render idle before a run, but returning idle from post-start polling is not proof of approval. The current effect incorrectly treats every non-`pending`, non-`error` poll response as success. Likewise, a start response with `state: 'error'` currently enters polling. The adapter corrects both edge cases.
+
+Polling configuration remains 2,000 ms / 60 attempts / 10,000 ms ceiling. Timeout copy: `Memory provider authorization timed out. Start the connection again.`
+
+There is no cancel method in this adapter.
+
+### MCP adapter in `features/capabilities/mcp-api.ts`
+
+```ts
+export interface McpOAuthContext {
+  flowId: string
+  serverName: string
+}
+
+export function createMcpOAuthAdapter(
+  mcp: McpApi,
+  serverName: string
+): OAuthFlowAdapter<McpOAuthContext>
+```
+
+Start mapping:
+
+- call `mcp.auth(serverName, signal)`;
+- require `flow_id.trim()` to be non-empty, but retain the original nonblank value because the handle is opaque;
+- retain the requested `serverName` in context. It identifies the selected row and is not a poll handle, so a malformed or renamed wire `server_name` cannot redirect caller policy;
+- map nullable `authorization_url` exactly, without inventing an error;
+- `starting` and `authorization_required` → `waiting`;
+- preserve the visible distinction normalization would otherwise erase: `starting` has no message and uses the screen's existing `Starting authentication…` fallback; `authorization_required` carries `Authorize the server in your browser, then return to Hermes.` even when its URL is null;
+- `approved` → `approved`;
+- `error` → `error` with the wire error message.
+
+Poll mapping:
+
+- call `mcp.oauthStatus(context.flowId, signal)`;
+- map phases as above;
+- retain the exact start context and map the poll response's `authorization_url` exactly. A non-null URL returned by polling becomes available to the Open authorization button but is not auto-opened.
+
+Polling configuration remains 1,000 ms / 60 attempts / 5,000 ms ceiling. Timeout copy remains behaviorally equivalent to the current UI: `MCP authorization timed out. Start authentication again if needed.`
+
+Explicit remote cancellation remains `mcp.cancelOAuth(flowId)` in the screen.
+
+## Polling engine change
+
+Update `client/src/gateway/remote-action.ts`:
+
+```ts
+export interface RemoteActionOptions<T> {
+  // existing scheduling, completion, Scope, and signal fields...
+  poll: (signal: AbortSignal) => Promise<RemoteActionState<T>>
+  start: (signal: AbortSignal) => Promise<RemoteActionState<T>>
+  timeoutError?: (maxAttempts: number) => Error
+}
+```
+
+Delete the `gateway` option, remove the `GatewayPort` import, and invoke `start(controller.signal)` / `poll(controller.signal)`. Update `runGatewayAction` and engine tests to this narrower callback shape. Remove `GatewayApi.gateway` from `client/src/gateway/gateway-api.ts`; the repository-wide `.gateway` inventory shows no other `GatewayApi` consumer. `GatewayController.gateway` and the `GatewayProvider` prop are unrelated and stay unchanged.
+
+At the existing bounded-poll failure:
+
+```ts
+if (!complete(state)) {
+  throw options.timeoutError?.(maxAttempts)
+    ?? classifyGatewayError(new Error(`Remote action timed out after ${maxAttempts} polls.`))
+}
+```
+
+`runOAuthFlow` supplies:
+
+```ts
+new GatewayError(adapter.polling.timeoutMessage, {
+  code: 'OAUTH_TIMEOUT',
+  details: { maxAttempts: adapter.polling.maxAttempts },
+  kind: 'server',
+  retryable: false
+})
+```
+
+The default path must remain byte-for-byte equivalent in behavior for gateway actions and every non-OAuth caller.
+
+## Core implementation flow
+
+`runOAuthFlow` should follow this order:
+
+1. Capture `beginScopedTask()`.
+2. Define `active = true` and `isActive()` as `active`, caller signal not aborted when present, and captured Scope still current.
+3. Call `runRemoteAction` rather than implementing a new loop. Pass the caller signal directly; the engine already owns signal forwarding, listener removal, its effective controller, and timer cleanup.
+4. In the engine's `start` callback:
+   - call `adapter.start(signal)`;
+   - if inactive, return the state without publishing. The engine's post-start Scope assertion will turn it into a silent abort;
+   - publish the normalized state through `onUpdate`, then check activity again so a callback-triggered abort or Scope change cannot launch an external URL;
+   - only for an initial `waiting` state whose URL has non-whitespace content, launch the opener without awaiting it and pass the original URL. Start it through a promise chain so a synchronously throwing test adapter also becomes a rejection. Report that rejection only if `isActive()` still holds;
+   - return the normalized state to the engine immediately, so the opener cannot gate polling.
+5. Save the start context once. In the engine's `poll` callback:
+   - call `adapter.poll(startContext, signal)`;
+   - publish through `onUpdate` only if active;
+   - return the normalized state to the engine.
+6. Complete when phase is not `waiting`.
+7. Supply the adapter timing values, Scope predicate, caller signal, and OAuth timeout factory to `runRemoteAction`.
+8. After the engine resolves, set `active = false` before returning the terminal state. Return it only if the caller signal and captured Scope are still current. This also suppresses a later opener rejection.
+9. Catch errors:
+   - snapshot whether the caller signal and captured Scope are current, then set `active = false` so detached opener failures become silent;
+   - classify the value. Existing `GatewayError` identity is preserved;
+   - if its kind is `aborted`, the caller signal is aborted, or Scope is stale, resolve `undefined` silently;
+   - otherwise invoke `onError` using the pre-deactivation guard snapshot and resolve `undefined`. Do not call `isActive()` after setting `active = false`.
+10. Use a `finally` fallback to set `active = false` even if a caller callback throws.
+
+Do not add another `AbortController`, abort listener, retry loop, delay helper, or timer to `oauth-flow.ts`.
+
+## Screen migration
+
+### Provider screen
+
+Files:
+
+- `client/src/features/settings/settings-administration-screen.tsx`
+- `client/src/features/settings/settings-administration-screen.test.tsx`
+
+Changes:
+
+1. Replace raw `OAuthStartResponse` ownership with the selected `OAuthProvider` plus normalized `OAuthFlowState<ProviderOAuthContext>`. Selection exists while start is pending, but the card renders only after the adapter publishes normalized context, matching today's no-card start wait.
+2. Start `runOAuthFlow` from the Connect handler. Keep one run active per screen: disable all provider Connect buttons until the run reaches a terminal state, fails, or is cancelled. A ref guard prevents a second synchronous click before React commits the busy state.
+3. Store that run's abort controller in a ref. Abort it on screen/card unmount, Scope reset, explicit cancel, and defensively before assigning a replacement controller.
+4. Use `createProviderOAuthAdapter(settings, provider)`.
+5. Inject `url => platformActions.openExternal(url)`.
+6. Publish normalized state to the card. Render:
+   - provider name;
+   - user code when present;
+   - current normalized phase;
+   - Open provider only when the URL has non-whitespace content;
+   - device-code input only when `context.flow === 'device_code'`.
+7. Await `runOAuthFlow` and apply terminal caller policy once. On `approved`, close the card, clear the one-shot code, and refetch the provider list. On `denied`, `expired`, or `error`, keep the card and preserve the current error banner using normalized `message` with existing fallback copy. `onUpdate` only publishes card state; it does not duplicate terminal policy.
+8. If start fails before normalized context exists, report the classified error and clear the pending selection, matching today's absence of a card after start failure. An opener error is different: keep the active card and continue the run.
+9. Keep device-code submission in the card:
+   - snapshot the raw field revision, trim a separate submitted value, and no-op if it is empty;
+   - call `settings.oauthSubmit(context.providerId, context.sessionId, submittedValue)` through `useScopedTask`; this route remains profile-bound;
+   - after success or failure, clear only when the current raw field still equals the raw snapshot. This clears whitespace-padded submitted input without erasing newer user edits made while the request was in flight;
+   - approved submission aborts polling, then closes/refetches exactly like approved polling.
+10. Keep remote cancel in the caller:
+    - abort local polling first;
+    - clear the code before the request;
+    - call `settings.oauthCancel(context.sessionId)`;
+    - clear the code again after the request;
+    - keep the card/context and show the error when remote cancellation fails.
+11. Remove provider-specific imports of `beginScopedTask`, `runRemoteAction`, `useGatewayApi`, `OAuthStartResponse`, and `OAuthPollResponse` when no longer used elsewhere in the file.
+12. Remove mutable callback refs that existed only to protect the old polling effect. Keep only the run controller/ref guard and the revision-safe code ref needed by caller policy.
+
+### Memory settings
+
+Files:
+
+- `client/src/features/settings/memory-settings.tsx`
+- `client/src/features/settings/memory-settings.test.tsx`
+
+Changes:
+
+1. Replace `oauthPending` plus the polling `useEffect` with one normalized flow state and one abort-controller ref. Derive the pending display from `phase === 'waiting'`.
+2. `startOAuth` creates `createMemoryOAuthAdapter(settings, providerKey)` and calls `runOAuthFlow`. Abort and replace any existing controller before the run, though the waiting-state button remains disabled.
+3. `onUpdate` updates the card from normalized phase/message. Await the runner once for terminal policy: `approved` invalidates queries; `error` uses its detail/fallback; transport and timeout failures arrive through `onError`. Preserve the current unsupported-route copy, `This memory provider does not offer OAuth.`, when `error.kind === 'unsupported'`.
+4. Immediate `approved` completes without a poll.
+5. Any `approved` result, immediate or polled, invalidates:
+   - `statusKey`, the memory status query;
+   - a saved `oauthKey = useScopeKey('settings', ['memory', 'oauth', providerKey])`, which is also passed to `useScopedQuery`.
+
+   The current `[...statusKey, 'oauth', providerKey]` is not the query's key. The actual key places `oauth` under the `settings` domain before `providerKey`; pin both exact invalidations in the screen test.
+6. `error`, `denied`, or `expired` maps to the existing `oauthError` display. The memory adapter should normally emit only waiting, approved, or error.
+7. `chooseProvider` aborts the current local run and clears its normalized state/error before changing `selectedProvider`. The current effect instead cleans up and can restart against the newly selected provider because `oauthPending` stays true; never retarget one provider's flow to another provider's status route.
+8. `useScopeReset` aborts the active run and clears normalized flow state and errors. A separate unmount cleanup aborts as well.
+9. There is no Cancel button and no remote cancellation call.
+10. Remove screen imports of `beginScopedTask`, `runRemoteAction`, and `useGatewayApi`; other memory behavior does not use the raw Gateway API.
+
+### MCP screen
+
+Files:
+
+- `client/src/features/capabilities/mcp-screen.tsx`
+- new `client/src/features/capabilities/mcp-screen.test.tsx`
+
+Changes:
+
+1. Replace raw `McpOAuthFlow` screen state with `OAuthFlowState<McpOAuthContext>`.
+2. Replace the `authMutation` plus polling `useEffect` with `runOAuthFlow(createMcpOAuthAdapter(...))`.
+3. Keep one local `authBusy` flag plus a synchronous ref guard for all Auth buttons for the entire run, not just the start request. Clear them only while the captured Scope is current; `useScopeReset` clears them for the new Scope. This prevents two server rows from sharing one flow slot.
+4. The shared module auto-opens the initial nonblank URL. Keep the Open authorization button so users can reopen the latest URL, but hide it for null, empty, or whitespace-only values.
+5. Render normalized phase and message:
+   - waiting → adapter message or `Starting authentication…`; the adapter message preserves the authorization-required instruction even when no URL exists;
+   - approved → Authentication complete;
+   - error → adapter message or existing fallback.
+6. Delete timeout string matching. Display the `OAUTH_TIMEOUT` message supplied by the adapter.
+7. Explicit Cancel:
+   - abort local polling first;
+   - call `mcpApi.cancelOAuth(flow.context.flowId)` through the existing scoped mutation;
+   - clear flow state on success;
+   - keep the card and show the classified error on failure.
+8. Dismiss:
+   - abort local polling;
+   - clear local state;
+   - do not call the remote cancel route.
+9. `useScopeReset` aborts and clears the active flow and busy guard. A separate unmount cleanup aborts as well.
+10. Remove the OAuth-specific `runRemoteAction`, `useGatewayApi`, raw polling refs, and old effect. Keep `beginScopedTask`: the file currently calls it four times in non-OAuth editor route/callback branches.
 
 ## Test plan
 
-**New — public functions and hook methods are the test surface; the head table is test-only structural data:**
+Follow replace-don’t-layer testing. New tests at the OAuth flow interface own lifecycle behavior. Screen tests retain only UI policy that remains outside the module.
 
-- `navigation/workspace-navigation.test.ts`:
-  - parser vectors, superseding `screen-url.test.ts` (preserve every existing vector, including a positive bare `/sessions` case, the `/capabilities/mcp` section case, `/bot` rejection, `/session/*` rejection, malformed paths, cron/capabilities/settings branches, trailing-slash and encoded segments) plus `restoreWorkspacePath` apply/reject vectors from `initial-navigation.test.ts` (a supported `/settings/model` applies; an unknown path and a session deep link with `?profile=work` reject) plus `/` → true with the roster root applied, as today;
-  - after a non-roster stack is populated, every false `restoreWorkspacePath` vector leaves the active tab and all stacks untouched;
-  - title table: every `botWorkspaceRouteTitle` branch (cron detail/editor/blueprints, capabilities-section, capability-detail ids and prefixes, fallbacks);
-  - `workspaceDestinationFor` (tabs, model category, null);
-  - `narrowRoute`: matching routes pass through, while a foreign route falls back to the requested tab's root for capabilities, cron, and settings;
-  - `workspaceMenuIntent` mapping;
-  - `workspaceBackLabel` mapping (nested detail; the model-surface suppression of 'Back' when a return origin exists; menu-origin return; roster fallback);
-  - `isAppShellScreenPath`: parseable heads, legacy `bot`/`navigation`, unknown rejection, malformed subpaths under served heads still allowed (`/group/a/b`, `/sessions/x`), `/session/…` still rejected;
-  - head-table invariants: an explicit valid-path vector for every current parsable head parses successfully and is served; every legacy head is served but unparsable;
-  - a DOM-free guard: direct import specifiers stay within sibling navigation modules or `~/navigation/*` (a source scan, not a transitive bundle proof; the production build is also required).
-- `navigation/use-workspace-navigation.test.tsx`:
-  - latch: idempotent open, no-op close when closed, StrictMode double-mount;
-  - zero history calls across every verb;
-  - `dismissMenu` intent policy: origin-equality short-circuits (tab and model), return-origin stash, non-origin destinations;
-  - `exitToReturnOrigin`: stack restore via `applyPathState`, menu reopen + origin recapture, fallback when no return origin;
-  - `openWorkspaceDestination` mapping (sessions→menu, model idempotence, cron/capabilities reset+select);
-  - `backOr` pop-or-fallback; `clearReturn` clears origin and stack as a pair without navigating; `closeToRoster`.
+### 1. Polling engine tests
 
-**Deleted (replace, don't layer):** `screen-url.test.ts`, `initial-navigation.test.ts`, `use-navigation-page-controller.test.tsx` — superseded by the module tests above.
+Update `client/src/gateway/remote-action.test.ts` first.
 
-**Untouched:** `app-navigation.test.tsx` (the regression witness — must pass unchanged), `navigation-store.test.ts`, `navigation/deep-links.test.ts`, `native/deep-links.test.ts`, `pwa/policy.test.ts` (pins the legacy heads).
+Update every direct engine test to omit the dummy `MemoryGateway` and use `start(signal)` / `poll(signal)`. Keep `MemoryGateway` only in `runGatewayAction` route tests.
 
-Known unchanged gap: the settings component tests cover administration-screen behavior, but no test drives `SettingsScreen`'s `onNavigate` into a settings-administration route. The `/settings/profiles` parser case is not UI-navigation coverage.
+Add tests that:
 
-## File-by-file changes
+- a supplied `timeoutError` Error instance is thrown unchanged after exactly the configured number of polls, and the factory receives that bound once;
+- the existing generic timeout message, classified kind (`network`), and retryability remain unchanged when no factory is supplied;
+- cancellation during backoff still leaves no timer when a timeout factory exists.
 
-| File | Change |
-|---|---|
-| `src/navigation/workspace-navigation.ts` | **new** — core interface + absorbed parser, head table, titles, intents |
-| `src/navigation/use-workspace-navigation.ts` | **new** — hook: latch, origin capture, dismiss policy, back verbs |
-| `src/navigation/workspace-navigation.test.ts` | **new** |
-| `src/navigation/use-workspace-navigation.test.tsx` | **new** |
-| `src/navigation/screen-url.ts` | **deleted** — parser absorbed, private |
-| `src/navigation/initial-navigation.ts` | **deleted** — deletion-test failure |
-| `src/navigation/use-navigation-page-controller.ts` | **deleted** — latch absorbed |
-| `src/navigation/screen-url.test.ts`, `initial-navigation.test.ts`, `use-navigation-page-controller.test.tsx` | **deleted** — superseded |
-| `src/app.tsx` | title maps, refs, latch handler, `openNavigationPage`/destination selection, `openDestination`/`openModelSettings`/`exitDestination`/`backToRoster`/`clearMenuReturn`/`goBackOr`/`routeForCapabilities`/`routeForCron`/`routeForSettings`/`activeBotConfigurationDestination`/`botWorkspaceRouteTitle` leave; `routeForGroupRoom` stays with the roster/group policy; module verbs and queries replace them (about 130 lines out) |
-| `src/components/sessions-menu.tsx` | intent import + onSelect mapping → `workspaceMenuIntent`, keeping the pending guard and the unconditional sessions no-op |
-| `src/components/bot-workspace-navigation.tsx` | destinations derived from `WORKSPACE_DESTINATIONS`; local icon map stays |
-| `src/pwa/policy.ts` | private regex → `isAppShellScreenPath` import |
-| `CONTEXT.md` | Workspace navigation + Sessions menu entries added (done — see *Side effects applied*) |
+Existing tests for retries, Scope predicates, late start cancellation, in-flight poll cancellation, and gateway-action behavior must remain green.
 
-## Steps
+### 2. OAuth flow interface tests
 
-1. **Land the core.** Add `workspace-navigation.ts` + its test (valid parser vectors for every current parsable head first, then rejection atomicity, titles/intents/table). No consumers yet. Checkpoint: `vitest run src/navigation/workspace-navigation.test.ts` green.
-2. **Land the hook.** Add `use-workspace-navigation.ts` + its test, replicating the latch and choreography semantics exactly (origin capture ordering, StrictMode, no-history). Checkpoint: hook tests green.
-3. **Bridge the SW.** `pwa/policy.ts` delegates to `isAppShellScreenPath`. Checkpoint: `pwa/policy.test.ts` is green and unchanged, and `npm run build` emits `dist/sw.js` with the DOM-free chain.
-4. **Migrate `app.tsx`.** Replace the maps, refs, latch, and helpers with the module. Checkpoint: `app-navigation.test.tsx` passes **unmodified**, serving as a regression witness for the covered app choreography.
-5. **Migrate the two components.** `sessions-menu.tsx` intents; `bot-workspace-navigation.tsx` destination list. Checkpoint: `app-navigation.test.tsx` still green.
-6. **Delete the absorbed files and their tests.** Checkpoint: full `tsc` + `vitest run` green; no dangling imports.
-7. **End-to-end verification.** `npx playwright test` — the whole suite, not just pwa-foundation: the cron-blueprints and cron-editor specs also drive the sessions menu; then a manual browser pass: cold-start URLs (`/cron/job-1/edit`, `/group/…`, `/settings/model`), menu round trip (open → Automations → back to menu → back), model destination round trip from both surfaces, offline reload of `/bot` still serving the shell, back labels in every surface.
+Create `client/src/gateway/oauth-flow.test.ts` using fake adapters, fake timers where needed, and a stub external opener. `MemoryGateway` is not part of this interface after the engine cleanup.
 
-## Risks
+Required cases:
 
-- **Menu reopen semantics** — the reopen-over-origin path is gesture-adjacent; the witness and e2e already exercise it, the hook tests pin it at the interface level, and step 7 exercises it by hand.
-- **StrictMode double-mount** — the latch must stay idempotent; the `isOpenRef` pattern carries over.
-- **SW bundle regression** — the source guard rejects direct React/app imports, while `npm run build` must emit `dist/sw.js`; neither is a transitive-dependency proof. The current worker includes the DOM-free `navigation-store`/nanostores chain and no React, so keep those dependencies DOM-free when they change.
-- **Silent policy drift returns** — the head table removes the production parser/SW head-list duplication, but it does not implement parser branch grammar and does not cover `client/e2e/server.mjs`'s fixture regex. Positive parser vectors, legacy-head assertions, the two title tables, and the intent mapping each need explicit tests; update the fixture separately for a new served head.
-- **Scope creep** — no runtime registration, no URI scheme changes, no new destinations. The registry-shaped extension is a deliberate non-goal for a five-tab app (YAGNI); revisit only when a second wave of destinations actually lands.
+1. **Immediate terminal states**
+   - start returns approved, denied, expired, or wire error in separate cases;
+   - each publishes once, does not open or poll, and returns unchanged;
+   - even a terminal start state carrying a URL does not invoke the opener.
 
-## Side effects applied
+2. **Waiting to approval ordering**
+   - start returns waiting with URL;
+   - start state publishes before opener runs;
+   - opener runs once;
+   - polls through waiting to approved;
+   - each state publishes in order;
+   - returns the approved context.
 
-- `CONTEXT.md` gained six appended domain terms in this commit: **Group chat**, **Group send engine**, **Group mirror**, **Known rooms**, **Workspace navigation**, and **Sessions menu**; no existing terms changed.
-- The previous `plan.md` (Group send engine, landed as e0705e9) was deleted to make room for this plan, as directed.
+3. **Missing or blank authorization URL**
+   - waiting states with `authorizationUrl` equal to `null`, `''`, and whitespace are valid separate cases;
+   - opener is not called;
+   - polling still completes.
+
+4. **Nonfatal, concurrent opener**
+   - a synchronous/early unsafe or popup rejection reaches `onError` as a classified error while Scope is current;
+   - polling continues and may approve;
+   - a never-settling opener does not delay the first poll or terminal return;
+   - an opener that rejects after terminal return is ignored.
+
+5. **Timeout classification**
+   - bounded waiting returns `undefined`;
+   - `onError` receives code `OAUTH_TIMEOUT`;
+   - error is non-retryable;
+   - details include `maxAttempts`;
+   - adapter timeout copy is preserved.
+
+6. **Transport failure**
+   - start failure is classified and reported once;
+   - a non-retryable poll failure and a retryable poll failure after the engine's four total attempts (`maxNetworkErrors` default 3, then the fourth error escapes) are each reported once;
+   - passing an existing `GatewayError` through the engine/catch path preserves object identity.
+
+7. **Caller abort before start**
+   - start is not invoked;
+   - no update or error callback fires;
+   - result is undefined.
+
+8. **Caller abort after publication or during backoff**
+   - aborting from the initial `onUpdate` prevents opener and poll calls and resolves undefined;
+   - aborting during backoff prevents a later poll;
+   - no update or error callback fires after abort, and no timer remains.
+
+9. **Scope changes after start**
+    - cover a connection-only change, a profile-only change, and switch-away-then-back to the original pair while a poll is pending. The generation must make the last case stale too;
+    - each late result does not publish, no error callback fires, and result is undefined.
+
+10. **Scope/abort while opener is pending**
+    - reject a pending opener after a Scope change and, separately, after caller abort;
+    - neither rejection reaches `onError` in the next Scope or after cancellation.
+
+11. **Engine-owned cleanup**
+    - terminal completion and abort leave no polling timer. Listener removal and effective-controller abortion stay pinned in `remote-action.test.ts`; OAuth tests must not inspect or recreate that implementation detail.
+
+Test observable behavior only. Do not inspect private helper state.
+
+### 3. Adapter tests
+
+Extend `client/src/features/settings/settings-api.test.ts`:
+
+- provider PKCE start maps URL, waiting phase, and context;
+- provider device-code start maps verification URL and user code;
+- provider poll maps every status and error message;
+- missing, empty, and whitespace-only provider session ids reject before polling; a nonblank opaque id is retained byte-for-byte;
+- provider start and submit stay profile-bound while poll and cancel remain unscoped; pin encoded provider/session paths as the current route methods require;
+- memory `connected: true` and `state: 'connected'` each map approved;
+- memory pending and idle map waiting while disconnected;
+- memory error preserves detail, but a contradictory connected+error payload maps approved;
+- memory start and status paths remain profile-bound according to existing route behavior;
+- polling constants and exact timeout copy are pinned.
+
+Extend `client/src/features/capabilities/mcp-api.test.ts`:
+
+- MCP start maps optional URL and context;
+- `starting` and `authorization_required` map waiting while preserving the current distinct user instructions, including authorization-required with a null URL;
+- approved and error map terminal states;
+- missing, empty, and whitespace-only flow ids reject; a nonblank opaque id is retained byte-for-byte;
+- context keeps the requested server name even if the response's `server_name` differs;
+- profile-bound auth start plus unscoped poll and cancellation paths are pinned, including encoded names/ids;
+- a URL first returned by poll is mapped for caller reopen without changing context;
+- polling constants and exact timeout copy are pinned.
+
+Do not duplicate generic polling tests in adapter suites.
+
+### 4. Provider screen tests
+
+Extend `settings-administration-screen.test.tsx` with a focused provider render helper and mocked external opener.
+
+Cover:
+
+- Connect starts the adapter and displays device code/state.
+- Approval closes the card and refetches provider status.
+- Device-code submit sends the correct provider/session/code.
+- The one-shot field clears after successful and failed submission when unchanged, including whitespace-padded input; a newer edit made during the request is retained.
+- Approved submission aborts the polling run before closing/refetching.
+- Cancel aborts local polling before the unscoped delete request and clears the code before and after failure. A failed delete keeps the card.
+- a second provider Connect click while one run is active is rejected by the busy/ref guard;
+- Connection change, Profile change, and away-then-back suppress late provider effects.
+- Start failure leaves no card; opener failure renders an error but leaves the flow card active and polling.
+
+Keep these as caller-policy tests. Poll timing and retry belong to `oauth-flow.test.ts`.
+
+### 5. Memory screen tests
+
+Extend `memory-settings.test.tsx`:
+
+- immediate connected start never polls and refreshes status;
+- pending start polls to connected and updates the card;
+- start error terminates without polling; post-start idle remains waiting rather than being treated as approval;
+- approval invalidates the exact saved OAuth key and memory status key;
+- timeout renders the adapter-specific message;
+- selecting another memory provider aborts the old run and never polls the new provider under the old authorization;
+- connection change, Profile change, away-then-back, and unmount abort without an error banner;
+- no cancellation request is made.
+
+Retain existing configuration and named-profile gate tests unchanged.
+
+### 6. MCP screen tests
+
+Create `mcp-screen.test.tsx`:
+
+- Auth starts a flow and exposes the waiting card;
+- null, empty, and whitespace-only authorization URLs neither call the opener nor render the reopen button, and still poll;
+- approval renders Authentication complete;
+- `OAUTH_TIMEOUT` copy renders without string inspection in the screen;
+- Cancel aborts and calls the unscoped delete route;
+- Dismiss aborts without calling delete;
+- a second Auth click while one run is active is rejected by the busy/ref guard;
+- connection change, Profile change, and away-then-back suppress a late result.
+
+Use `MemoryGateway` and a QueryClient consistent with nearby screen tests.
+
+### 7. Regression and build checks
+
+Run from `client/` in this order:
+
+```bash
+npm test -- src/gateway/remote-action.test.ts src/gateway/gateway-api.test.ts src/gateway/oauth-flow.test.ts
+npm test -- src/features/settings/settings-api.test.ts src/features/capabilities/mcp-api.test.ts
+npm test -- src/features/settings/settings-administration-screen.test.tsx src/features/settings/memory-settings.test.tsx src/features/capabilities/mcp-screen.test.tsx
+npm run typecheck
+npm test
+npm run build
+```
+
+The narrow checks should run first so interface failures are easy to locate. The full suite and production build verify that the new module does not leak React or native code into unrelated bundles.
+
+### 8. Browser verification status
+
+Browser verification is unavailable in the current repository fixture. `client/e2e/server.mjs` has no provider OAuth, memory OAuth, MCP auth, OAuth status, submit, or cancellation REST handlers; its unmatched `/api/*` branch returns `404 Fixture API route not found`. The MCP fixture row also lacks `auth: 'oauth'`, so it does not expose the Auth control. The only e2e MCP coverage navigates to the MCP screen.
+
+Do not add the missing fake route families to this refactor just to duplicate the direct module and screen tests. Record this known limitation in the implementation result. A manual pass against a real OAuth-capable gateway remains useful after implementation, but it is not an executable acceptance gate in this repository. Typechecking and JSDOM do not prove native popup behavior; `platform-actions.test.ts` remains the direct witness for credential-free HTTP(S) validation.
+
+## Implementation sequence
+
+### Phase 1: pin the polling engine extension
+
+1. Update engine tests to the signal-only callbacks and add failing cases for custom timeout creation and unchanged defaults.
+2. Remove the unused GatewayPort option/callback arguments and `GatewayApi.gateway` escape hatch.
+3. Add `timeoutError` to `RemoteActionOptions` and use it only at the existing attempt-bound branch.
+4. Run the narrow engine and gateway API tests.
+
+### Phase 2: build the deep module test-first
+
+1. Add `oauth-flow.test.ts` with all immediate terminal phases, waiting-to-approved ordering, missing URL, nonblocking/late opener cases, timeout, abort, and the full Scope-staleness taxonomy.
+2. Add `oauth-flow.ts` with the public types and `runOAuthFlow`.
+3. Reuse `runRemoteAction`; do not add polling helpers.
+4. Run engine and OAuth flow tests together.
+
+### Phase 3: add feature adapters
+
+1. Add provider and memory adapter tests to `settings-api.test.ts`.
+2. Implement their context types and factories in `settings-api.ts`.
+3. Add MCP adapter tests to `mcp-api.test.ts`.
+4. Implement its context type and factory in `mcp-api.ts`.
+5. Run both adapter suites.
+
+### Phase 4: migrate provider OAuth
+
+1. Add provider screen tests before changing production code.
+2. Replace raw start/poll state with selected-provider plus normalized state and one active-run guard.
+3. Preserve revision-safe device-code submit and cancel hygiene.
+4. Remove old polling imports/effect/refs.
+5. Run provider screen and adapter tests.
+
+### Phase 5: migrate memory OAuth
+
+1. Add immediate, pending, idle/error boundary, exact-invalidation, timeout, and stale-Scope tests.
+2. Replace the old effect with `runOAuthFlow`.
+3. Correctly invalidate the existing OAuth query key and memory status key after approval.
+4. Remove old polling imports and state.
+5. Run memory screen and adapter tests.
+
+### Phase 6: migrate MCP OAuth
+
+1. Create the focused MCP screen suite, including the one-active-run guard.
+2. Replace auth mutation plus polling effect with `runOAuthFlow`.
+3. Preserve reopen, Cancel, and Dismiss behavior.
+4. Remove timeout string matching and old polling imports.
+5. Run MCP screen and adapter tests.
+
+### Phase 7: remove superseded tests and dead code
+
+1. Delete old screen assertions that test polling internals now covered at the OAuth flow interface.
+2. Keep route-scope tests in feature API suites.
+3. Keep device-code secret hygiene, cache invalidation, explicit cancellation, and rendering tests in screen suites.
+4. Search for remaining direct OAuth use of `runRemoteAction`; none should remain outside `gateway/oauth-flow.ts`.
+5. Search for timeout message substring matching; none should remain.
+
+Suggested checks:
+
+```bash
+rg -n "runRemoteAction" client/src/features/settings client/src/features/capabilities
+rg -n "includes\(['\"]timed out|message.*timed out" client/src
+rg -n "beginScopedTask" client/src/features/settings/memory-settings.tsx client/src/features/capabilities/mcp-screen.tsx
+```
+
+The first two searches must return no matches. The third must return none for memory settings and exactly the import plus four non-OAuth calls in MCP editor branches.
+
+### Phase 8: full verification
+
+1. Run typecheck.
+2. Run all Vitest tests.
+3. Run the production build.
+4. Record browser flow verification as unavailable for the fixture, with the verified missing-route reason above.
+5. Inspect `git diff --check`.
+6. Confirm `CONTEXT.md` still describes the implemented ownership accurately. Update only if the final behavior differs; no new domain term is required by this plan.
+
+## File-by-file change list
+
+### New files
+
+- `client/src/gateway/oauth-flow.ts`
+  - normalized phases and state;
+  - adapter and options types;
+  - `runOAuthFlow` implementation;
+  - Scope, abort, opening, polling, error, and timeout ownership.
+
+- `client/src/gateway/oauth-flow.test.ts`
+  - complete interface-level lifecycle coverage.
+
+- `client/src/features/capabilities/mcp-screen.test.tsx`
+  - MCP caller policy and visible state coverage.
+
+### Modified files
+
+- `client/src/gateway/remote-action.ts`
+  - remove the unused GatewayPort pass-through;
+  - add the optional timeout error factory.
+
+- `client/src/gateway/remote-action.test.ts`
+  - signal-only callback migration;
+  - custom and default timeout behavior and engine-owned cleanup.
+
+- `client/src/gateway/gateway-api.ts`
+  - remove the now-unused public `gateway` escape hatch; request adapters still close over the same GatewayPort.
+
+- `client/src/features/settings/settings-api.ts`
+  - provider and memory adapter factories and context types.
+
+- `client/src/features/settings/settings-api.test.ts`
+  - adapter normalization and route-scope tests.
+
+- `client/src/features/capabilities/mcp-api.ts`
+  - MCP adapter factory and context type.
+
+- `client/src/features/capabilities/mcp-api.test.ts`
+  - adapter normalization, optional URL, and unscoped route tests.
+
+- `client/src/features/settings/settings-administration-screen.tsx`
+  - provider flow migrated to normalized state and shared lifecycle.
+
+- `client/src/features/settings/settings-administration-screen.test.tsx`
+  - provider submit, cancel, opener, approval, and secret-hygiene tests.
+
+- `client/src/features/settings/memory-settings.tsx`
+  - memory flow migrated; duplicated polling effect removed.
+
+- `client/src/features/settings/memory-settings.test.tsx`
+  - immediate/polled completion, timeout, and Scope tests.
+
+- `client/src/features/capabilities/mcp-screen.tsx`
+  - MCP flow migrated; duplicated polling effect and timeout string matching removed.
+
+### Expected unchanged files
+
+- `client/src/native/platform-actions.ts`
+  - remains the production external URL adapter.
+
+- `client/src/native/platform-actions.test.ts`
+  - continues to pin safe credential-free HTTP(S) URL validation.
+
+- `client/src/lib/types.ts` and `client/src/compat/hermes-types.ts`
+  - existing wire types remain authoritative.
+
+- `CONTEXT.md`
+  - already names the OAuth flow module and the intended ownership accurately.
+
+
+## Behavior matrix
+
+| Flow | Start | External URL | Poll | Terminal phases | Caller-owned action |
+|---|---|---|---|---|---|
+| Provider PKCE | profile-bound | supplied by start; validated by opener | unscoped by session id | approved, denied, expired, error | unscoped remote cancel |
+| Provider device code | profile-bound | verification URL supplied by start | unscoped by session id | approved, denied, expired, error | profile-bound submit, unscoped remote cancel, revision-safe code clearing |
+| Memory provider | profile-bound | none in the declared wire type | profile-bound status | approved, error; idle remains waiting during a run | exact query invalidation; no remote cancel |
+| MCP | profile-bound auth start | optional on start and poll | unscoped by flow id | approved, error | reopen latest URL, unscoped remote cancel, local-only dismiss |
+
+## Risks and mitigations
+
+### Risk: a shared adapter becomes a second wire vocabulary
+
+Mitigation: adapters live beside `SettingsApi` and `McpApi`. `oauth-flow.ts` imports neither feature module and sees only normalized state.
+
+### Risk: stale callbacks update a new Profile
+
+Mitigation: the module captures Scope once and guards every update, error, and return. Tests change both connection and Profile while work is pending.
+
+### Risk: abort and remote cancel become conflated
+
+Mitigation: the interface accepts only a local abort signal. Provider and MCP screens explicitly call remote cancellation routes after aborting local polling. Memory never invents a cancel request.
+
+### Risk: an opener blocks polling or rejects after the flow is over
+
+Mitigation: publish start state first, launch without awaiting, and guard the rejection with the run's active flag plus Scope/signal checks. Tests use both never-settling and late-rejecting opener promises.
+
+### Risk: timeout customization changes non-OAuth actions
+
+Mitigation: `timeoutError` is optional. Existing default behavior and all `runGatewayAction` tests stay unchanged.
+
+### Risk: device codes linger in state
+
+Mitigation: keep device-code submission and cancellation in the provider caller, retain revision-safe clearing, and add both success and failure tests. Do not put submitted codes in adapter context, stores, query cache, logs, or error details.
+
+### Risk: a memory flow is retargeted when selection changes
+
+Mitigation: bind the adapter and invalidation keys at start, and make `chooseProvider` abort and clear the current run before switching. A screen test proves the new provider is not polled under the old run.
+
+### Risk: two flow runs overlap in one Scope
+
+Mitigation: provider and MCP use a busy state plus synchronous ref guard for their single flow slot; memory already disables its only start button while waiting. Each start aborts any controller left by a prior settled run before assigning the new one. Screen tests prove a second start is rejected rather than inventing multi-flow state.
+
+### Risk: the shared module duplicates engine cancellation
+
+Mitigation: callers own one controller and `runRemoteAction` owns the effective controller, listener, and timer. `runOAuthFlow` passes the signal through and adds no controller or timer.
+
+## Acceptance criteria
+
+The refactor is complete when all of the following are true:
+
+- `client/src/gateway/oauth-flow.ts` exists and matches the ownership in `CONTEXT.md`.
+- Provider, memory, and MCP screens no longer call `runRemoteAction` directly for OAuth.
+- The OAuth flow module is the only OAuth caller of the generic polling engine.
+- All three feature adapters return the normalized phase union; provider exercises all five phases, while memory and MCP emit only phases supported by their wire unions.
+- Feature route paths and profile/unscoped behavior remain unchanged.
+- External URLs still pass through `PlatformActions.openExternal` and its URL validation.
+- Missing MCP authorization URLs remain valid.
+- Opener failures do not stop polling.
+- Scope changes and local aborts produce no stale updates or error banners.
+- Provider device-code inputs clear after submit and cancel, including failure paths, without erasing a newer edit made during an in-flight submit.
+- Provider and MCP explicit cancellation still call their existing unscoped routes.
+- Memory authorization never calls a cancellation route.
+- MCP no longer matches timeout error text.
+- OAuth timeout errors have code `OAUTH_TIMEOUT` and are non-retryable.
+- Existing generic remote-action scheduling and default timeout behavior are unchanged for non-OAuth callers; its unused GatewayPort parameter is gone.
+- `GatewayApi` no longer exposes a transport solely for the polling engine.
+- A pending external opener cannot delay polling, and late opener errors cannot land after terminal completion, abort, or Scope change.
+- Direct module tests, adapter tests, and caller-policy screen tests pass.
+- `npm run typecheck`, `npm test`, and `npm run build` pass.
+- Browser verification is recorded as unavailable because the checked-in fixture has none of the required OAuth REST routes.
+- No unrelated files are reformatted or changed.
+
+## Side effects and repository safety
+
+- This root `plan.md` replaces the previous Workspace navigation plan in the working-tree diff.
+- No ADR conflicts exist because the repository has no `docs/adr/` directory.
+- No `CONTEXT.md` edit is needed. The OAuth flow term and ownership already exist.
+- The pre-existing user modification in `client/src/navigation/workspace-navigation.test.ts` is unrelated and must remain untouched during implementation.
