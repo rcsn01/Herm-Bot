@@ -1,7 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
-import { setEngineTransport } from './group-runtime'
 import {
   assignLegacyThreads,
   groupChatGatewayJsonSize,
@@ -11,10 +10,6 @@ import {
   mergeGroupChatSyncSnapshots,
   mergeRemoteGroupChatSnapshotIntoRooms,
   normalizeGroupChatSyncSnapshot,
-  pullGroupChatState,
-  scheduleGroupChatSync,
-  startGroupChatSync,
-  stopGroupChatSync,
   type GroupChatSyncSnapshot
 } from './groups-sync'
 import type { GroupMessage } from './group-model'
@@ -42,8 +37,6 @@ function room(overrides: Partial<GroupChatRoom> = {}): GroupChatRoom {
 beforeEach(() => {
   localStorage.clear()
   replaceGroupChats({})
-  stopGroupChatSync()
-  startGroupChatSync()
 })
 
 describe('sizing', () => {
@@ -119,12 +112,23 @@ describe('sync snapshot', () => {
 })
 
 describe('normalize', () => {
-  it('lifts v1/v2 name-keyed snapshots to the v3 shape', () => {
+  it('lifts v1 name-keyed snapshots without giving wall-clock tombstones a revision', () => {
     const legacy = { version: 1, rooms: { Old: { log: [userEntry('hi')] } }, deleted: { Gone: 123 } }
     const norm = normalizeGroupChatSyncSnapshot(legacy as unknown as GroupChatSyncSnapshot)
     expect(norm.rooms['name:Old']?.name).toBe('Old')
     // v1 tombstones carry wall-clock ms and must not outrank revisions.
     expect(norm.deleted?.['name:Gone']).toBe(0)
+  })
+
+  it('lifts v2 name-keyed snapshots with revisioned tombstones', () => {
+    const legacy = {
+      version: 2,
+      rooms: { Old: { log: [userEntry('hi')] } },
+      deleted: { Gone: 9 }
+    }
+    const norm = normalizeGroupChatSyncSnapshot(legacy as unknown as GroupChatSyncSnapshot)
+    expect(norm.rooms['name:Old']?.name).toBe('Old')
+    expect(norm.deleted?.['name:Gone']).toBe(9)
   })
 })
 
@@ -320,92 +324,5 @@ describe('legacy threads', () => {
   it('keeps explicit threads untouched', () => {
     const log = [userEntry('a', 0, 't1'), memberEntry('b', 'x', 1, 't2')]
     expect(assignLegacyThreads(log).every((entry, i) => entry.thread === log[i].thread)).toBe(true)
-  })
-})
-
-describe('flush job', () => {
-  it('pulls the remote snapshot into rooms', async () => {
-    setEngineTransport(async method => {
-      if (method === 'profiles.list') {
-        return {
-          profiles: [
-            {
-              name: 'default',
-              ui_meta: {
-                'hermes-bots-groups': {
-                  version: 3,
-                  rooms: { 'name:Pulled': { name: 'Pulled', revision: 2, log: [userEntry('from mirror')] } }
-                }
-              },
-              ui_meta_revisions: { 'hermes-bots-groups': 2 }
-            }
-          ]
-        }
-      }
-      return {}
-    })
-    const pulled = await pullGroupChatState()
-    expect(pulled).toBe(true)
-    expect($groupChats.get().Pulled.log[0].text).toBe('from mirror')
-    expect($groupChats.get().Pulled.syncRevision).toBe(2)
-  })
-
-  it('writes through the CAS protocol with read-back, retrying on revision races', async () => {
-    vi.useFakeTimers()
-    let revision = 3
-    let writes = 0
-    let stale = true
-    setEngineTransport(async (method, params) => {
-      if (method === 'profiles.list') {
-        return {
-          profiles: [
-            {
-              name: 'default',
-              ui_meta: { 'hermes-bots-groups': { version: 3, rooms: {}, deleted: {} } },
-              ui_meta_revisions: { 'hermes-bots-groups': revision }
-            }
-          ]
-        }
-      }
-      if (method === 'profiles.configure') {
-        writes += 1
-        const expected = (params?.ui_meta_expected_revisions as Record<string, number>)?.['hermes-bots-groups']
-        expect(expected).toBe(3)
-        if (stale) {
-          // Another client raced ahead while the write was in flight: the
-          // acknowledged revision does not match writeRevision → the read-back
-          // check fails and the job retries.
-          revision = expected + 1
-          stale = false
-          return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots-groups': expected } } }
-        }
-        revision = expected + 1
-        return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots-groups': revision } } }
-      }
-      return {}
-    })
-
-    replaceGroupChats({ Room: room({ log: [userEntry('hi')] }) })
-    scheduleGroupChatSync({ changedRooms: ['Room'] })
-    await vi.advanceTimersByTimeAsync(400)
-    // First flush: write accepted but revision read-back shows a race → retry
-    // after backoff with fresh remote state.
-    expect(writes).toBe(1)
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(writes).toBe(2)
-    vi.useRealTimers()
-  })
-
-  it('never publishes an empty snapshot unless a disband allows it', async () => {
-    vi.useFakeTimers()
-    let writes = 0
-    setEngineTransport(async method => {
-      if (method === 'profiles.configure') writes += 1
-      return {}
-    })
-    scheduleGroupChatSync({})
-    await vi.advanceTimersByTimeAsync(400)
-    expect(writes).toBe(0)
-    vi.useRealTimers()
   })
 })

@@ -8,6 +8,7 @@ import {
   $groupNeedsYou,
   $groupPrompts,
   groupRoomsView,
+  openGroupRoom,
   sendToGroupChat,
   startGroupEngine,
   stopGroupEngine,
@@ -15,7 +16,6 @@ import {
   useGroupRooms
 } from './group-engine'
 import { replaceGroupChats, updateGroupChat, type GroupChatRoom } from './group-store'
-import { pullGroupChatState } from './groups-sync'
 import { groupEngineRequest } from './group-runtime'
 import type { GroupMember, GroupMessage, GroupRoom } from './group-model'
 
@@ -113,9 +113,9 @@ describe('lifecycle', () => {
     }
     expect(snapshot.version).toBe(3)
     expect(Object.keys(snapshot.rooms)).toContain('id:r-1')
-    // A plain pull (the flushed room is no longer "changed") then confirms
-    // the read-back merge advanced the room's sync revision to the write.
-    await pullGroupChatState()
+    // A plain pull through the engine facade confirms the read-back revision.
+    openGroupRoom({ key: 'id:r-1', log: [], members: [{ name: 'ada' }], name: 'Room', roomId: 'r-1' })
+    await vi.waitFor(() => expect($groupChats.get().Room.syncRevision).toBe(1))
     expect($groupChats.get().Room.syncRevision).toBe(1)
     // stop clears pending work and the transport
     stopGroupEngine()
@@ -132,6 +132,115 @@ describe('lifecycle', () => {
     const stopped = $groupChats.get().Room
     expect(stopped.running).toBe(false)
     expect(stopped.epoch).toBe(6)
+  })
+
+  it('holds engine writes behind the initial pull', async () => {
+    vi.useFakeTimers()
+    let releaseInitial!: (value: unknown) => void
+    const initial = new Promise<unknown>(resolve => { releaseInitial = resolve })
+    let written: unknown = null
+    let revision = 0
+    let configures = 0
+    const transport = async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'profiles.list') {
+        if (revision === 0 && written === null) return initial
+        return {
+          profiles: [{
+            name: 'default',
+            ui_meta: written ? { 'hermes-bots-groups': written } : {},
+            ui_meta_revisions: { 'hermes-bots-groups': revision }
+          }]
+        }
+      }
+      if (method === 'profiles.configure') {
+        configures += 1
+        written = (params?.ui_meta as Record<string, unknown>)['hermes-bots-groups']
+        revision += 1
+        return { applied: { ui_meta: true, ui_meta_revisions: { 'hermes-bots-groups': revision } } }
+      }
+      return {}
+    }
+
+    startGroupEngine(transport)
+    updateGroupChat('Room', current => ({
+      ...current,
+      roomId: 'r-barrier',
+      members: [{ name: 'ada' }],
+      log: [userEntry('queued')]
+    }))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(configures).toBe(0)
+
+    releaseInitial({ profiles: [{ name: 'default', ui_meta: {}, ui_meta_revisions: {} }] })
+    await vi.waitFor(() => expect(configures).toBe(1))
+  })
+
+  it('isolates a stopped engine pull from the next engine lifecycle', async () => {
+    let releaseOld!: (value: unknown) => void
+    const oldRead = new Promise<unknown>(resolve => { releaseOld = resolve })
+    let oldCalls = 0
+    const oldTransport = async (method: string) => {
+      if (method === 'profiles.list') {
+        oldCalls += 1
+        return oldRead
+      }
+      return {}
+    }
+    const nextTransport = async (method: string) => {
+      if (method === 'profiles.list') {
+        return {
+          profiles: [{
+            name: 'default',
+            ui_meta: {
+              'hermes-bots-groups': {
+                version: 3,
+                rooms: { 'name:Next': { name: 'Next', revision: 1, log: [userEntry('next')] } }
+              }
+            },
+            ui_meta_revisions: { 'hermes-bots-groups': 1 }
+          }]
+        }
+      }
+      return {}
+    }
+
+    startGroupEngine(oldTransport)
+    await vi.waitFor(() => expect(oldCalls).toBe(1))
+    stopGroupEngine()
+    startGroupEngine(nextTransport)
+    await vi.waitFor(() => expect($groupChats.get().Next).toBeTruthy())
+
+    releaseOld({
+      profiles: [{
+        name: 'default',
+        ui_meta: {
+          'hermes-bots-groups': {
+            version: 3,
+            rooms: { 'name:Old': { name: 'Old', revision: 1, log: [userEntry('old')] } }
+          }
+        },
+        ui_meta_revisions: { 'hermes-bots-groups': 1 }
+      }]
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect($groupChats.get().Old).toBeUndefined()
+    expect($groupChats.get().Next).toBeTruthy()
+  })
+
+  it('tears down the old lifecycle on a repeated start', async () => {
+    const firstTransport = async () => ({})
+    replaceGroupChats({ Room: room({ epoch: 5, running: true }) })
+    startGroupEngine(firstTransport)
+
+    let secondRead!: (value: unknown) => void
+    const secondPending = new Promise<unknown>(resolve => { secondRead = resolve })
+    startGroupEngine(async method => method === 'profiles.list' ? secondPending : {})
+
+    expect($groupChats.get().Room).toMatchObject({ epoch: 6, running: false })
+    secondRead({ profiles: [{ name: 'default', ui_meta: {}, ui_meta_revisions: {} }] })
+    await Promise.resolve()
   })
 })
 

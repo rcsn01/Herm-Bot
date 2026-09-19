@@ -15,13 +15,18 @@ import { atom } from 'nanostores'
 
 import { $groupChats } from './group-store'
 
-export type GroupEngineRequest = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+export type GroupEngineRequest = (
+  method: string,
+  params?: Record<string, unknown>,
+  options?: { signal?: AbortSignal }
+) => Promise<unknown>
 
 let engineRequest: GroupEngineRequest | null = null
 
 /** The gateway controller installs its runtime here on connect and clears it
  *  on scope teardown — a profile switch must not leave turns firing at a dead
- *  transport. */
+ *  transport. The mirror captures its own adapter request instead of using
+ *  this mutable member-RPC slot. */
 export function setEngineTransport(request: GroupEngineRequest | null): void {
   engineRequest = request
 }

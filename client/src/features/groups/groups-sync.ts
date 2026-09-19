@@ -12,7 +12,7 @@
  */
 
 import type { GroupMember, GroupMessage } from './group-model'
-import { groupEngineRequest } from './group-runtime'
+import type { GroupEngineRequest } from './group-runtime'
 import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
 
 const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
@@ -39,6 +39,36 @@ export interface GroupChatSyncSnapshot {
   rooms: Record<string, GroupChatSyncRoom>
   updatedAt?: number
   version: number
+}
+
+export interface GroupMirrorRemoteState {
+  snapshot: GroupChatSyncSnapshot | null
+  revision: number
+  supportsCas: boolean
+}
+
+export interface GroupMirrorWriteResult {
+  applied: boolean
+  revision?: number
+}
+
+export interface GroupMirrorGateway {
+  read(signal: AbortSignal): Promise<GroupMirrorRemoteState>
+  write(
+    snapshot: GroupChatSyncSnapshot,
+    expectedRevision: number | undefined,
+    signal: AbortSignal
+  ): Promise<GroupMirrorWriteResult>
+}
+
+export interface GroupMirrorSchedule {
+  changedRooms?: string[]
+}
+
+export interface GroupMirror {
+  pull(): Promise<boolean>
+  schedule(options?: GroupMirrorSchedule): void
+  stop(): void
 }
 
 /** The wire size the gateway charges for JSON in its ui_meta budget: every
@@ -576,29 +606,71 @@ function trimLocalLog(log: GroupMessage[], watermarks: Record<string, number>, l
   return { log: log.slice(drop), watermarks: trimmed }
 }
 
-// --- flush job (read-merge-CAS-write with read-back) -------------------------
+// --- semantic gateway adapter and mirror lifecycle --------------------------
 
-interface SyncPending {
-  allowEmpty: boolean
-  changedRooms: string[]
-  deletedRooms: string[]
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-let disposed = false
-let inFlight = false
-let pending: SyncPending | null = null
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
-let retryTimer: ReturnType<typeof setTimeout> | null = null
-let retryCount = 0
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+/** Map the route-shaped profile protocol to the semantic mirror gateway. */
+export function createGroupMirrorGateway(transport: GroupEngineRequest): GroupMirrorGateway {
+  return {
+    async read(signal) {
+      const raw = await transport('profiles.list', { include_sessions: false }, { signal })
+      const result = isObjectRecord(raw) ? raw : null
+      const profiles = Array.isArray(result?.profiles) ? result.profiles : []
+      const profileValue = profiles.find(profile => isObjectRecord(profile) && profile.name === 'default')
+      const profile = isObjectRecord(profileValue) ? profileValue : null
+      const uiMeta = profile && isObjectRecord(profile.ui_meta) ? profile.ui_meta : null
+      const rawSnapshot = uiMeta?.[GROUP_CHAT_SYNC_META_KEY]
+      const snapshot = isObjectRecord(rawSnapshot) ? rawSnapshot as unknown as GroupChatSyncSnapshot : null
+      const revisions = profile && isObjectRecord(profile.ui_meta_revisions) ? profile.ui_meta_revisions : null
+      const revision = finiteNonNegativeNumber(revisions?.[GROUP_CHAT_SYNC_META_KEY]) ?? 0
+      const supportsCas = Boolean(profile && Object.prototype.hasOwnProperty.call(profile, 'ui_meta_revisions'))
+
+      return { snapshot, revision, supportsCas }
+    },
+
+    async write(snapshot, expectedRevision, signal) {
+      const params: Record<string, unknown> = {
+        name: 'default',
+        ui_meta: { [GROUP_CHAT_SYNC_META_KEY]: snapshot }
+      }
+      if (expectedRevision !== undefined) {
+        params.ui_meta_expected_revisions = { [GROUP_CHAT_SYNC_META_KEY]: expectedRevision }
+      }
+
+      const raw = await transport('profiles.configure', params, { signal })
+      const result = isObjectRecord(raw) ? raw : null
+      const applied = isObjectRecord(result?.applied) ? result.applied : null
+      const revisions = applied && isObjectRecord(applied.ui_meta_revisions) ? applied.ui_meta_revisions : null
+      const revision = finiteNonNegativeNumber(revisions?.[GROUP_CHAT_SYNC_META_KEY])
+
+      return revision === undefined ? { applied: applied?.ui_meta === true } : {
+        applied: applied?.ui_meta === true,
+        revision
+      }
+    }
+  }
+}
+
+interface SyncPending {
+  changedRooms: string[]
+}
+
 const FLUSH_DEBOUNCE_MS = 350
 const MAX_RETRIES = 8
 
 function mergePending(existing: SyncPending | null, incoming: SyncPending): SyncPending {
-  if (!existing) return incoming
   return {
-    allowEmpty: existing.allowEmpty || incoming.allowEmpty,
-    changedRooms: [...new Set([...existing.changedRooms, ...incoming.changedRooms])],
-    deletedRooms: [...new Set([...existing.deletedRooms, ...incoming.deletedRooms])]
+    changedRooms: [...new Set([
+      ...(existing?.changedRooms || []),
+      ...incoming.changedRooms
+    ])]
   }
 }
 
@@ -609,196 +681,202 @@ function syncPayloadEqual(left: GroupChatSyncSnapshot | null | undefined, right:
   )
 }
 
-async function readRemoteSnapshot(): Promise<{ snapshot: GroupChatSyncSnapshot | null; revision: number; supportsCas: boolean }> {
-  const result = (await groupEngineRequest('profiles.list', { include_sessions: false })) as {
-    profiles?: Array<Record<string, unknown>>
+export function createGroupMirror(gateway: GroupMirrorGateway): GroupMirror {
+  let stopped = false
+  let initialPullSettled = false
+  let initialPulls = 0
+  let inFlight = false
+  let activeJob: SyncPending | null = null
+  let pending: SyncPending | null = null
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  let retryCount = 0
+  // Pulls and flushes share one queue so an older remote read cannot publish
+  // after a newer write's read-back.
+  let operationQueue: Promise<void> | null = null
+  const controller = new AbortController()
+
+  const isCurrent = (signal: AbortSignal = controller.signal): boolean => !stopped && !signal.aborted
+
+  const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+    const queued = operationQueue
+    const result = queued ? queued.then(operation) : operation()
+    operationQueue = result.then(() => undefined, () => undefined)
+    return result
   }
-  const profile = (Array.isArray(result?.profiles) ? result.profiles : []).find(row => row?.name === 'default')
-  const uiMeta = (profile?.ui_meta ?? {}) as Record<string, unknown>
-  const snapshot = uiMeta[GROUP_CHAT_SYNC_META_KEY] as GroupChatSyncSnapshot | undefined
-  const supportsCas = Boolean(profile && Object.prototype.hasOwnProperty.call(profile, 'ui_meta_revisions'))
-  const revisions = (profile?.ui_meta_revisions ?? {}) as Record<string, unknown>
 
-  return {
-    snapshot:
-      snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? (snapshot as GroupChatSyncSnapshot) : null,
-    revision: Math.max(0, Number(revisions[GROUP_CHAT_SYNC_META_KEY] || 0)),
-    supportsCas
-  }
-}
+  const changedRoomsInFlight = (): string[] => [...new Set([
+    ...(activeJob?.changedRooms || []),
+    ...(pending?.changedRooms || [])
+  ])]
 
-/** Pull the shared room projection into this client before it publishes any
- *  local state — the receive half of the sync contract. */
-export async function pullGroupChatState(): Promise<boolean> {
-  const { snapshot } = await readRemoteSnapshot()
-  if (!snapshot) return false
+  const flush = async (): Promise<void> => {
+    if (stopped || !initialPullSettled || inFlight || retryTimer || !pending) return
 
-  const merged = mergeRemoteGroupChatSnapshotIntoRooms(snapshot, $groupChats.get(), {
-    preserveRooms: pending?.changedRooms || [],
-    deletedRooms: pending?.deletedRooms || []
-  })
-  replaceGroupChats(merged)
-  return true
-}
+    const job = pending
+    pending = null
+    activeJob = job
+    inFlight = true
+    const signal = controller.signal
 
-async function flushGroupChatSync(): Promise<void> {
-  if (disposed || inFlight || !pending) return
+    return enqueue(async () => {
+      if (!isCurrent(signal)) return
 
-  const job = pending
-  pending = null
-  inFlight = true
+      try {
+        const remoteState = await gateway.read(signal)
+        if (!isCurrent(signal)) return
 
-  try {
-    const remoteState = await readRemoteSnapshot()
-    const local = groupChatSyncSnapshot($groupChats.get())
-    const writeRevision = remoteState.revision + 1
+        const local = groupChatSyncSnapshot($groupChats.get())
+        const writeRevision = remoteState.revision + 1
+        const snapshot = mergeGroupChatSyncSnapshots(remoteState.snapshot, local, {
+          changedRooms: job.changedRooms,
+          writeRevision
+        })
 
-    const snapshot = mergeGroupChatSyncSnapshots(remoteState.snapshot, local, {
-      changedRooms: job.changedRooms,
-      deletedRooms: job.deletedRooms,
-      writeRevision
-    })
+        // Reconciliation can find the exact merged projection already stored at
+        // the gateway. Do not advance a revision just because the view reopened.
+        if (!job.changedRooms.length && syncPayloadEqual(snapshot, remoteState.snapshot)) {
+          if (remoteState.snapshot) {
+            // This flush already holds the operation queue; calling public pull()
+            // here would enqueue behind itself.
+            await runPull(false, signal)
+            if (!isCurrent(signal)) return
+          }
+          retryCount = 0
+          return
+        }
 
-    // Reconnect/startup reconciliation often discovers the gateway already
-    // holds the exact merged projection. Avoid advancing a revision merely
-    // because a view reopened.
-    if (
-      !(job.changedRooms || []).length &&
-      !(job.deletedRooms || []).length &&
-      syncPayloadEqual(snapshot, remoteState.snapshot)
-    ) {
-      if (remoteState.snapshot) {
-        await pullGroupChatState()
-      }
-      retryCount = 0
-      return
-    }
+        const result = await gateway.write(
+          snapshot,
+          remoteState.supportsCas ? remoteState.revision : undefined,
+          signal
+        )
+        if (!isCurrent(signal)) return
 
-    const configureParams: {
-      name: string
-      ui_meta: Record<string, GroupChatSyncSnapshot>
-      ui_meta_expected_revisions?: Record<string, number>
-    } = {
-      name: 'default',
-      ui_meta: { [GROUP_CHAT_SYNC_META_KEY]: snapshot }
-    }
+        if (result.applied !== true) {
+          throw new Error('Gateway rejected group chat ui_meta')
+        }
+        if (remoteState.supportsCas && result.revision !== writeRevision) {
+          throw new Error('Gateway did not advance group chat ui_meta revision')
+        }
 
-    if (remoteState.supportsCas) {
-      configureParams.ui_meta_expected_revisions = { [GROUP_CHAT_SYNC_META_KEY]: remoteState.revision }
-    }
+        const confirmedState = await gateway.read(signal)
+        if (!isCurrent(signal)) return
+        if (remoteState.supportsCas && confirmedState.revision < writeRevision) {
+          throw new Error('Group chat ui_meta revision missing after read-back')
+        }
 
-    const result = (await groupEngineRequest('profiles.configure', configureParams)) as {
-      applied?: { ui_meta?: boolean; ui_meta_revisions?: Record<string, number> }
-    }
+        if (confirmedState.snapshot) {
+          const merged = mergeRemoteGroupChatSnapshotIntoRooms(
+            confirmedState.snapshot,
+            $groupChats.get(),
+            { preserveRooms: changedRoomsInFlight() }
+          )
+          if (!isCurrent(signal)) return
+          replaceGroupChats(merged)
+        }
 
-    if (result?.applied?.ui_meta !== true) {
-      throw new Error('Gateway rejected group chat ui_meta')
-    }
-
-    if (
-      remoteState.supportsCas &&
-      Number(result?.applied?.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0) !== writeRevision
-    ) {
-      throw new Error('Gateway did not advance group chat ui_meta revision')
-    }
-
-    // Read-back: a gateway that accepted the write but did not persist it
-    // must not be trusted as the merged state's source of truth.
-    const confirmedState = await readRemoteSnapshot()
-
-    if (remoteState.supportsCas && confirmedState.revision < writeRevision) {
-      throw new Error('Group chat ui_meta revision missing after read-back')
-    }
-
-    if (confirmedState.snapshot) {
-      const merged = mergeRemoteGroupChatSnapshotIntoRooms(confirmedState.snapshot, $groupChats.get(), {
-        preserveRooms: job.changedRooms || [],
-        deletedRooms: job.deletedRooms || []
-      })
-      replaceGroupChats(merged)
-    }
-
-    retryCount = 0
-  } catch {
-    if (!disposed) {
-      retryCount += 1
-
-      if (retryCount > MAX_RETRIES) {
         retryCount = 0
-        return
-      }
+      } catch {
+        if (!isCurrent(signal)) return
 
-      pending = mergePending(pending, job)
-      if (!retryTimer) {
-        // Backoff ladder: 1s * 2^n, capped at 30s.
-        const delay = Math.min(30000, 1000 * 2 ** Math.min(retryCount - 1, 5))
-        retryTimer = setTimeout(() => {
-          retryTimer = null
-          void flushGroupChatSync()
-        }, delay)
+        retryCount += 1
+        if (retryCount > MAX_RETRIES) {
+          retryCount = 0
+          return
+        }
+
+        pending = mergePending(pending, job)
+        if (!retryTimer && typeof setTimeout === 'function') {
+          const delay = Math.min(30000, 1000 * 2 ** Math.min(retryCount - 1, 5))
+          retryTimer = setTimeout(() => {
+            retryTimer = null
+            if (isCurrent(signal)) void flush()
+          }, delay)
+        }
+      } finally {
+        if (!isCurrent(signal)) return
+        activeJob = null
+        inFlight = false
+        if (pending && !retryTimer) void flush()
+      }
+    })
+  }
+
+  const runPull = async (isInitialPull: boolean, signal: AbortSignal): Promise<boolean> => {
+    if (!isCurrent(signal)) return false
+
+    try {
+      const remoteState = await gateway.read(signal)
+      if (!isCurrent(signal) || !remoteState.snapshot) return false
+
+      const merged = mergeRemoteGroupChatSnapshotIntoRooms(
+        remoteState.snapshot,
+        $groupChats.get(),
+        { preserveRooms: changedRoomsInFlight() }
+      )
+      if (!isCurrent(signal)) return false
+      replaceGroupChats(merged)
+      return true
+    } catch (error) {
+      if (!isCurrent(signal)) return false
+      throw error
+    } finally {
+      if (isInitialPull) {
+        initialPulls -= 1
+        if (initialPulls === 0) {
+          initialPullSettled = true
+          if (isCurrent(signal)) void flush()
+        }
       }
     }
-  } finally {
+  }
+
+  const pull = (): Promise<boolean> => {
+    if (stopped) return Promise.resolve(false)
+
+    const isInitialPull = !initialPullSettled
+    if (isInitialPull) initialPulls += 1
+    const signal = controller.signal
+    const operation = enqueue(() => runPull(isInitialPull, signal))
+    return operation
+  }
+
+  const schedule = (options: GroupMirrorSchedule = {}): void => {
+    if (stopped || typeof setTimeout !== 'function') return
+
+    const snapshot = groupChatSyncSnapshot($groupChats.get())
+    if (Object.keys(snapshot.rooms).length === 0) return
+
+    pending = mergePending(pending, { changedRooms: options.changedRooms || [] })
+    if (!initialPullSettled) return
+
+    if (debounceTimer !== null) clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null
+      if (isCurrent()) void flush()
+    }, FLUSH_DEBOUNCE_MS)
+  }
+
+  const stop = (): void => {
+    if (stopped) return
+    stopped = true
+    controller.abort()
+
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer)
+      debounceTimer = null
+    }
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
+
+    pending = null
+    activeJob = null
+    retryCount = 0
     inFlight = false
-    if (pending && !retryTimer && !disposed) {
-      void flushGroupChatSync()
-    }
-  }
-}
-
-/** Debounced, pull-merge-write mirror publish. */
-export function scheduleGroupChatSync({
-  allowEmpty = false,
-  changedRooms = [],
-  deletedRooms = []
-}: { allowEmpty?: boolean; changedRooms?: string[]; deletedRooms?: string[] } = {}): void {
-  if (typeof setTimeout !== 'function') return
-
-  const snapshot = groupChatSyncSnapshot($groupChats.get())
-
-  // A freshly installed client has no local room cache. Publishing that
-  // empty state would erase a valid mirror produced elsewhere. Only an
-  // explicit final-room disband may clear the projection.
-  if (Object.keys(snapshot.rooms).length === 0 && !allowEmpty) {
-    return
   }
 
-  if (debounceTimer !== null) clearTimeout(debounceTimer)
-
-  pending = mergePending(pending, { allowEmpty, changedRooms, deletedRooms })
-
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null
-    void flushGroupChatSync()
-  }, FLUSH_DEBOUNCE_MS)
-}
-
-/** Tear down timers (scope teardown / profile switch). */
-export function stopGroupChatSync(): void {
-  disposed = true
-  pending = null
-  if (debounceTimer !== null) {
-    clearTimeout(debounceTimer)
-    debounceTimer = null
-  }
-  if (retryTimer !== null) {
-    clearTimeout(retryTimer)
-    retryTimer = null
-  }
-  retryCount = 0
-}
-
-/** Reactivate after a teardown (new gateway scope). */
-export function startGroupChatSync(): void {
-  disposed = false
-}
-
-/** A gateway swap invalidates any in-flight room drive: bump every room's
- *  epoch so running loops bail at their next member boundary. */
-export function handleGatewayTransition(): void {
-  const rooms = { ...$groupChats.get() }
-  for (const name of Object.keys(rooms)) {
-    rooms[name] = { ...rooms[name], epoch: (rooms[name].epoch || 0) + 1, running: false }
-  }
-  $groupChats.set(rooms)
+  return { pull, schedule, stop }
 }

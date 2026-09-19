@@ -296,6 +296,32 @@ describe('roster tap flow', () => {
     controller.dispose()
   })
 
+  it('forwards and aborts the Group mirror request signal', async () => {
+    let releaseProfiles!: (value: unknown) => void
+    const profiles = new Promise<unknown>(resolve => { releaseProfiles = resolve })
+    let mirrorSignal: AbortSignal | undefined
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-default' }))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('profiles.list', (_params, options) => {
+        mirrorSignal = options?.signal
+        return profiles
+      })
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.connect()
+    await vi.waitFor(() => expect(mirrorSignal).toBeDefined())
+    expect(mirrorSignal?.aborted).toBe(false)
+
+    controller.dispose()
+    expect(mirrorSignal?.aborted).toBe(true)
+    releaseProfiles({ profiles: [] })
+    await Promise.resolve()
+  })
+
   it('flags the profile switch while it is in flight and clears it afterwards', async () => {
     const controller = new GatewayController({} as never)
     let releaseConnect: (() => void) | null = null

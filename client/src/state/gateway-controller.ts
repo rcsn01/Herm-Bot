@@ -380,7 +380,7 @@ export class GatewayController {
    *  mirror writer (the initial pull happens BEFORE any local publish — the
    *  receive half of the sync contract). */
   private installGroupEngine() {
-    startGroupEngine((method, params) => this.runtime.rpc(method, params))
+    startGroupEngine((method, params, options) => this.runtime.rpc(method, params, options))
   }
 
   private subscribeRuntime() {

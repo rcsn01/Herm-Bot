@@ -1,823 +1,693 @@
-# Complete the OAuth flow module
+# Implementation plan: deepen the Group mirror wire protocol
 
-## Goal
+## Status
 
-Create the promised deep OAuth flow module at `client/src/gateway/oauth-flow.ts` and route all in-app authorization polling through it.
+Implementation complete. Gateway routes and the Group chat UI were left unchanged.
 
-The module will cover the three authorization flows already present in the app:
+Repository root: `/Users/mac/Syncthing/Projects/Moirasia/apps/standalone/Herm-Bot`
 
-- provider accounts in `settings-administration-screen.tsx`;
-- memory-provider authorization in `memory-settings.tsx`;
-- MCP server authorization in `mcp-screen.tsx`.
+The existing root `plan.md` was deleted before this replacement, as requested. This plan covers the latest architecture-review Candidate 01: the **Group mirror**. It does not revive the older OAuth plan or repeat the already-landed Group send-engine work.
 
-It will own the common protocol work:
+## 1. Objective
 
-- Scope capture and stale-result discard;
-- start and poll lifecycle;
-- normalized phases of `waiting`, `approved`, `denied`, `expired`, and `error`;
-- bounded polling through the existing `runRemoteAction` engine;
-- automatic opening of an authorization URL when the wire response supplies one;
-- explicit re-opening of the current authorization URL;
-- cancellation of local polling on stop, Scope change, and unmount;
-- typed timeout classification as `GatewayError` with code `OAUTH_TIMEOUT`.
+Give the Group mirror a real module interface and a captured gateway adapter without changing its wire contract or its display-projection semantics.
 
-Feature modules will keep their route vocabulary and protocol-specific policy. Provider device-code submission and remote cancellation remain at the provider call site. MCP remote cancellation remains at the MCP call site. Memory OAuth keeps its existing status-only contract because it has no flow handle, authorization URL, or cancel route.
+The finished module must:
 
-Gateway login in `GatewayController.login` and `passwordLogin` is outside this work. It is a connection and redirect flow, not one of the provider, memory-provider, or MCP authorization flows described by `CONTEXT.md`.
+- keep the existing v1/v2-to-v3 normalization, durable room keys, stable message keys, member merge, tombstone handling, bounded snapshots, gateway byte accounting, and local rich-copy preservation;
+- keep the existing read → merge → CAS write → read-back protocol, including no-op detection and bounded exponential retry;
+- stop the mirror from importing or calling the global `groupEngineRequest` slot;
+- make each Group engine start create a fresh mirror instance that captures the transport it was given;
+- make a stopped mirror instance unable to publish, issue another request, schedule a retry, or affect a later engine Scope;
+- use an explicit semantic `GroupMirrorGateway` adapter so mirror behavior tests do not need to know RPC route names;
+- preserve the exact production route vocabulary and request bytes: `profiles.list` with `{ include_sessions: false }`, the `default` profile lookup, and `profiles.configure` with `name: 'default'`, the `ui_meta` payload, and the optional `ui_meta_expected_revisions` map;
+- leave the global runtime transport in place for `group-rounds.ts` and `group-turns.ts`, which still need it for member/session RPCs.
 
-## Why this work is needed
+This is a deepening of the existing `groups-sync.ts` module, not a speculative new `group-mirror.ts` abstraction.
 
-`CONTEXT.md` already names `gateway/oauth-flow.ts` as the deep module for provider, memory-provider, and MCP authorization, but that file does not exist.
+## 2. Settled design decisions
 
-The protocol is currently copied into three screen implementations:
+These are the recommended answers to the architecture-review questions. They are settled for implementation; do not reopen them during the coding pass unless repository evidence makes them impossible.
 
-- `client/src/features/capabilities/mcp-screen.tsx:57-121` owns the MCP start result, authorization URL, polling effect, abort controller, terminal mapping, timeout message, and cancel interaction.
-- `client/src/features/settings/settings-administration-screen.tsx:197-321` owns provider start, external URL opening, provider polling, device-code submission, cancellation, mounted checks, refs for changing callbacks, and terminal mapping.
-- `client/src/features/settings/memory-settings.tsx:102-157` owns memory OAuth polling, its separate pending flag, status mapping, invalidation, and error state.
+### 2.1 Scope
 
-All three call `runRemoteAction`, but that module only supplies backoff, abort, retry of temporary network errors, and a caller-provided completion predicate. It does not capture the Scope, normalize OAuth states, open authorization URLs, or classify an OAuth timeout.
+Deepen only the Group mirror's wire protocol and lifecycle. Do not redesign:
 
-The current tests cover route bytes and the generic polling engine, but not a shared OAuth interface:
+- the local Group send engine;
+- the round-robin drive, member turns, prompts, holds, watermarks, stranded-reply harvest, or activity feed;
+- the v3 snapshot format or its merge rules;
+- the gateway backend or its `profiles.*` routes;
+- the Group room UI;
+- Scope management outside the signal plumbing needed to cancel mirror requests.
 
-- `client/src/features/settings/settings-api.test.ts:88-104` checks provider poll and cancel route scoping.
-- `client/src/features/capabilities/mcp-api.test.ts:32-40` checks MCP cancel scoping.
-- `client/src/features/settings/memory-settings.test.tsx:58-145` covers memory provider config and stale save handling, but not the OAuth state machine.
-- `client/src/gateway/remote-action.test.ts:10-164` covers generic polling, cancellation, retries, and timeout bounds.
-- There is no `client/src/gateway/oauth-flow.test.tsx`, no MCP screen flow test, and no provider OAuth screen flow test.
+### 2.2 Module location
 
-The deletion test supports the deepening. Delete the proposed module and the same start, poll, timeout, stale-scope, and cleanup rules return to three screens. The complexity does not disappear. It belongs behind one interface. The intended depth is the protocol lifecycle and its concurrency guarantees, while feature locality remains with route mapping, cache invalidation, rendering, and call-site policy.
+Keep the deep module in `client/src/features/groups/groups-sync.ts`.
 
-## Decisions made
+Do not add `group-mirror.ts`. The current file already owns the snapshot vocabulary and merge semantics. The implementation should remove its module-global job state and put the stateful wire/lifecycle policy behind a factory in the same module. This gives the existing projection code locality with the policy that consumes it, without adding a shallow forwarding module.
 
-These are the recommended answers to the design questions for this candidate.
+The file will contain two layers:
 
-### 1. Cover all three in-app flows
+1. **Pure/in-process projection layer** — the existing normalization, sizing, snapshot, merge, and local-store projection functions.
+2. **Group mirror interface layer** — the new `GroupMirrorGateway` adapter seam and the `createGroupMirror(gateway)` lifecycle instance.
 
-Implement provider, memory-provider, and MCP authorization in one module. They share enough protocol behavior to justify a seam, and they already provide more than two concrete adapters:
+The raw `profiles.list` and `profiles.configure` mapping belongs to the production adapter in the same file. The mirror interface sees semantic remote state, not route-shaped response records.
 
-- provider route adapter;
-- memory-provider route adapter;
-- MCP route adapter;
-- in-memory test adapters.
+### 2.3 Mirror interface
 
-Do not include Gateway login. Its redirect changes the connection lifecycle and can navigate the page before a flow result exists. Folding it into this module would make the interface less deep by mixing two different protocols.
-
-### 2. Use a headless React hook as the public module
-
-Use `useOAuthFlow` as the public interface in `client/src/gateway/oauth-flow.ts`.
-
-A pure `runOAuthFlow` helper would remove some polling boilerplate, but each screen would still need its own effect, busy state, active abort controller, stale-result guard, and teardown. The hook hides those React lifecycle mechanics as well as the protocol mechanics. This gives the callers more leverage per fact they must learn, without taking route and presentation locality away from the feature.
-
-The module can keep a private async runner inside the hook. Do not export that runner as a second public interface. The interface is the test surface.
-
-### 3. Keep feature route vocabulary in feature adapters
-
-The OAuth module must not import `SettingsApi` or `McpApi`. Feature modules will provide small adapters that call the existing route modules and return normalized snapshots.
-
-The adapter seam is real, not hypothetical. Production uses three route adapters and tests use in-memory adapters. The OAuth module owns the protocol; the feature adapters own endpoint paths, profile scoping, raw response mapping, and feature-specific handles.
-
-Do not change the route strings or move route ownership into `gateway/oauth-flow.ts`.
-
-### 4. Inject external URL opening
-
-The hook receives an `openExternal` function. Production callers pass a bound callback such as `url => platformActions.openExternal(url)`, preserving the `PlatformActions` instance. Unit tests pass a spy adapter.
-
-This preserves the existing URL validation in `validatedExternalURL` and makes the external opener testable without opening a browser or an iOS sheet. The OAuth module calls the opener only for a normalized snapshot that has an authorization URL. The memory adapter supplies no URL, so it does not fabricate one.
-
-The hook automatically attempts the first open after a successful start. A failure to open the URL becomes a current flow error, but it does not abort server-side polling. The user can use the explicit Open authorization action again.
-
-### 5. Normalize wire states, not wire response shapes
-
-The public OAuth snapshot will contain only values the screens need:
+Expose a factory and a small lifecycle interface:
 
 ```ts
-export type OAuthPhase =
-  | 'waiting'
-  | 'approved'
-  | 'denied'
-  | 'expired'
-  | 'error'
-
-export interface OAuthFlowSnapshot {
-  authorizationURL?: string
-  flowId?: string
-  message?: string
-  phase: OAuthPhase
-  userCode?: string
-}
-```
-
-`flowId` is an opaque handle for callers that own cancellation or device-code submission. It is optional because memory OAuth has no handle.
-
-The module treats `waiting` as the only non-terminal phase. All other phases stop polling. The module preserves stable metadata such as `flowId`, `authorizationURL`, and `userCode` when a later poll response omits it.
-
-Do not expose raw provider, memory, or MCP response objects through the OAuth module. The screens already know which feature they are rendering, and raw response types would make the shared interface shallow.
-
-### 6. Reuse `runRemoteAction` and add a narrow timeout hook
-
-Keep the existing polling engine as the implementation underneath OAuth. Extend `RemoteActionOptions` with one optional timeout factory:
-
-```ts
-timeoutError?: (maxAttempts: number) => GatewayError
-```
-
-When the polling bound expires, `runRemoteAction` uses the supplied factory. Without it, the current generic timeout behavior remains unchanged. OAuth passes a factory that creates a non-retryable `GatewayError` with:
-
-- `code: 'OAUTH_TIMEOUT'`;
-- `kind: 'server'`;
-- `retryable: false`;
-- the attempt count in `details`;
-- a user-facing message that tells the user to start authorization again.
-
-A deliberate poll bound is not a temporary network error. It must not be classified as retryable just because individual network errors are retried inside the polling engine. A timeout from one HTTP request remains the existing request error; only exhaustion of the OAuth poll-attempt bound receives `OAUTH_TIMEOUT`.
-
-### 7. Preserve the current polling cadence
-
-Keep the current feature behavior while moving it:
-
-- provider OAuth: 1 second initial interval, 5 second ceiling, 60 polls;
-- MCP OAuth: 1 second initial interval, 5 second ceiling, 60 polls;
-- memory OAuth: 2 second initial interval, 10 second ceiling, 60 polls.
-
-The provider response contains `poll_interval`, but the current client does not use it. Do not broaden this change to gateway-driven polling cadence. If a later contract requires it, the provider adapter can own that policy without changing the OAuth module interface.
-
-### 8. Keep remote cancellation and device-code submission at the call site
-
-The shared module stops local polling. It does not guess whether a provider or MCP flow has a remote cancellation route.
-
-- Providers keep `oauthCancel` and `oauthSubmit` in the provider screen policy.
-- MCP keeps `cancelOAuth` in the MCP screen policy.
-- Memory has no remote cancellation operation and only stops local polling.
-
-This matches the existing domain decision in `CONTEXT.md` and prevents the shared module from inventing a cancellation protocol that memory OAuth cannot satisfy.
-
-## Proposed interface
-
-Create `client/src/gateway/oauth-flow.ts` with the following public shape. Names may be adjusted during implementation to match local style, but the interface must remain this small.
-
-```ts
-import type { GatewayPort } from './gateway-port'
-import type { GatewayError } from './gateway-error'
-
-export type OAuthPhase =
-  | 'waiting'
-  | 'approved'
-  | 'denied'
-  | 'expired'
-  | 'error'
-
-export interface OAuthFlowSnapshot {
-  authorizationURL?: string
-  flowId?: string
-  message?: string
-  phase: OAuthPhase
-  userCode?: string
-}
-
-export interface OAuthFlowAdapter {
-  readonly gateway: GatewayPort
-  readonly polling?: {
-    intervalMs?: number
-    maxAttempts?: number
-    maxIntervalMs?: number
-  }
-  start(signal: AbortSignal): Promise<OAuthFlowSnapshot>
-  poll(current: OAuthFlowSnapshot, signal: AbortSignal): Promise<OAuthFlowSnapshot>
-}
-
-export interface OAuthFlowController {
-  readonly busy: boolean
-  readonly error: GatewayError | null
-  readonly snapshot: OAuthFlowSnapshot | null
-  start(adapter: OAuthFlowAdapter): void
+export interface GroupMirror {
+  pull(): Promise<boolean>
+  schedule(options?: GroupMirrorSchedule): void
   stop(): void
-  openAuthorization(): Promise<void>
 }
 
-export function useOAuthFlow(options: {
-  openExternal?: (url: string) => Promise<void>
-}): OAuthFlowController
+export function createGroupMirror(gateway: GroupMirrorGateway): GroupMirror
 ```
 
-Interface invariants:
+There is deliberately no restart method. A factory call creates one live instance. `stop()` is terminal and idempotent. A later Group engine start must call the factory again and must never reuse the stopped instance.
 
-- `start` is a no-op while a run is active. The caller disables its start control using `busy`.
-- `start` clears the previous snapshot and error, captures the current Scope, and begins a new local run generation.
-- `stop` aborts local polling, invalidates the current run generation, and clears the local snapshot and error. It never calls a feature's remote cancel route.
-- `openAuthorization` opens the current snapshot's URL through the injected opener. If no URL exists, it does nothing. It classifies a current opener failure without changing the flow phase.
-- A `waiting` snapshot continues polling. A terminal snapshot does not.
-- A result publishes only when both the local run generation and the captured Scope are current.
-- A stale Scope or local abort never publishes an error, snapshot, busy transition, or completion side effect.
+`pull()` preserves the current boolean meaning: `true` when a present remote snapshot, including an empty v3 envelope, was applied; `false` when there was no snapshot or the operation became stale/stopped. Active non-abort adapter errors remain rejected so existing callers can catch them.
 
-The adapter is the only place that knows which route starts or polls a flow. The caller still owns what it does when the normalized phase becomes `approved`, `denied`, `expired`, or `error`.
+A newly created mirror starts in an initial-pull state. The engine installs its scheduler before starting that pull so local changes can record their room markers, but `schedule()` queues those markers without writing until the first pull (or all concurrent first pulls) settles. The pull then merges with those queued markers and releases the queued work. This is the actual startup barrier that prevents a non-empty stale local cache from publishing before hydration. Direct mirror tests must prime the instance with a pull before asserting ordinary scheduled writes.
 
-## Protocol adapters
+`GroupMirrorSchedule` carries the only marker currently produced by `group-store`:
 
-Add feature-owned adapter constructors. These are route vocabulary adapters, not new domain modules.
+```ts
+export interface GroupMirrorSchedule {
+  changedRooms?: string[]
+}
+```
 
-### Provider OAuth adapter
+`schedule()` is a no-op after `stop()`. It also refuses an empty local snapshot. The existing pure merge functions continue to accept explicit tombstone markers, but the repository has no production room-delete/disband caller that can supply them, so the new lifecycle interface does not expose an `allowEmpty` escape hatch or a dead `deletedRooms` option.
 
-Add `client/src/features/settings/oauth-sources.ts` with a provider adapter constructor that accepts the existing `SettingsApi`, the existing `GatewayPort`, and a provider id.
+### 2.4 Gateway adapter interface
 
-Start behavior:
+Use a semantic adapter, not a generic route callback inside the mirror:
 
-- call `settings.oauthStart(providerId, signal)`;
-- map PKCE `auth_url` and device-code `verification_url` to `authorizationURL`;
-- map `session_id` to `flowId`;
-- map `user_code` when the response is a device-code flow;
-- map both start variants to `phase: 'waiting'`;
-- reject malformed responses that have no usable session id or authorization URL instead of starting an unpollable run.
+```ts
+export interface GroupMirrorRemoteState {
+  snapshot: GroupChatSyncSnapshot | null
+  revision: number
+  supportsCas: boolean
+}
 
-Poll behavior:
+export interface GroupMirrorWriteResult {
+  applied: boolean
+  revision?: number
+}
 
-- require the normalized `flowId`;
-- call `settings.oauthPoll(providerId, flowId, signal)`;
-- preserve the handle and authorization metadata;
-- map `pending` to `waiting`;
-- map `approved` to `approved`;
-- map `denied` to `denied`;
-- map `expired` to `expired`;
-- map `error` to `error` and carry `error_message` as `message`.
+export interface GroupMirrorGateway {
+  read(signal: AbortSignal): Promise<GroupMirrorRemoteState>
+  write(
+    snapshot: GroupChatSyncSnapshot,
+    expectedRevision: number | undefined,
+    signal: AbortSignal
+  ): Promise<GroupMirrorWriteResult>
+}
+```
 
-Do not move `oauthSubmit` or `oauthCancel` into this adapter. They remain explicit provider policy in the provider screen.
+The adapter owns one read or one write against the remote profile. The mirror owns the higher-level protocol:
 
-### Memory-provider OAuth adapter
+- when to read;
+- which local and remote snapshots to merge;
+- when CAS is required;
+- how to calculate and validate the next revision;
+- when a read-back is mandatory;
+- how to preserve changed local rooms while applying remote tombstones;
+- how to debounce and retry;
+- when a result is stale and must be discarded.
 
-Keep the adapter beside the settings feature, in the same `oauth-sources.ts` file.
+The production adapter owns raw wire mapping and response extraction. Its factory will be named `createGroupMirrorGateway(transport)` and will capture the injected `GroupEngineRequest`; it must not call the mutable `groupEngineRequest()` function from `group-runtime.ts`.
 
-Start behavior:
+Tests will provide semantic in-memory and deferred adapters directly to `createGroupMirror()`. Separate adapter contract tests will exercise `createGroupMirrorGateway()` with a recording transport to pin the production request bytes.
 
-- call `settings.startMemoryOAuth(provider, signal)`;
-- map `connected` to `approved`;
-- map `pending` to `waiting`;
-- map `error` to `error` and carry `detail` as `message`;
-- map an active-run response of `idle` to `error` with `detail` when present, or a fixed message explaining that the gateway did not start authorization;
-- do not invent `flowId` or `authorizationURL`.
+### 2.5 Transport separation
 
-Poll behavior:
+`group-runtime.ts` remains the global transport slot for member/session RPCs used by `group-rounds.ts` and `group-turns.ts`.
 
-- call `settings.memoryOAuthStatus(provider, signal)`;
-- map the same four states for an active run;
-- continue polling a `pending` result even though it has no handle;
-- retain no remote cancel policy because the existing `SettingsApi` has no memory OAuth cancel method.
+The mirror must not import the `groupEngineRequest` function. It receives a captured transport through `createGroupMirrorGateway(transport)`. This is the critical seam: an old mirror cannot accidentally reach a new Scope merely because the global runtime slot was replaced.
 
-The `idle` mapping must be covered by a test. It is a valid baseline status, but it does not prove that an authorization run is active. Treating active `idle` as `waiting` would poll until timeout, while treating it as approval would dismiss a provider that has not connected. The ordinary status query may continue to render baseline `idle` as disconnected.
+The injected request type gains an optional signal-bearing third argument so the mirror can abort its own work while existing two-argument member RPC calls remain source-compatible:
 
-### MCP OAuth adapter
+```ts
+export type GroupEngineRequest = (
+  method: string,
+  params?: Record<string, unknown>,
+  options?: { signal?: AbortSignal }
+) => Promise<unknown>
+```
 
-Add `client/src/features/capabilities/mcp-oauth.ts` with a constructor that accepts the existing `McpApi`, the existing `GatewayPort`, and the server name.
+Only the injected callback type and the controller's callback need the third argument. `groupEngineRequest()` remains the two-argument member-RPC wrapper because no current member caller supplies a signal and the mirror must not use that mutable slot.
 
-Start behavior:
+### 2.6 Lifecycle safety
 
-- call `mcpApi.auth(serverName, signal)`;
-- map `flow_id` to `flowId`;
-- map `authorization_url` to `authorizationURL`;
-- map `starting` and `authorization_required` to `waiting`;
-- map `approved` to `approved`;
-- map `error` to `error` and carry the wire error as `message`.
+Abort is a cancellation mechanism, not the correctness condition. `stop()` is terminal, so the correctness guard is the stopped flag plus the instance's private closure state. Every asynchronous boundary must check that flag and the instance signal before acting.
 
-Poll behavior:
+A stopped instance must not:
 
-- require the normalized `flowId`;
-- call `mcpApi.oauthStatus(flowId, signal)` through the existing deliberately unscoped route;
-- preserve the handle and URL;
-- map the same MCP states.
+- replace `$groupChats` after a read or read-back resolves;
+- issue a write after a stale read resolves;
+- issue a read-back after a stale write resolves;
+- requeue a failed job;
+- create or honor a debounce/retry timer;
+- reset retry or in-flight state in a later lifecycle;
+- publish through a scheduler installed for a later engine start.
 
-Do not add `denied` or `expired` to `McpOAuthFlow` without a backend contract. The normalized phase union can support them for provider flows while MCP continues to expose only the states its wire type declares.
+The implementation will use:
 
-Remote cancellation remains `mcpApi.cancelOAuth(flowId, signal)` in `McpScreen`.
+- an `AbortController` owned by the mirror instance and passed to every adapter method;
+- a terminal `stopped` flag checked at every asynchronous boundary;
+- per-instance pending, active-job, timer, in-flight, and retry state.
 
-## Internal behavior of `useOAuthFlow`
+A generation counter is deliberately not added. Because a mirror cannot restart and a later engine start creates a different closure, a generation would duplicate the terminal stopped check without distinguishing any additional live case.
 
-### Start and Scope capture
+### 2.7 Glossary ownership
 
-`start(adapter)` will:
+Update `CONTEXT.md` so the Group mirror entry names:
 
-1. check a synchronous `activeRunRef` and return immediately if a run is already active;
-2. set `activeRunRef` before the first state update so same-tick clicks cannot start two runs;
-3. increment a private run generation;
-4. abort any defensively retained controller from the previous run;
-5. clear the previous snapshot and error;
-6. create a fresh `AbortController`;
-7. capture `beginScopedTask()` for the current connection and Profile;
-8. set `busy` to true;
-9. invoke the adapter through `runRemoteAction`.
+- `groups-sync.ts` as the owner;
+- `createGroupMirror(gateway)` and its `pull`/`schedule`/`stop` interface;
+- the semantic `GroupMirrorGateway` seam and captured production adapter;
+- the fact that the member-turn transport remains in `group-runtime.ts` and is separate from the mirror adapter.
+
+Update the Group send engine entry so “the injected transport is the engine's only seam to the wire” is no longer inaccurate. The injected transport remains the member-turn seam; the mirror has its own captured adapter seam.
 
-Pass the captured task's `isCurrent` predicate to `runRemoteAction`. The local run generation is still required because a user can stop a run or start a new terminal run while the old promise is resolving under the same Scope.
+## 3. Current evidence and seam to change
 
-### Start publication and external opening
+The implementation pass should begin from these repository facts rather than re-deriving a different boundary:
 
-When the adapter start resolves:
+- `client/src/features/groups/groups-sync.ts` currently combines pure projection helpers with the stateful flush job.
+- The file imports `groupEngineRequest` directly.
+- The stateful section has module-global `disposed`, `inFlight`, `pending`, `debounceTimer`, `retryTimer`, and `retryCount` variables.
+- `readRemoteSnapshot()` sends `profiles.list` with `{ include_sessions: false }`, finds `name === 'default'`, reads `ui_meta['hermes-bots-groups']`, and extracts `ui_meta_revisions`.
+- `flushGroupChatSync()` sends `profiles.configure` with `name: 'default'`, `ui_meta`, and the expected revision only when CAS is supported.
+- It validates `applied.ui_meta`, validates a CAS write revision, reads back the profile, checks the persisted revision, and merges the confirmed snapshot into the local store.
+- `stopGroupChatSync()` clears timers and pending state but cannot cancel or neutralize async work already awaiting `groupEngineRequest`.
+- `startGroupChatSync()` only changes `disposed`, so a late continuation can run after a later engine start has reopened the global transport slot.
+- `client/src/features/groups/group-engine.ts` currently installs the global member transport, starts the global mirror job, installs the store scheduler, and fires the initial pull.
+- `client/src/features/groups/group-runtime.ts` is still required by `group-rounds.ts` and `group-turns.ts`; its global slot cannot simply be removed.
+- `client/src/state/gateway-controller.ts` currently passes `(method, params) => this.runtime.rpc(method, params)` and must forward the optional signal for mirror cancellation.
+- Existing tests cover projection sizing, keys, v1 normalization, merge behavior, legacy threads, a normal engine-level read-back, a configure/revision failure that enters the retry path, no-empty scheduling, Group engine lifecycle, and full rounds. The current retry fixture fails before a successful read-back and never proves that a read-back revision race retries, so the migrated suite must add that coverage rather than describe the old test as a read-back retry test.
+- `startGroupEngine()` currently installs the scheduler before an unawaited initial pull. A non-empty local cache can therefore publish before hydration; the empty-cache guard does not cover that case. The new per-instance mirror must queue scheduled markers and suppress writes until its first pull settles.
+- A pull can overlap a flush after the flush has removed its job from `pending`. The mirror serializes their protocol operations, and read-back preservation still includes both the active captured job and the remaining pending markers so a remote tombstone cannot delete a room being written.
+- There is no production caller for `allowEmpty` or `deletedRooms` in the old scheduler. Keep tombstone behavior in the pure merge functions, but do not carry a dead local-disband escape hatch into the new lifecycle interface or claim that an explicit final-room publish exists.
+- `teardownGatewayScope()` and `dispose()` stop the Group engine before closing the runtime, but `logout()` closes the runtime before entering shared teardown and app-background handling calls `runtime.close()` without stopping the Group engine. Reconnect reopens the same runtime and does not call `startGroupEngine()` again. The plan must describe these paths accurately rather than claim that every runtime close stops the mirror.
 
-- validate the normalized snapshot's phase and required metadata;
-- publish it only if the run and Scope remain current;
-- if it contains `authorizationURL`, attempt to open it through `openExternal`;
-- catch opener errors, classify them, and publish the current `error` without aborting polling;
-- keep polling if the server flow is still waiting.
+## 4. Target architecture
 
-The module must not call `window.open` or the native plugin directly. `PlatformActions.openExternal` remains the production adapter and continues to reject non-HTTP(S) URLs or URLs with embedded credentials.
+### 4.1 Ownership after the refactor
 
-### Poll publication
+`groups-sync.ts` owns:
 
-Use `runRemoteAction` with the adapter's polling values. Each poll:
+- `GroupChatSyncRoom` and `GroupChatSyncSnapshot`;
+- the v1/v2-to-v3 normalization path;
+- gateway byte sizing and snapshot bounding;
+- durable room, message, and member identity keys;
+- snapshot merge, tombstone, rename, and local rich-copy policy;
+- the `GroupMirrorGateway` and `GroupMirror` interfaces;
+- the production gateway adapter;
+- the per-instance debounce, CAS, read-back, retry, abort, startup-barrier, and terminal-stop policy.
 
-- receives the latest normalized snapshot;
-- calls the feature adapter;
-- merges stable metadata from the previous snapshot when the wire response omits it;
-- publishes only while the run and Scope remain current;
-- returns the normalized phase as the remote-action status.
+`group-engine.ts` owns:
 
-The module must not reopen an authorization URL on every poll. The hook owns the automatic open after start; the caller invokes `openAuthorization` only for an explicit reopening afterward.
+- the active mirror instance reference for the current engine lifecycle;
+- installing the mirror's `schedule` method into `group-store`;
+- starting the initial `pull`;
+- delegating `openGroupRoom` pulls to the current instance;
+- the existing member-turn transport installation and engine teardown;
+- the room epoch/running reset on gateway transition.
+
+`group-runtime.ts` owns:
+
+- the existing global member RPC transport slot;
+- activity and prompt atoms;
+- the optional signal forwarding on the injected request type.
+
+`group-store.ts` remains the scheduler host. It does not learn route names or mirror protocol rules.
+
+### 4.2 Production adapter mapping
+
+Implement `createGroupMirrorGateway(transport)` next to the mirror interface in `groups-sync.ts`.
+
+`read(signal)` must:
+
+1. call `transport('profiles.list', { include_sessions: false }, { signal })`;
+2. treat the result as the existing `{ profiles: [...] }` profiles-list shape;
+3. select the row whose `name` is exactly `default`;
+4. read the `hermes-bots-groups` value only when that row's `ui_meta` is a non-null, non-array object and the value is a non-null, non-array object;
+5. return `snapshot: null` when the default row, usable `ui_meta`, or snapshot is absent;
+6. normalize the revision key to a non-negative finite number when the wire value is a number; use `0` for `undefined`, null, non-numeric, negative, `NaN`, `Infinity`, or a missing key;
+7. set `supportsCas` only when the default row has its own `ui_meta_revisions` property, even if that property's value is null or the map's key is absent. This preserves the current capability detection, which is property-presence based rather than value based.
+
+`write(snapshot, expectedRevision, signal)` must:
+
+1. build exactly `{ name: 'default', ui_meta: { 'hermes-bots-groups': snapshot } }`;
+2. add exactly `{ 'hermes-bots-groups': expectedRevision }` under `ui_meta_expected_revisions` only when `expectedRevision !== undefined`;
+3. call `transport('profiles.configure', params, { signal })`;
+4. map `result.applied.ui_meta === true` to `applied`;
+5. map the returned revision to a number only when the wire value is a finite non-negative number; otherwise leave `revision` undefined. Invalid acknowledgements must not satisfy the mirror's exact `writeRevision` check.
+
+Do not move merge policy into this adapter. Do not make the adapter retry, read back, or update `$groupChats`.
+
+### 4.3 Mirror instance state
+
+Move the current module-global state into the closure created by `createGroupMirror()`:
+
+```ts
+let stopped = false
+let initialPullSettled = false
+let initialPulls = 0
+let inFlight = false
+let activeJob: SyncPending | null = null
+let pending: SyncPending | null = null
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+let retryCount = 0
+const controller = new AbortController()
+```
+
+The exact names may differ, but the ownership must be per instance. Constants such as the debounce duration and retry ceiling can remain module constants because they are policy constants, not mutable lifecycle state.
 
-### Terminal handling
+`isCurrent(signal)` must require both `!stopped` and `!signal.aborted`. The captured signal is always the instance controller's signal. `activeJob` is separate from `pending`: it keeps the markers of a flush that has been removed from the pending queue visible to a concurrent pull.
 
-When polling returns a terminal snapshot:
+`stop()` must be idempotent and must, in this order or an equivalent order that preserves the same invariants:
 
-- set the snapshot to that value;
-- set `busy` to false;
-- clear an earlier operation-level opener or transport error;
-- keep protocol error text in `snapshot.message` rather than converting a provider rejection into a transport error;
-- leave completion decisions to the caller.
+1. mark the instance stopped;
+2. abort the instance controller;
+3. clear the debounce and retry timers;
+4. clear pending and active job state and reset retry/in-flight bookkeeping;
+5. leave the instance permanently stopped.
 
-A provider screen can respond to `approved` by refreshing its provider list. MCP can keep its existing completed card. Memory can invalidate its status and OAuth queries. The shared module does not know which cache to refresh.
+A later call to `schedule()` must return before taking a snapshot. A later call to `pull()` must resolve as stale/no-op rather than touching the adapter or store. A stopped instance is never made ready again.
 
-### Timeout and transport errors
+### 4.4 Pull behavior
 
-When `runRemoteAction` exhausts its bound, the timeout factory produces `OAUTH_TIMEOUT`. The hook publishes the current snapshot as an error phase and exposes the classified error.
+`pull()` keeps the current receive-half behavior, with the startup and concurrent-flush guards made explicit:
 
-For a non-abort transport failure:
+1. return `false` immediately if the instance is stopped;
+2. count the call as one of the initial pulls while `initialPullSettled` is false, and capture the instance signal;
+3. call `gateway.read(signal)`;
+4. check `isCurrent(signal)` after the await;
+5. return `false` for no snapshot;
+6. preserve the union of `activeJob.changedRooms` and the current `pending.changedRooms` while merging into `$groupChats`;
+7. check `isCurrent(signal)` immediately before `replaceGroupChats()`;
+8. replace the local rooms and return `true`;
+9. in a `finally`, mark the initial phase settled only after all pulls that began before settlement have finished, then flush queued work if the instance is still current.
 
-- classify it with `classifyGatewayError`;
-- expose it through `error` while the Scope is current;
-- retain the last snapshot when it contains useful flow metadata;
-- set `busy` to false.
+If an active adapter read fails, reject it as today so the caller can decide whether to swallow it. If the operation is stopped or aborted, suppress the stale/abort failure and resolve `false`; do not create a retry for the explicit pull. A scheduled job queued during a failed initial pull may still run after the initial phase settles, using its normal read/merge/retry policy.
 
-For an abort or stale Scope:
+The pull must read markers from the same mirror instance, including the captured active job. It must not read a module-global queue that a later instance could reuse. This active-job union is required because flush removes its job from `pending` before its first read. Pull and flush protocols are serialized through one per-instance operation queue, so an older pull or read-back cannot publish after a newer operation; the active-job union remains the read-back protection while a captured job is in flight. Calls made during the initial phase still count toward the startup barrier.
 
-- do not publish an error;
-- do not publish a terminal phase;
-- do not call a caller completion callback;
-- do not leave a backoff timer behind.
+### 4.5 Flush behavior
 
-### Stop and cleanup
+Keep the existing protocol in the mirror closure, changing only its dependencies and lifecycle guards:
 
-`stop()` will abort the current controller and invalidate its run generation before clearing local state. The hook's unmount cleanup performs the same abort and generation invalidation, but must not call React state setters after unmount.
+1. Return if the instance is stopped, the initial pull has not settled, already in flight, an existing retry timer is active, or there is no pending job.
+2. Capture the instance signal.
+3. remove one `SyncPending` job from the instance queue, copy it to `activeJob`, and mark the instance in flight;
+4. read remote state through `gateway.read(signal)`;
+5. check `isCurrent(signal)` before using the result;
+6. create the local bounded snapshot from `$groupChats`;
+7. compute `writeRevision = remote.revision + 1`;
+8. merge remote and local snapshots with the job's changed rooms and write revision;
+9. if there are no changed-room markers and the payload matches the remote payload, avoid a write; if a remote snapshot exists, pull it back through the same current instance, check currentness again, then reset retry count;
+10. call `gateway.write(snapshot, remote.supportsCas ? remote.revision : undefined, signal)`;
+11. check `isCurrent(signal)` before validating or issuing anything else;
+12. require `applied === true`;
+13. when CAS is supported, require the returned revision to equal `writeRevision`;
+14. read back through `gateway.read(signal)`;
+15. check `isCurrent(signal)` before validating or publishing;
+16. when CAS is supported, require the confirmed revision to be at least `writeRevision`;
+17. merge the confirmed snapshot into the local store while preserving the union of the current `activeJob.changedRooms` and any current `pending.changedRooms`;
+18. check `isCurrent(signal)` immediately before `replaceGroupChats()`;
+19. reset retry count only for the current instance.
 
-A Scope change uses the existing `useScopeReset` mechanism inside the hook. It stops the current run and clears local state. The hook must not rely only on a screen's `useScopeReset`, because the stale-scope guarantee belongs to the OAuth module and every caller must receive it.
+The catch path must:
 
-The hook must remain safe under React effect cleanup and development Strict Mode. Adapter objects used by screens should be created at the click or provider-selection seam, not recreated on every render while a run is active.
+- suppress all stale or aborted errors;
+- increment the retry count only while the same instance is current;
+- when the count is at or below `MAX_RETRIES`, requeue the captured job, preserve the existing backoff ladder (`1s`, `2s`, `4s`, `8s`, `16s`, capped at `30s`), and install one retry timer;
+- when the count exceeds `MAX_RETRIES`, reset the count and drop the captured job exactly as the current implementation does. This is a bounded best-effort mirror, not a durable offline queue;
+- have a retry timer check `isCurrent(signal)` before invoking another flush;
+- never let a stopped operation install a retry timer or requeue into a later instance.
 
-### Explicit authorization reopening
+The finally path must:
 
-`openAuthorization()` will:
+- check `isCurrent(signal)` before mutating `activeJob`, `inFlight`, or starting pending work;
+- clear `activeJob` and `inFlight` for the current instance;
+- immediately flush current pending work when no retry timer is active;
+- do nothing when the instance is stopped. `stop()` already clears the old instance's bookkeeping, and the old instance must never be reused.
 
-- return immediately when there is no current authorization URL;
-- capture the current Scope and current run generation;
-- call the injected opener;
-- classify and expose an opener error only while both the Scope and run generation remain current;
-- leave the poll run untouched.
+Preserve the current behavior that local mutations arriving while a flush is awaiting the gateway are merged into `pending` and handled by the next flush rather than being lost or folded into the already-captured job. This guarantee applies while the bounded retry window remains; after retry exhaustion the current policy deliberately abandons the captured job.
 
-The generation guard matters when a user stops or replaces a flow while an earlier opener promise is still pending.
+### 4.6 Schedule behavior
 
-This supports device-code flows where the user may need to reopen the verification page after copying the code.
+`schedule(options)` must preserve the current policy while making it instance-local:
 
-## Screen migrations
+1. no-op when stopped or timers are unavailable;
+2. build a bounded local snapshot;
+3. refuse to schedule an empty snapshot;
+4. merge `changedRooms` into this instance's pending queue;
+5. if the initial pull has not settled, leave the markers queued and do not start a write timer;
+6. otherwise clear and replace the debounce timer;
+7. have the callback clear its own timer reference and call flush only when `isCurrent(controller.signal)` is true.
 
-### Provider settings
+The initial-pull gate protects a freshly installed client from publishing a non-empty stale local cache over the remote mirror. The empty-snapshot guard remains a second defense. There is no current production local-room deletion/disband path, so do not add an `allowEmpty` escape hatch or describe one as a supported publish.
 
-Modify `client/src/features/settings/settings-administration-screen.tsx`.
+## 5. File-by-file implementation steps
 
-Keep `ProvidersSettings` responsible for the provider list, endpoint list, endpoint actions, list refetch, and the selected provider identity. Replace the raw `OAuthStartResponse` state with the selected `OAuthProvider` used to mount the flow card.
+### Step 1 — Extend the injected request only for cancellation
 
-Change the provider Connect action to select the provider and mount `ProviderOAuthFlow`. It must no longer call `settings.oauthStart` from the parent.
+File: `client/src/features/groups/group-runtime.ts`
 
-Refactor `ProviderOAuthFlow` to:
+- Extend `GroupEngineRequest` with an optional `{ signal?: AbortSignal }` third argument.
+- Keep `groupEngineRequest()` as the existing two-argument member-RPC wrapper. The mirror never calls it, so widening that wrapper would add no current behavior.
+- Keep `setEngineTransport()` and the mutable runtime slot because member-turn modules still depend on it.
+- Update the module comment to state that the Group mirror receives a captured request through its adapter and does not call this global request function.
+- Do not move `$groupActivity`, `$groupPrompts`, or member RPC helpers.
 
-- create the provider route adapter;
-- call `useOAuthFlow` and start it when the selected provider card mounts;
-- render `snapshot.message`, `snapshot.phase`, `snapshot.authorizationURL`, and `snapshot.userCode` from the normalized state;
-- rely on the hook's automatic open after start;
-- use `oauth.openAuthorization()` only for the explicit Open provider button;
-- keep device-code submission as a local `useScopedTask` operation using `snapshot.flowId`;
-- stop local polling before calling `settings.oauthCancel` on Cancel;
-- clear the code before and after cancellation or submission, preserving the existing one-shot input behavior;
-- use a local completion guard in `ProviderOAuthFlow` so a late poll approval and a successful device-code submission cannot complete the flow twice;
-- call the existing `onDone` policy after the guarded approval so the provider query refetches and the card closes;
-- display `oauth.error` alongside the existing screen error without replacing endpoint errors.
+File: `client/src/state/gateway-controller.ts`
 
-Keep the existing provider status labels and endpoint behavior. Do not move custom endpoint persistence, billing, or other administration pages into the OAuth module.
+- Change `installGroupEngine()` to forward the third argument:
 
-Remove from this screen only the provider polling implementation: the direct `runRemoteAction` import for OAuth, polling abort ref, mounted ref used only by that poll, and start-level OAuth task. Keep `useScopedTask` for device-code submission, cancellation, external endpoint actions, and other settings policy that still needs it.
+  `startGroupEngine((method, params, options) => this.runtime.rpc(method, params, options))`
 
-### MCP screen
+- Do not reorder the controller lifecycle in this plan. `teardownGatewayScope()` and `dispose()` already stop the Group engine before closing or disposing the runtime. `logout()` currently closes the runtime before entering shared teardown, and app-background handling calls `runtime.close()` without stopping the Group engine; reconnect reopens that same runtime and does not call `startGroupEngine()` again. The mirror's terminal-stop guarantees apply when `stopGroupEngine()` runs, while `SessionRuntime`'s own Scope guard handles in-flight runtime RPCs across a runtime close/reconnect without terminating the mirror instance. Test the signal-forwarding boundary without claiming that every runtime close stops the mirror.
 
-Modify `client/src/features/capabilities/mcp-screen.tsx`.
+The third argument is optional, so existing two-argument test transports and member-turn calls remain valid.
 
-Replace `flow`, `pollAbort`, and `authMutation` with:
+### Step 2 — Replace the global mirror job with the captured interface
 
-- an active server name or null;
-- one `useOAuthFlow` controller;
-- the MCP route adapter created when authentication starts.
+File: `client/src/features/groups/groups-sync.ts`
 
-The Auth button will select the server and call `oauth.start(adapter)`. The screen will use:
+- Replace the value import of `groupEngineRequest` with a type-only import of `GroupEngineRequest` if needed by the production adapter.
+- Leave the pure projection functions and their behavior unchanged unless a type adjustment is required.
+- Add the `GroupMirrorRemoteState`, `GroupMirrorWriteResult`, `GroupMirrorGateway`, `GroupMirrorSchedule`, and `GroupMirror` interfaces near the stateful section.
+- Add `createGroupMirrorGateway(transport)` with the exact route mapping described above.
+- Add `createGroupMirror(gateway)` and move `SyncPending`, mutable state, timers, debounce, initial-pull barrier, active-job preservation, pull, flush, retry, and stop logic into its closure.
+- Keep `mergePending()` and `syncPayloadEqual()` private to this module or the factory; they do not need to become public protocol vocabulary.
+- Remove the old module-global `disposed`, `inFlight`, `pending`, timers, and retry count.
+- Remove the old global `readRemoteSnapshot()`, `pullGroupChatState()`, `flushGroupChatSync()`, `scheduleGroupChatSync()`, `startGroupChatSync()`, and `stopGroupChatSync()` exports. Their behavior is now behind the factory interface.
+- Do not import or call `groupEngineRequest` anywhere in the file after the change.
+- Keep the meta key, byte limits, debounce duration, and retry constants local to this module.
 
-- `oauth.busy` for the Auth button and status text;
-- `oauth.snapshot` for authorization URL, phase, flow handle, and error message;
-- the hook's automatic URL open after start and `oauth.openAuthorization()` for explicit reopening;
-- the existing `cancelAuth` scoped mutation for remote cancellation;
-- `oauth.stop()` before remote cancellation or dismissal.
+The production adapter and mirror must remain in this file so the interface has useful depth: callers receive lifecycle operations, while raw route mapping, projection semantics, CAS policy, read-back, retry policy, startup hydration, and stop isolation stay local to the module.
 
-On Cancel, capture `snapshot.flowId` before stopping. If a handle exists, invoke `mcpApi.cancelOAuth`; if no handle exists, dismiss locally. Preserve the existing behavior when cancellation fails: show the classified error and do not claim that the remote flow was cancelled.
+### Step 3 — Make the engine own one active mirror instance
 
-Keep toggle, delete, test, catalog, editor, server-list invalidation, and selected-server routing unchanged. Remove only the direct OAuth polling effect, its `AbortController`, and the direct external URL action used by that flow.
+File: `client/src/features/groups/group-engine.ts`
 
-### Memory settings
+Add a module-local active mirror reference typed by the new `GroupMirror` interface.
 
-Modify `client/src/features/settings/memory-settings.tsx`.
+`startGroupEngine(transport)` must:
 
-Replace `oauthPending` and `oauthError` with the shared OAuth controller and a memory route adapter created for the selected provider.
+1. if an active engine exists, run the same teardown choreography first so the old mirror is stopped and old member loops receive the existing epoch invalidation before the new transport replaces the global member slot;
+2. install the captured transport for member turns with `setEngineTransport(transport)`;
+3. create a fresh production adapter with `createGroupMirrorGateway(transport)`;
+4. create a fresh mirror with `createGroupMirror(adapter)` and store it as the active instance;
+5. install `setGroupSyncScheduler(changedRoom => mirror.schedule({ changedRooms: [changedRoom] }))` so local durable mutations target this instance;
+6. fire `void mirror.pull().catch(() => undefined)`. The scheduler is intentionally installed before this pull so mutations during hydration are recorded, but the mirror's initial-pull barrier prevents any write until hydration settles.
 
-The Start button will call `oauth.start(adapter)`. The memory card will render:
+`stopGroupEngine()` must:
 
-- `oauth.busy` as its pending state;
-- `oauth.snapshot.message` for a terminal provider error;
-- `oauth.error?.message` for transport or timeout errors;
-- the existing `oauth.data` query status when no active flow snapshot exists.
+1. take the active mirror out of the module reference so later callers cannot reach it;
+2. clear the store scheduler;
+3. call `mirror.stop()` to abort and invalidate all mirror work;
+4. clear the member-turn transport with `setEngineTransport(null)`;
+5. bump room epochs and clear `running` so live member loops stop at their existing boundaries.
 
-When the normalized phase becomes `approved`, invalidate the memory status and provider OAuth query keys exactly as the current implementation does. When it becomes `error`, keep the wire detail visible. There is no external opener for this adapter because the existing memory route does not return an authorization URL.
+The exact ordering may be implemented with equivalent sequencing, but the active mirror must be invalidated before a later start can install a new scheduler or transport. A repeated `startGroupEngine()` without an explicit stop must also invalidate the prior engine lifecycle, not only its mirror.
 
-If a memory start response is `pending`, continue polling the status route even though there is no handle. If the selected provider changes while the Scope is otherwise unchanged, stop the old local run before constructing the new provider adapter. The baseline status query can still display raw `idle` as disconnected; only an `idle` response received by an active OAuth adapter is normalized to an error.
+Move the current `handleGatewayTransition()` room-state update into a private Group-engine helper. Its behavior must not change: clone every room, increment its epoch, and set `running: false`. Do not retain a public lifecycle helper in `groups-sync.ts`.
 
-Remove the direct `runRemoteAction` import and the memory OAuth polling effect. Keep the existing status query, provider selection, provider config editor, setup action, reset actions, and named-profile gate unchanged.
+The epoch bump is the existing member-loop boundary, not cancellation of a member RPC already awaiting `groupEngineRequest()`. This plan keeps that member transport behavior unchanged; only the mirror gets captured-request abort and stale-result guards.
 
-## `runRemoteAction` changes
+Update `openGroupRoom()` to call `activeMirror?.pull()` instead of the removed global `pullGroupChatState()`. Keep the existing error swallowing and stranded-reply harvest policy. Opening a room while the engine is stopped must not issue a gateway request.
 
-Modify `client/src/gateway/remote-action.ts` only as needed to support protocol-specific timeout classification.
+Keep all existing facade exports and all member-turn action implementations unchanged.
 
-Add the optional timeout factory to `RemoteActionOptions`. At the existing timeout branch, call the factory when supplied and keep the current generic `classifyGatewayError(new Error(...))` fallback when absent.
+### Step 4 — Update the domain glossary
 
-Do not change:
+File: `CONTEXT.md`
 
-- abort behavior;
-- Scope predicate checks;
-- temporary network-error retry count;
-- backoff calculation;
-- `runGatewayAction` start and terminal handling;
-- action failure code `ACTION_FAILED`.
+Update the **Group send engine** and **Group mirror** entries as described in the settled decisions.
 
-Extend `client/src/gateway/remote-action.test.ts` with one custom timeout test that asserts the factory's `GatewayError` is returned. Keep the existing generic timeout assertion to pin backward compatibility.
+Use the repository's existing terms:
 
-## Test plan
+- the Group mirror is a deep module;
+- `GroupMirrorGateway` is its semantic adapter seam;
+- the production adapter captures the engine transport and owns raw `profiles.*` mapping;
+- the mirror owns normalization/merge consumption, debounce, CAS, read-back, retry, abort, startup-barrier, and terminal-stop policy;
+- stopped instances are never restarted or reused;
+- `group-runtime.ts` remains the member-RPC transport seam.
 
-Use direct tests at the new module interface, then keep screen tests at the visible composition seam. Do not layer the old screen-level polling tests on top of the new hook tests.
+Do not add a new glossary concept for every internal helper or timer.
 
-### Step 1: Add the shared hook test seam
+## 6. Test migration and additions
 
-Create `client/src/gateway/oauth-flow.test.tsx`.
+### 6.1 Preserve the projection suite
 
-Use `renderHook`, a `MemoryGateway`, `$preferences`, and fake external opener functions. Each adapter in this file should be an in-memory `OAuthFlowAdapter`; the test must not call feature route constructors for the hook's protocol tests.
+File: `client/src/features/groups/groups-sync.test.ts`
 
-Cover these cases:
+Keep the existing tests for:
 
-1. Starting a waiting adapter sets `busy`, publishes the waiting snapshot, and eventually publishes an approved snapshot.
-2. A start snapshot with an authorization URL opens it once automatically.
-3. `openAuthorization()` opens the same URL again without restarting polling.
-4. A start snapshot without a URL never calls the opener.
-5. A start opener rejection becomes a visible classified error while polling continues.
-6. A terminal start snapshot does not poll.
-7. A waiting poll maps to approved, denied, expired, and error phases without another poll after terminal state.
-8. Stable `flowId`, URL, and user code survive a poll response that omits them.
-9. `stop()` aborts a poll during backoff, clears state, and leaves no timer behind.
-10. An unmount aborts the run and produces no late state update.
-11. A Profile change suppresses a late poll result and late transport error.
-12. A connection change followed by a switch back to the same Profile still suppresses the old run because the Scope generation changed.
-13. A non-retryable poll error is classified and exposed while the Scope is current.
-14. Temporary network errors are retried through `runRemoteAction` before the adapter reaches a terminal state.
-15. Poll exhaustion exposes a `GatewayError` with `code: 'OAUTH_TIMEOUT'`, `retryable: false`, and the configured attempt count.
-16. A delayed explicit opener result after `stop()` or replacement cannot publish an error into the next run.
-17. Calling `start` in the same tick twice does not create a second active poll lane; the synchronous active-run ref wins before React state updates.
-18. Starting again after a terminal state creates a fresh run and does not reuse the old snapshot or error.
+- gateway byte sizing;
+- durable room keys;
+- stable entry keys and legacy-family collapse;
+- bounded v3 snapshots;
+- empty runtime tombstone filtering;
+- member/text/image limits;
+- the existing v1 normalization case, plus an explicit v2 name-keyed snapshot and its revisioned tombstone case;
+- log union, revision ordering, member ties, tombstones, and rename behavior;
+- local rich-copy preservation, runtime-state preservation, remote rename, and local deletion/preserve guards;
+- legacy thread assignment.
 
-Use deferred promises and `vi.useFakeTimers()` with `vi.advanceTimersByTimeAsync`. Assert request and poll counts before resolving each deferred response. Do not use real one-second sleeps.
+These tests should continue to exercise the pure projection layer without installing a global engine transport. The v2 and malformed-input cases are additions, not claims about coverage that the current file does not have.
 
-### Step 2: Test feature adapters
+Remove the current `stopGroupChatSync()`/`startGroupChatSync()` setup and the direct `setEngineTransport()` dependency from the mirror tests.
 
-Create `client/src/features/settings/oauth-sources.test.ts`.
+### 6.2 Test the semantic mirror with deferred/in-memory adapters
 
-Provider cases:
+Migrate the current “flush job” tests to `createGroupMirror()` using a test-local adapter that stores semantic `snapshot`, `revision`, and `supportsCas` state. The fake should not know `profiles.list` or `profiles.configure` names.
 
-- PKCE start maps `auth_url` and `session_id` to a waiting snapshot.
-- Device-code start maps `verification_url`, `session_id`, and `user_code`.
-- Poll maps each provider terminal status and carries the error message.
-- A missing session id or missing authorization URL rejects as an invalid start response.
-- Poll uses the handle from the normalized snapshot.
+Cover at least:
 
-Memory cases:
+1. **Pull** — a remote snapshot merges into local rooms and preserves local sessions, watermarks, epochs, running flags, rich entries, and pending changed-room markers.
+2. **No remote snapshot** — `pull()` returns `false` and does not replace local state.
+3. **CAS write and read-back** — after priming the mirror with its initial pull, `schedule()` debounces, writes the merged snapshot with the remote revision as the expected revision, performs the required read-back, and merges the confirmed state without overwriting the captured local room.
+4. **Applied-revision race** — a fake write returns `applied: true` with a revision other than `writeRevision`; the job retries after the existing backoff with a fresh read.
+5. **Read-back revision race** — a fake write succeeds, but the next read reports a revision below `writeRevision`; the job retries after the existing backoff with a fresh read.
+6. **Non-CAS gateway** — the adapter receives `undefined` for the expected revision and the mirror does not require a CAS revision response.
+7. **No-empty-publish** — scheduling an empty local cache never calls `write()`; there is no current `allowEmpty` override or local disband producer.
+8. **Concurrent local mutation** — a change arriving while a write/read-back is in flight remains in the instance's pending queue and is flushed after the captured job.
+9. **Pull/flush overlap** — a pull requested after flush captured its job is serialized behind that protocol, while read-back preserves both the active job's changed room and any remaining pending marker, so a remote tombstone cannot delete the room being written.
+10. **Read-back no-op** — when the merged payload matches the remote payload and there are no changed-room markers, no write occurs, but a remote snapshot is still pulled into local state.
+11. **Retry exhaustion** — repeated active failures use exactly the bounded backoff and then drop the captured job, reset the retry count, and do not retry that job without a new schedule; separately queued markers may still flush.
 
-- `connected` maps to approved.
-- An active `pending` response maps to waiting and remains pollable without a handle.
-- An active `idle` response maps to error instead of creating a fake active flow.
-- `error` maps to error and carries `detail`.
-- No memory snapshot invents a handle or URL.
-- A baseline status query may continue to render raw `idle` as disconnected.
+Use fake timers for debounce and retry assertions. Stop every created mirror in test cleanup.
 
-Create `client/src/features/capabilities/mcp-oauth.test.ts`.
+### 6.3 Test lifecycle races and stop guards
 
-MCP cases:
+Add deferred adapter tests that prove the lifecycle safety, not only the final happy state:
 
-- Start maps `authorization_required`, URL, and flow id.
-- Start maps an already approved response without polling.
-- Poll maps approved and error states while preserving the flow id.
-- The adapter uses the existing unscoped poll route through `McpApi` rather than appending a Profile query.
+1. **Initial-pull write barrier** — schedule a non-empty local change before the first read resolves; assert that no write occurs, resolve the read, and assert that the pull preserves the marker and only then releases the flush.
+2. **Initial-pull failure still settles the barrier** — reject the first read, assert that no write happened before it settled, then assert queued work follows the normal fresh-read/retry path rather than being abandoned or publishing stale local state.
+3. **Concurrent initial pulls settle together** — start two first pulls with separate deferred reads, resolve one, and assert queued work remains blocked until the other settles; after both settle, release exactly the queued work.
+4. **Stopped pull cannot publish** — start `pull()`, stop the mirror before `read()` resolves, resolve with a valid snapshot, and assert that `$groupChats` is unchanged and `pull()` resolves stale/false.
+5. **Stopped flush cannot write after read** — schedule a job, let its remote read resolve, stop before the write boundary, and assert that `write()` is never called.
+6. **Stopped in-flight write cannot read back or publish** — stop while `write()` is deferred, resolve it as applied, and assert there is no read-back and no local replacement.
+7. **Abort signal is delivered** — assert that `stop()` aborts the signal passed to the adapter and that an abort rejection does not create a retry.
+8. **Retry suppression** — make an active write fail, stop before the backoff timer, advance timers, and assert there is no second write.
+9. **Stopped timer guard** — capture a scheduled debounce or retry callback, stop the instance, and invoke or advance it; it must not call the adapter.
+10. **Stop/restart isolation** — start one mirror with a deferred old adapter, stop it, create a second mirror with a new adapter, then resolve the old adapter. The old snapshot and old retry must not alter the local store or call the second adapter.
+11. **Finalizer guard** — resolve an old operation after the next mirror has been created and assert that the old `finally` path cannot reset or drain the new instance's pending work.
+12. **Instance non-reuse** — after `stop()`, `schedule()` and `pull()` are no-ops; a new factory instance starts with empty pending/retry state and accepts fresh work.
 
-Keep `settings-api.test.ts` and `mcp-api.test.ts` as route-shape tests. Adapter tests should focus on normalized meaning, not duplicate every route assertion.
+These tests should use deferred promises and explicit call counters, not sleeps. The terminal stop flag and private closure state are the guard; there is no generation counter to test.
 
-### Step 3: Migrate provider screen tests
+### 6.4 Pin the production adapter's wire contract
 
-Extend `client/src/features/settings/settings-administration-screen.test.tsx` with provider flow coverage. Mock or spy on `PlatformActions.openExternal` so tests never open a real external URL.
+Add adapter-focused tests in `groups-sync.test.ts` or a clearly named adjacent test file without adding a production module.
 
-Use `MemoryGateway` handlers for:
+Use a recording `GroupEngineRequest` and assert:
 
-- `/api/providers/oauth` provider list;
-- scoped provider start;
-- unscoped provider poll;
-- unscoped provider cancel;
-- provider list refetch after approval.
+- `read(signal)` calls exactly `profiles.list` with `{ include_sessions: false }` and forwards the same signal;
+- the adapter selects the row named exactly `default` rather than another profile;
+- no default row, or a default row with unusable `ui_meta` or snapshot metadata, maps to `snapshot: null` and revision `0`; CAS support is false when there is no default row or no own `ui_meta_revisions` property;
+- a usable snapshot remains present even when the default row has no `ui_meta_revisions` property, with revision `0` and `supportsCas: false`;
+- a default row whose own `ui_meta_revisions` property is present still has `supportsCas: true` even when its value is null or the key is absent, matching the property-presence capability rule;
+- array-valued `ui_meta` or snapshot metadata is rejected as absent; array-valued revision metadata yields revision `0` without discarding an otherwise usable snapshot, while its own-property capability remains `supportsCas: true`;
+- invalid read revisions normalize to `0`, while finite non-negative numeric revisions survive unchanged;
+- `write(snapshot, undefined, signal)` calls exactly `profiles.configure` with `name: 'default'` and the one-key `ui_meta` object, omitting `ui_meta_expected_revisions`;
+- `write(snapshot, 7, signal)` adds exactly `{ 'hermes-bots-groups': 7 }` under `ui_meta_expected_revisions`;
+- the adapter maps `applied.ui_meta` and a finite non-negative numeric returned revision without doing merge or retry policy;
+- a missing, negative, nonnumeric, or infinite returned revision maps to `undefined`;
+- the adapter forwards the signal to both route calls.
 
-Cover:
+These assertions are the byte-level guardrail. The semantic mirror tests must remain independent of route vocabulary.
 
-- Connect renders the waiting flow and opens the returned URL.
-- Approval clears the flow and refetches the provider list.
-- Device-code providers show the code, submit it with the session handle, and clear the input after the request settles.
-- A rejected device code stays visible with the gateway message.
-- Cancel aborts local polling and sends the existing unscoped DELETE route.
-- A late poll result after a Profile change does not close the provider flow or publish an error.
-- An opener failure is visible and the explicit Open provider action can retry it.
+### 6.5 Update Group engine lifecycle tests
 
-Retain the existing provider settings, endpoint, plugin, and profile-gate tests. Do not turn them into OAuth protocol tests.
+File: `client/src/features/groups/group-engine.test.ts`
 
-### Step 4: Add MCP screen tests
+- Remove the direct import of `pullGroupChatState` from `groups-sync.ts`.
+- Keep the existing test that starts the engine, mutates a room, observes the CAS configure and the required read-back list, stops the engine, confirms no later scheduler write, and confirms `groupEngineRequest()` is disconnected after stop. Do not treat the immediate read-back merge of a preserved changed room as advancing that room's local `syncRevision`; replace the existing test's later direct `pullGroupChatState()` call with an engine facade path such as `openGroupRoom()` that delegates to the active mirror.
+- Keep the epoch/running teardown test.
+- Add an engine-level initial-pull barrier test: defer the first read, mutate a non-empty local room, assert no configure occurs before the read resolves, then resolve the read and assert the queued change flushes.
+- Add an engine-level stop/restart test with two captured transports: resolve a read from the first start after `stopGroupEngine()` and a second `startGroupEngine()`, then assert the first result cannot land in the new lifecycle or call the second transport.
+- Add a repeated-start test without an intervening explicit stop so the defensive start choreography invalidates the old mirror and bumps the old room lifecycle before installing the new transport.
+- Keep full-round tests and `stopGroupThread` coverage. Their member/session calls must continue to use the global `group-runtime` transport and must not be routed through `GroupMirrorGateway`; the existing epoch boundary, not mirror abort, remains their teardown behavior.
 
-Create `client/src/features/capabilities/mcp-screen.test.tsx` with a `QueryClientProvider`, `GatewayProvider`, and a fake external opener.
+File: `client/src/state/gateway-controller.test.ts`
 
-Cover:
+- Add one controller-boundary assertion that the initial mirror `profiles.list` receives a signal through `installGroupEngine()`. When the controller tears down the Group engine, the request's effective signal must be aborted; the test should assert forwarding and eventual cancellation, not object identity or whether the mirror or `SessionRuntime` signal supplied the abort. The mirror-specific test remains the authority for direct `stop()` cancellation.
 
-- The server list renders an OAuth-authenticated server.
-- Auth starts the scoped route, opens the URL, and polls the unscoped flow route.
-- Approval renders the completed state.
-- Cancel stops local polling and calls the unscoped cancel route.
-- Dismiss stops local polling without calling the remote cancel route.
-- Poll error and timeout use the shared error path.
-- A Scope change suppresses a late status response.
+Files: `client/src/features/groups/group-rounds.test.ts` and `client/src/features/groups/group-turns.test.ts`
 
-Keep MCP editor, toggle, delete, catalog, and test behavior outside this test file unless an existing test already covers it.
+- Keep their direct `setEngineTransport()` test setup. It is testing the separate member-RPC seam.
+- Do not migrate these suites to the mirror adapter or add member-turn signal cancellation as part of this plan.
 
-### Step 5: Extend memory screen tests
+### 6.6 Test cleanup requirements
 
-Add to `client/src/features/settings/memory-settings.test.tsx`:
+Every test that creates a mirror must stop it in `afterEach`, even when the test fails. Semantic mirror tests must explicitly perform the initial pull before ordinary scheduled-write assertions, and deferred startup tests must leave that pull unresolved until they assert the write barrier. Fake timers must be restored. The test setup must reset `$groupChats`, localStorage, activity, prompts, and needs-you state as it does today.
 
-- start returns pending, status polling returns pending once and connected next, and the memory status and OAuth queries are invalidated after approval;
-- an `error` status displays its `detail` without attempting to open an external URL;
-- a timeout displays the shared OAuth timeout message and stops the pending state;
-- a Profile change suppresses a late status response and clears the active flow.
+Do not rely on module-global mirror state between tests. The purpose of this refactor is for each test and each engine start to own its own lifecycle instance. Member-RPC suites may continue to seed the separate global `group-runtime` transport, but must clear it in their existing cleanup.
 
-Keep the current declared provider config, secret clearing, stale save, and named-profile tests unchanged.
+## 7. Verification sequence after implementation
 
-### Step 6: Add one browser path
+Run the narrow checks first, then the broader suite:
 
-Extend `client/e2e/server.mjs` with the smallest deterministic MCP OAuth fixture. Keep the fixture state per browser session.
+```bash
+cd client
+npm run test -- src/features/groups/groups-sync.test.ts src/features/groups/group-engine.test.ts src/state/gateway-controller.test.ts
+npm run test -- src/features/groups
+npm run typecheck
+npm run test
+npm run build
+```
 
-Add handlers for:
+Also run repository hygiene checks from the repository root:
 
-- `GET /api/mcp/servers?profile=default`, returning one enabled server with `auth: 'oauth'`;
-- `POST /api/mcp/servers/<name>/auth?profile=default`, returning a waiting flow with a safe HTTPS authorization URL and `flow_id`;
-- unscoped `GET /api/mcp/oauth/flows/<flow_id>`, returning waiting on the first poll and approved on the next;
-- unscoped `DELETE /api/mcp/oauth/flows/<flow_id>`, recording cancellation and returning success.
+```bash
+git diff --check
+git status --short --branch
+```
 
-Record the profile query on the start route and assert that the poll and cancel paths do not receive a Profile query.
+Use the narrow test command to diagnose mirror behavior, the full `src/features/groups` command to catch member-turn regressions, and the full test/typecheck/build commands to verify the changed transport type and controller boundary.
 
-Add one test to `client/e2e/pwa-foundation.spec.ts` that:
+Before considering the work complete, inspect the diff for these structural assertions:
 
-1. logs in through the existing fixture;
-2. opens the Capabilities page and MCP page;
-3. clicks Auth on the fixture server;
-4. verifies the waiting flow and the authorization URL opener through a popup or intercepted `window.open`;
-5. verifies the normalized approved state after polling;
-6. verifies the recorded start, poll, and optional cancel paths through `/api/fixture-calls`.
+```bash
+rg -n "groupEngineRequest" client/src/features/groups/groups-sync.ts
+rg -n "startGroupChatSync|stopGroupChatSync|scheduleGroupChatSync|pullGroupChatState" client/src
+rg -n "createGroupMirror|GroupMirrorGateway" client/src/features/groups
+```
 
-Keep the test deterministic by using the fixture's second-poll approval. The hook tests remain authoritative for timing, Scope changes, and timeout behavior. The browser test proves that the rendered MCP flow reaches the production adapter and user-visible state.
+The first search must return no value import or call from `groups-sync.ts`; the second must show no stale global mirror API references; the third must show the new interface and its engine/adapter tests.
 
-## Required behavior matrix
+## 8. Acceptance criteria
 
-### Shared protocol
+The implementation is complete only when all of the following are true:
 
-- A run captures the current connection and Profile Scope.
-- A stale Scope cannot publish a snapshot, error, busy transition, or completion effect.
-- A local stop aborts polling and invalidates the run generation.
-- Unmount leaves no active backoff timer or late state update.
-- Only one poll run can be active per hook instance.
-- A waiting phase polls; every other normalized phase is terminal.
-- Temporary network errors use the existing retry policy.
-- Poll exhaustion produces `GatewayError` code `OAUTH_TIMEOUT` and is not retryable.
-- Authorization URL opening uses the injected external opener and existing URL validation.
-- Opener failure does not cancel the server-side flow.
+### Interface and locality
 
-### Provider OAuth
+- `groups-sync.ts` exposes `createGroupMirror(gateway)` with `pull`, `schedule`, and `stop`.
+- The mirror's mutable state is per factory instance; no module-global pending queue, in-flight flag, timer, disposed flag, or retry count remains.
+- The production adapter is captured at factory construction and maps semantic reads/writes to the existing wire contract.
+- The mirror owns merge, debounce, CAS, read-back, retry, abort, startup-barrier, active-job preservation, and terminal-stop policy; the adapter does not.
+- `group-engine.ts` creates a new mirror on every engine start and never restarts a stopped instance.
 
-- PKCE and device-code starts normalize to waiting.
-- PKCE uses `auth_url`.
-- Device-code uses `verification_url` and exposes `user_code`.
-- Provider poll handles remain unscoped through `SettingsApi`.
-- Approved, denied, expired, and error statuses stop polling.
-- Device-code submission remains a separate caller operation.
-- Remote cancellation remains a separate caller operation.
-- Approval refetches the provider list and closes the card.
+### Wire compatibility
 
-### Memory-provider OAuth
+- Reads still use `profiles.list` with `{ include_sessions: false }`.
+- The `default` profile and `hermes-bots-groups` key are unchanged.
+- Writes still use `profiles.configure` with `name: 'default'` and the same `ui_meta` shape.
+- CAS expected revisions are sent only when the remote advertises `ui_meta_revisions` support.
+- No backend or route changes are required.
 
-- Start and status routes remain Profile-scoped.
-- Connected maps to approved.
-- Active pending maps to waiting and remains pollable without a handle.
-- Active idle maps to error instead of creating a fake active flow.
-- Error maps to error with the provider detail.
-- No handle, URL, or remote cancellation is fabricated.
-- Baseline raw idle remains the disconnected status shown before a run starts.
-- Approval invalidates memory status and OAuth queries.
-- The existing memory card remains the visible policy owner.
+### Lifecycle correctness
 
-### MCP OAuth
+- Stop marks the instance terminal, aborts adapter work, clears its timers and queued/active bookkeeping, and prevents later reuse.
+- Every post-await store publication, subsequent adapter request, retry timer, retry requeue, and finalizer is guarded by the instance's stopped flag and captured abort signal.
+- A stopped in-flight operation cannot publish into a later engine Scope.
+- A stale failure cannot schedule a retry.
+- Member-turn RPCs still use the global runtime transport; engine teardown bumps room epochs and clears `running` so member loops stop at their existing boundaries, but it does not cancel an already awaited member RPC.
 
-- Start remains Profile-scoped.
-- Poll and cancel remain deliberately unscoped.
-- `flow_id` remains opaque and is only used by MCP policy.
-- Authorization URL opens through the shared opener.
-- Approved and error stop polling.
-- Cancel stops local polling before the remote DELETE.
-- Dismiss stops local polling without remote cancellation.
+### Behavioral compatibility
 
-### Compatibility
+- Existing v3 snapshot size, normalization, merge, tombstone, rename, read-back, and no-empty-publish behavior remains intact.
+- Local rich log entries and runtime coordination fields remain protected from compact remote projections.
+- Local markers arriving during an in-flight mirror operation remain queued through the configured retry window; after retry exhaustion, the captured job is deliberately dropped as in the bounded best-effort policy, so this is not an at-least-once guarantee.
+- Full Group round behavior and prompt/activity tests remain green.
 
-- Existing wire paths, verbs, bodies, Profile queries, and unscoped routes remain unchanged.
-- Existing `SettingsApi` and `McpApi` route interfaces remain the feature adapter seam.
-- Gateway login behavior remains unchanged.
-- Existing CSS classes and visible labels remain unchanged except for the shared timeout text if a screen currently supplies a feature-specific variant.
-- No new runtime dependency is added.
-- Update the existing OAuth glossary entry in `CONTEXT.md` to say that provider and MCP flows may expose an opaque handle, while memory-provider OAuth is status-only and has no handle, URL, or cancel route. Also make the Gateway API entry's unscoped OAuth wording name only the routes that are actually unscoped. No new domain term is needed.
+### Documentation and verification
 
-## Implementation sequence
+- `CONTEXT.md` describes the new Group mirror seam and the remaining member transport seam accurately.
+- The projection suite, semantic mirror suite, lifecycle race suite, adapter wire-contract suite, Group engine suite, controller signal-forwarding test, typecheck, tests, build, and `git diff --check` pass.
+- The diff contains only the intended Group mirror implementation/test/documentation changes once implementation begins.
 
-Use vertical red-green slices. Do not write all tests first and then move the implementation in one large change.
+## 9. Risks and mitigations
 
-### Step 1: Add the timeout extension
+### Old work reaches the new runtime
 
-Modify `client/src/gateway/remote-action.ts` and its test first. Add the optional timeout factory and preserve the generic fallback. Run the focused remote-action tests.
+A late continuation could call the mutable global runtime slot after a restart. Mitigation: the mirror never imports `groupEngineRequest`; it captures the transport adapter at creation, aborts on stop, and checks its stopped flag and captured signal before every next action and publication.
 
-### Step 2: Build the OAuth hook behind its direct interface
+### Abort rejection is mistaken for a retryable gateway failure
 
-Create `client/src/gateway/oauth-flow.ts` and `client/src/gateway/oauth-flow.test.tsx`.
+Mitigation: check the stopped flag and `signal.aborted` in pull/flush catches before requeueing. Add a test whose fake rejects because its signal was aborted.
 
-Implement Scope capture, run generations, abort cleanup, snapshot publication, external URL opening, normalized terminal handling, and the `OAUTH_TIMEOUT` path. Keep the adapter in-memory in this slice so the module is tested without feature route details.
+### A stale finalizer affects a fresh instance
 
-Do not add screen imports yet. Get the hook's concurrency and cleanup behavior green first.
+Mitigation: keep all mutable state in the old instance's closure, guard the finalizer with that instance's stopped/current check, clear the active engine reference before stopping, and never reuse the object. Add a deferred stop/restart test.
 
-### Step 3: Add normalized feature adapters
+### Extending `GroupEngineRequest` breaks callers
 
-Create:
+Mitigation: make the signal options third argument optional. Existing two-argument functions remain valid; run the Group suites and full typecheck.
 
-- `client/src/features/settings/oauth-sources.ts`;
-- `client/src/features/settings/oauth-sources.test.ts`;
-- `client/src/features/capabilities/mcp-oauth.ts`;
-- `client/src/features/capabilities/mcp-oauth.test.ts`.
+### Route bytes drift while extracting the adapter
 
-Reuse the existing `SettingsApi` and `McpApi` methods. Do not change route factories unless a type or signal issue prevents the adapter from using them correctly.
+Mitigation: keep the adapter mapping in one function and add exact request-shape tests for both CAS and non-CAS writes.
 
-### Step 4: Migrate the provider flow
+### Pending local changes are overwritten by read-back
 
-Refactor the parent provider selection and `ProviderOAuthFlow` as described above. Add screen tests before deleting the old polling code. Once the new tests pass, remove the old `runRemoteAction` effect, refs, and raw wire-state handling.
+Mitigation: preserve both the captured `activeJob` markers and the remaining pending markers while a flush is in flight; use the existing local-store `preserveRooms` behavior when publishing read-back; check the stopped/current guard immediately before publication. Pure projection functions retain their explicit tombstone arguments, but the lifecycle scheduler does not expose an unused local `deletedRooms` option.
 
-### Step 5: Migrate MCP
+### A new instance publishes before its initial pull
 
-Replace the MCP auth mutation and polling effect with the shared hook and adapter. Add the screen test, then delete the old flow state and `AbortController`.
+Mitigation: install the fresh mirror and its scheduler, issue the initial `pull`, and hold queued writes behind the mirror's initial-pull barrier until all first pulls settle. Keep the no-empty-publish guard as a second line of defense.
 
-### Step 6: Migrate memory OAuth
+### Reconnect reuses the engine instance
 
-Replace the memory pending flag and polling effect with the shared hook and adapter. Add terminal, timeout, and stale-Scope tests. Keep the memory route and query ownership in `MemorySettings`.
+A runtime close followed by the existing reconnect path does not call `startGroupEngine()` again, so the captured controller callback does not freeze one particular `SessionRuntime` operation or create a new mirror for every temporary connection. That is intentional in this scope: `SessionRuntime` combines its current scope signal into each RPC and rejects an operation that began in a closed scope, while the mirror remains alive to retry on the reopened runtime. If reconnect isolation requires a terminal mirror per runtime reopen, the controller must stop and recreate the engine, which is outside this plan; do not claim captured transport alone provides that stronger guarantee.
 
-### Step 7: Add the browser fixture path
+## 10. Explicitly out of scope
 
-Add the deterministic MCP OAuth fixture and one Playwright test. Use it to catch integration mistakes that unit tests cannot prove, especially route scoping, production `PlatformActions`, and the rendered status path.
+- Adding or changing gateway backend routes, CAS semantics, metadata keys, or byte-budget rules.
+- Replacing `group-runtime.ts`'s global member transport with a second lifecycle system.
+- Adding immediate cancellation or signal plumbing to already in-flight member-turn RPCs; their existing epoch-boundary teardown remains unchanged.
+- Refactoring `group-rounds.ts`, `group-turns.ts`, prompt handling, session plumbing, or activity state.
+- Moving the mirror into a new file solely to rename the module.
+- Persisting pending mirror jobs across a Scope teardown.
+- Increasing retry limits or adding a durable offline queue.
+- Adding a local room-delete/disband producer or an `allowEmpty`/`deletedRooms` scheduler API absent from current production callers.
+- Changing how rooms are rendered, named, opened, or created.
+- Rewriting the existing pure projection algorithms without a failing test that requires it.
+- Running a migration or publishing a deployment.
 
-### Step 8: Clean up and document
+## 11. Implementation checklist
 
-Search for direct OAuth polling imports and verify only `gateway/oauth-flow.ts` uses `runRemoteAction` for these three flows. The following direct screen responsibilities should be gone:
-
-- provider and MCP polling `useEffect` blocks;
-- screen-owned OAuth poll abort refs;
-- feature screens passing raw wire status into shared-looking UI;
-- feature screens classifying generic polling timeout strings.
-
-Keep direct `useScopedTask` calls for provider device-code submission, remote cancellation, and unrelated settings actions. Keep `runRemoteAction` for Gateway actions and no-flow remote operations.
-
-Update the existing OAuth and Gateway API glossary wording in `CONTEXT.md` to record the optional handle and the scoped versus unscoped route split. Do not add a second glossary term for the adapter or normalized phase types.
-
-## Verification sequence
-
-Run from `client/` in increasing breadth:
-
-1. Shared polling and timeout behavior:
-   ```bash
-   npm test -- src/gateway/remote-action.test.ts src/gateway/oauth-flow.test.tsx
-   ```
-2. Feature adapter and route contracts:
-   ```bash
-   npm test -- src/features/settings/oauth-sources.test.ts src/features/settings/settings-api.test.ts src/features/capabilities/mcp-oauth.test.ts src/features/capabilities/mcp-api.test.ts
-   ```
-3. Screen flows:
-   ```bash
-   npm test -- src/features/settings/settings-administration-screen.test.tsx src/features/settings/memory-settings.test.tsx src/features/capabilities/mcp-screen.test.tsx
-   ```
-4. Existing nearby scope and platform regressions:
-   ```bash
-   npm test -- src/gateway/scope-guard.test.tsx src/native/platform-actions.test.ts
-   ```
-5. Typecheck:
-   ```bash
-   npm run typecheck
-   ```
-6. Full unit suite:
-   ```bash
-   npm test
-   ```
-7. Production build:
-   ```bash
-   npm run build
-   ```
-8. Browser flow:
-   ```bash
-   npm run test:e2e -- pwa-foundation.spec.ts --grep "MCP OAuth"
-   ```
-
-Before calling the work complete, inspect the built browser flow rather than relying only on TypeScript and unit output. Verify that a user can start MCP authorization, reopen its URL, see a waiting state, and reach the approved state. Verify that the fixture records Profile scoping on start and no Profile query on poll or cancel.
-
-## Acceptance criteria
-
-- `client/src/gateway/oauth-flow.ts` exists and is the only module that owns the common OAuth start, poll, Scope, external-open, and timeout protocol.
-- Provider, memory-provider, and MCP screens use the shared hook through feature-owned adapters.
-- No screen owns a direct OAuth polling effect or OAuth-specific backoff loop.
-- The public hook interface exposes only `busy`, `error`, `snapshot`, `start`, `stop`, and `openAuthorization` behavior.
-- The adapter interface contains route start and poll behavior, a Gateway transport, and optional polling values, but no screen state or cache policy.
-- At most one OAuth run is active per hook instance.
-- Stale Scope, local stop, and unmount suppress late success and failure effects.
-- Poll exhaustion produces `GatewayError` code `OAUTH_TIMEOUT` with `retryable: false`.
-- Provider PKCE and device-code flows preserve their URL, handle, and code behavior.
-- Provider device-code submission and remote cancellation remain call-site policy.
-- MCP start remains Profile-scoped, while poll and cancel remain unscoped.
-- Memory OAuth does not gain a fabricated handle, URL, or cancel route.
-- Authorization URLs pass through `PlatformActions.openExternal` and existing URL validation.
-- Existing feature route tests remain green without changed request bytes.
-- Screen tests verify visible composition and protocol-policy actions without duplicating the hook's full concurrency matrix.
-- One Playwright test proves the rendered MCP flow against the production adapter and fixture.
-- `CONTEXT.md` accurately describes the completed OAuth flow module.
-- No new runtime dependency, generic OAuth framework, global flow registry, or Gateway login refactor is introduced.
-
-## Risks and mitigations
-
-### The shared hook becomes a pass-through around `runRemoteAction`
-
-Keep Scope capture, run generations, normalized snapshots, external opening, timeout classification, and cleanup inside the hook. The caller should not need to know about `AbortController`, `isCurrentScope`, `runRemoteAction`, or raw wire statuses.
-
-### Memory OAuth does not match the handle-based flows
-
-Keep its adapter status-only. `flowId`, `authorizationURL`, and remote cancel remain optional or absent. Do not force memory into the provider or MCP response model.
-
-### A poll approval races with device-code submission
-
-The provider card must use one completion path. A successful device-code submit calls `oauth.stop()` before the completion callback. The hook suppresses a stopped or replaced poll snapshot, and a local `completionRef` in the provider card makes the approval effect and submit callback idempotent. Add a test with a deferred poll and a deferred submit to prove only one completion occurs.
-
-### An external opener is blocked or fails
-
-Keep the explicit Open authorization button. Opening is best effort and does not stop polling. Use the existing `PlatformActions` validation and expose the classified opener error so the user can retry.
-
-### A stale Scope settles after the user switches away and back
-
-Use both the `ScopedTask` predicate and a local run generation. The Scope generation in `scope-guard.ts` changes even when the user returns to the same connection and Profile, so a previous run cannot publish into the new foreground lifecycle.
-
-### A timeout is mistaken for a retryable network error
-
-Create `OAUTH_TIMEOUT` with `retryable: false` in the timeout factory. Keep temporary network retry inside `runRemoteAction`, but do not retry after the poll bound is exhausted.
-
-### Adapter objects restart the hook on every render
-
-Screens should construct an adapter on the explicit start action or memoize it by the provider/server identity. The hook captures the adapter for one run and never reads a changing adapter object after start.
-
-### Remote cancellation races with local stop
-
-Capture the opaque handle before calling `stop()`. Stop local polling first, then issue the existing scoped cancellation mutation. If the remote request fails, leave the user-visible error and local dismissed state consistent with the current feature policy rather than claiming cancellation succeeded.
-
-### Browser popup behavior differs across platforms
-
-Keep URL opening behind `PlatformActions`. Unit tests inject a fake opener. The Playwright test observes the opener through a popup or intercepted `window.open` and does not navigate the test page to the external provider.
-
-### The module grows into a generic authorization framework
-
-Do not add provider registries, persistence, refresh-token management, cross-screen flow storage, or generic cancel and submit commands. The module owns one active in-app authorization run. Feature adapters and callers keep the differences that are real.
+1. Extend the request type and controller signal forwarding.
+2. Add the semantic adapter and factory interfaces to `groups-sync.ts`.
+3. Move the flush state into per-instance closure state.
+4. Add stopped-flag and abort checks at every listed asynchronous boundary.
+5. Preserve the existing read/merge/CAS/read-back/retry algorithm, including bounded retry exhaustion.
+6. Wire a fresh mirror instance into `group-engine.ts` start, open, scheduler, repeated-start, and stop paths.
+7. Keep member-turn calls on `group-runtime.ts` and update only their compatible types.
+8. Migrate stateful tests to semantic fakes.
+9. Add initial-barrier, active-job race, lifecycle-stop, abort, retry suppression, restart-isolation, repeated-start, controller-forwarding, and adapter wire-contract tests.
+10. Update `CONTEXT.md`.
+11. Run the narrow tests, Group tests, typecheck, full tests, build, diff check, and status check.
+12. Review the final diff for stale global mirror exports/imports and unrelated changes.

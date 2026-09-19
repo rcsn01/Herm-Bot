@@ -36,35 +36,50 @@ import {
   type GroupPrompt
 } from './group-runtime'
 import {
+  createGroupMirror,
+  createGroupMirrorGateway,
   groupChatRoomKey,
-  handleGatewayTransition,
-  pullGroupChatState,
-  scheduleGroupChatSync,
-  startGroupChatSync,
-  stopGroupChatSync
+  type GroupMirror
 } from './groups-sync'
 import { harvestStrandedGroupReply } from './group-turns'
 
 // --- Lifecycle — the GatewayController is the only caller. -------------------
 
-/** Point the engine at this scope's transport and arm the mirror writer.
- *  The initial pull fires BEFORE any local publish (the receive half of the
- *  sync contract). */
+let activeMirror: GroupMirror | null = null
+
+/** A gateway swap invalidates any in-flight room drive: bump every room's
+ *  epoch so running loops bail at their next member boundary. */
+function handleGatewayTransition(): void {
+  const rooms = { ...$groupChats.get() }
+  for (const name of Object.keys(rooms)) {
+    rooms[name] = { ...rooms[name], epoch: (rooms[name].epoch || 0) + 1, running: false }
+  }
+  $groupChats.set(rooms)
+}
+
+/** Point the engine at this scope's transport and arm a fresh mirror writer.
+ *  The scheduler is installed before the initial pull so local mutations can
+ *  queue room markers while hydration is still in flight. */
 export function startGroupEngine(transport: GroupEngineRequest): void {
+  if (activeMirror) stopGroupEngine()
+
   setEngineTransport(transport)
-  startGroupChatSync()
-  setGroupSyncScheduler(changedRoom => scheduleGroupChatSync({ changedRooms: [changedRoom] }))
-  void pullGroupChatState().catch(() => undefined)
+  const mirror = createGroupMirror(createGroupMirrorGateway(transport))
+  activeMirror = mirror
+  setGroupSyncScheduler(changedRoom => mirror.schedule({ changedRooms: [changedRoom] }))
+  void mirror.pull().catch(() => undefined)
 }
 
 /** Clear the transport and scheduler, bump every room's epoch so live drive
- *  loops bail at their next member boundary, and tear down the flush job.
+ *  loops bail at their next member boundary, and stop the active mirror.
  *  Scope teardown and dispose share this choreography. */
 export function stopGroupEngine(): void {
-  setEngineTransport(null)
+  const mirror = activeMirror
+  activeMirror = null
   setGroupSyncScheduler(null)
+  mirror?.stop()
+  setEngineTransport(null)
   handleGatewayTransition()
-  stopGroupChatSync()
 }
 
 // --- Actions — call-site policy (which room, which draft) stays with screens.
@@ -74,7 +89,8 @@ export function stopGroupEngine(): void {
  *  The screen keeps only its mount-once guard. */
 export function openGroupRoom(room: GroupRoom): void {
   adoptMirrorRoom(room)
-  void pullGroupChatState().catch(() => undefined)
+  const mirror = activeMirror
+  if (mirror) void mirror.pull().catch(() => undefined)
   const local = getGroupRoom(room.name)
   if (local.stranded && Object.keys(local.stranded).length > 0) {
     void Promise.all(room.members.map(member => harvestStrandedGroupReply(room.name, member))).catch(
