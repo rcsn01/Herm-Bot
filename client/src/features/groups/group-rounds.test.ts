@@ -1,23 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { GroupMessage, GroupMember } from './group-model'
-import { $groupActivity } from './group-runtime'
-import { $groupChats, $groupNeedsYou, replaceGroupChats, type GroupChatRoom } from './group-store'
+import { $groupActivity, $groupChats, $groupNeedsYou, replaceGroupChats, type GroupChatRoom } from './group-store'
+import { botHandle, type EngineMember } from './group-model'
 import {
   applyGroupHoldDirective,
-  botHandle,
-  buildGroupChatTurnPrompt,
   classifyGroupHoldDirective,
   createGroupRoundDriver,
-  formatGroupChatLine,
-  heldMemberWatermarkAdvance,
   parseGroupChatMentions,
   resolveGroupResponders,
   rotateGroupSpeakers,
-  unaddressedGroupMentions,
-  type EngineMember
+  unaddressedGroupMentions
 } from './group-rounds'
-import { createGroupMemberGateway, createGroupTurnModule, type GroupTurnModule, type GroupTurnResult } from './group-turns'
+import { createGroupMemberGateway, createGroupTurnModule, type GroupTurnModule, type GroupTurnReport } from './group-turns'
 
 const MEMBERS: EngineMember[] = [
   { name: 'research' },
@@ -41,27 +36,21 @@ function room(overrides: Partial<GroupChatRoom> = {}): GroupChatRoom {
   }
 }
 
-function result(kind: GroupTurnResult['kind'], commit: () => { accepted: true } | { accepted: false; reason: 'engine-stopped' | 'room-stopped' | 'newer-user' }, text = 'reply', reason?: string): GroupTurnResult {
-  if (kind === 'reply') return { kind, text, commit }
-  if (kind === 'failed') return { kind, ...(reason ? { reason } : {}), commit }
-  if (kind === 'cancelled') return { kind, reason: 'room-stopped', commit }
-  return { kind, commit }
-}
-
-function accepted(kind: GroupTurnResult['kind'] = 'pass', text = 'reply', reason?: string): GroupTurnResult {
-  return result(kind, () => ({ accepted: true }), text, reason)
-}
-
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(res => { resolve = res })
   return { promise, resolve }
 }
 
-function fakeTurns(run: GroupTurnModule['run'] = async () => accepted()): GroupTurnModule {
+const NOOP_REPORT: GroupTurnReport = { abandoned: false, spoke: false, stop: false }
+
+function fakeTurns(takeTurn: GroupTurnModule['takeTurn'] = async () => ({ ...NOOP_REPORT })): GroupTurnModule {
   return {
-    run: vi.fn(run),
+    takeTurn: vi.fn(takeTurn),
+    // The driver must only ever drive turns through takeTurn.
+    run: vi.fn(async () => { throw new Error('driver must not call run') }),
     harvest: vi.fn(async () => undefined),
+    harvestRoom: vi.fn(async () => undefined),
     answer: vi.fn(async () => undefined),
     interrupt: vi.fn(async () => undefined),
     stop: vi.fn()
@@ -108,20 +97,8 @@ describe('mention and prompt helpers', () => {
     expect(resolveGroupResponders([entry('user', 'You', 'plain', 't1')], MEMBERS).map(member => member.name)).toEqual(MEMBERS.map(member => member.name))
   })
 
-  it('rotates speakers and formats source-qualified transcript lines', () => {
+  it('rotates speakers each round', () => {
     expect(rotateGroupSpeakers(MEMBERS, 1).map(member => member.name)).toEqual(['builder', 'default', 'research'])
-    expect(formatGroupChatLine(entry('user', 'You', 'hi'), 'research')).toBe('You (user): hi')
-    expect(formatGroupChatLine({ ...entry('member', 'builder', 'hi'), from: { kind: 'member', name: 'builder', source: 'mac' } }, 'research')).toBe('builder [mac]: hi')
-    expect(formatGroupChatLine(entry('member', 'default', 'hi'), 'research')).toBe('Hermes: hi')
-  })
-
-  it('builds the per-member prompt with the group rules and source labels', () => {
-    const members: EngineMember[] = [{ name: 'research' }, { name: 'builder', connectionId: 'c1', connectionLabel: 'mac', sourceScoped: true }]
-    const prompt = buildGroupChatTurnPrompt({ groupName: 'Launch', members, viewer: members[0], deltaLines: ['You (user): ship it'] })
-    expect(prompt).toContain('[Group chat: "Launch"]')
-    expect(prompt).toContain('@builder [mac]')
-    expect(prompt).toContain('reply with exactly "(pass)"')
-    expect(prompt).toContain('You (user): ship it')
   })
 })
 
@@ -132,8 +109,6 @@ describe('holds and pure continuation detection', () => {
     const held = applyGroupHoldDirective({}, { mentioned: ['a'] }, 'stop @a', { at: 1 }, ['a', 'b'])
     expect(Object.keys(held)).toEqual(['a'])
     expect(applyGroupHoldDirective(held, { everyone: true }, 'resume all', { at: 2 }, ['a', 'b'])).toEqual({})
-    expect(heldMemberWatermarkAdvance(2, 5)).toBe(5)
-    expect(heldMemberWatermarkAdvance(5, 5)).toBe(null)
   })
 
   it('finds a cited member who has not posted after the handoff', () => {
@@ -145,197 +120,75 @@ describe('holds and pure continuation detection', () => {
   })
 })
 
-describe('round driver publication', () => {
-  it('settles an all-pass round and treats a failed result as silence', async () => {
-    turns = fakeTurns(async ({ member }) => member.name === 'builder' ? accepted('failed', 'unused', 'gateway hiccup') : accepted('pass'))
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Quiet', MEMBERS, 'fyi, deploy went out', 't1')
-    await settle('Quiet')
-    expect($groupChats.get().Quiet.log).toHaveLength(1)
-    expect($groupActivity.get().Quiet.map(item => item.kind)).toContain('failed')
-    expect($groupActivity.get().Quiet.find(item => item.kind === 'failed')?.reason).toBe('gateway hiccup')
-    expect(turns.run).toHaveBeenCalledTimes(3)
-  })
-
-  it('publishes only after an accepted reply lease and advances the member watermark', async () => {
-    turns = fakeTurns(async ({ member }) => member.name === 'research' ? accepted('reply', 'found the bug') : accepted('pass'))
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Reply', MEMBERS, 'investigate', 't9')
-    await settle('Reply')
-    const roomState = $groupChats.get().Reply
-    expect(roomState.log.filter(item => item.from.kind === 'member')).toHaveLength(1)
-    expect(roomState.log.find(item => item.from.kind === 'member')).toMatchObject({ text: 'found the bug', thread: 't9' })
-    expect(roomState.watermarks['t9::research']).toBe(roomState.log.length)
-  })
-
-  it('records a failed reason in the normal loop but hides it for continuation failures', async () => {
-    const commit = vi.fn(() => ({ accepted: true as const }))
-    const handoffRoom = room({ log: [entry('member', 'research', 'handing to @builder', 't1', 1)] })
-    replaceGroupChats({ Room: handoffRoom })
-    turns = fakeTurns(async ({ member }) => {
-      if (member.name === 'research') return accepted('pass')
-      return { kind: 'failed', reason: 'continuation detail', commit } as GroupTurnResult
-    })
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Room', [{ name: 'research' }, { name: 'builder' }], '@research start', 't1')
-    await settle('Room')
-    const failed = $groupActivity.get().Room.filter(item => item.kind === 'failed')
-    expect(failed).toHaveLength(1)
-    expect(failed[0].reason).toBeUndefined()
-  })
-
-  it('does not append or advance on a rejected newer-user lease, but records supersession', async () => {
-    const commit = vi.fn(() => ({ accepted: false as const, reason: 'newer-user' as const }))
-    turns = fakeTurns(async () => ({ kind: 'reply', text: 'old reply', commit }))
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Stale', [{ name: 'research' }], 'start', 't1')
-    await settle('Stale')
-    const result = $groupChats.get().Stale
-    expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
-    expect(result.watermarks).toEqual({})
-    expect($groupActivity.get().Stale.map(item => item.kind)).toContain('cancelled')
-    expect(commit).toHaveBeenCalledTimes(1)
-  })
-
-  it('consumes a room-stopped watermark without appending a reply', async () => {
-    turns = fakeTurns(async () => ({
-      kind: 'cancelled',
-      reason: 'room-stopped',
-      commit: () => ({ accepted: true as const })
-    }))
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Stopped', [{ name: 'research' }], 'start', 't1')
-    await settle('Stopped')
-    const result = $groupChats.get().Stopped
-    expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
-    expect(result.watermarks['t1::research']).toBe(result.log.length)
-  })
-
-  it('suppresses result activity when a room-stopped lease rejects', async () => {
-    const commit = vi.fn(() => ({ accepted: false as const, reason: 'room-stopped' as const }))
-    turns = fakeTurns(async () => ({ kind: 'reply', text: 'stale', commit }))
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Rejected stop', [{ name: 'research' }], 'start', 't1')
-    await settle('Rejected stop')
-    const result = $groupChats.get()['Rejected stop']
-    expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
-    expect(result.watermarks['t1::research']).toBe(result.log.length)
-    expect($groupActivity.get()['Rejected stop'].some(item => item.kind === 'replied')).toBe(false)
-  })
-
-  it('keeps a normal-loop cross-thread late reply in its original thread', async () => {
-    turns = fakeTurns(async () => {
-      const current = $groupChats.get().Cross
-      $groupChats.set({
-        ...$groupChats.get(),
-        Cross: { ...current, epoch: current.epoch + 1, log: [...current.log, entry('user', 'You', 'other', 't2')] }
-      })
-      return accepted('reply', 'late original')
-    })
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Cross', [{ name: 'research' }], 'start', 't1')
-    // The old drive intentionally has no finalizer after the epoch change;
-    // publication itself is the behavior under test.
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect($groupChats.get().Cross.log.find(item => item.text === 'late original')).toMatchObject({ thread: 't1' })
-  })
-
-  it('drops a continuation after any epoch change before commit or publication', async () => {
-    const continuationCommit = vi.fn(() => ({ accepted: true as const }))
-    replaceGroupChats({ Room: room({ log: [entry('member', 'research', 'handoff @builder', 't1', 1)] }) })
-    turns = fakeTurns(async ({ member }) => {
-      if (member.name === 'research') return accepted('pass')
-      const current = $groupChats.get().Room
-      $groupChats.set({
-        ...$groupChats.get(),
-        Room: { ...current, epoch: current.epoch + 1, log: [...current.log, entry('user', 'You', 'other', 't2')] }
-      })
-      return { kind: 'reply', text: 'continuation late', commit: continuationCommit } as GroupTurnResult
-    })
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Room', [{ name: 'research' }, { name: 'builder' }], '@research go', 't1')
-    await new Promise(resolve => setTimeout(resolve, 30))
-    expect(continuationCommit).not.toHaveBeenCalled()
-    expect($groupChats.get().Room.log.some(item => item.text === 'continuation late')).toBe(false)
-    expect($groupChats.get().Room.watermarks['t1::builder']).toBeUndefined()
-    expect($groupActivity.get().Room.filter(item => item.member === 'builder')).toEqual([])
-  })
-
-  it('settles a live driver when an operation is invalidated without publishing', async () => {
-    turns = fakeTurns(async () => ({
-      kind: 'cancelled',
-      reason: 'engine-stopped',
-      commit: () => ({ accepted: true as const })
-    }))
-    driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Invalidated operation', [{ name: 'research' }], 'start', 't1')
-    await settle('Invalidated operation')
-    expect($groupChats.get()['Invalidated operation'].running).toBe(false)
-    expect($groupActivity.get()['Invalidated operation'].filter(item => item.member === 'research')).toEqual([])
-  })
-
-  it('does not publish an invalidated failure or timeout', async () => {
-    for (const kind of ['failed', 'timed-out'] as const) {
-      const pending = deferred<GroupTurnResult>()
-      let stopped = false
-      turns = {
-        ...fakeTurns(async () => pending.promise),
-        stop: vi.fn(() => { stopped = true })
-      }
-      driver = createGroupRoundDriver(turns)
-      const group = `Invalidated ${kind}`
-      driver.sendToGroupChat(group, [{ name: 'research' }], 'start', 't1')
-      pending.resolve({
-        kind,
-        ...(kind === 'failed' ? { reason: 'late failure' } : {}),
-        commit: () => stopped
-          ? { accepted: false as const, reason: 'engine-stopped' as const }
-          : { accepted: true as const }
-      } as GroupTurnResult)
-      turns.stop()
-      await Promise.resolve()
-      await Promise.resolve()
-      const result = $groupChats.get()[group]
-      expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
-      expect(result.watermarks).toEqual({})
-      expect($groupActivity.get()[group].some(item => item.kind === kind)).toBe(false)
-    }
-  })
-})
-
 describe('round lifecycle and guards', () => {
-  it('holds a member on a stop send and consumes its delta once', async () => {
-    turns = fakeTurns(async () => accepted('pass'))
+  it('stamps member holds from a stop send', async () => {
+    turns = fakeTurns()
     driver = createGroupRoundDriver(turns)
     driver.sendToGroupChat('Holds', [{ name: 'research' }, { name: 'builder' }], 'stop @research', 't1')
     await settle('Holds')
     expect($groupChats.get().Holds.holds?.research).toBeTruthy()
-    expect($groupActivity.get().Holds.map(item => item.kind)).toContain('held')
+  })
+
+  it('settles a quiet round with the settled finalizer', async () => {
+    turns = fakeTurns()
+    driver = createGroupRoundDriver(turns)
+    driver.sendToGroupChat('Quiet', MEMBERS, 'fyi, deploy went out', 't1')
+    await settle('Quiet')
+    expect($groupChats.get().Quiet.running).toBe(false)
+    expect($groupActivity.get().Quiet.map(item => item.kind)).toContain('settled')
+    expect(vi.mocked(turns.takeTurn)).toHaveBeenCalledTimes(MEMBERS.length)
+  })
+
+  it('clears the needs-you badge on send and dedupes the roster on durable identity', () => {
+    $groupNeedsYou.set({ Room: true })
+    turns = fakeTurns()
+    driver = createGroupRoundDriver(turns)
+    driver.sendToGroupChat('Room', [{ name: 'research' }, { name: 'research' }, { name: 'builder' }], 'hello', 't1')
+    expect($groupNeedsYou.get().Room).toBe(false)
+    expect($groupChats.get().Room.members.map(member => member.name)).toEqual(['research', 'builder'])
   })
 
   it('caps chatty members at the room message limit', async () => {
-    turns = fakeTurns(async () => accepted('reply', 'another thought @everyone keep going'))
+    vi.useFakeTimers()
+    // The REAL turn module over a fake gateway: the caps test exercises the
+    // full pipeline — takeTurn drive step, publication, and the driver's cap.
+    let resumes = 0
+    const gateway = createGroupMemberGateway(async (method, params = {}) => {
+      if (method === 'session.resume') {
+        if (params.omit_messages) return { session_id: 'rt', session_key: 'stored' }
+        resumes += 1
+        return resumes % 2 === 1
+          ? { messages: [] }
+          : { messages: [{ role: 'assistant', content: 'another thought @everyone keep going' }] }
+      }
+      return {}
+    })
+    turns = createGroupTurnModule(gateway)
     driver = createGroupRoundDriver(turns)
     driver.sendToGroupChat('Loud', [{ name: 'research' }, { name: 'builder' }], 'go wild', 't1')
-    await settle('Loud')
-    expect($groupChats.get().Loud.log.filter(item => item.from.kind === 'member').length).toBeLessThanOrEqual(10)
+    await vi.advanceTimersByTimeAsync(30000)
+    const result = $groupChats.get().Loud
+    expect(result.log.filter(item => item.from.kind === 'member').length).toBeLessThanOrEqual(10)
+    expect($groupActivity.get().Loud.map(item => item.kind)).toContain('capped')
+    expect(result.running).toBe(false)
   })
 
   it('chains a send onto a running room without using a second driver', async () => {
     vi.useFakeTimers()
-    let release!: (value: GroupTurnResult) => void
-    const first = new Promise<GroupTurnResult>(resolve => { release = resolve })
-    const run = vi.fn<GroupTurnModule['run']>()
+    let release!: (value: GroupTurnReport) => void
+    const first = new Promise<GroupTurnReport>(resolve => { release = resolve })
+    const takeTurn = vi.fn<GroupTurnModule['takeTurn']>()
       .mockReturnValueOnce(first)
-      .mockResolvedValue(accepted('pass'))
-    turns = fakeTurns(run)
+      .mockResolvedValue({ ...NOOP_REPORT })
+    turns = fakeTurns(takeTurn)
     driver = createGroupRoundDriver(turns)
     driver.sendToGroupChat('Chain', [{ name: 'research' }], 'first', 't1')
     driver.sendToGroupChat('Chain', [{ name: 'research' }], 'second', 't1')
-    release(accepted('reply', 'first done'))
+    release({ abandoned: false, spoke: true, stop: false })
     await vi.advanceTimersByTimeAsync(400)
     expect($groupChats.get().Chain.log.filter(item => item.from.kind === 'user')).toHaveLength(2)
     expect($groupChats.get().Chain.running).toBe(false)
+    expect(vi.mocked(turns.takeTurn).mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
   it('interrupts the current speaker after applying local stop state', async () => {

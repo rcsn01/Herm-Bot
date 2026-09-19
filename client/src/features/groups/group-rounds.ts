@@ -1,8 +1,15 @@
 /**
  * Room-level coordination, ported from the desktop Bot Mode's
  * group-rounds.ts (apps/desktop/src/plugins/hermes-bots/group-rounds.ts):
- * the @mention parse, responder resolution, speaker rotation, the per-turn
- * prompt, the #93129 member holds, and the bounded round-robin driver.
+ * the @mention parse, responder resolution, speaker rotation, the #93129
+ * member holds, and the bounded round-robin driver.
+ *
+ * The round driver owns room sequencing only: rounds, caps, responder
+ * rotation, the drive boundary checks and finalizer, and the send/stop
+ * verbs. One member's turn end to end — watermark delta, hold consumption,
+ * prompt assembly, the run, and that turn's room-log publication — lives in
+ * the Group member turn module (group-turns.ts), driven here via takeTurn at
+ * each member boundary.
  *
  * Behavioral model (desktop, clean-room): a group conversation is ONE ordered
  * room log owned by this store. A user send triggers at most
@@ -14,11 +21,9 @@
  * saw the room.
  */
 
-import type { GroupMessage } from './group-model'
-import { recordGroupActivity } from './group-runtime'
+import { botHandle, groupDurableMemberKey, type EngineMember, type GroupMessage } from './group-model'
 import {
   $groupNeedsYou,
-  GROUP_CHAT_HISTORY_LIMIT,
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MEMBERS,
   GROUP_CHAT_MAX_MESSAGES,
@@ -26,32 +31,15 @@ import {
   appendGroupChatEntry,
   getGroupRoom,
   groupMemberKey,
-  groupSpeakerLabel,
   groupThreadOf,
   mintGroupThreadId,
+  recordGroupActivity,
   updateGroupChat,
   type GroupHoldStamp
 } from './group-store'
-import type { GroupTurnModule, GroupTurnResult } from './group-turns'
+import type { GroupTurnModule } from './group-turns'
 
-export interface EngineMember {
-  connectionId?: string
-  connectionKind?: string
-  connectionLabel?: string
-  displayName?: string
-  handle?: string
-  name: string
-  sourceScoped?: boolean
-  title?: string
-}
-
-/** The @handle a member is addressed by. The primary profile is presented as
- *  hermes (botHandle, data.ts): a bot named "default" must stay @hermes. */
-export function botHandle(name: string, member?: { handle?: string }): string {
-  const handle = String(member?.handle || '').trim()
-  if (handle) return handle
-  return name.trim().toLowerCase() === 'default' ? 'hermes' : name.trim().toLowerCase()
-}
+/** Deterministic @mention parse (group-rounds.ts parseGroupChatMentions):
 
 /** Deterministic @mention parse (group-rounds.ts parseGroupChatMentions):
  *  @name, @handle, @everyone/@all; names match case-insensitively against
@@ -130,52 +118,6 @@ export function rotateGroupSpeakers<T>(members: T[], round: number): T[] {
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
-/** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
- *  `Name (you): …`. (group-rounds.ts formatGroupChatLine) */
-export function formatGroupChatLine(entry: GroupMessage, viewerName: string): string {
-  if (entry.from.kind === 'user') {
-    return `${entry.from.name || 'User'} (user): ${entry.text}`
-  }
-  const suffix = entry.from.name === viewerName ? ' (you)' : ''
-  const source = entry.from.source ? ` [${entry.from.source}]` : ''
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}`
-}
-
-interface GroupChatTurnPromptInput {
-  deltaLines: string[]
-  groupName: string
-  members: EngineMember[]
-  viewer: EngineMember
-}
-
-/** The full per-turn payload for one member: participation rules + the room
- *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
- *  can join a group chat without a profile migration. Byte-faithful port of
- *  the desktop template — the model sees the same contract on both surfaces. */
-export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: GroupChatTurnPromptInput): string {
-  const viewerKey = groupMemberKey(viewer)
-  const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
-  const peerNames = peers
-    .map(m => {
-      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
-      return m.sourceScoped || m.connectionLabel ? `${handle} [${m.connectionLabel || m.connectionId}]` : handle
-    })
-    .join(', ')
-
-  return [
-    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
-    '',
-    'New messages in the room since your last turn (oldest first):',
-    ...deltaLines.map(line => `  ${line}`),
-    '',
-    'Rules for this room:',
-    '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
-    '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
-    '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
-    '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'
-  ].join('\n')
-}
-
 // --- member-hold helpers (#93129) — pure, unit-tested ---
 
 /** #93129: classify a USER room message's effect on member holds. Only user
@@ -237,12 +179,6 @@ export function applyGroupHoldDirective(
   return next
 }
 
-/** A held member's skip must consume its delta exactly once — advance the
- *  watermark past the current log. Null = nothing to consume. */
-export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
-  return logLength > (seen || 0) ? logLength : null
-}
-
 // --- end member-hold helpers ---
 
 /** Members cited by @mention in a thread who have not posted any entry after
@@ -283,89 +219,6 @@ export interface GroupRoundDriver {
   deactivate(): void
 }
 
-interface PublishedTurn {
-  abandoned: boolean
-  spoke: boolean
-  stop: boolean
-}
-
-/** Publish one typed turn result. The lease classification is authoritative:
- * a room stop consumes the current member delta without appending, a newer
- * same-thread send records only supersession, and an engine stop abandons the
- * drive without running its finalizer. */
-function publishTurnResult(
-  group: string,
-  member: EngineMember,
-  thread: string,
-  markKey: string,
-  result: GroupTurnResult,
-  includeFailureReason: boolean
-): PublishedTurn {
-  const lease = result.commit()
-
-  if (!lease.accepted) {
-    if (lease.reason === 'room-stopped') {
-      updateGroupChat(group, r => {
-        r.watermarks[markKey] = r.log.length
-        return r
-      }, { sync: false })
-      return { abandoned: false, spoke: false, stop: true }
-    }
-    if (lease.reason === 'newer-user') {
-      recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
-      return { abandoned: false, spoke: false, stop: true }
-    }
-    return { abandoned: true, spoke: false, stop: true }
-  }
-
-  if (result.kind === 'cancelled') {
-    if (result.reason === 'room-stopped') {
-      updateGroupChat(group, r => {
-        r.watermarks[markKey] = r.log.length
-        return r
-      }, { sync: false })
-      return { abandoned: false, spoke: false, stop: true }
-    }
-    if (result.reason === 'newer-user') {
-      recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
-      return { abandoned: false, spoke: false, stop: true }
-    }
-    // A live module can invalidate one operation when a newer operation claims
-    // its token. That cancellation is a no-op, not a lifecycle abandonment;
-    // only a rejected engine-stopped lease suppresses the drive finalizer.
-    return { abandoned: false, spoke: false, stop: true }
-  }
-
-  if (result.kind === 'reply') {
-    recordGroupActivity(group, { kind: 'replied', member: member.name, thread })
-  } else if (result.kind === 'pass') {
-    recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
-  } else if (result.kind === 'timed-out') {
-    recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
-  } else if (result.kind === 'failed') {
-    const reason = includeFailureReason ? result.reason : undefined
-    recordGroupActivity(group, { kind: 'failed', member: member.name, thread, ...(reason ? { reason } : {}) })
-  }
-
-  updateGroupChat(group, r => {
-    r.watermarks[markKey] = r.log.length
-    return r
-  }, { sync: false })
-
-  if (result.kind !== 'reply') return { abandoned: false, spoke: false, stop: false }
-
-  appendGroupChatEntry(group, {
-    kind: 'member',
-    name: member.name,
-    ...(member.connectionLabel || member.sourceScoped ? { source: member.connectionLabel || member.connectionId } : {})
-  }, result.text, thread)
-  updateGroupChat(group, r => {
-    r.watermarks[markKey] = r.log.length
-    return r
-  }, { sync: false })
-  return { abandoned: false, spoke: true, stop: false }
-}
-
 export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver {
   let deactivated = false
   let abandoned = false
@@ -403,10 +256,7 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
         }
 
         const roomLog = getGroupRoom(group).log.filter(entry => groupThreadOf(entry) === thread)
-        const strandedNow = getGroupRoom(group).stranded || {}
-        const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
-          member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
-        )
+        const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round)
 
         let spokeThisRound = 0
 
@@ -418,41 +268,7 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
             return
           }
 
-          const room = getGroupRoom(group)
-          const memberKey = groupMemberKey(member)
-          const markKey = `${thread}::${memberKey}`
-          const seen = room.watermarks[markKey] || 0
-          const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === thread)
-          if (!delta.length) continue
-
-          // #93129: a held member takes no turn — consume the delta exactly
-          // once so the same entries never re-trigger the skip.
-          const heldEntry = (room.holds || {})[memberKey]
-          if (heldEntry) {
-            const advance = heldMemberWatermarkAdvance(seen, room.log.length)
-            updateGroupChat(group, r => {
-              if (advance !== null) r.watermarks[markKey] = advance
-              if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
-                r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
-              }
-              return r
-            })
-            if (!heldEntry.noted) {
-              recordGroupActivity(group, { kind: 'held', member: member.name, thread })
-            }
-            continue
-          }
-
-          const prompt = buildGroupChatTurnPrompt({
-            groupName: group,
-            members,
-            viewer: member,
-            deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, member.name))
-          })
-
-          updateGroupChat(group, r => ({ ...r, turn: member.name }), { sync: false })
-          const result = await turns.run({ group, member, prompt, thread })
-          const outcome = publishTurnResult(group, member, thread, markKey, result, true)
+          const outcome = await turns.takeTurn({ group, member, members, thread, driveEpoch: startEpoch, policy: 'round' })
           if (outcome.abandoned) {
             abandoned = true
             return
@@ -474,35 +290,10 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
           if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
             const citedMembers = members.filter(member => pendingKeys.includes(groupMemberKey(member)))
             if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
-              const stranded = getGroupRoom(group).stranded || {}
-              const continuationResponders = citedMembers.filter(member => !Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member)))
-
-              for (const member of continuationResponders) {
+              for (const member of citedMembers) {
                 if (!driveIsLive() || !roomEpochIsCurrent(group, startEpoch) || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) break
 
-                const room = getGroupRoom(group)
-                const memberKey = groupMemberKey(member)
-                const markKey = `${thread}::${memberKey}`
-                const seen = room.watermarks[markKey] || 0
-                const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === thread)
-                if (!delta.length) continue
-                if ((room.holds || {})[memberKey]) continue // holds apply to continuation turns
-
-                const prompt = buildGroupChatTurnPrompt({
-                  groupName: group,
-                  members,
-                  viewer: member,
-                  deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, member.name))
-                })
-
-                updateGroupChat(group, r => ({ ...r, turn: member.name }), { sync: false })
-                const continuationResult = await turns.run({ group, member, prompt, thread })
-
-                // Continuations deliberately retain their strict drive-level
-                // epoch policy. Do not inherit normal-loop cross-thread acceptance.
-                if (!driveIsLive() || !roomEpochIsCurrent(group, startEpoch)) return
-
-                const outcome = publishTurnResult(group, member, thread, markKey, continuationResult, false)
+                const outcome = await turns.takeTurn({ group, member, members, thread, driveEpoch: startEpoch, policy: 'continuation' })
                 if (outcome.abandoned) {
                   abandoned = true
                   return
@@ -561,7 +352,7 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
     const seen = new Set<string>()
     const roster = members
       .filter(member => {
-        const key = `${member.connectionId || 'legacy'}::${member.name}`
+        const key = groupDurableMemberKey(member)
         if (seen.has(key)) return false
         seen.add(key)
         return true

@@ -16,8 +16,7 @@ import {
   stopGroupThread,
   useGroupRooms
 } from './group-engine'
-import { replaceGroupChats, updateGroupChat, type GroupChatRoom } from './group-store'
-import type { GroupPrompt } from './group-runtime'
+import { replaceGroupChats, updateGroupChat, type GroupChatRoom, type GroupPrompt } from './group-store'
 import type { GroupMember, GroupMessage, GroupRoom } from './group-model'
 
 type Transport = (method: string, params?: Record<string, unknown>) => Promise<unknown>

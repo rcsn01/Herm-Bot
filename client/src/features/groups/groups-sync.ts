@@ -11,8 +11,7 @@
  * connection per scope, so the per-connection job maps collapse.
  */
 
-import type { GroupMember, GroupMessage } from './group-model'
-import type { GroupEngineRequest } from './group-runtime'
+import { groupDurableMemberKey, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
 import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
 
 const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
@@ -111,13 +110,6 @@ export function groupChatSyncEntryKey(entry: GroupMessage): string {
     String(entry?.thread || 'legacy').replace(/^legacy-\d+$/, 'legacy'),
     String(entry?.text || '')
   ])
-}
-
-/** Members dedupe on durable identity — the same (connectionId, name) pair
- *  botRosterKey seats them by everywhere else. Display strings (label,
- *  handle) are re-derived per machine and must not key membership. */
-export function groupChatSyncMemberKey(member: GroupMember): string {
-  return `${member?.connectionId || 'legacy'}::${member?.name || 'default'}`
 }
 
 /** Lift any historical projection shape (v1 wall-clock, v2 name-keyed) to
@@ -398,7 +390,7 @@ export function mergeGroupChatSyncSnapshots(
       const byId = new Map<string, GroupMember>()
 
       for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
-        byId.set(groupChatSyncMemberKey(member), member)
+        byId.set(groupDurableMemberKey(member), member)
       }
 
       members = [...byId.values()]
@@ -501,7 +493,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     )
 
     const members = new Map<string, GroupMember>(
-      (Array.isArray(existing.members) ? existing.members : []).map(member => [groupChatSyncMemberKey(member), member])
+      (Array.isArray(existing.members) ? existing.members : []).map(member => [groupDurableMemberKey(member), member])
     )
 
     for (const entry of projected.log) {
@@ -524,7 +516,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       }
 
       for (const member of Array.isArray(projected.members) ? projected.members : []) {
-        members.set(groupChatSyncMemberKey(member), { ...member, sourceScoped: member.sourceScoped })
+        members.set(groupDurableMemberKey(member), { ...member, sourceScoped: member.sourceScoped })
       }
     }
 

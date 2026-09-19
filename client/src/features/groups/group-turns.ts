@@ -1,32 +1,35 @@
 /**
  * One member's turn: its hidden per-group plumbing session, the submit/poll
  * loop that runs it, the pending clarify/approval prompts mirrored out of
- * it, and the late-reply harvest for a turn that timed out.
+ * it, the late-reply harvest for a turn that timed out, the per-turn drive
+ * step (watermark delta, hold consumption, prompt assembly, turn indicator),
+ * and that turn's room-log publication.
  *
  * Ported from the desktop Bot Mode's group-turns.ts
- * (apps/desktop/src/plugins/hermes-bots/group-turns.ts). Room-level
- * sequencing lives in group-rounds.ts, which drives this module.
+ * (apps/desktop/src/plugins/hermes-bots/group-turns.ts).
  *
  * The Group engine creates one captured member gateway and one terminal turn
- * module per lifecycle. The module owns member-session behavior and stale
- * operation policy; the round driver owns room-log publication.
+ * module per lifecycle. The module owns one member's turn end to end,
+ * including publication; the round driver (group-rounds.ts) owns room
+ * sequencing — rounds, caps, responder rotation, the drive finalizer.
+ * Publication living here is a documented PWA divergence from the desktop's
+ * group-rounds.ts, which keeps publication in its round driver.
  */
 
-import type { GroupMember } from './group-model'
-import {
-  $groupPrompts,
-  recordGroupActivity,
-  type GroupEngineRequest,
-  type GroupPrompt
-} from './group-runtime'
+import { botHandle, type EngineMember, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
 import {
   $groupChats,
   $groupNeedsYou,
+  $groupPrompts,
+  GROUP_CHAT_HISTORY_LIMIT,
   appendGroupChatEntry,
   groupMemberKey,
+  groupSpeakerLabel,
   groupThreadOf,
+  recordGroupActivity,
   updateGroupChat,
-  type GroupChatRoom
+  type GroupChatRoom,
+  type GroupPrompt
 } from './group-store'
 
 export interface GroupMemberGateway {
@@ -86,9 +89,38 @@ export type GroupTurnResult =
       commit: () => GroupTurnCommit
     }
 
+export type GroupTurnPolicy = 'round' | 'continuation'
+
+export interface GroupTurnSpec {
+  group: string
+  thread: string
+  member: EngineMember
+  /** Room roster — feeds the prompt's peer list. */
+  members: readonly EngineMember[]
+  /** The drive's captured start epoch. 'continuation' bails on any change. */
+  driveEpoch: number
+  policy: GroupTurnPolicy
+}
+
+export interface GroupTurnReport {
+  /** Rejected engine-stopped lease: the drive stops and skips its finalizer. */
+  abandoned: boolean
+  /** The member's reply was appended to the room log. */
+  spoke: boolean
+  /** The drive must stop: room-stopped, newer-user, invalidated operation,
+   *  continuation epoch drift — and a rejected engine-stopped lease also sets
+   *  it (abandoned implies stop; the driver checks abandoned first). */
+  stop: boolean
+}
+
 export interface GroupTurnModule {
-  run(input: GroupTurnInput): Promise<GroupTurnResult>
+  /** One member's turn end to end. Never rejects for member-level failure
+   *  (network error classifies as 'failed' ⇒ silent). Never claims a token
+   *  when it returns a no-op outcome. */
+  takeTurn(spec: GroupTurnSpec): Promise<GroupTurnReport>
   harvest(group: string, member: GroupMember): Promise<void>
+  /** Harvest every member holding a stranded marker (engine facade: room open). */
+  harvestRoom(group: string, members: readonly GroupMember[]): Promise<void>
   answer(
     entry: GroupPrompt,
     member: GroupMember,
@@ -96,6 +128,9 @@ export interface GroupTurnModule {
   ): Promise<void>
   interrupt(member: GroupMember, storedSessionId: string): Promise<void>
   stop(): void
+  /** Internal test seam: the raw capture/lease machinery. The driver and the
+   *  facade never call it; only this module's tests do. */
+  run(input: GroupTurnInput): Promise<GroupTurnResult>
 }
 
 function roomOf(group: string): GroupChatRoom {
@@ -115,6 +150,58 @@ export function isGroupPassText(text: unknown): boolean {
   const trimmed = String(text || '').trim()
   if (!trimmed) return true
   return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
+}
+
+/** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
+ *  `Name (you): …`. (group-rounds.ts formatGroupChatLine) */
+export function formatGroupChatLine(entry: GroupMessage, viewerName: string): string {
+  if (entry.from.kind === 'user') {
+    return `${entry.from.name || 'User'} (user): ${entry.text}`
+  }
+  const suffix = entry.from.name === viewerName ? ' (you)' : ''
+  const source = entry.from.source ? ` [${entry.from.source}]` : ''
+  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}`
+}
+
+interface GroupChatTurnPromptInput {
+  deltaLines: string[]
+  groupName: string
+  members: readonly EngineMember[]
+  viewer: EngineMember
+}
+
+/** The full per-turn payload for one member: participation rules + the room
+ *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
+ *  can join a group chat without a profile migration. Byte-faithful port of
+ *  the desktop template — the model sees the same contract on both surfaces. */
+export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: GroupChatTurnPromptInput): string {
+  const viewerKey = groupMemberKey(viewer)
+  const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
+  const peerNames = peers
+    .map(m => {
+      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
+      return m.sourceScoped || m.connectionLabel ? `${handle} [${m.connectionLabel || m.connectionId}]` : handle
+    })
+    .join(', ')
+
+  return [
+    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    '',
+    'New messages in the room since your last turn (oldest first):',
+    ...deltaLines.map(line => `  ${line}`),
+    '',
+    'Rules for this room:',
+    '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
+    '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
+    '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
+    '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'
+  ].join('\n')
+}
+
+/** A held member's skip must consume its delta exactly once — advance the
+ *  watermark past the current log. Null = nothing to consume. */
+export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
+  return logLength > (seen || 0) ? logLength : null
 }
 
 /** One transcript entry in a `session.resume` snapshot, as the turn harvester
@@ -325,6 +412,9 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
   const markerVersions = new Map<string, number>()
 
   const operationKey = (group: string, member: GroupMember) => `${group}::${groupMemberKey(member)}`
+
+  /** The one owner of the per-member watermark key format. */
+  const watermarkKey = (thread: string, memberKey: string): string => `${thread}::${memberKey}`
 
   const claimToken = (group: string, member: GroupMember): number => {
     const token = ++nextToken
@@ -619,6 +709,147 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     return { kind: 'timed-out', commit: commitFor(capture) }
   }
 
+  /** Publish one typed turn result. The lease classification is authoritative:
+   * a room stop consumes the current member delta without appending, a newer
+   * same-thread send records only supersession, and an engine stop abandons the
+   * drive without running its finalizer. */
+  const publishTurn = (
+    group: string,
+    member: EngineMember,
+    thread: string,
+    markKey: string,
+    result: GroupTurnResult,
+    includeFailureReason: boolean
+  ): GroupTurnReport => {
+    const lease = result.commit()
+
+    if (!lease.accepted) {
+      if (lease.reason === 'room-stopped') {
+        updateGroupChat(group, r => {
+          r.watermarks[markKey] = r.log.length
+          return r
+        }, { sync: false })
+        return { abandoned: false, spoke: false, stop: true }
+      }
+      if (lease.reason === 'newer-user') {
+        recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+        return { abandoned: false, spoke: false, stop: true }
+      }
+      return { abandoned: true, spoke: false, stop: true }
+    }
+
+    if (result.kind === 'cancelled') {
+      if (result.reason === 'room-stopped') {
+        updateGroupChat(group, r => {
+          r.watermarks[markKey] = r.log.length
+          return r
+        }, { sync: false })
+        return { abandoned: false, spoke: false, stop: true }
+      }
+      if (result.reason === 'newer-user') {
+        recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+        return { abandoned: false, spoke: false, stop: true }
+      }
+      // A live module can invalidate one operation when a newer operation claims
+      // its token. That cancellation is a no-op, not a lifecycle abandonment;
+      // only a rejected engine-stopped lease suppresses the drive finalizer.
+      return { abandoned: false, spoke: false, stop: true }
+    }
+
+    if (result.kind === 'reply') {
+      recordGroupActivity(group, { kind: 'replied', member: member.name, thread })
+    } else if (result.kind === 'pass') {
+      recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
+    } else if (result.kind === 'timed-out') {
+      recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
+    } else if (result.kind === 'failed') {
+      const reason = includeFailureReason ? result.reason : undefined
+      recordGroupActivity(group, { kind: 'failed', member: member.name, thread, ...(reason ? { reason } : {}) })
+    }
+
+    updateGroupChat(group, r => {
+      r.watermarks[markKey] = r.log.length
+      return r
+    }, { sync: false })
+
+    if (result.kind !== 'reply') return { abandoned: false, spoke: false, stop: false }
+
+    appendGroupChatEntry(group, {
+      kind: 'member',
+      name: member.name,
+      ...(member.connectionLabel || member.sourceScoped ? { source: member.connectionLabel || member.connectionId } : {})
+    }, result.text, thread)
+    updateGroupChat(group, r => {
+      r.watermarks[markKey] = r.log.length
+      return r
+    }, { sync: false })
+    return { abandoned: false, spoke: true, stop: false }
+  }
+
+  /** One member's turn end to end: the drive step the round driver used to
+   *  copy-paste into both of its loops, plus that turn's publication. */
+  const takeTurn = async (spec: GroupTurnSpec): Promise<GroupTurnReport> => {
+    const room = roomOf(spec.group)
+    const memberKey = groupMemberKey(spec.member)
+
+    // A member with a standing stranded marker takes no new turn. Checked
+    // before any token claim, so the refusal never invalidates an in-flight
+    // harvest. (The driver's per-loop pre-filters moved here: one invariant,
+    // one owner. A legacy numeric marker 0 is a valid marker.)
+    if (room.stranded && Object.prototype.hasOwnProperty.call(room.stranded, memberKey)) {
+      return { abandoned: false, spoke: false, stop: false }
+    }
+
+    const markKey = watermarkKey(spec.thread, memberKey)
+    const seen = room.watermarks[markKey] || 0
+    const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === spec.thread)
+    if (!delta.length) return { abandoned: false, spoke: false, stop: false }
+
+    // #93129: a held member takes no turn — consume the delta exactly once so
+    // the same entries never re-trigger the skip. Continuations skip silently
+    // without consuming (group-rounds.ts:489).
+    const heldEntry = (room.holds || {})[memberKey]
+    if (heldEntry) {
+      if (spec.policy === 'round') {
+        const advance = heldMemberWatermarkAdvance(seen, room.log.length)
+        updateGroupChat(spec.group, r => {
+          if (advance !== null) r.watermarks[markKey] = advance
+          if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
+            r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
+          }
+          return r
+        })
+        if (!heldEntry.noted) {
+          recordGroupActivity(spec.group, { kind: 'held', member: spec.member.name, thread: spec.thread })
+        }
+      }
+      return { abandoned: false, spoke: false, stop: false }
+    }
+
+    const prompt = buildGroupChatTurnPrompt({
+      groupName: spec.group,
+      members: spec.members,
+      viewer: spec.member,
+      deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, spec.member.name))
+    })
+
+    updateGroupChat(spec.group, r => ({ ...r, turn: spec.member.name }), { sync: false })
+    const result = await run({ group: spec.group, member: spec.member, prompt, thread: spec.thread })
+
+    // Continuations deliberately retain their strict drive-level epoch policy.
+    // Do not inherit normal-loop cross-thread acceptance: bail before the lease
+    // is committed (group-rounds.ts:503). The driveIsLive() half of the old
+    // driver-side bail is unreachable in flight: stopGroupEngine deactivates
+    // the driver, stops the turn module, and bumps every room epoch
+    // synchronously — no interleaving point — so this epoch check catches it;
+    // in-loop abandonment returns immediately and can never be observed here.
+    if (spec.policy === 'continuation' && (roomOf(spec.group).epoch || 0) !== spec.driveEpoch) {
+      return { abandoned: false, spoke: false, stop: true }
+    }
+
+    return publishTurn(spec.group, spec.member, spec.thread, markKey, result, spec.policy === 'round')
+  }
+
   const markerIsCurrent = (
     group: string,
     member: GroupMember,
@@ -720,11 +951,23 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       updateGroupChat(
         group,
         (r: GroupChatRoom) => {
-          r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+          r.watermarks[watermarkKey(strandedThread, memberKey)] = r.log.length
           return r
         },
         { sync: false }
       )
+    }
+  }
+
+  /** Harvest every member holding a stranded marker (engine facade: room
+   *  open). The module owns the stranded-marker invariant, so the facade no
+   *  longer reads the marker shape to decide whom to harvest. */
+  const harvestRoom = async (group: string, members: readonly GroupMember[]): Promise<void> => {
+    for (const member of members) {
+      const room = roomOf(group)
+      if (room.stranded && Object.prototype.hasOwnProperty.call(room.stranded, groupMemberKey(member))) {
+        await harvest(group, member)
+      }
     }
   }
 
@@ -785,7 +1028,9 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
   return {
     run,
+    takeTurn,
     harvest,
+    harvestRoom,
     answer,
     interrupt,
     stop() {

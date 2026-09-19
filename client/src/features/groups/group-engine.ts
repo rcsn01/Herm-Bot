@@ -7,40 +7,37 @@
  * surface. Which room to open and what to draft stay with the screens
  * (CONTEXT.md: engine plumbing vs call-site policy).
  *
- * Internal seams (group-store, group-runtime, groups-sync, group-rounds,
- * group-turns) are file-exports, never re-exported here except the read
- * surface below — writers stay inside the engine.
+ * Internal seams (group-store, groups-sync, group-rounds, group-turns) are
+ * file-exports, never re-exported here except the read surface below —
+ * writers stay inside the engine.
  */
 
 import { useEffect, useMemo } from 'react'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 
-import type { GroupMember, GroupRoom } from './group-model'
+import type { EngineMember, GroupEngineRequest, GroupMember, GroupRoom } from './group-model'
 import {
+  $groupActivity,
   $groupChats,
+  $groupNeedsYou,
+  $groupPrompts,
   adoptMirrorRoom,
-  getGroupRoom,
   mintGroupRoomId,
   setGroupSyncScheduler,
   uniqueGroupChatName,
   updateGroupChat,
-  type GroupChatRoom
-} from './group-store'
-import {
-  $groupActivity,
-  $groupPrompts,
   type GroupActivityEntry,
-  type GroupEngineRequest,
+  type GroupChatRoom,
   type GroupPrompt
-} from './group-runtime'
+} from './group-store'
 import {
   createGroupMirror,
   createGroupMirrorGateway,
   groupChatRoomKey,
   type GroupMirror
 } from './groups-sync'
-import { createGroupRoundDriver, type EngineMember, type GroupRoundDriver } from './group-rounds'
+import { createGroupRoundDriver, type GroupRoundDriver } from './group-rounds'
 import { createGroupMemberGateway, createGroupTurnModule, type GroupTurnModule } from './group-turns'
 
 // --- Lifecycle — the GatewayController is the only caller. -------------------
@@ -103,12 +100,7 @@ export function openGroupRoom(room: GroupRoom): void {
   const mirror = activeMirror
   const turns = activeTurns
   if (mirror) void mirror.pull().catch(() => undefined)
-  const local = getGroupRoom(room.name)
-  if (turns && local.stranded && Object.keys(local.stranded).length > 0) {
-    void Promise.all(room.members.map(member => turns.harvest(room.name, member))).catch(
-      () => undefined
-    )
-  }
+  if (turns) void turns.harvestRoom(room.name, room.members).catch(() => undefined)
 }
 
 /** Mint a durable room identity, keep the display name unique, write the room,
@@ -184,8 +176,7 @@ export function useGroupRooms(rosterGroups?: GroupRoom[]): GroupRoom[] {
 // --- Read surface (re-exported; writers stay inside the engine). -------------
 
 export { $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_MEMBERS, getGroupRoom } from './group-store'
-export { $groupActivity, $groupPrompts } from './group-runtime'
-
+export { $groupActivity, $groupPrompts } from './group-store'
 // --- Actions — thin wrappers over the active captured lifecycle. ------------
 
 export function sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string {
@@ -208,5 +199,6 @@ export async function answerGroupPrompt(
 
 // --- Types. ------------------------------------------------------------------
 
-export type { GroupEngineRequest as GroupEngineTransport, GroupActivityEntry, GroupPrompt } from './group-runtime'
+export type { GroupEngineRequest as GroupEngineTransport } from './group-model'
+export type { GroupActivityEntry, GroupPrompt } from './group-store'
 export type { GroupChatRoom } from './group-store'

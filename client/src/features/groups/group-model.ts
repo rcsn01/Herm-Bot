@@ -38,6 +38,43 @@ export interface GroupMember {
   sourceScoped?: boolean
 }
 
+/** The engine's member shape for the drive: a mirror roster row plus the
+ *  presentation fields the roster carries (title, display name, handle). */
+export interface EngineMember {
+  connectionId?: string
+  connectionKind?: string
+  connectionLabel?: string
+  displayName?: string
+  handle?: string
+  name: string
+  sourceScoped?: boolean
+  title?: string
+}
+
+/** The @handle a member is addressed by. The primary profile is presented as
+ *  hermes (botHandle, data.ts): a bot named "default" must stay @hermes. */
+export function botHandle(name: string, member?: { handle?: string }): string {
+  const handle = String(member?.handle || '').trim()
+  if (handle) return handle
+  return name.trim().toLowerCase() === 'default' ? 'hermes' : name.trim().toLowerCase()
+}
+
+/** Durable member identity shared by every surface that must agree on
+ *  membership: the mirror's member dedupe/merge key (groups-sync) and the
+ *  send engine's roster-dedup key. Display strings (label, handle) never
+ *  key membership. */
+export function groupDurableMemberKey(member: GroupMember): string {
+  return `${member?.connectionId || 'legacy'}::${member?.name || 'default'}`
+}
+
+/** Raw transport contract the engine adapts per lifecycle (member gateway,
+ *  mirror gateway). */
+export type GroupEngineRequest = (
+  method: string,
+  params?: Record<string, unknown>,
+  options?: { signal?: AbortSignal }
+) => Promise<unknown>
+
 export interface GroupRoom {
   /** Stable identity: the snapshot record key (`id:<roomId>` or
    *  `name:<name>`), so a rename never forks the room. */

@@ -7,6 +7,11 @@
  * and the room epoch never ride the wire — they are local coordination
  * state, persisted to localStorage like the desktop persists to plugin
  * storage.
+ *
+ * This file also hosts the engine's runtime-only feed atoms (room activity,
+ * pending prompts) and the shared raw transport type lives in group-model —
+ * they sit beside the rooms (not in group-engine) so the append and turn
+ * paths can write them without an import cycle.
  */
 
 import { atom } from 'nanostores'
@@ -57,6 +62,56 @@ const STORAGE_KEY = 'hermes.group-chats.v1'
 export const $groupNeedsYou = atom<Record<string, boolean>>({})
 
 export const $groupChats = atom<Record<string, GroupChatRoom>>({})
+
+/** Room activity feed — the "queued/working/passed/replied/settled…" lines
+ * the desktop renders under the room (group-activity.ts). Runtime-only state,
+ * kept beside the rooms (not in group-engine) so the append path can record
+ * it without an import cycle. */
+export interface GroupActivityEntry {
+  at: number
+  epoch: number
+  kind: 'cancelled' | 'capped' | 'delivered' | 'failed' | 'held' | 'passed' | 'queued' | 'replied' | 'settled' | 'stopped' | 'timed-out' | 'working'
+  member: null | string
+  reason?: string
+  thread: null | string
+}
+
+export const $groupActivity = atom<Record<string, GroupActivityEntry[]>>({})
+const GROUP_ACTIVITY_LIMIT = 30
+
+export function recordGroupActivity(group: string, event: Omit<GroupActivityEntry, 'at' | 'epoch'>): void {
+  const entry: GroupActivityEntry = {
+    ...event,
+    at: Date.now(),
+    epoch: getRoomEpoch(group)
+  }
+  const all = $groupActivity.get()
+  const list = [...(all[group] || []), entry]
+  $groupActivity.set({ ...all, [group]: list.slice(-GROUP_ACTIVITY_LIMIT) })
+}
+
+function getRoomEpoch(group: string): number {
+  return $groupChats.get()[group]?.epoch || 0
+}
+
+/** A pending clarify question / command approval blocking inside a member's
+ * session, mirrored into a room card (#90694). */
+export interface GroupPrompt {
+  at: number
+  choices?: string[]
+  command?: string
+  group: string
+  kind: 'approval' | 'clarify'
+  member: string
+  memberKey: string
+  multiSelect?: boolean
+  question: string
+  questions?: Array<Record<string, unknown>> | null
+  requestId: string
+  sessionId?: null | string
+}
+
+export const $groupPrompts = atom<Record<string, GroupPrompt>>({})
 
 export function groupThreadOf(entry: GroupMessage): string {
   return entry?.thread || 'legacy'
