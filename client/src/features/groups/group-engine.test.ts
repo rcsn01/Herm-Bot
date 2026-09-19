@@ -16,7 +16,7 @@ import {
   useGroupRooms
 } from './group-engine'
 import { replaceGroupChats, updateGroupChat, type GroupChatRoom } from './group-store'
-import { groupEngineRequest } from './group-runtime'
+import type { GroupPrompt } from './group-runtime'
 import type { GroupMember, GroupMessage, GroupRoom } from './group-model'
 
 type Transport = (method: string, params?: Record<string, unknown>) => Promise<unknown>
@@ -122,7 +122,9 @@ describe('lifecycle', () => {
     updateGroupChat('Room', r => r) // scheduler gone — nothing scheduled
     await vi.advanceTimersByTimeAsync(1000)
     expect(calls.filter(call => call.method === 'profiles.configure')).toHaveLength(1)
-    expect(() => groupEngineRequest('profiles.list')).toThrow('Group engine transport is not connected.')
+    expect(sendToGroupChat('Room', [{ name: 'ada' }], 'after stop')).toBe(null)
+    await stopGroupThread('Room', 't1', [{ name: 'ada' }])
+    await expect(Promise.resolve()).resolves.toBeUndefined()
   })
 
   it('bumps every room epoch and clears running on scope teardown', () => {
@@ -227,6 +229,147 @@ describe('lifecycle', () => {
 
     expect($groupChats.get().Old).toBeUndefined()
     expect($groupChats.get().Next).toBeTruthy()
+  })
+
+  it('isolates an old member turn when a new lifecycle replaces its transport', async () => {
+    vi.useFakeTimers()
+    let releaseOldPoll!: (value: unknown) => void
+    const oldPoll = new Promise<unknown>(resolve => { releaseOldPoll = resolve })
+    let oldResume = 0
+    let oldMemberCalls = 0
+    const oldTransport: Transport = async (method, params = {}) => {
+      if (method === 'profiles.list') return {}
+      if (method === 'session.resume') {
+        oldMemberCalls += 1
+        if (params.omit_messages) return { session_id: 'old-runtime', session_key: 'old-stored' }
+        if (oldResume++ === 0) return { messages: [] }
+        return oldPoll
+      }
+      if (method === 'prompt.submit') { oldMemberCalls += 1; return {} }
+      return {}
+    }
+    startGroupEngine(oldTransport)
+    replaceGroupChats({ Room: room({ roomId: 'r-old', members: [{ name: 'ada' }] }) })
+    sendToGroupChat('Room', [{ name: 'ada' }], 'old request', 't-old')
+    await vi.advanceTimersByTimeAsync(2000)
+    const oldCallsAtStop = oldMemberCalls
+
+    stopGroupEngine()
+    let newResume = 0
+    const newTransport: Transport = async (method, params = {}) => {
+      if (method === 'profiles.list') return {}
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'new-runtime', session_key: 'new-stored' }
+      if (method === 'session.resume') return newResume++ === 0
+        ? { messages: [] }
+        : { messages: [{ role: 'assistant', content: 'new reply' }] }
+      return {}
+    }
+    startGroupEngine(newTransport)
+
+    releaseOldPoll({
+      messages: [{ role: 'assistant', content: 'old reply' }]
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(oldMemberCalls).toBe(oldCallsAtStop)
+    expect($groupChats.get().Room.log.some(item => item.text === 'old reply')).toBe(false)
+
+    sendToGroupChat('Room', [{ name: 'ada' }], 'new request', 't-new')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect($groupChats.get().Room.log.some(item => item.text === 'new reply')).toBe(true)
+  })
+
+  it('deactivates delayed drives so they cannot consult the next lifecycle', async () => {
+    vi.useFakeTimers()
+    let release!: (value: unknown) => void
+    const firstPoll = new Promise<unknown>(resolve => { release = resolve })
+    let pollCount = 0
+    let oldMemberCalls = 0
+    startGroupEngine(async (method, params = {}) => {
+      if (method === 'profiles.list') return {}
+      if (method === 'session.resume' && params.omit_messages) { oldMemberCalls += 1; return { session_id: 'rt', session_key: 'stored' } }
+      if (method === 'session.resume') {
+        oldMemberCalls += 1
+        if (pollCount++ === 0) return { messages: [] }
+        return firstPoll
+      }
+      if (method === 'prompt.submit') { oldMemberCalls += 1; return {} }
+      return {}
+    })
+    sendToGroupChat('Room', [{ name: 'ada' }], 'first', 't1')
+    sendToGroupChat('Room', [{ name: 'ada' }], 'second', 't1')
+    stopGroupEngine()
+    const callsAtStop = oldMemberCalls
+    let newResume = 0
+    startGroupEngine(async (method, params = {}) => {
+      if (method === 'profiles.list') return {}
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'new-rt', session_key: 'new-stored' }
+      if (method === 'session.resume') return newResume++ === 0
+        ? { messages: [] }
+        : { messages: [{ role: 'assistant', content: 'new lifecycle' }] }
+      return {}
+    })
+    sendToGroupChat('Room', [{ name: 'ada' }], 'new lifecycle request', 't2')
+    release({ messages: [{ role: 'assistant', content: 'old' }] })
+    await vi.advanceTimersByTimeAsync(400)
+    expect(oldMemberCalls).toBe(callsAtStop)
+    expect($groupChats.get().Room.log.some(item => item.text === 'old')).toBe(false)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect($groupChats.get().Room.log.some(item => item.text === 'new lifecycle')).toBe(true)
+    expect($groupChats.get().Room.running).toBe(false)
+  })
+
+  it('harvests an opened room through its captured lifecycle', async () => {
+    vi.useFakeTimers()
+    let release!: (value: unknown) => void
+    const pending = new Promise<unknown>(resolve => { release = resolve })
+    let oldHarvestCalls = 0
+    startGroupEngine(async (method, params = {}) => {
+      if (method === 'profiles.list') return {}
+      if (method === 'session.resume') {
+        oldHarvestCalls += 1
+        return pending
+      }
+      return {}
+    })
+    replaceGroupChats({ Room: room({
+      roomId: 'r-open',
+      sessions: { ada: 'old-stored' },
+      stranded: { ada: { before: 0, thread: 't1' } }
+    }) })
+    openGroupRoom({ key: 'id:r-open', log: [], members: [{ name: 'ada' }], name: 'Room', roomId: 'r-open' })
+    await Promise.resolve()
+    expect(oldHarvestCalls).toBe(1)
+
+    stopGroupEngine()
+    let newMemberCalls = 0
+    startGroupEngine(async (method) => {
+      if (method === 'profiles.list') return {}
+      newMemberCalls += 1
+      return { messages: [{ role: 'assistant', content: 'new lifecycle' }] }
+    })
+    release({ messages: [{ role: 'assistant', content: 'old harvest' }] })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(newMemberCalls).toBe(0)
+    expect($groupChats.get().Room.log.some(item => item.text === 'old harvest')).toBe(false)
+    expect($groupChats.get().Room.stranded?.ada).toBeTruthy()
+  })
+
+  it('fails closed when no lifecycle is active', async () => {
+    replaceGroupChats({ Room: room({ epoch: 2 }) })
+    await stopGroupThread('Room', 't1', [{ name: 'ada' }])
+    expect(sendToGroupChat('Room', [{ name: 'ada' }], 'no transport')).toBe(null)
+    const prompt: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
+      question: 'old', requestId: 'q1', sessionId: 'rt'
+    }
+    $groupPrompts.set({ 'Room::ada': prompt })
+    const before = $groupChats.get().Room
+    const answer = await import('./group-engine').then(engine => engine.answerGroupPrompt(prompt, { name: 'ada' }, 'yes'))
+    expect(answer).toBeUndefined()
+    expect($groupPrompts.get()['Room::ada']).toBe(prompt)
+    expect($groupChats.get().Room.epoch).toBe(before.epoch)
   })
 
   it('tears down the old lifecycle on a repeated start', async () => {

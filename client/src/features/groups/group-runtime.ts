@@ -1,14 +1,10 @@
 /**
- * The group engine's runtime state: the injected gateway transport slot and
- * the runtime-only atoms (room activity feed, pending prompt mirror). The
- * desktop's engine reaches members through requestForBot route sockets
- * (apps/desktop/src/plugins/hermes-bots/routing.ts); every member on this
- * gateway is reachable from the PWA's single transport with the profile
- * riding the RPC params, so the engine takes the transport as an injection
- * (configured by the gateway controller) instead of importing one.
+ * The Group engine's runtime-only atoms and shared raw transport type. The
+ * engine creates per-lifecycle member and mirror adapters from the injected
+ * callback; this file does not own a mutable transport slot.
  *
- * File-exports only — the facade (group-engine.ts) never re-exports the
- * transport slot; in-cluster modules and unit suites reach it here.
+ * File-exports only — the facade (group-engine.ts) re-exports the read surface,
+ * while in-cluster modules own the state writes.
  */
 
 import { atom } from 'nanostores'
@@ -20,21 +16,6 @@ export type GroupEngineRequest = (
   params?: Record<string, unknown>,
   options?: { signal?: AbortSignal }
 ) => Promise<unknown>
-
-let engineRequest: GroupEngineRequest | null = null
-
-/** The gateway controller installs its runtime here on connect and clears it
- *  on scope teardown — a profile switch must not leave turns firing at a dead
- *  transport. The mirror captures its own adapter request instead of using
- *  this mutable member-RPC slot. */
-export function setEngineTransport(request: GroupEngineRequest | null): void {
-  engineRequest = request
-}
-
-export function groupEngineRequest(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  if (!engineRequest) throw new Error('Group engine transport is not connected.')
-  return engineRequest(method, params)
-}
 
 /** Room activity feed — the "queued/working/passed/replied/settled…" lines
  *  the desktop renders under the room (group-activity.ts). Runtime-only. */

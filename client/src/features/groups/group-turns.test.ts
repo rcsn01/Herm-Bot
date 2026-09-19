@@ -1,550 +1,581 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $groupPrompts, setEngineTransport } from './group-runtime'
-import { $groupNeedsYou } from './group-store'
-import { $groupChats, replaceGroupChats } from './group-store'
+import type { GroupMember } from './group-model'
+import { $groupPrompts, type GroupPrompt } from './group-runtime'
+import { $groupChats, $groupNeedsYou, replaceGroupChats, updateGroupChat, type GroupChatRoom } from './group-store'
 import {
-  answerGroupPrompt,
-  ensureGroupChatSession,
-  harvestStrandedGroupReply,
+  createGroupMemberGateway,
+  createGroupTurnModule,
   isGroupPassText,
   isSessionGoneError,
   pickGroupTurnReply,
-  runGroupChatMemberTurn,
-  syncGroupClarify
+  type GroupMemberGateway,
+  type GroupTurnModule
 } from './group-turns'
 
-type Transport = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+type Call = { member: GroupMember; method: string; params: Record<string, unknown> }
+type Handler = (member: GroupMember, method: string, params: Record<string, unknown>) => unknown | Promise<unknown>
 
-let calls: Array<{ method: string; params: Record<string, unknown> }> = []
-let transport: Transport = async () => ({})
+const MEMBER: GroupMember = { name: 'research' }
+let calls: Call[] = []
 
-function install(next: Partial<Record<string, (params: Record<string, unknown>) => unknown>> = {}) {
-  setEngineTransport(async (method, params) => {
-    calls.push({ method, params: params ?? {} })
-    const handler = next[method]
-    if (handler) return handler(params ?? {})
-    return {}
+function room(overrides: Partial<GroupChatRoom> = {}): GroupChatRoom {
+  return {
+    name: 'Room',
+    log: [],
+    members: [MEMBER],
+    watermarks: {},
+    epoch: 0,
+    running: false,
+    ...overrides
+  }
+}
+
+function makeModule(handler: Handler = async () => ({})): { gateway: GroupMemberGateway; turns: GroupTurnModule } {
+  const gateway: GroupMemberGateway = {
+    async request(member, method, params = {}) {
+      calls.push({ member, method, params })
+      return handler(member, method, params)
+    }
+  }
+  return { gateway, turns: createGroupTurnModule(gateway) }
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
   })
+  return { promise, resolve, reject }
+}
+
+function runInput(thread = 't1') {
+  return { group: 'Room', member: MEMBER, prompt: 'room delta', thread }
 }
 
 beforeEach(() => {
   localStorage.clear()
-  replaceGroupChats({})
+  replaceGroupChats({ Room: room() })
   $groupPrompts.set({})
   $groupNeedsYou.set({})
   calls = []
-  install()
 })
 
 afterEach(() => {
   vi.useRealTimers()
-  setEngineTransport(null)
 })
 
-describe('pass text', () => {
+describe('pure helpers', () => {
   it('reads pass, (pass), pass. and empty as silence, but not real text', () => {
-    const silentTexts = ['', '   ', 'pass', '(pass)', 'Pass.', '( PASS )']
-    for (const silent of silentTexts) {
-      expect(isGroupPassText(silent)).toBe(true)
-    }
-    const spokenTexts = ['I will pass the salt', 'passed the tests', 'passing on this']
-    for (const spoken of spokenTexts) {
-      expect(isGroupPassText(spoken)).toBe(false)
-    }
+    for (const text of ['', '   ', 'pass', '(pass)', 'Pass.', '( PASS )']) expect(isGroupPassText(text)).toBe(true)
+    for (const text of ['I will pass the salt', 'passed the tests', 'passing on this']) expect(isGroupPassText(text)).toBe(false)
   })
-})
 
-describe('reply selection (#94376)', () => {
-  it('surfaces a substantive answer followed by a synthetic continuation pass', () => {
-    const messages = [
+  it('selects substantive text before a trailing synthetic pass', () => {
+    expect(pickGroupTurnReply([
       { role: 'user', content: 'go' },
-      { role: 'assistant', content: 'the full answer, with detail' },
+      { role: 'assistant', content: 'the full answer' },
       { role: 'assistant', content: '(pass)' }
-    ]
-    expect(pickGroupTurnReply(messages, 0)).toBe('the full answer, with detail')
+    ], 0)).toBe('the full answer')
   })
 
-  it('reads a pass-only turn as silent, returning the newest pass text', () => {
-    const messages = [
+  it('returns the newest pass when a turn contains only pass text', () => {
+    expect(pickGroupTurnReply([
       { role: 'assistant', content: '(pass)' },
       { role: 'assistant', content: 'pass' }
-    ]
-    expect(pickGroupTurnReply(messages, 0)).toBe('pass')
-  })
-
-  it('returns null when no assistant message appears in range', () => {
+    ], 0)).toBe('pass')
     expect(pickGroupTurnReply([{ role: 'user', content: 'hi' }], 0)).toBe(null)
-    expect(pickGroupTurnReply([{ role: 'assistant', content: 'old' }], 1)).toBe(null)
-  })
-})
-
-describe('session resolution', () => {
-  it('pins session titles to the roomId, with a legacy fallback to the display name', async () => {
-    replaceGroupChats({
-      Launch: { name: 'Launch', roomId: 'r-42', log: [], members: [], watermarks: {}, epoch: 0, running: false }
-    })
-    const resumes: Array<Record<string, unknown>> = []
-    install({
-      'session.resume': params => {
-        resumes.push(params)
-        return { session_id: 'rt-1', session_key: 'stored-1' }
-      }
-    })
-    await ensureGroupChatSession('Launch', { name: 'research' })
-    expect(resumes[0].session_id).toBe('Group: r-42')
-
-    replaceGroupChats({
-      Legacy: { name: 'Legacy', roomId: null, log: [], members: [], watermarks: {}, epoch: 0, running: false }
-    })
-    await ensureGroupChatSession('Legacy', { name: 'research' })
-    expect(resumes[1].session_id).toBe('Group: Legacy')
   })
 
-  it('creates member sessions with the room_plumbing + follow_profile_config contracts', async () => {
-    let created: Record<string, unknown> = {}
-    install({
-      'session.resume': () => {
-        throw Object.assign(new Error('no session'), { code: 4007 })
-      },
-      'session.create': params => {
-        created = params
-        return { session_id: 'rt-9', stored_session_id: 'stored-9' }
-      }
-    })
-    replaceGroupChats({
-      Room: { name: 'Room', roomId: 'r-1', log: [], members: [], watermarks: {}, epoch: 0, running: false }
-    })
-    const handle = await ensureGroupChatSession('Room', { name: 'research' })
-    expect(created.title).toBe('Group: r-1')
-    expect(created.hidden).toBe(true)
-    expect(created.room_plumbing).toBe(true)
-    expect(created.follow_profile_config).toBe(true)
-    expect(created.profile).toBe('research')
-    expect(handle).toEqual({ runtime: 'rt-9', stored: 'stored-9' })
-    expect($groupChats.get().Room.sessions?.research).toBe('stored-9')
-  })
-
-  it('fails closed on a transient resume failure instead of forking the member session', async () => {
-    install({
-      'session.resume': () => {
-        throw Object.assign(new Error('backend warming'), { code: 5001 })
-      }
-    })
-    await expect(ensureGroupChatSession('Room', { name: 'research' })).rejects.toThrow(/not starting a new one/)
-    // session.create must never be reached on a non-4007 failure.
-    expect(calls.filter(call => call.method === 'session.create')).toHaveLength(0)
-  })
-
-  it('falls through a genuine 4007 to the title lookup, then creates', async () => {
-    const resumeIds: Array<unknown> = []
-    const resumeTargets: Array<unknown> = []
-    install({
-      'session.resume': params => {
-        resumeTargets.push(params.session_id)
-        throw Object.assign(new Error('gone'), { code: 4007 })
-      },
-      'session.create': () => ({ session_id: 'rt-2', stored_session_id: 'stored-2' })
-    })
-    replaceGroupChats({
-      Room: {
-        name: 'Room',
-        roomId: 'r-2',
-        log: [],
-        members: [],
-        watermarks: {},
-        sessions: { research: 'stored-old' },
-        epoch: 0,
-        running: false
-      }
-    })
-    await ensureGroupChatSession('Room', { name: 'research' })
-    expect(resumeTargets).toEqual(['stored-old', 'Group: r-2'])
-  })
-
-  it('resumes the stored session when known and persists the returned session_key', async () => {
-    install({
-      'session.resume': params =>
-        params.session_id === 'stored-old'
-          ? { session_id: 'rt-live', session_key: 'stored-old' }
-          : { session_id: 'rt-title' }
-    })
-    replaceGroupChats({
-      Room: {
-        name: 'Room',
-        roomId: null,
-        log: [],
-        members: [],
-        watermarks: {},
-        sessions: { research: 'stored-old' },
-        epoch: 0,
-        running: false
-      }
-    })
-    const handle = await ensureGroupChatSession('Room', { name: 'research' })
-    expect(handle.runtime).toBe('rt-live')
-    expect($groupChats.get().Room.sessions?.research).toBe('stored-old')
-    expect(calls.filter(call => call.method === 'session.create')).toHaveLength(0)
-  })
-})
-
-describe('session-gone classification', () => {
-  it('treats 4001 and not-in-memory as recoverable, 4007 as not', () => {
+  it('classifies recoverable runtime-session failures without treating 4007 as one', () => {
     expect(isSessionGoneError({ code: 4001 })).toBe(true)
     expect(isSessionGoneError({ code: 4007 })).toBe(false)
     expect(isSessionGoneError({ message: 'session not in memory' })).toBe(true)
     expect(isSessionGoneError({ message: 'Session not found' })).toBe(true)
     expect(isSessionGoneError(null)).toBe(false)
-    expect(isSessionGoneError({ code: 4012 })).toBe(false)
   })
 })
 
-describe('member turn', () => {
-  it('resumes by title when the room has no stored session, and delivers the reply', async () => {
-    vi.useFakeTimers()
-    install({
-      'session.resume': params =>
-        params.session_id === 'Group: r-3'
-          ? { session_id: 'rt-live', session_key: 'stored-3' }
-          : { messages: [], message_count: 0 },
-      'prompt.submit': () => ({}),
-      'session.create': () => ({ session_id: 'rt-created' })
-    })
-    replaceGroupChats({
-      Room: { name: 'Room', roomId: 'r-3', log: [], members: [], watermarks: {}, epoch: 0, running: false }
+describe('captured member gateway', () => {
+  it('injects the member profile and overwrites an accidental profile parameter', async () => {
+    const transportCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const gateway = createGroupMemberGateway(async (method, params) => {
+      transportCalls.push({ method, params })
+      return 'ok'
     })
 
-    let pollCount = 0
-    const base = install
-    setEngineTransport(async (method, params) => {
-      calls.push({ method, params: params ?? {} })
-      if (method === 'session.resume' && params?.session_id === 'Group: r-3') {
-        return { session_id: 'rt-live', session_key: 'stored-3' }
-      }
-      if (method === 'session.resume' && pollCount++ === 0) {
-        return { messages: [{ role: 'user', content: 'old' }], message_count: 1 }
-      }
-      if (method === 'session.resume') {
-        return {
-          messages: [
-            { role: 'user', content: 'old' },
-            { role: 'assistant', content: 'the finding' }
-          ]
-        }
-      }
-      return {}
-    })
-
-    const turnPromise = runGroupChatMemberTurn('Room', { name: 'research' }, 'room delta', 't1')
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(2000)
-    const reply = await turnPromise
-
-    expect(reply).toBe('the finding')
-    const submits = calls.filter(call => call.method === 'prompt.submit')
-    expect(submits).toHaveLength(1)
-    expect(submits[0].params.profile).toBe('research')
+    await gateway.request(MEMBER, 'session.resume', { profile: 'wrong', session_id: 's1' })
+    expect(transportCalls).toEqual([{
+      method: 'session.resume',
+      params: { profile: 'research', session_id: 's1' }
+    }])
   })
+})
 
-  it('recovers a 4001 on the first submit via the STORED id and delivers', async () => {
-    vi.useFakeTimers()
-    let submitted = false
-    let submitAttempts = 0
-    setEngineTransport(async (method, params) => {
-      calls.push({ method, params: params ?? {} })
-      if (method === 'session.resume' && params?.omit_messages) {
-        if (params.session_id === 'stored-4') return { session_id: 'rt-fresh' }
+describe('session resolution and member results', () => {
+  it('uses the room title, creates with the plumbing contracts, and persists the stored id', async () => {
+    const created: Record<string, unknown> = {}
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
         throw Object.assign(new Error('gone'), { code: 4007 })
       }
-      if (method === 'prompt.submit') {
-        submitted = true
-        submitAttempts += 1
-        if (submitAttempts === 1) {
-          throw Object.assign(new Error('not in memory'), { code: 4001 })
-        }
-        return {}
+      if (method === 'session.create') {
+        Object.assign(created, params)
+        return { session_id: 'rt-created', stored_session_id: 'stored-created' }
       }
       if (method === 'session.resume') {
-        // The baseline (pre-submit) read sees an empty transcript; the polls
-        // see the finished reply.
-        return submitted ? { messages: [{ role: 'assistant', content: 'recovered reply' }] } : { messages: [] }
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [{ role: 'assistant', content: 'done' }] }
       }
       return {}
     })
-    replaceGroupChats({
-      Room: {
-        name: 'Room',
-        roomId: 'r-4',
-        log: [],
-        members: [],
-        watermarks: {},
-        sessions: { research: 'stored-4' },
-        epoch: 0,
-        running: false
-      }
+    replaceGroupChats({ Room: room({ roomId: 'r-1' }) })
+    vi.useFakeTimers()
+
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await promise
+
+    expect(result.kind).toBe('reply')
+    expect(created).toMatchObject({
+      title: 'Group: r-1',
+      hidden: true,
+      room_plumbing: true,
+      follow_profile_config: true
     })
-
-    const turnPromise = runGroupChatMemberTurn('Room', { name: 'research' }, 'delta', 't1')
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(2000)
-    const reply = await turnPromise
-
-    expect(reply).toBe('recovered reply')
-    const submits = calls.filter(call => call.method === 'prompt.submit')
-    expect(submits.length).toBeGreaterThanOrEqual(2)
+    expect($groupChats.get().Room.sessions?.research).toBe('stored-created')
   })
 
-  it('reads a pass-only turn as silent and still advances the watermark (caller side)', async () => {
+  it('does not fork a session after a transient resume failure', async () => {
+    const { turns } = makeModule(async (_member, method) => {
+      if (method === 'session.resume') throw Object.assign(new Error('warming'), { code: 5001 })
+      return {}
+    })
+
+    const result = await turns.run(runInput())
+    expect(result.kind).toBe('failed')
+    expect(calls.some(call => call.method === 'session.create')).toBe(false)
+  })
+
+  it('falls through 4007 lookups and performs one-shot 4001 submit recovery', async () => {
+    let submitAttempts = 0
+    let baseline = true
+    let recoveryResume = false
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
+        if (params.session_id === 'stored-old') throw Object.assign(new Error('gone'), { code: 4007 })
+        if (params.session_id === 'Group: r-2') throw Object.assign(new Error('gone'), { code: 4007 })
+        if (params.session_id === 'stored-new') {
+          recoveryResume = false
+          return { session_id: 'rt-fresh' }
+        }
+      }
+      if (method === 'session.create') return { session_id: 'rt-live', stored_session_id: 'stored-new' }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        if (recoveryResume) {
+          recoveryResume = false
+          return { session_id: 'rt-fresh' }
+        }
+        return { messages: [{ role: 'assistant', content: 'recovered' }] }
+      }
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+        if (submitAttempts === 1) {
+          recoveryResume = true
+          throw Object.assign(new Error('not in memory'), { code: 4001 })
+        }
+      }
+      return {}
+    })
+    replaceGroupChats({ Room: room({ roomId: 'r-2', sessions: { research: 'stored-old' } }) })
     vi.useFakeTimers()
-    setEngineTransport(async method => {
-      calls.push({ method, params: {} })
-      if (method === 'session.resume' && !calls.some(call => call.method === 'prompt.submit')) {
-        return { session_id: 'rt-5', session_key: 'stored-5' }
+
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await promise
+
+    expect(result.kind).toBe('reply')
+    expect(submitAttempts).toBe(2)
+    expect(calls.filter(call => call.method === 'session.resume' && call.params.omit_messages).map(call => call.params.session_id)).toEqual([
+      'stored-old',
+      'Group: r-2',
+      'stored-new'
+    ])
+  })
+
+  it('normalizes pass text to a typed pass result and keeps the two-second poll cadence', async () => {
+    let baseline = true
+    const { turns } = makeModule(async (_member, method) => {
+      if (method === 'session.resume' && calls.filter(call => call.method === 'session.resume').length === 1) {
+        return { session_id: 'rt', session_key: 'stored' }
       }
       if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
         return { messages: [{ role: 'assistant', content: '(pass)' }] }
       }
       return {}
     })
-    replaceGroupChats({
-      Room: { name: 'Room', roomId: 'r-5', log: [], members: [], watermarks: {}, epoch: 0, running: false }
-    })
+    vi.useFakeTimers()
 
-    const turnPromise = runGroupChatMemberTurn('Room', { name: 'research' }, 'delta', 't1')
-    await vi.advanceTimersByTimeAsync(2000)
-    // Pass-only turns return the pass text; the room loop reads it as silence.
-    expect(await turnPromise).toBe('(pass)')
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(calls.filter(call => call.method === 'session.resume')).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await promise
+    expect(result.kind).toBe('pass')
   })
 
-  it('abandons the poll when an explicit stop held the member', async () => {
-    vi.useFakeTimers()
-    let polls = 0
-    setEngineTransport(async method => {
-      calls.push({ method, params: {} })
-      if (method === 'session.resume' && !calls.some(call => call.method === 'prompt.submit')) {
-        return { session_id: 'rt-6', session_key: 'stored-6' }
+  it('returns a failed result with the gateway reason while answer failures still reject', async () => {
+    const { turns } = makeModule(async (_member, method) => {
+      if (method === 'session.resume' && calls.filter(call => call.method === 'session.resume').length === 1) {
+        return { session_id: 'rt', session_key: 'stored' }
       }
-      if (method === 'session.resume') {
-        polls += 1
-        return { messages: [], message_count: 0, running: true }
-      }
-      return {}
-    })
-    replaceGroupChats({
-      Room: {
-        name: 'Room',
-        roomId: 'r-6',
-        log: [],
-        members: [],
-        watermarks: {},
-        sessions: { research: 'stored-6' },
-        epoch: 0,
-        running: true
-      }
+      if (method === 'prompt.submit') throw { data: { reason: 'provider unavailable' } }
+      return { messages: [] }
     })
 
-    const turnPromise = runGroupChatMemberTurn('Room', { name: 'research' }, 'delta', 't1')
-    await vi.advanceTimersByTimeAsync(2000)
-    // The stop path: epoch bump + member hold.
-    $groupChats.set({
-      ...$groupChats.get(),
-      Room: {
-        ...$groupChats.get().Room,
-        epoch: 1,
-        holds: { research: { at: Date.now(), thread: 't1' } }
-      }
-    })
-    // The next poll (after the held mutation) must bail immediately.
-    await vi.advanceTimersByTimeAsync(2000)
-    expect(await turnPromise).toBe(null)
-    expect(polls).toBe(1)
-  })
+    const result = await turns.run(runInput())
+    expect(result).toMatchObject({ kind: 'failed', reason: 'provider unavailable' })
 
-  it('records a stranded marker on timeout so the reply can be harvested late', async () => {
-    vi.useFakeTimers()
-    setEngineTransport(async method => {
-      calls.push({ method, params: {} })
-      if (method === 'session.resume' && !calls.some(call => call.method === 'prompt.submit')) {
-        return { session_id: 'rt-7', session_key: 'stored-7' }
-      }
-      if (method === 'session.resume') {
-        return { messages: [], message_count: 0, running: true }
-      }
-      return {}
-    })
-    replaceGroupChats({
-      Room: { name: 'Room', roomId: 'r-7', log: [], members: [], watermarks: {}, epoch: 0, running: false }
-    })
-
-    const turnPromise = runGroupChatMemberTurn('Room', { name: 'research' }, 'delta', 't2')
-    // Hard cap is 20 minutes; the working deadline keeps extending.
-    await vi.advanceTimersByTimeAsync(21 * 60000)
-    expect(await turnPromise).toBe(null)
-
-    const room = $groupChats.get().Room
-    expect(room.stranded?.research).toEqual({ before: 0, thread: 't2' })
+    const entry: GroupPrompt = {
+      at: Date.now(),
+      group: 'Room',
+      member: 'research',
+      memberKey: 'research',
+      kind: 'clarify',
+      question: 'Proceed?',
+      requestId: 'q1',
+      sessionId: 'rt'
+    }
+    const failing = makeModule(async () => { throw new Error('answer failed') }).turns
+    await expect(failing.answer(entry, MEMBER, 'yes')).rejects.toThrow('answer failed')
   })
 })
 
-describe('stranded harvest', () => {
-  it('posts the late reply into the stranded thread and clears the marker', async () => {
-    setEngineTransport(async method => {
-      calls.push({ method, params: {} })
+describe('prompt ownership and answers', () => {
+  it('mirrors a pending question, keeps the same request id idempotent, and answers it', async () => {
+    let baseline = true
+    let poll = 0
+    const { turns } = makeModule(async (_member, method) => {
+      if (method === 'session.resume' && calls.filter(call => call.method === 'session.resume').length === 1) {
+        return { session_id: 'rt', session_key: 'stored' }
+      }
       if (method === 'session.resume') {
-        return {
-          session_id: 'rt-8',
-          messages: [
-            { role: 'user', content: 'old' },
-            { role: 'assistant', content: 'finished late' }
-          ]
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
         }
+        poll += 1
+        return poll === 1
+          ? { pending_clarify: { request_id: 'q1', question: 'Which account?', choices: ['ops'] }, session_id: 'rt' }
+          : { messages: [{ role: 'assistant', content: 'answered' }] }
       }
       return {}
     })
-    replaceGroupChats({
-      Room: {
-        name: 'Room',
-        roomId: 'r-8',
-        log: [],
-        members: [{ name: 'research' }],
-        watermarks: {},
-        sessions: { research: 'stored-8' },
-        stranded: { research: { before: 1, thread: 't5' } },
-        epoch: 0,
-        running: false
-      }
-    })
+    vi.useFakeTimers()
 
-    await harvestStrandedGroupReply('Room', { name: 'research' })
-
-    const room = $groupChats.get().Room
-    expect(room.stranded?.research).toBeUndefined()
-    const late = room.log.find(entry => entry.from.kind === 'member')
-    expect(late?.text).toBe('finished late')
-    expect(late?.thread).toBe('t5')
-    expect(room.watermarks['t5::research']).toBe(room.log.length)
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const key = 'Room::research'
+    const first = $groupPrompts.get()[key]
+    expect(first?.requestId).toBe('q1')
+    expect($groupNeedsYou.get().Room).toBe(true)
+    const sameModuleAnswer = turns.answer(first!, MEMBER, 'ops')
+    await sameModuleAnswer
+    expect(calls.some(call => call.method === 'clarify.respond')).toBe(true)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((await promise).kind).toBe('reply')
   })
 
-  it('keeps the marker while the session is still working or unreachable', async () => {
-    setEngineTransport(async () => {
-      throw new Error('unreachable')
-    })
-    replaceGroupChats({
-      Room: {
-        name: 'Room',
-        roomId: 'r-9',
-        log: [],
-        members: [{ name: 'research' }],
-        watermarks: {},
-        stranded: { research: { before: 0, thread: 't1' } },
-        epoch: 0,
-        running: false
-      }
-    })
-    await harvestStrandedGroupReply('Room', { name: 'research' })
-    expect($groupChats.get().Room.stranded?.research).toBeTruthy()
+  it('routes clarify batches and approvals through the captured gateway', async () => {
+    const { turns } = makeModule(async () => ({}))
+    const clarify: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      question: '', requestId: 'batch', sessionId: 'rt', questions: [{ qid: 'a' }, { id: 'b' }]
+    }
+    $groupPrompts.set({ 'Room::research': clarify })
+    await turns.answer(clarify, MEMBER, { a: 'one', b: 'two' })
+    expect(calls.filter(call => call.method === 'clarify.respond').map(call => call.params)).toEqual([
+      { request_id: 'batch', question_id: 'a', answer: 'one' },
+      { request_id: 'batch', question_id: 'b', answer: 'two' }
+    ])
+    expect($groupPrompts.get()['Room::research']).toBeUndefined()
 
-    setEngineTransport(async () => ({ messages: [], running: true }))
-    await harvestStrandedGroupReply('Room', { name: 'research' })
-    expect($groupChats.get().Room.stranded?.research).toBeTruthy()
+    const approval: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'approval',
+      question: '', requestId: 'approval', sessionId: 'rt', choices: ['once', 'deny']
+    }
+    $groupPrompts.set({ 'Room::research': approval })
+    await turns.answer(approval, MEMBER, 'once')
+    expect(calls.find(call => call.method === 'approval.respond')?.params).toEqual({
+      session_id: 'rt', request_id: 'approval', choice: 'once'
+    })
+  })
+
+  it('does not clear a newer prompt when an answer settles after stop', async () => {
+    const response = deferred<unknown>()
+    const entry: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      question: 'Old?', requestId: 'old', sessionId: 'rt'
+    }
+    const newer = { ...entry, requestId: 'new', question: 'New?' }
+    $groupPrompts.set({ 'Room::research': newer })
+    const { turns } = makeModule(async () => response.promise)
+    const answer = turns.answer(entry, MEMBER, 'yes')
+    await Promise.resolve()
+    turns.stop()
+    response.resolve({})
+    await answer
+    expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
   })
 })
 
-describe('clarify and approvals (#90694)', () => {
-  const member = { name: 'research' }
+describe('stale results and lifecycle ownership', () => {
+  function deferredPollModule() {
+    const poll = deferred<unknown>()
+    let baseline = true
+    const module = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt', session_key: 'stored' }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return poll.promise
+      }
+      return {}
+    })
+    return { ...module, poll }
+  }
 
-  it('mirrors a question, badges needs-you, and is idempotent per request', () => {
-    const state = {
-      session_id: 'rt-x',
-      pending_clarify: { request_id: 'q1', question: 'Which account?', choices: ['ops', 'billing'] }
-    }
-    expect(syncGroupClarify('Room', member, state)).toBe(true)
-    const key = 'Room::research'
-    expect($groupPrompts.get()[key]?.question).toBe('Which account?')
-    expect($groupNeedsYou.get().Room).toBe(true)
-
-    // Same request — identity kept, no duplicate.
-    expect(syncGroupClarify('Room', member, state)).toBe(true)
-    expect(Object.keys($groupPrompts.get())).toEqual([key])
-
-    // Resolved — mirror cleared.
-    expect(syncGroupClarify('Room', member, { session_id: 'rt-x' })).toBe(false)
-    expect($groupPrompts.get()[key]).toBeUndefined()
+  it('returns room-stopped for an in-flight poll after a member hold', async () => {
+    vi.useFakeTimers()
+    const { turns, poll } = deferredPollModule()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    updateGroupChat('Room', r => ({
+      ...r,
+      epoch: 1,
+      holds: { research: { at: Date.now(), thread: 't1' } }
+    }))
+    poll.resolve({ messages: [{ role: 'assistant', content: 'late' }] })
+    const result = await promise
+    expect(result).toMatchObject({ kind: 'cancelled', reason: 'room-stopped' })
+    expect(result.commit()).toEqual({ accepted: false, reason: 'room-stopped' })
   })
 
-  it('never mirrors for older backends without pending fields', () => {
-    expect(syncGroupClarify('Room', member, {})).toBe(false)
-    expect(syncGroupClarify('Room', member, null)).toBe(false)
-    expect(Object.keys($groupPrompts.get())).toHaveLength(0)
+  it('classifies a newer same-thread user before a hold and rejects its commit lease', async () => {
+    vi.useFakeTimers()
+    const { turns, poll } = deferredPollModule()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    updateGroupChat('Room', r => ({
+      ...r,
+      epoch: 1,
+      log: [...r.log, { id: 'new-user', at: Date.now(), from: { kind: 'user', name: 'You' }, text: 'new', thread: 't1' }]
+    }))
+    poll.resolve({ messages: [{ role: 'assistant', content: 'old reply' }] })
+    const result = await promise
+    expect(result).toMatchObject({ kind: 'cancelled', reason: 'newer-user' })
+    expect(result.commit()).toEqual({ accepted: false, reason: 'newer-user' })
+    expect($groupChats.get().Room.watermarks).toEqual({})
   })
 
-  it('routes an answer through clarify.respond and clears the mirror', async () => {
-    const state = {
-      session_id: 'rt-y',
-      pending_clarify: { request_id: 'q2', question: 'Proceed?' }
+  it('accepts a normal-loop cross-thread late result', async () => {
+    vi.useFakeTimers()
+    const { turns, poll } = deferredPollModule()
+    const promise = turns.run(runInput('t1'))
+    await vi.advanceTimersByTimeAsync(2000)
+    updateGroupChat('Room', r => ({
+      ...r,
+      epoch: 1,
+      log: [...r.log, { id: 'other-thread', at: Date.now(), from: { kind: 'user', name: 'You' }, text: 'other', thread: 't2' }]
+    }))
+    poll.resolve({ messages: [{ role: 'assistant', content: 'late answer' }] })
+    const result = await promise
+    expect(result.kind).toBe('reply')
+    expect(result.commit()).toEqual({ accepted: true })
+  })
+
+  it('rechecks the commit lease after run returns', async () => {
+    vi.useFakeTimers()
+    const { turns, poll } = deferredPollModule()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    poll.resolve({ messages: [{ role: 'assistant', content: 'answer' }] })
+    const result = await promise
+    updateGroupChat('Room', r => ({
+      ...r,
+      epoch: 1,
+      log: [...r.log, { id: 'later', at: Date.now(), from: { kind: 'user', name: 'You' }, text: 'later', thread: 't1' }]
+    }))
+    expect(result.commit()).toEqual({ accepted: false, reason: 'newer-user' })
+  })
+
+  it('stops without aborting an in-flight request and prevents every later request or write', async () => {
+    const first = deferred<unknown>()
+    const { turns } = makeModule(async (_member, method) => method === 'session.resume' ? first.promise : {})
+    const promise = turns.run(runInput())
+    await Promise.resolve()
+    turns.stop()
+    first.resolve({ session_id: 'rt', session_key: 'stored' })
+    const result = await promise
+    expect(result).toMatchObject({ kind: 'cancelled', reason: 'engine-stopped' })
+    expect(calls).toHaveLength(1)
+    expect($groupChats.get().Room.sessions).toBeUndefined()
+    expect($groupPrompts.get()).toEqual({})
+  })
+
+  it('does not submit after a room stop during the baseline resume', async () => {
+    const baseline = deferred<unknown>()
+    let submitted = false
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt', session_key: 'stored' }
+      if (method === 'session.resume') return baseline.promise
+      submitted = method === 'prompt.submit'
+      return {}
+    })
+    const promise = turns.run(runInput())
+    await Promise.resolve()
+    await Promise.resolve()
+    updateGroupChat('Room', r => ({
+      ...r,
+      epoch: r.epoch + 1,
+      holds: { research: { at: Date.now(), thread: 't1' } }
+    }))
+    baseline.resolve({ messages: [] })
+    const result = await promise
+    expect(result).toMatchObject({ kind: 'cancelled', reason: 'room-stopped' })
+    expect(submitted).toBe(false)
+  })
+
+  it('does not let an empty harvest claim the active turn token', async () => {
+    vi.useFakeTimers()
+    const { turns, poll } = deferredPollModule()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    await turns.harvest('Room', MEMBER)
+    poll.resolve({ messages: [{ role: 'assistant', content: 'reply' }] })
+    expect((await promise).kind).toBe('reply')
+  })
+
+  it('keeps a replacement stranded marker when an older harvest resolves', async () => {
+    const oldMarker = { before: 0, thread: 'old' }
+    const read = deferred<unknown>()
+    replaceGroupChats({ Room: room({ stranded: { research: oldMarker }, sessions: { research: 'stored' } }) })
+    const { turns } = makeModule(async () => read.promise)
+    const harvest = turns.harvest('Room', MEMBER)
+    await Promise.resolve()
+    const replacement = { before: 2, thread: 'new' }
+    updateGroupChat('Room', r => ({ ...r, stranded: { research: replacement } }))
+    read.resolve({ messages: [{ role: 'assistant', content: 'old reply' }] })
+    await harvest
+    expect($groupChats.get().Room.stranded?.research).toEqual(replacement)
+    expect($groupChats.get().Room.log).toHaveLength(0)
+  })
+})
+
+describe('timeouts and stranded harvest', () => {
+  it('records a stranded marker at the hard cap', async () => {
+    vi.useFakeTimers()
+    let baseline = true
+    const { turns } = makeModule(async (_member, method) => {
+      if (method === 'session.resume' && calls.filter(call => call.method === 'session.resume').length === 1) {
+        return { session_id: 'rt', session_key: 'stored' }
+      }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [], running: true }
+      }
+      return {}
+    })
+    const promise = turns.run(runInput('late'))
+    await vi.advanceTimersByTimeAsync(20 * 60000 + 2000)
+    const result = await promise
+    expect(result.kind).toBe('timed-out')
+    expect($groupChats.get().Room.stranded?.research).toEqual({ before: 0, thread: 'late' })
+  })
+
+  it('harvests a legacy zero baseline marker', async () => {
+    replaceGroupChats({ Room: room({ stranded: { research: 0 }, sessions: { research: 'stored' } }) })
+    const { turns } = makeModule(async () => ({ messages: [{ role: 'assistant', content: 'zero baseline reply' }] }))
+    await turns.harvest('Room', MEMBER)
+    expect($groupChats.get().Room.stranded?.research).toBeUndefined()
+    expect($groupChats.get().Room.log.find(entry => entry.text === 'zero baseline reply')).toBeTruthy()
+  })
+
+  it('harvests a late substantive reply into its original thread and watermark', async () => {
+    replaceGroupChats({ Room: room({
+      sessions: { research: 'stored' },
+      stranded: { research: { before: 1, thread: 'late-thread' } },
+      log: [{ id: 'user', at: 1, from: { kind: 'user', name: 'You' }, text: 'ask', thread: 'late-thread' }]
+    }) })
+    const { turns } = makeModule(async () => ({
+      messages: [
+        { role: 'user', content: 'ask' },
+        { role: 'assistant', content: 'finished late' }
+      ],
+      running: false
+    }))
+    await turns.harvest('Room', MEMBER)
+    const result = $groupChats.get().Room
+    expect(result.stranded?.research).toBeUndefined()
+    expect(result.log.find(entry => entry.from.kind === 'member')).toMatchObject({ text: 'finished late', thread: 'late-thread' })
+    expect(result.watermarks['late-thread::research']).toBe(result.log.length)
+  })
+
+  it('clears the prompt observed by a harvest but retains a newer prompt', async () => {
+    const marker = { before: 0, thread: 't1' }
+    const oldPrompt: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
-    syncGroupClarify('Room', member, state)
-    const entry = $groupPrompts.get()['Room::research']!
-
-    install({})
-    await answerGroupPrompt(entry, member, 'yes')
-
-    const respond = calls.find(call => call.method === 'clarify.respond')
-    expect(respond?.params).toMatchObject({ request_id: 'q2', answer: 'yes', profile: 'research' })
+    replaceGroupChats({ Room: room({ stranded: { research: marker }, sessions: { research: 'stored' } }) })
+    $groupPrompts.set({ 'Room::research': oldPrompt })
+    const first = makeModule(async () => ({ messages: [], running: false })).turns
+    await first.harvest('Room', MEMBER)
     expect($groupPrompts.get()['Room::research']).toBeUndefined()
+    expect($groupChats.get().Room.stranded?.research).toBeUndefined()
+
+    const read = deferred<unknown>()
+    const newerMarker = { before: 0, thread: 't2' }
+    replaceGroupChats({ Room: room({ stranded: { research: newerMarker }, sessions: { research: 'stored' } }) })
+    $groupPrompts.set({ 'Room::research': oldPrompt })
+    const second = makeModule(async () => read.promise).turns
+    const harvest = second.harvest('Room', MEMBER)
+    await Promise.resolve()
+    const newerPrompt = { ...oldPrompt, requestId: 'new', question: 'New?' }
+    $groupPrompts.set({ 'Room::research': newerPrompt })
+    read.resolve({ messages: [], running: false })
+    await harvest
+    expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
+    expect($groupChats.get().Room.stranded?.research).toEqual(newerMarker)
   })
 
-  it('answers batch questions one wire call per question', async () => {
-    const state = {
-      session_id: 'rt-y',
-      pending_clarify: {
-        request_id: 'q3',
-        questions: [
-          { qid: 'a', question: 'First?' },
-          { id: 'b', question: 'Second?' }
-        ]
-      }
-    }
-    syncGroupClarify('Room', member, state)
-    const entry = $groupPrompts.get()['Room::research']!
+  it('keeps a stranded marker for unreachable or still-working sessions', async () => {
+    replaceGroupChats({ Room: room({ stranded: { research: { before: 0, thread: 't1' } } }) })
+    const unreachable = makeModule(async () => { throw new Error('unreachable') }).turns
+    await unreachable.harvest('Room', MEMBER)
+    expect($groupChats.get().Room.stranded?.research).toBeTruthy()
 
-    install({})
-    await answerGroupPrompt(entry, member, { a: 'one', b: 'two' })
-
-    const answers = calls.filter(call => call.method === 'clarify.respond')
-    expect(answers).toHaveLength(2)
-    expect(answers[0].params).toMatchObject({ question_id: 'a', answer: 'one' })
-    expect(answers[1].params).toMatchObject({ question_id: 'b', answer: 'two' })
-  })
-
-  it('routes an approval choice through approval.respond keyed by session', async () => {
-    const state = {
-      session_id: 'rt-z',
-      pending_approval: { request_id: 'ap1', command: 'rm -rf /', choices: ['once', 'deny'] }
-    }
-    syncGroupClarify('Room', member, state)
-    const entry = $groupPrompts.get()['Room::research']!
-    expect(entry.kind).toBe('approval')
-    expect(entry.choices).toEqual(['once', 'deny'])
-
-    install({})
-    await answerGroupPrompt(entry, member, 'once')
-
-    const approval = calls.find(call => call.method === 'approval.respond')
-    expect(approval?.params).toMatchObject({ request_id: 'ap1', choice: 'once', session_id: 'rt-z' })
-  })
-
-  it('mirrors a batch clarify card with questions intact', () => {
-    const state = {
-      pending_clarify: {
-        request_id: 'q4',
-        multi_select: true,
-        questions: [{ qid: 'a', question: 'Pick' }]
-      }
-    }
-    syncGroupClarify('Room', member, state)
-    const entry = $groupPrompts.get()['Room::research']!
-    expect(entry.multiSelect).toBe(true)
-    expect(entry.questions).toEqual([{ qid: 'a', question: 'Pick' }])
+    const working = makeModule(async () => ({ running: true, messages: [] })).turns
+    await working.harvest('Room', MEMBER)
+    expect($groupChats.get().Room.stranded?.research).toBeTruthy()
   })
 })

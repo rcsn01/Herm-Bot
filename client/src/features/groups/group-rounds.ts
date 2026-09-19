@@ -15,7 +15,7 @@
  */
 
 import type { GroupMessage } from './group-model'
-import { groupEngineRequest, recordGroupActivity } from './group-runtime'
+import { recordGroupActivity } from './group-runtime'
 import {
   $groupNeedsYou,
   GROUP_CHAT_HISTORY_LIMIT,
@@ -32,7 +32,7 @@ import {
   updateGroupChat,
   type GroupHoldStamp
 } from './group-store'
-import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import type { GroupTurnModule, GroupTurnResult } from './group-turns'
 
 export interface EngineMember {
   connectionId?: string
@@ -276,310 +276,360 @@ export function unaddressedGroupMentions(group: string, members: EngineMember[],
   })
 }
 
-/** Whether a finished member turn may still commit (#93127): a turn
- *  dispatched under an older epoch was superseded mid-flight by a newer user
- *  send in the SAME thread — its late result must be dropped, because the
- *  new send's loop re-drives this member with the full delta. */
-export function shouldCommitMemberTurn(epochAtDispatch: number, currentEpoch: number, newerUserEntryInThread = true): boolean {
-  if (epochAtDispatch === currentEpoch) return true
-  return !newerUserEntryInThread
+/** Internal driver seam: it captures one terminal member-turn module. */
+export interface GroupRoundDriver {
+  sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string
+  stopGroupThread(group: string, thread: null | string, members?: EngineMember[] | null): Promise<void>
+  deactivate(): void
 }
 
-/** The room drive: bounded serial round-robin. Ported from
- *  group-rounds.ts runGroupChatRounds — harvest passes, holds, watermarks,
- *  continuation rounds for unanswered handoffs, epoch cancellation, and the
- *  capped/settled exit kinds. */
-export async function runGroupChatRounds(group: string, members: EngineMember[], thread: string): Promise<void> {
-  const startEpoch = getGroupRoom(group).epoch || 0
-  const isCurrent = () => (getGroupRoom(group).epoch || 0) === startEpoch
-  let posted = 0
-  let continuations = 0
-  let exitKind: 'capped' | 'settled' = 'settled'
+interface PublishedTurn {
+  abandoned: boolean
+  spoke: boolean
+  stop: boolean
+}
 
-  try {
-    for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
-      // Deliver any replies that finished after their turn timed out — every
-      // member, so long work is late, never lost.
-      for (const member of members) {
-        if (!isCurrent()) {
-          recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
-          return
-        }
-        await harvestStrandedGroupReply(group, member)
-      }
+/** Publish one typed turn result. The lease classification is authoritative:
+ * a room stop consumes the current member delta without appending, a newer
+ * same-thread send records only supersession, and an engine stop abandons the
+ * drive without running its finalizer. */
+function publishTurnResult(
+  group: string,
+  member: EngineMember,
+  thread: string,
+  markKey: string,
+  result: GroupTurnResult,
+  includeFailureReason: boolean
+): PublishedTurn {
+  const lease = result.commit()
 
-      const roomLog = getGroupRoom(group).log.filter(entry => groupThreadOf(entry) === thread)
-      const strandedNow = getGroupRoom(group).stranded || {}
-      const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
-        member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
-      )
+  if (!lease.accepted) {
+    if (lease.reason === 'room-stopped') {
+      updateGroupChat(group, r => {
+        r.watermarks[markKey] = r.log.length
+        return r
+      }, { sync: false })
+      return { abandoned: false, spoke: false, stop: true }
+    }
+    if (lease.reason === 'newer-user') {
+      recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+      return { abandoned: false, spoke: false, stop: true }
+    }
+    return { abandoned: true, spoke: false, stop: true }
+  }
 
-      let spokeThisRound = 0
+  if (result.kind === 'cancelled') {
+    if (result.reason === 'room-stopped') {
+      updateGroupChat(group, r => {
+        r.watermarks[markKey] = r.log.length
+        return r
+      }, { sync: false })
+      return { abandoned: false, spoke: false, stop: true }
+    }
+    if (result.reason === 'newer-user') {
+      recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+      return { abandoned: false, spoke: false, stop: true }
+    }
+    return { abandoned: true, spoke: false, stop: true }
+  }
 
-      for (const member of responders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES) {
-          if (!isCurrent()) {
-            recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
-          } else {
-            exitKind = 'capped'
+  if (result.kind === 'reply') {
+    recordGroupActivity(group, { kind: 'replied', member: member.name, thread })
+  } else if (result.kind === 'pass') {
+    recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
+  } else if (result.kind === 'timed-out') {
+    recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
+  } else if (result.kind === 'failed') {
+    const reason = includeFailureReason ? result.reason : undefined
+    recordGroupActivity(group, { kind: 'failed', member: member.name, thread, ...(reason ? { reason } : {}) })
+  }
+
+  updateGroupChat(group, r => {
+    r.watermarks[markKey] = r.log.length
+    return r
+  }, { sync: false })
+
+  if (result.kind !== 'reply') return { abandoned: false, spoke: false, stop: false }
+
+  appendGroupChatEntry(group, {
+    kind: 'member',
+    name: member.name,
+    ...(member.connectionLabel || member.sourceScoped ? { source: member.connectionLabel || member.connectionId } : {})
+  }, result.text, thread)
+  updateGroupChat(group, r => {
+    r.watermarks[markKey] = r.log.length
+    return r
+  }, { sync: false })
+  return { abandoned: false, spoke: true, stop: false }
+}
+
+export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver {
+  let deactivated = false
+  let abandoned = false
+
+  const driveIsLive = () => !deactivated && !abandoned
+  const roomEpochIsCurrent = (group: string, epoch: number) => (getGroupRoom(group).epoch || 0) === epoch
+
+  const recordRoomCancellation = (group: string, thread: string) => {
+    if (driveIsLive()) recordGroupActivity(group, { kind: 'cancelled', member: null, thread })
+  }
+
+  const runGroupChatRounds = async (group: string, members: EngineMember[], thread: string): Promise<void> => {
+    const startEpoch = getGroupRoom(group).epoch || 0
+    let posted = 0
+    let continuations = 0
+    let exitKind: 'capped' | 'settled' = 'settled'
+
+    try {
+      for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
+        // Deliver any replies that finished after their turn timed out — every
+        // member, so long work is late, never lost.
+        for (const member of members) {
+          if (!driveIsLive()) return
+          if (!roomEpochIsCurrent(group, startEpoch)) {
+            recordRoomCancellation(group, thread)
+            return
           }
+          await turns.harvest(group, member)
+        }
+
+        if (!driveIsLive()) return
+        if (!roomEpochIsCurrent(group, startEpoch)) {
+          recordRoomCancellation(group, thread)
           return
         }
 
-        const room = getGroupRoom(group)
-        const memberKey = groupMemberKey(member)
-        const markKey = `${thread}::${memberKey}`
-        const seen = room.watermarks[markKey] || 0
-        const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === thread)
-        if (!delta.length) continue
+        const roomLog = getGroupRoom(group).log.filter(entry => groupThreadOf(entry) === thread)
+        const strandedNow = getGroupRoom(group).stranded || {}
+        const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
+          member => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+        )
 
-        // #93129: a held member takes no turn — consume the delta exactly
-        // once so the same entries never re-trigger the skip.
-        const heldEntry = (room.holds || {})[memberKey]
-        if (heldEntry) {
-          const advance = heldMemberWatermarkAdvance(seen, room.log.length)
-          updateGroupChat(group, r => {
-            if (advance !== null) r.watermarks[markKey] = advance
-            if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
-              r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
+        let spokeThisRound = 0
+
+        for (const member of responders) {
+          if (!driveIsLive()) return
+          if (!roomEpochIsCurrent(group, startEpoch) || posted >= GROUP_CHAT_MAX_MESSAGES) {
+            if (!roomEpochIsCurrent(group, startEpoch)) recordRoomCancellation(group, thread)
+            else exitKind = 'capped'
+            return
+          }
+
+          const room = getGroupRoom(group)
+          const memberKey = groupMemberKey(member)
+          const markKey = `${thread}::${memberKey}`
+          const seen = room.watermarks[markKey] || 0
+          const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === thread)
+          if (!delta.length) continue
+
+          // #93129: a held member takes no turn — consume the delta exactly
+          // once so the same entries never re-trigger the skip.
+          const heldEntry = (room.holds || {})[memberKey]
+          if (heldEntry) {
+            const advance = heldMemberWatermarkAdvance(seen, room.log.length)
+            updateGroupChat(group, r => {
+              if (advance !== null) r.watermarks[markKey] = advance
+              if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
+                r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
+              }
+              return r
+            })
+            if (!heldEntry.noted) {
+              recordGroupActivity(group, { kind: 'held', member: member.name, thread })
             }
-            return r
+            continue
+          }
+
+          const prompt = buildGroupChatTurnPrompt({
+            groupName: group,
+            members,
+            viewer: member,
+            deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, member.name))
           })
-          if (!heldEntry.noted) {
-            recordGroupActivity(group, { kind: 'held', member: member.name, thread })
+
+          updateGroupChat(group, r => ({ ...r, turn: member.name }), { sync: false })
+          const result = await turns.run({ group, member, prompt, thread })
+          const outcome = publishTurnResult(group, member, thread, markKey, result, true)
+          if (outcome.abandoned) {
+            abandoned = true
+            return
           }
-          continue
-        }
-
-        const prompt = buildGroupChatTurnPrompt({
-          groupName: group,
-          members,
-          viewer: member,
-          deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, member.name))
-        })
-
-        updateGroupChat(group, r => ({ ...r, turn: member.name }), { sync: false })
-        let reply: null | string = null
-        try {
-          reply = await runGroupChatMemberTurn(group, member, prompt, thread)
-        } catch (error: unknown) {
-          const reason = String((error as { data?: { reason?: string } })?.data?.reason || '').trim()
-          recordGroupActivity(group, { kind: 'failed', member: member.name, thread, ...(reason ? { reason } : {}) })
-          reply = null // a failed turn is a pass, never a room error
-        }
-
-        // #93127: a turn that finished after a newer user send bumped the
-        // epoch must not commit — the new send's loop re-drives this member
-        // with the full delta. Anchor the mid-turn tail by entry id, not
-        // index (the history trim drops from the front).
-        const roomNow = getGroupRoom(group)
-        const epochNow = roomNow.epoch || 0
-        const anchorId = room.log.length ? room.log[room.log.length - 1].id : null
-        const anchorIdx = anchorId === null ? -1 : roomNow.log.findIndex(entry => entry.id === anchorId)
-        const turnTail = anchorIdx >= 0 ? roomNow.log.slice(anchorIdx + 1) : roomNow.log
-        const newerUserEntryInThread = turnTail.some(entry => entry.from?.kind === 'user' && groupThreadOf(entry) === thread)
-
-        if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
-          recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
-          return
-        }
-
-        updateGroupChat(group, r => {
-          r.watermarks[markKey] = r.log.length
-          return r
-        }, { sync: false })
-
-        if (reply !== null && !isGroupPassText(reply)) {
-          appendGroupChatEntry(group, {
-            kind: 'member',
-            name: member.name,
-            ...(member.connectionLabel || member.sourceScoped ? { source: member.connectionLabel || member.connectionId } : {})
-          }, reply, thread)
-          updateGroupChat(group, r => {
-            r.watermarks[markKey] = r.log.length
-            return r
-          }, { sync: false })
-          posted += 1
-          spokeThisRound += 1
-        }
-      }
-
-      if (spokeThisRound === 0) {
-        // #94478: a quiet round is not always consensus — cited members may
-        // still be owed a turn. One bounded continuation round for exactly
-        // those members.
-        const pendingKeys = unaddressedGroupMentions(group, members, thread)
-        continuations += 1
-
-        if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
-          const citedMembers = members.filter(member => pendingKeys.includes(groupMemberKey(member)))
-          if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
-            const stranded = getGroupRoom(group).stranded || {}
-            const continuationResponders = citedMembers.filter(member => !Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member)))
-
-            for (const member of continuationResponders) {
-              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) break
-
-              const room = getGroupRoom(group)
-              const memberKey = groupMemberKey(member)
-              const markKey = `${thread}::${memberKey}`
-              const seen = room.watermarks[markKey] || 0
-              const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === thread)
-              if (!delta.length) continue
-              if ((room.holds || {})[memberKey]) continue // holds apply to continuation turns
-
-              const prompt = buildGroupChatTurnPrompt({
-                groupName: group,
-                members,
-                viewer: member,
-                deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, member.name))
-              })
-
-              updateGroupChat(group, r => ({ ...r, turn: member.name }), { sync: false })
-              let continuationReply: null | string = null
-              try {
-                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
-              } catch {
-                recordGroupActivity(group, { kind: 'failed', member: member.name, thread })
-                continuationReply = null
-              }
-
-              if (!isCurrent()) return
-
-              updateGroupChat(group, r => {
-                r.watermarks[markKey] = r.log.length
-                return r
-              }, { sync: false })
-
-              if (continuationReply !== null && !isGroupPassText(continuationReply)) {
-                appendGroupChatEntry(group, {
-                  kind: 'member',
-                  name: member.name,
-                  ...(member.connectionLabel || member.sourceScoped ? { source: member.connectionLabel || member.connectionId } : {})
-                }, continuationReply, thread)
-                updateGroupChat(group, r => {
-                  r.watermarks[markKey] = r.log.length
-                  return r
-                }, { sync: false })
-                posted += 1
-                spokeThisRound += 1
-              }
-            }
+          if (outcome.stop) return
+          if (outcome.spoke) {
+            posted += 1
+            spokeThisRound += 1
           }
         }
 
         if (spokeThisRound === 0) {
-          if (pendingKeys.length && (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)) {
-            exitKind = 'capped'
+          // #94478: a quiet round is not always consensus — cited members may
+          // still be owed a turn. One bounded continuation round for exactly
+          // those members.
+          const pendingKeys = unaddressedGroupMentions(group, members, thread)
+          continuations += 1
+
+          if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
+            const citedMembers = members.filter(member => pendingKeys.includes(groupMemberKey(member)))
+            if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
+              const stranded = getGroupRoom(group).stranded || {}
+              const continuationResponders = citedMembers.filter(member => !Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member)))
+
+              for (const member of continuationResponders) {
+                if (!driveIsLive() || !roomEpochIsCurrent(group, startEpoch) || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) break
+
+                const room = getGroupRoom(group)
+                const memberKey = groupMemberKey(member)
+                const markKey = `${thread}::${memberKey}`
+                const seen = room.watermarks[markKey] || 0
+                const delta = room.log.slice(seen).filter(entry => groupThreadOf(entry) === thread)
+                if (!delta.length) continue
+                if ((room.holds || {})[memberKey]) continue // holds apply to continuation turns
+
+                const prompt = buildGroupChatTurnPrompt({
+                  groupName: group,
+                  members,
+                  viewer: member,
+                  deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, member.name))
+                })
+
+                updateGroupChat(group, r => ({ ...r, turn: member.name }), { sync: false })
+                const continuationResult = await turns.run({ group, member, prompt, thread })
+
+                // Continuations deliberately retain their strict drive-level
+                // epoch policy. Do not inherit normal-loop cross-thread acceptance.
+                if (!driveIsLive() || !roomEpochIsCurrent(group, startEpoch)) return
+
+                const outcome = publishTurnResult(group, member, thread, markKey, continuationResult, false)
+                if (outcome.abandoned) {
+                  abandoned = true
+                  return
+                }
+                if (outcome.stop) return
+                if (outcome.spoke) {
+                  posted += 1
+                  spokeThisRound += 1
+                }
+              }
+            }
           }
-          return
+
+          if (spokeThisRound === 0) {
+            if (pendingKeys.length && (continuations > GROUP_CHAT_MAX_CONTINUATIONS || posted >= GROUP_CHAT_MAX_MESSAGES)) {
+              exitKind = 'capped'
+            }
+            return
+          }
         }
       }
-    }
 
-    // All rounds ran with someone still speaking — the round cap ended it.
-    exitKind = 'capped'
-  } finally {
-    if (isCurrent()) {
-      recordGroupActivity(group, { kind: exitKind, member: null, thread })
-      updateGroupChat(group, r => ({ ...r, running: false, turn: null }), { sync: false })
-      // A member whose turn timed out after the final round is stranded
-      // until the next send — the mobile room reopen harvests it
-      // (harvestStrandedGroupReply on mount).
+      // All rounds ran with someone still speaking — the round cap ended it.
+      exitKind = 'capped'
+    } finally {
+      if (driveIsLive() && roomEpochIsCurrent(group, startEpoch)) {
+        recordGroupActivity(group, { kind: exitKind, member: null, thread })
+        updateGroupChat(group, r => ({ ...r, running: false, turn: null }), { sync: false })
+        // A member whose turn timed out after the final round is stranded
+        // until the next send — the room reopen harvests it.
+      }
     }
   }
-}
 
-/** The user send that starts it all (group-rounds.ts sendToGroupChat):
- *  append the user entry, bump the epoch, apply the hold directive, and
- *  kick the round loop (chained after a settle when one is already live). */
-export function sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string {
-  const trimmed = String(text || '').trim()
-  if (!trimmed || !members.length) return null
-
-  const target = thread || mintGroupThreadId()
-  // A fresh user send answers the room — clear the needs-you badge.
-  $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
-  // Refresh the durable room roster on every send (backfills older rooms and
-  // keeps the mirror complete), deduped on durable identity like the
-  // desktop's durableGroupChatMembers.
-  const seen = new Set<string>()
-  const roster = members
-    .filter(member => {
-      const key = `${member.connectionId || 'legacy'}::${member.name}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    .slice(0, GROUP_CHAT_MAX_MEMBERS)
-  updateGroupChat(group, room => ({ ...room, members: roster }))
-
-  const sent = appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target)
-
-  const wasRunning = getGroupRoom(group).running === true
-  updateGroupChat(group, room => ({
-    ...room,
-    epoch: (room.epoch || 0) + 1,
-    running: true,
-    // #93129: user text is the ONLY input that changes member holds.
-    holds: applyGroupHoldDirective(
-      room.holds,
-      parseGroupChatMentions(trimmed, members),
-      trimmed,
-      { at: sent?.at, byMessageId: sent?.id, thread: target },
-      members.map(member => groupMemberKey(member))
-    )
-  }))
-  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
-
-  if (!wasRunning) {
-    void runGroupChatRounds(group, members, target).catch(() => {
+  const startDrive = (group: string, members: EngineMember[], thread: string): void => {
+    if (!driveIsLive()) return
+    const driveEpoch = getGroupRoom(group).epoch || 0
+    void runGroupChatRounds(group, members, thread).catch(() => {
+      if (!driveIsLive() || !roomEpochIsCurrent(group, driveEpoch)) return
       updateGroupChat(group, r => ({ ...r, running: false }), { sync: false })
     })
-  } else {
-    // A loop is live; it bails at its next boundary. Chain the fresh loop so
-    // exactly one drive owns the room.
-    setTimeout(() => {
-      void runGroupChatRounds(group, members, target).catch(() => {
-        updateGroupChat(group, r => ({ ...r, running: false }), { sync: false })
-      })
-    }, 250)
   }
 
-  return target
-}
+  const sendToGroupChat = (group: string, members: EngineMember[], text: string, thread?: null | string): null | string => {
+    if (!driveIsLive()) return null
 
-/** The real stop path (#91868/#94569): bump the epoch (the driving loop bails
- *  at its next boundary), hold EVERY member (future turns stay skipped until
- *  an explicit release), and session.interrupt the member mid-turn. */
-export async function stopGroupThread(group: string, thread: null | string, members: EngineMember[] | null = null): Promise<void> {
-  const room = getGroupRoom(group)
-  const roster = Array.isArray(members) && members.length ? members : room.members || []
-  const turnName = room.turn || null
+    const trimmed = String(text || '').trim()
+    if (!trimmed || !members.length) return null
 
-  const stamp: GroupHoldStamp = { at: Date.now(), byMessageId: null, thread: thread || null }
+    const target = thread || mintGroupThreadId()
+    // A fresh user send answers the room — clear the needs-you badge.
+    $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: false })
+    // Refresh the durable room roster on every send (backfills older rooms and
+    // keeps the mirror complete), deduped on durable identity like the
+    // desktop's durableGroupChatMembers.
+    const seen = new Set<string>()
+    const roster = members
+      .filter(member => {
+        const key = `${member.connectionId || 'legacy'}::${member.name}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, GROUP_CHAT_MAX_MEMBERS)
+    updateGroupChat(group, room => ({ ...room, members: roster }))
 
-  updateGroupChat(group, r => {
-    const holds: Record<string, GroupHoldStamp> = { ...(r.holds || {}) }
-    for (const member of roster) {
-      const key = groupMemberKey(member)
-      if (key && !holds[key]) holds[key] = { ...stamp }
+    const sent = appendGroupChatEntry(group, { kind: 'user', name: 'You' }, trimmed, target)
+
+    const wasRunning = getGroupRoom(group).running === true
+    updateGroupChat(group, room => ({
+      ...room,
+      epoch: (room.epoch || 0) + 1,
+      running: true,
+      // #93129: user text is the ONLY input that changes member holds.
+      holds: applyGroupHoldDirective(
+        room.holds,
+        parseGroupChatMentions(trimmed, members),
+        trimmed,
+        { at: sent?.at, byMessageId: sent?.id, thread: target },
+        members.map(member => groupMemberKey(member))
+      )
+    }))
+    recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
+
+    if (!wasRunning) {
+      startDrive(group, members, target)
+    } else {
+      // A loop is live; it bails at its next boundary. Chain the fresh loop so
+      // exactly one drive owns the room.
+      setTimeout(() => startDrive(group, members, target), 250)
     }
-    return { ...r, epoch: (r.epoch || 0) + 1, running: false, turn: null, holds }
-  })
 
-  recordGroupActivity(group, { kind: 'stopped', member: 'You', thread: thread || null })
+    return target
+  }
 
-  const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  const stopGroupThread = async (group: string, thread: null | string, members: EngineMember[] | null = null): Promise<void> => {
+    const room = getGroupRoom(group)
+    const roster = Array.isArray(members) && members.length ? members : room.members || []
+    const turnName = room.turn || null
 
-  if (onTurn && sessionId) {
-    try {
-      // The member's session lives under its profile — the profile rides the
-      // params like every member RPC (requestForBot injects it on desktop).
-      await groupEngineRequest('session.interrupt', { session_id: sessionId, profile: onTurn.name })
-    } catch {
-      /* best-effort — the epoch/hold legs already stopped the room */
+    const stamp: GroupHoldStamp = { at: Date.now(), byMessageId: null, thread: thread || null }
+
+    updateGroupChat(group, r => {
+      const holds: Record<string, GroupHoldStamp> = { ...(r.holds || {}) }
+      for (const member of roster) {
+        const key = groupMemberKey(member)
+        if (key && !holds[key]) holds[key] = { ...stamp }
+      }
+      return { ...r, epoch: (r.epoch || 0) + 1, running: false, turn: null, holds }
+    })
+
+    recordGroupActivity(group, { kind: 'stopped', member: 'You', thread: thread || null })
+
+    const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
+    const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+
+    if (onTurn && sessionId) {
+      try {
+        await turns.interrupt(onTurn, sessionId)
+      } catch {
+        /* best-effort — the epoch/hold legs already stopped the room */
+      }
+    }
+  }
+
+  return {
+    sendToGroupChat,
+    stopGroupThread,
+    deactivate() {
+      deactivated = true
     }
   }
 }

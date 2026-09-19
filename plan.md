@@ -1,693 +1,509 @@
-# Implementation plan: deepen the Group mirror wire protocol
+# Implementation plan: capture Group member turns behind one seam
 
 ## Status
 
-Implementation complete. Gateway routes and the Group chat UI were left unchanged.
+Design finalized; implementation has not started.
+
+This replacement plan covers architecture-review Candidate 01: **capture member turns behind one seam**. The previous repository-root `plan.md` was explicitly deleted before this replacement. Do not stage or commit this file as part of the implementation work.
 
 Repository root: `/Users/mac/Syncthing/Projects/Moirasia/apps/standalone/Herm-Bot`
 
-The existing root `plan.md` was deleted before this replacement, as requested. This plan covers the latest architecture-review Candidate 01: the **Group mirror**. It does not revive the older OAuth plan or repeat the already-landed Group send-engine work.
+The existing Group mirror deepening is already present at `17148bd` (`Refactor Group mirror lifecycle`). This plan starts from that implementation and deepens the remaining member-turn seam. It does not reopen the mirror refactor, the OAuth work, or the Group UI.
 
 ## 1. Objective
 
-Give the Group mirror a real module interface and a captured gateway adapter without changing its wire contract or its display-projection semantics.
+Make the member-turn module deep: one per-engine instance must own the captured member transport, session resolution, prompt submission, polling, interruption, prompt mirroring, timeout/stranded-reply handling, and stale-result policy.
 
 The finished module must:
 
-- keep the existing v1/v2-to-v3 normalization, durable room keys, stable message keys, member merge, tombstone handling, bounded snapshots, gateway byte accounting, and local rich-copy preservation;
-- keep the existing read → merge → CAS write → read-back protocol, including no-op detection and bounded exponential retry;
-- stop the mirror from importing or calling the global `groupEngineRequest` slot;
-- make each Group engine start create a fresh mirror instance that captures the transport it was given;
-- make a stopped mirror instance unable to publish, issue another request, schedule a retry, or affect a later engine Scope;
-- use an explicit semantic `GroupMirrorGateway` adapter so mirror behavior tests do not need to know RPC route names;
-- preserve the exact production route vocabulary and request bytes: `profiles.list` with `{ include_sessions: false }`, the `default` profile lookup, and `profiles.configure` with `name: 'default'`, the `ui_meta` payload, and the optional `ui_meta_expected_revisions` map;
-- leave the global runtime transport in place for `group-rounds.ts` and `group-turns.ts`, which still need it for member/session RPCs.
+- capture the transport passed to one Group engine lifecycle instead of reading a mutable global request slot for every member RPC;
+- keep all existing member wire vocabulary and parameter shapes unchanged: `session.resume`, `session.create`, `prompt.submit`, `clarify.respond`, `approval.respond`, and `session.interrupt`, with the member profile in the RPC params;
+- keep member session identity, prompt, activity, watermark, epoch, hold, and stranded-reply semantics local to the existing Group modules;
+- prevent a stopped engine lifecycle from starting new member requests or publishing late session, prompt, activity, stranded, or reply state into a later lifecycle;
+- preserve the policy that an already-running member RPC is not immediately cancelled by this refactor;
+- move late-result classification behind the member-turn seam, while preserving the intentional distinction between same-thread supersession and a cross-thread late result;
+- leave `startGroupEngine`, `stopGroupEngine`, the Group screen actions, backend routes, and wire vocabulary stable to their callers;
+- keep the Group mirror's separate captured adapter seam intact.
 
-This is a deepening of the existing `groups-sync.ts` module, not a speculative new `group-mirror.ts` abstraction.
+This is a deepening of `client/src/features/groups/group-turns.ts` and its callers. It is not a new generic task runner, a new Gateway lifecycle module, or a redesign of Group rounds.
 
-## 2. Settled design decisions
+## 2. Constraints and non-goals
 
-These are the recommended answers to the architecture-review questions. They are settled for implementation; do not reopen them during the coding pass unless repository evidence makes them impossible.
+### 2.1 Preserve
 
-### 2.1 Scope
+Do not change:
 
-Deepen only the Group mirror's wire protocol and lifecycle. Do not redesign:
+- backend routes, RPC method names, request parameter names, or profile routing;
+- the Group screen's public action signatures or connected UI behavior; the explicit no-active fail-closed wrapper behavior in Section 6, Step 3 is the deliberate disconnected-boundary exception;
+- the durable room snapshot format, mirror merge rules, or Group mirror lifecycle;
+- member session recovery rules: stored-id/title lookup, code `4007` create fallback, and code `4001` one-shot submit recovery;
+- the two-second poll cadence, 180-second base timeout, 20-minute hard cap, prompt mirroring, and stranded-reply harvest behavior except where lifecycle guards are required;
+- room holds, epochs, watermarks, round caps, continuation policy, or activity vocabulary.
 
-- the local Group send engine;
-- the round-robin drive, member turns, prompts, holds, watermarks, stranded-reply harvest, or activity feed;
-- the v3 snapshot format or its merge rules;
-- the gateway backend or its `profiles.*` routes;
-- the Group room UI;
-- Scope management outside the signal plumbing needed to cancel mirror requests.
+### 2.2 Explicitly do not add
 
-### 2.2 Module location
+- Group-module-initiated immediate cancellation or an abort signal for an already-running member RPC (the existing `SessionRuntime.close()` may still abort its scope as a separate controller behavior);
+- a second mutable transport slot. The engine may keep active per-lifecycle instance references, like the existing `activeMirror`; those references are lifecycle handles, not a transport registry;
+- a new backend endpoint or a new wire abstraction shared with unrelated features;
+- app-background pause/restart choreography for the Group engine;
+- automatic `session.interrupt` from `stopGroupEngine()`;
+- a broad redesign of `SessionRuntime` or `GatewayController`.
 
-Keep the deep module in `client/src/features/groups/groups-sync.ts`.
+The existing optional `GroupEngineRequest` signal argument remains available for the already-deep Group mirror adapter. Member-turn requests deliberately do not pass a signal through the new member adapter.
 
-Do not add `group-mirror.ts`. The current file already owns the snapshot vocabulary and merge semantics. The implementation should remove its module-global job state and put the stateful wire/lifecycle policy behind a factory in the same module. This gives the existing projection code locality with the policy that consumes it, without adding a shallow forwarding module.
+## 3. Current evidence and the seam to change
 
-The file will contain two layers:
+The implementation should start from these facts at `17148bd`:
 
-1. **Pure/in-process projection layer** — the existing normalization, sizing, snapshot, merge, and local-store projection functions.
-2. **Group mirror interface layer** — the new `GroupMirrorGateway` adapter seam and the `createGroupMirror(gateway)` lifecycle instance.
+- `client/src/features/groups/group-runtime.ts` owns a mutable `engineRequest` slot, `setEngineTransport()`, and `groupEngineRequest()`.
+- `client/src/features/groups/group-turns.ts:121–124` has `memberRequest()`, which calls `groupEngineRequest()` for every session, submit, poll, answer, and harvest RPC. `session.interrupt` is the exception: `group-rounds.ts:580` calls `groupEngineRequest()` directly.
+- A member turn spans session resume/create, baseline resume, prompt submission, repeated `session.resume` polling, pending clarify/approval mirroring, timeout, and possible late harvest. It therefore outlives the call site that started it.
+- `client/src/features/groups/group-rounds.ts` owns room epochs and decides whether a late result may commit through `shouldCommitMemberTurn()` in the normal responder loop. The continuation loop has a separate strict `isCurrent()` check and currently drops every epoch change, including a cross-thread late result.
+- `runGroupChatMemberTurn()` captures an epoch but does not own the transport or the final stale-result decision. `group-rounds.ts` has to inspect the room again after the turn returns. `clearGroupPrompts()` is a stateful definition with no caller in the current tree, so it is not a required interface to preserve.
+- `stopGroupEngine()` clears the global transport and stops the mirror. A continuation already awaiting the old transport can nevertheless observe a later transport slot unless every continuation is tied to an instance.
+- `GatewayController` stops the Group engine for explicit Scope teardown and dispose. App background handling currently closes `SessionRuntime` without stopping the Group engine; reconnect reopens that same runtime without reinstalling the Group engine.
+- The current `GatewayController.installGroupEngine()` already forwards the optional request options to `SessionRuntime.rpc()` for the mirror adapter. That signal plumbing is not a member-turn cancellation contract.
+- The Group mirror now captures its own adapter through `createGroupMirrorGateway(transport)`. Member turns should follow the same captured-dependency direction, but remain a separate module and policy.
 
-The raw `profiles.list` and `profiles.configure` mapping belongs to the production adapter in the same file. The mirror interface sees semantic remote state, not route-shaped response records.
+The root problem is not that member RPCs lack a route wrapper. It is that transport ownership, long polling, shared prompt state, stranded-reply state, and stale-result decisions are split across a mutable slot and two modules. The new seam must concentrate that policy rather than add another forwarding layer.
 
-### 2.3 Mirror interface
+## 4. Settled design decisions
 
-Expose a factory and a small lifecycle interface:
+### 4.1 The deep module and its location
+
+Keep the deep module in `client/src/features/groups/group-turns.ts`.
+
+Do not add `group-member-turns.ts` or a generic async-operation module. `group-turns.ts` already owns the member session vocabulary, prompt projection, polling, timeout, and harvest behavior. Put the captured adapter and lifecycle factory in that file so the implementation has locality.
+
+The module has two internal layers:
+
+1. a small captured `GroupMemberGateway` adapter that turns a member-aware request into the existing raw `GroupEngineRequest` call; and
+2. the deep `GroupTurnModule` implementation that owns all turn behavior and lifecycle guards.
+
+The adapter is a real seam: production supplies the captured gateway transport, while tests supply an in-memory member-aware adapter. The Group engine and Group rounds see only `GroupTurnModule`, not route names or transport slots.
+
+### 4.2 Final member-turn interfaces
+
+Use these names and responsibilities unless TypeScript details require an equivalent spelling:
 
 ```ts
-export interface GroupMirror {
-  pull(): Promise<boolean>
-  schedule(options?: GroupMirrorSchedule): void
+export interface GroupMemberGateway {
+  request(
+    member: GroupMember,
+    method: string,
+    params?: Record<string, unknown>
+  ): Promise<unknown>
+}
+
+export function createGroupMemberGateway(
+  transport: GroupEngineRequest
+): GroupMemberGateway
+
+export interface GroupTurnInput {
+  group: string
+  member: GroupMember
+  prompt: string
+  thread: string
+}
+
+export type GroupTurnCancelReason =
+  | 'engine-stopped'
+  | 'room-stopped'
+  | 'newer-user'
+
+export type GroupTurnCommit =
+  | { accepted: true }
+  | { accepted: false; reason: GroupTurnCancelReason }
+
+export type GroupTurnResult =
+  | {
+      kind: 'reply'
+      text: string
+      commit: () => GroupTurnCommit
+    }
+  | {
+      kind: 'pass'
+      commit: () => GroupTurnCommit
+    }
+  | {
+      kind: 'timed-out'
+      commit: () => GroupTurnCommit
+    }
+  | {
+      kind: 'failed'
+      reason?: string
+      commit: () => GroupTurnCommit
+    }
+  | {
+      kind: 'cancelled'
+      reason: GroupTurnCancelReason
+      commit: () => GroupTurnCommit
+    }
+
+export interface GroupTurnModule {
+  run(input: GroupTurnInput): Promise<GroupTurnResult>
+  harvest(group: string, member: GroupMember): Promise<void>
+  answer(
+    entry: GroupPrompt,
+    member: GroupMember,
+    answers: Record<string, string> | string | undefined
+  ): Promise<void>
+  interrupt(member: GroupMember, storedSessionId: string): Promise<void>
   stop(): void
 }
 
-export function createGroupMirror(gateway: GroupMirrorGateway): GroupMirror
+export function createGroupTurnModule(
+  gateway: GroupMemberGateway
+): GroupTurnModule
 ```
 
-There is deliberately no restart method. A factory call creates one live instance. `stop()` is terminal and idempotent. A later Group engine start must call the factory again and must never reuse the stopped instance.
+This is the module's interface, not a public engine API. `GroupEngine` may use the type internally; the Group screen continues to call its existing `sendToGroupChat`, `stopGroupThread`, and `answerGroupPrompt` functions.
 
-`pull()` preserves the current boolean meaning: `true` when a present remote snapshot, including an empty v3 envelope, was applied; `false` when there was no snapshot or the operation became stale/stopped. Active non-abort adapter errors remain rejected so existing callers can catch them.
+Interface invariants:
 
-A newly created mirror starts in an initial-pull state. The engine installs its scheduler before starting that pull so local changes can record their room markers, but `schedule()` queues those markers without writing until the first pull (or all concurrent first pulls) settles. The pull then merges with those queued markers and releases the queued work. This is the actual startup barrier that prevents a non-empty stale local cache from publishing before hydration. Direct mirror tests must prime the instance with a pull before asserting ordinary scheduled writes.
+- `createGroupTurnModule()` creates one terminal lifecycle. `stop()` is idempotent and there is no restart method; a later engine lifecycle creates a new instance.
+- `run()` returns a substantive answer only as `kind: 'reply'`; pass text is normalized to `kind: 'pass'`. Expected member-gateway failures are returned as `kind: 'failed'` with the existing activity reason when available, so the module can classify staleness before the round driver records the existing failed-as-pass activity. The module may record only the current `working` activity after successful session resolution, at the existing point in the flow; result outcome activity is deferred to the round driver. `answer()` still rejects a failed response because the screen owns that action's error swallowing.
+- Every `run()` result carries a commit lease. The round driver must call `commit()` immediately before any watermark, activity, or reply mutation. `commit()` rechecks the module lifecycle and room state at publication time; it is the last stale-result guard before synchronous store writes. The lease's return value is authoritative over any earlier result classification: an accepted `room-stopped` cancellation, or any result whose lease reports `room-stopped`, permits the current member watermark to be consumed but never permits a reply append; a lease reporting `engine-stopped` or `newer-user` rejects without result publication or watermark mutation.
+- `interrupt()` is best effort at the caller's policy level. It sends one existing `session.interrupt` request while the module is active and does not cancel a different request already in flight.
+- Calling any method after `stop()` starts no new member request. `answer()` and `harvest()` leave shared state unchanged when stale; `run()` returns `engine-stopped`; `interrupt()` resolves without issuing a request.
 
-`GroupMirrorSchedule` carries the only marker currently produced by `group-store`:
+### 4.3 Production adapter mapping
+
+`createGroupMemberGateway(transport)` captures the function value passed to that factory. Its only production mapping is:
 
 ```ts
-export interface GroupMirrorSchedule {
-  changedRooms?: string[]
+request(member, method, params = {}) {
+  return transport(method, { ...params, profile: member.name })
 }
 ```
 
-`schedule()` is a no-op after `stop()`. It also refuses an empty local snapshot. The existing pure merge functions continue to accept explicit tombstone markers, but the repository has no production room-delete/disband caller that can supply them, so the new lifecycle interface does not expose an `allowEmpty` escape hatch or a dead `deletedRooms` option.
+The member name must overwrite any accidental `profile` value in `params`, matching the current `memberRequest()` behavior. The adapter must not call `groupEngineRequest()` or read any mutable slot.
 
-### 2.4 Gateway adapter interface
+The adapter does not:
 
-Use a semantic adapter, not a generic route callback inside the mirror:
+- add an `AbortSignal` to member requests;
+- retry, classify, poll, or mutate Group stores;
+- change method names, parameter names, session ids, or response shapes.
 
-```ts
-export interface GroupMirrorRemoteState {
-  snapshot: GroupChatSyncSnapshot | null
-  revision: number
-  supportsCas: boolean
-}
+The raw `GroupEngineRequest` type may continue to carry `options?: { signal?: AbortSignal }` because `groups-sync.ts` uses it. The member adapter calls the raw transport with the existing two arguments, preserving the no-immediate-cancellation decision.
 
-export interface GroupMirrorWriteResult {
-  applied: boolean
-  revision?: number
-}
+### 4.4 Captured lifecycle ownership
 
-export interface GroupMirrorGateway {
-  read(signal: AbortSignal): Promise<GroupMirrorRemoteState>
-  write(
-    snapshot: GroupChatSyncSnapshot,
-    expectedRevision: number | undefined,
-    signal: AbortSignal
-  ): Promise<GroupMirrorWriteResult>
-}
-```
+`startGroupEngine(transport)` creates both:
 
-The adapter owns one read or one write against the remote profile. The mirror owns the higher-level protocol:
+- a new `GroupTurnModule` from a new captured member gateway; and
+- the existing new Group mirror from its captured mirror gateway.
 
-- when to read;
-- which local and remote snapshots to merge;
-- when CAS is required;
-- how to calculate and validate the next revision;
-- when a read-back is mandatory;
-- how to preserve changed local rooms while applying remote tombstones;
-- how to debounce and retry;
-- when a result is stale and must be discarded.
+The engine stores the current turn module in a private `activeTurns` reference. `stopGroupEngine()` detaches and terminally stops it. No later engine start reuses it. This reference is paired with the captured round driver and mirror as one lifecycle; it is not another place from which a turn looks up transport.
 
-The production adapter owns raw wire mapping and response extraction. Its factory will be named `createGroupMirrorGateway(transport)` and will capture the injected `GroupEngineRequest`; it must not call the mutable `groupEngineRequest()` function from `group-runtime.ts`.
+A round drive captures the `GroupTurnModule` instance when the drive starts. This applies to the delayed chained drive created by `sendToGroupChat`, too. A delayed callback must never look up `activeTurns` again, because doing so would let an old drive use a later Scope's adapter.
 
-Tests will provide semantic in-memory and deferred adapters directly to `createGroupMirror()`. Separate adapter contract tests will exercise `createGroupMirrorGateway()` with a recording transport to pin the production request bytes.
+Lifecycle matrix:
 
-### 2.5 Transport separation
+| Event | Turn-module behavior |
+| --- | --- |
+| Initial connect/start | Create a fresh captured module. New sends use it. |
+| Repeated `startGroupEngine()` | Stop the old module first, bump room epochs through existing transition logic, then create the new module. |
+| Explicit Scope teardown, profile switch, configure-URL teardown, logout teardown, dispose | `stopGroupEngine()` terminally stops the module and detaches the lifecycle. Its own `stop()` does not abort an already-handed member promise. The controller's following `SessionRuntime.close()` or `dispose()` may still abort that promise through the runtime's existing scope signal. `logout()` currently calls `runtime.close()` before its shared teardown calls `stopGroupEngine()`; preserve that order and do not claim the module protects the interval between those calls. |
+| Explicit `stopGroupThread()` | The room driver bumps the epoch and applies holds as today, then calls `turns.interrupt()` for the current member session. This is the existing explicit interrupt action, not automatic lifecycle cancellation. |
+| App background | Preserve current behavior: `GatewayController` closes `SessionRuntime` without stopping the Group engine. That runtime close may abort the raw RPC already in flight; the turn module remains alive and later calls use the same `SessionRuntime` object. |
+| Reconnect after background or a transport drop | Preserve current behavior: the same captured callback still points at the same `SessionRuntime` object, whose later calls use the reopened runtime. Reconnect does not reinstall the Group engine and the callback does not capture a `SessionRuntime` generation. |
+| User send in the same engine | Reuse the module, but capture a fresh room epoch/thread/anchor for that member turn. |
 
-`group-runtime.ts` remains the global transport slot for member/session RPCs used by `group-rounds.ts` and `group-turns.ts`.
+The module's `stop()` is a correctness guard, not an immediate-cancellation mechanism. An already-running raw promise may reject or resolve later. The implementation must wait for that promise to settle and then discard its effects.
 
-The mirror must not import the `groupEngineRequest` function. It receives a captured transport through `createGroupMirrorGateway(transport)`. This is the critical seam: an old mirror cannot accidentally reach a new Scope merely because the global runtime slot was replaced.
+### 4.5 Stale-result policy
 
-The injected request type gains an optional signal-bearing third argument so the mirror can abort its own work while existing two-argument member RPC calls remain source-compatible:
+Move the current epoch decision into the turn module and make the policy explicit:
 
-```ts
-export type GroupEngineRequest = (
-  method: string,
-  params?: Record<string, unknown>,
-  options?: { signal?: AbortSignal }
-) => Promise<unknown>
-```
+1. Capture the engine instance, room epoch, thread, and last-entry anchor **before the first asynchronous session-resolution call**.
+2. If the module is stopped, the operation is stale regardless of room state; return `engine-stopped` and never publish.
+3. If the room epoch is unchanged, the result is current.
+4. If the epoch changed and a newer user entry exists in the captured thread after the anchor, return `newer-user`. This has priority even when that newer send also placed a hold on the member, matching the current `shouldCommitMemberTurn()` decision after `runGroupChatMemberTurn()` returns.
+5. If the epoch changed, there is no newer same-thread user entry, and the current room holds this member, return `room-stopped`. The normal responder loop must consume that member's current watermark without appending a reply, matching the current stop path. The continuation loop must retain its existing strict epoch guard and drop the result before that watermark mutation.
+6. If the epoch changed but there is no newer same-thread user entry and no hold for this member, preserve the existing normal-loop cross-thread late-result policy: the result may still commit into its original thread.
 
-Only the injected callback type and the controller's callback need the third argument. `groupEngineRequest()` remains the two-argument member-RPC wrapper because no current member caller supplies a signal and the mirror must not use that mutable slot.
+Use the current entry-id anchor technique so front-trimming the bounded room log does not make an index stale. Capture only a non-empty string id as the anchor; if the last entry has no usable id, or that valid id is absent after trimming, use the current implementation's conservative tail scan over the retained log rather than comparing `undefined` ids. `GroupMessage.id` is optional for legacy and mirrored entries; this fallback is a deliberate boundary case.
 
-### 2.6 Lifecycle safety
+The module must check this policy:
 
-Abort is a cancellation mechanism, not the correctness condition. `stop()` is terminal, so the correctness guard is the stopped flag plus the instance's private closure state. Every asynchronous boundary must check that flag and the instance signal before acting.
+- before mirroring a poll snapshot that belongs to a superseded/held turn;
+- before recording a timeout marker or clearing its prompt mirror;
+- before converting a member-gateway failure into a `failed` result;
+- when constructing every result; and
+- again in the result's `commit()` closure immediately before the round driver mutates the room.
 
-A stopped instance must not:
+The final `commit()` check is required even though `run()` checked once: another queued continuation can change the room after the promise resolves and before the caller's `await` continuation publishes the result. The round driver must not append, record result activity, or advance a watermark until the lease is accepted. A lease that loses the final race specifically to `room-stopped` is the controlled exception: the driver consumes the watermark only for that stop classification and still never appends the stale reply. A rejected `newer-user` lease may record the one current `cancelled` activity entry that explains the supersession, but it must not publish the old result or advance its watermark.
 
-- replace `$groupChats` after a read or read-back resolves;
-- issue a write after a stale read resolves;
-- issue a read-back after a stale write resolves;
-- requeue a failed job;
-- create or honor a debounce/retry timer;
-- reset retry or in-flight state in a later lifecycle;
-- publish through a scheduler installed for a later engine start.
+The normal responder loop uses this per-turn lease for cross-thread acceptance. The continuation loop keeps its current `if (!isCurrent()) return` guard before publication, so it continues to drop every epoch change. This is a drive-level policy distinction, not a second implementation of the entry-anchor/token classification.
 
-The implementation will use:
+### 4.6 Prompt and stranded-reply ownership
 
-- an `AbortController` owned by the mirror instance and passed to every adapter method;
-- a terminal `stopped` flag checked at every asynchronous boundary;
-- per-instance pending, active-job, timer, in-flight, and retry state.
+Keep the current prompt shape and stranded marker shape. Add only instance-local ownership guards:
 
-A generation counter is deliberately not added. Because a mirror cannot restart and a later engine start creates a different closure, a generation would duplicate the terminal stopped check without distinguishing any additional live case.
+- Every stateful member operation that can write prompt or marker state, including `run()` and a non-empty `harvest()`, claims a monotonically increasing per-module operation token keyed by `group + memberKey`. A harvest that finds no current marker returns without claiming a token, so a no-op open/round harvest cannot invalidate an active turn. The token is shared across non-no-op `run()` and `harvest()` operations: the latest claimant owns prompt/marker writes, and a later `run()` reclaims ownership if it starts after a harvest. This ordering is intentional for concurrent open/send boundaries. Prompt mirror writes, prompt clears, and timeout-marker writes require both an active module and the latest token for that group/member. An older continuation may finish its RPC but cannot overwrite or clear a newer turn's prompt or stranded marker. `answer()` does not claim a turn token; it uses the active-module check and request-id comparison below.
+- When a prompt is cleared, compare the request id that the operation observed with the current stored prompt. An old poll or answer must not delete a newer request's card. A poll must also hold the latest operation token before it writes a replacement prompt.
+- `harvest()` captures an existing marker's `before` and `thread` values, then claims its operation token before its read. Before clearing the marker or appending the late reply, require the module to remain active, the token to remain current, and the current marker to still represent the captured marker. Use object identity when the marker is an object; for a legacy numeric marker, the token/version check is the discriminator because equal numbers have no identity.
+- All session-id persistence, prompt-store writes, `$groupNeedsYou` writes, and stranded updates after an await must check the module's active state and operation ownership. Result activity entries and normal-turn room appends after an await must go through the result commit lease; harvested replies use the marker/token ownership check instead. The old module must never publish into a later engine lifecycle.
+- A module stop does not erase already-committed local markers or prompt entries. It only prevents old continuations from changing them. Existing store reset/Scope policy remains outside this plan.
 
-### 2.7 Glossary ownership
+The token is local lifecycle bookkeeping, not a new persisted wire field and not a cancellation mechanism.
 
-Update `CONTEXT.md` so the Group mirror entry names:
+## 5. Target ownership after the refactor
 
-- `groups-sync.ts` as the owner;
-- `createGroupMirror(gateway)` and its `pull`/`schedule`/`stop` interface;
-- the semantic `GroupMirrorGateway` seam and captured production adapter;
-- the fact that the member-turn transport remains in `group-runtime.ts` and is separate from the mirror adapter.
+### `group-turns.ts` — deep member-turn module
 
-Update the Group send engine entry so “the injected transport is the engine's only seam to the wire” is no longer inaccurate. The injected transport remains the member-turn seam; the mirror has its own captured adapter seam.
+Owns:
 
-## 3. Current evidence and seam to change
+- `GroupMemberGateway` and the captured production adapter;
+- `GroupTurnModule`, input/result types, and terminal lifecycle state;
+- session resolution and session-id persistence;
+- prompt submission and one-shot runtime-session recovery;
+- baseline reads and polling;
+- pass/reply selection and prompt projection;
+- the current `working` activity at the same post-session-resolution point as today; result outcome activity stays with the round driver;
+- prompt answers and member interruption;
+- timeout, hard-cap, stranded marker creation, and late harvest;
+- per-turn prompt/marker ownership and stale-result commit leases.
 
-The implementation pass should begin from these repository facts rather than re-deriving a different boundary:
+It may continue to export pure helpers that have independent callers or useful pure tests, such as `isGroupPassText`, `pickGroupTurnReply`, and `isSessionGoneError`. Stateful turn operations must be reached through `GroupTurnModule` rather than free functions that consult a global transport.
 
-- `client/src/features/groups/groups-sync.ts` currently combines pure projection helpers with the stateful flush job.
-- The file imports `groupEngineRequest` directly.
-- The stateful section has module-global `disposed`, `inFlight`, `pending`, `debounceTimer`, `retryTimer`, and `retryCount` variables.
-- `readRemoteSnapshot()` sends `profiles.list` with `{ include_sessions: false }`, finds `name === 'default'`, reads `ui_meta['hermes-bots-groups']`, and extracts `ui_meta_revisions`.
-- `flushGroupChatSync()` sends `profiles.configure` with `name: 'default'`, `ui_meta`, and the expected revision only when CAS is supported.
-- It validates `applied.ui_meta`, validates a CAS write revision, reads back the profile, checks the persisted revision, and merges the confirmed snapshot into the local store.
-- `stopGroupChatSync()` clears timers and pending state but cannot cancel or neutralize async work already awaiting `groupEngineRequest`.
-- `startGroupChatSync()` only changes `disposed`, so a late continuation can run after a later engine start has reopened the global transport slot.
-- `client/src/features/groups/group-engine.ts` currently installs the global member transport, starts the global mirror job, installs the store scheduler, and fires the initial pull.
-- `client/src/features/groups/group-runtime.ts` is still required by `group-rounds.ts` and `group-turns.ts`; its global slot cannot simply be removed.
-- `client/src/state/gateway-controller.ts` currently passes `(method, params) => this.runtime.rpc(method, params)` and must forward the optional signal for mirror cancellation.
-- Existing tests cover projection sizing, keys, v1 normalization, merge behavior, legacy threads, a normal engine-level read-back, a configure/revision failure that enters the retry path, no-empty scheduling, Group engine lifecycle, and full rounds. The current retry fixture fails before a successful read-back and never proves that a read-back revision race retries, so the migrated suite must add that coverage rather than describe the old test as a read-back retry test.
-- `startGroupEngine()` currently installs the scheduler before an unawaited initial pull. A non-empty local cache can therefore publish before hydration; the empty-cache guard does not cover that case. The new per-instance mirror must queue scheduled markers and suppress writes until its first pull settles.
-- A pull can overlap a flush after the flush has removed its job from `pending`. The mirror serializes their protocol operations, and read-back preservation still includes both the active captured job and the remaining pending markers so a remote tombstone cannot delete a room being written.
-- There is no production caller for `allowEmpty` or `deletedRooms` in the old scheduler. Keep tombstone behavior in the pure merge functions, but do not carry a dead local-disband escape hatch into the new lifecycle interface or claim that an explicit final-room publish exists.
-- `teardownGatewayScope()` and `dispose()` stop the Group engine before closing the runtime, but `logout()` closes the runtime before entering shared teardown and app-background handling calls `runtime.close()` without stopping the Group engine. Reconnect reopens the same runtime and does not call `startGroupEngine()` again. The plan must describe these paths accurately rather than claim that every runtime close stops the mirror.
-
-## 4. Target architecture
-
-### 4.1 Ownership after the refactor
-
-`groups-sync.ts` owns:
+### `group-rounds.ts` — room policy and sequencing
 
-- `GroupChatSyncRoom` and `GroupChatSyncSnapshot`;
-- the v1/v2-to-v3 normalization path;
-- gateway byte sizing and snapshot bounding;
-- durable room, message, and member identity keys;
-- snapshot merge, tombstone, rename, and local rich-copy policy;
-- the `GroupMirrorGateway` and `GroupMirror` interfaces;
-- the production gateway adapter;
-- the per-instance debounce, CAS, read-back, retry, abort, startup-barrier, and terminal-stop policy.
-
-`group-engine.ts` owns:
-
-- the active mirror instance reference for the current engine lifecycle;
-- installing the mirror's `schedule` method into `group-store`;
-- starting the initial `pull`;
-- delegating `openGroupRoom` pulls to the current instance;
-- the existing member-turn transport installation and engine teardown;
-- the room epoch/running reset on gateway transition.
-
-`group-runtime.ts` owns:
-
-- the existing global member RPC transport slot;
-- activity and prompt atoms;
-- the optional signal forwarding on the injected request type.
-
-`group-store.ts` remains the scheduler host. It does not learn route names or mirror protocol rules.
-
-### 4.2 Production adapter mapping
-
-Implement `createGroupMirrorGateway(transport)` next to the mirror interface in `groups-sync.ts`.
-
-`read(signal)` must:
-
-1. call `transport('profiles.list', { include_sessions: false }, { signal })`;
-2. treat the result as the existing `{ profiles: [...] }` profiles-list shape;
-3. select the row whose `name` is exactly `default`;
-4. read the `hermes-bots-groups` value only when that row's `ui_meta` is a non-null, non-array object and the value is a non-null, non-array object;
-5. return `snapshot: null` when the default row, usable `ui_meta`, or snapshot is absent;
-6. normalize the revision key to a non-negative finite number when the wire value is a number; use `0` for `undefined`, null, non-numeric, negative, `NaN`, `Infinity`, or a missing key;
-7. set `supportsCas` only when the default row has its own `ui_meta_revisions` property, even if that property's value is null or the map's key is absent. This preserves the current capability detection, which is property-presence based rather than value based.
-
-`write(snapshot, expectedRevision, signal)` must:
-
-1. build exactly `{ name: 'default', ui_meta: { 'hermes-bots-groups': snapshot } }`;
-2. add exactly `{ 'hermes-bots-groups': expectedRevision }` under `ui_meta_expected_revisions` only when `expectedRevision !== undefined`;
-3. call `transport('profiles.configure', params, { signal })`;
-4. map `result.applied.ui_meta === true` to `applied`;
-5. map the returned revision to a number only when the wire value is a finite non-negative number; otherwise leave `revision` undefined. Invalid acknowledgements must not satisfy the mirror's exact `writeRevision` check.
-
-Do not move merge policy into this adapter. Do not make the adapter retry, read back, or update `$groupChats`.
-
-### 4.3 Mirror instance state
-
-Move the current module-global state into the closure created by `createGroupMirror()`:
-
-```ts
-let stopped = false
-let initialPullSettled = false
-let initialPulls = 0
-let inFlight = false
-let activeJob: SyncPending | null = null
-let pending: SyncPending | null = null
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
-let retryTimer: ReturnType<typeof setTimeout> | null = null
-let retryCount = 0
-const controller = new AbortController()
-```
-
-The exact names may differ, but the ownership must be per instance. Constants such as the debounce duration and retry ceiling can remain module constants because they are policy constants, not mutable lifecycle state.
-
-`isCurrent(signal)` must require both `!stopped` and `!signal.aborted`. The captured signal is always the instance controller's signal. `activeJob` is separate from `pending`: it keeps the markers of a flush that has been removed from the pending queue visible to a concurrent pull.
-
-`stop()` must be idempotent and must, in this order or an equivalent order that preserves the same invariants:
-
-1. mark the instance stopped;
-2. abort the instance controller;
-3. clear the debounce and retry timers;
-4. clear pending and active job state and reset retry/in-flight bookkeeping;
-5. leave the instance permanently stopped.
+Owns:
 
-A later call to `schedule()` must return before taking a snapshot. A later call to `pull()` must resolve as stale/no-op rather than touching the adapter or store. A stopped instance is never made ready again.
+- mention parsing, responder selection, speaker rotation, prompt construction, holds, room epoch changes, round/continuation caps, and activity policy at round boundaries;
+- synchronous publication of an accepted `GroupTurnResult` into the room log and watermark;
+- publication of accepted result activity (`replied`, `passed`, `timed-out`, or `failed`) at the round boundary; the module keeps the existing post-session-resolution `working` activity point;
+- creating a round-drive closure around one captured `GroupTurnModule`;
+- the existing drive-level distinction between the normal responder loop's cross-thread acceptance and the continuation loop's strict epoch cancellation.
 
-### 4.4 Pull behavior
+It must not import `groupEngineRequest`, call a raw gateway, or reimplement the turn module's entry-anchor, hold, or operation-token classification.
 
-`pull()` keeps the current receive-half behavior, with the startup and concurrent-flush guards made explicit:
+### `group-engine.ts` — public Group engine and lifecycle owner
 
-1. return `false` immediately if the instance is stopped;
-2. count the call as one of the initial pulls while `initialPullSettled` is false, and capture the instance signal;
-3. call `gateway.read(signal)`;
-4. check `isCurrent(signal)` after the await;
-5. return `false` for no snapshot;
-6. preserve the union of `activeJob.changedRooms` and the current `pending.changedRooms` while merging into `$groupChats`;
-7. check `isCurrent(signal)` immediately before `replaceGroupChats()`;
-8. replace the local rooms and return `true`;
-9. in a `finally`, mark the initial phase settled only after all pulls that began before settlement have finished, then flush queued work if the instance is still current.
+Owns:
 
-If an active adapter read fails, reject it as today so the caller can decide whether to swallow it. If the operation is stopped or aborted, suppress the stale/abort failure and resolve `false`; do not create a retry for the explicit pull. A scheduled job queued during a failed initial pull may still run after the initial phase settles, using its normal read/merge/retry policy.
+- `activeTurns` and the current round-drive closure;
+- creating and stopping one turn module per engine lifecycle;
+- installing the existing Group mirror scheduler;
+- delegating the existing public actions to the current captured module/round driver;
+- existing room epoch transition behavior.
 
-The pull must read markers from the same mirror instance, including the captured active job. It must not read a module-global queue that a later instance could reuse. This active-job union is required because flush removes its job from `pending` before its first read. Pull and flush protocols are serialized through one per-instance operation queue, so an older pull or read-back cannot publish after a newer operation; the active-job union remains the read-back protection while a captured job is in flight. Calls made during the initial phase still count toward the startup barrier.
+The public function signatures used by `group-screen.tsx` remain unchanged.
 
-### 4.5 Flush behavior
+### `group-runtime.ts` — runtime-only Group state and shared type
 
-Keep the existing protocol in the mirror closure, changing only its dependencies and lifecycle guards:
+Keeps:
 
-1. Return if the instance is stopped, the initial pull has not settled, already in flight, an existing retry timer is active, or there is no pending job.
-2. Capture the instance signal.
-3. remove one `SyncPending` job from the instance queue, copy it to `activeJob`, and mark the instance in flight;
-4. read remote state through `gateway.read(signal)`;
-5. check `isCurrent(signal)` before using the result;
-6. create the local bounded snapshot from `$groupChats`;
-7. compute `writeRevision = remote.revision + 1`;
-8. merge remote and local snapshots with the job's changed rooms and write revision;
-9. if there are no changed-room markers and the payload matches the remote payload, avoid a write; if a remote snapshot exists, pull it back through the same current instance, check currentness again, then reset retry count;
-10. call `gateway.write(snapshot, remote.supportsCas ? remote.revision : undefined, signal)`;
-11. check `isCurrent(signal)` before validating or issuing anything else;
-12. require `applied === true`;
-13. when CAS is supported, require the returned revision to equal `writeRevision`;
-14. read back through `gateway.read(signal)`;
-15. check `isCurrent(signal)` before validating or publishing;
-16. when CAS is supported, require the confirmed revision to be at least `writeRevision`;
-17. merge the confirmed snapshot into the local store while preserving the union of the current `activeJob.changedRooms` and any current `pending.changedRooms`;
-18. check `isCurrent(signal)` immediately before `replaceGroupChats()`;
-19. reset retry count only for the current instance.
+- `$groupActivity`, `recordGroupActivity`, `$groupPrompts`, and the `GroupPrompt` type;
+- the raw `GroupEngineRequest` type shared by the mirror adapter and member adapter.
 
-The catch path must:
+Removes the mutable request slot and its setter/wrapper. The file comment must no longer describe a global member transport.
 
-- suppress all stale or aborted errors;
-- increment the retry count only while the same instance is current;
-- when the count is at or below `MAX_RETRIES`, requeue the captured job, preserve the existing backoff ladder (`1s`, `2s`, `4s`, `8s`, `16s`, capped at `30s`), and install one retry timer;
-- when the count exceeds `MAX_RETRIES`, reset the count and drop the captured job exactly as the current implementation does. This is a bounded best-effort mirror, not a durable offline queue;
-- have a retry timer check `isCurrent(signal)` before invoking another flush;
-- never let a stopped operation install a retry timer or requeue into a later instance.
+### `groups-sync.ts` — existing independent mirror module
 
-The finally path must:
+No protocol redesign. It continues to use its own captured semantic adapter and must not depend on the member-turn module. The same raw transport may be passed to two separate adapters at engine start, but neither adapter may retrieve it from a global slot.
 
-- check `isCurrent(signal)` before mutating `activeJob`, `inFlight`, or starting pending work;
-- clear `activeJob` and `inFlight` for the current instance;
-- immediately flush current pending work when no retry timer is active;
-- do nothing when the instance is stopped. `stop()` already clears the old instance's bookkeeping, and the old instance must never be reused.
+### `GatewayController` and `SessionRuntime`
 
-Preserve the current behavior that local mutations arriving while a flush is awaiting the gateway are merged into `pending` and handled by the next flush rather than being lost or folded into the already-captured job. This guarantee applies while the bounded retry window remains; after retry exhaustion the current policy deliberately abandons the captured job.
+No lifecycle expansion is planned. Keep:
 
-### 4.6 Schedule behavior
+- `installGroupEngine()` forwarding the optional transport options to `runtime.rpc()` for mirror cancellation;
+- explicit Scope teardown stopping the Group engine;
+- app-background close without Group-engine stop;
+- reconnect reopening the existing runtime without reinstalling the Group engine.
 
-`schedule(options)` must preserve the current policy while making it instance-local:
+Only type-level adjustments should be made if the removed setter/wrapper was imported.
 
-1. no-op when stopped or timers are unavailable;
-2. build a bounded local snapshot;
-3. refuse to schedule an empty snapshot;
-4. merge `changedRooms` into this instance's pending queue;
-5. if the initial pull has not settled, leave the markers queued and do not start a write timer;
-6. otherwise clear and replace the debounce timer;
-7. have the callback clear its own timer reference and call flush only when `isCurrent(controller.signal)` is true.
+## 6. File-by-file implementation steps
 
-The initial-pull gate protects a freshly installed client from publishing a non-empty stale local cache over the remote mirror. The empty-snapshot guard remains a second defense. There is no current production local-room deletion/disband path, so do not add an `allowEmpty` escape hatch or describe one as a supported publish.
+### Step 1 — Define the captured member adapter and module interface
 
-## 5. File-by-file implementation steps
+File: `client/src/features/groups/group-turns.ts`
 
-### Step 1 — Extend the injected request only for cancellation
+1. Import `GroupEngineRequest` as a type from `group-runtime.ts`; do not import `groupEngineRequest`.
+2. Add the finalized `GroupMemberGateway`, `GroupTurnInput`, `GroupTurnResult`, commit, cancellation, and `GroupTurnModule` types.
+3. Implement `createGroupMemberGateway(transport)` so it captures the callback and adds `profile: member.name` exactly once per request.
+4. Implement `createGroupTurnModule(gateway)` with all mutable lifecycle state in its closure:
+   - terminal `stopped` flag;
+   - operation-token counter and latest-token map keyed by `group + memberKey`, claimed by both `run()` and `harvest()`;
+   - only the local marker/version bookkeeping needed to distinguish a legacy numeric marker from a later replacement;
+   - no module-global transport or mutable per-operation/session/prompt/timeout/marker state; the shared room atoms remain the runtime state owners.
+5. Move the current `memberRequest()` behavior into the captured gateway path. All private helpers (`ensureGroupChatSession`, `submitGroupTurnPrompt`, polling, prompt sync, answer, harvest) must receive/use the captured gateway or the factory closure.
+6. Capture room epoch, thread, and entry-id anchor before `ensureGroupChatSession()` begins. Implement the settled stale policy and the commit lease described in Section 4.5.
+7. Place active and ownership checks after every awaited member request and timer boundary before:
+   - starting another member request;
+   - persisting a session key;
+   - changing `$groupPrompts` or `$groupNeedsYou`;
+   - recording activity;
+   - writing a stranded marker;
+   - clearing a marker;
+   - appending a harvested reply.
+8. Preserve the existing wire/error decisions for `4007`, `4001`, and transient resume/poll handling. Keep baseline and poll resume failures best-effort and continue polling as today; convert errors that currently escape session resolution or prompt submission into `kind: 'failed'` after stale classification. The round driver still records `failed` activity and treats those failures as a pass when current. Do not let a stale same-thread/held/engine-stopped failure leak a late failure activity entry.
+9. Make `stop()` terminal and idempotent. It must not abort a member request already handed to the gateway. It must prevent subsequent polls, prompt updates, answer cleanup, harvest publication, and retry-like continuation.
+10. Make `interrupt()` use the captured gateway and preserve the exact `{ session_id, profile }` wire params. If the module is already stopped, it must not call the gateway.
+11. Hide stateful free functions behind the factory. Remove or make private the old global-dependent exports (`ensureGroupChatSession`, `answerGroupPrompt`, `runGroupChatMemberTurn`, `harvestStrandedGroupReply`, `syncGroupClarify`, and `memberRequest`) after their callers and tests migrate. Delete `clearGroupPrompts()` as well: the current grep inventory has no caller, and keeping an unowned prompt-store mutator would violate this interface. Retain pure helpers only where they still have a legitimate in-process interface.
 
-File: `client/src/features/groups/group-runtime.ts`
+### Step 2 — Make the round driver capture the turn module
 
-- Extend `GroupEngineRequest` with an optional `{ signal?: AbortSignal }` third argument.
-- Keep `groupEngineRequest()` as the existing two-argument member-RPC wrapper. The mirror never calls it, so widening that wrapper would add no current behavior.
-- Keep `setEngineTransport()` and the mutable runtime slot because member-turn modules still depend on it.
-- Update the module comment to state that the Group mirror receives a captured request through its adapter and does not call this global request function.
-- Do not move `$groupActivity`, `$groupPrompts`, or member RPC helpers.
+File: `client/src/features/groups/group-rounds.ts`
 
-File: `client/src/state/gateway-controller.ts`
+1. Remove the `groupEngineRequest` import.
+2. Import `GroupTurnModule` and `GroupTurnResult` as internal types.
+3. Replace direct imports of `runGroupChatMemberTurn` and `harvestStrandedGroupReply` with a small `createGroupRoundDriver(turns)` factory. Export this factory only from `group-rounds.ts` for in-cluster tests; do not re-export it from the public engine facade. Its returned `sendToGroupChat` and `stopGroupThread` methods retain the current public action shapes for the engine, while their closures capture `turns`. Define the internal `GroupRoundDriver` shape as those two methods plus a non-public `deactivate()` lifecycle hook; the hook only marks delayed drives inactive and is not part of the engine facade's action signatures.
+4. Keep `runGroupChatRounds` private to that driver or give it the captured module as an explicit internal dependency. It must not look up the current module inside the loop.
+5. In the normal responder loop:
+   - call `turns.harvest()` at the existing harvest boundary;
+   - call `turns.run({ group, member, prompt, thread })`; the module records the existing `working` activity only after session resolution succeeds and the active check passes, rather than moving that activity earlier than today;
+   - handle `reply`, `pass`, `timed-out`, and `failed` as typed outcomes without interpreting raw pass text. A `failed` result carries the existing reason and is a pass for room sequencing;
+   - call the result's `commit()` immediately before any result activity, watermark, or reply mutation. The module must not record `replied`, `passed`, `timed-out`, or `failed` before this classification;
+   - on an accepted reply/pass/timed-out/failed lease, record the corresponding result activity and preserve the current watermark and append behavior;
+   - after inspecting the lease result, consume the current member watermark only when the lease is accepted for a `room-stopped` cancellation or reports `reason: 'room-stopped'`; append nothing and exit. If the lease instead reports `newer-user` or `engine-stopped`, make no watermark mutation. This preserves the current explicit-stop behavior without trusting an obsolete result reason;
+   - on `newer-user`, record the existing member-level `cancelled` activity, do not advance the old watermark, and exit;
+   - on `engine-stopped`, publish no further activity or room state and exit; any `working` activity already recorded after session resolution is the existing operation-start record, not a stale result outcome. A drive-abandoned/deactivated flag must also suppress its `finally` settled/running cleanup if the module stopped before the room epoch transition ran.
+6. In the continuation loop, retain the current strict `if (!isCurrent()) return` check before result activity or `commit()`. It must continue to drop every epoch change, including a cross-thread result, rather than inheriting the normal responder loop's cross-thread acceptance; a dropped continuation publishes no result activity, watermark, or reply. For a current result, use the same failed/pass, watermark, and publication behavior as above, but preserve the current continuation activity shape: a continuation `failed` activity does not gain the normal loop's optional error reason unless the existing policy is deliberately changed and tested.
+7. Keep the existing `isCurrent()` room-epoch checks at round boundaries. They protect the round driver; the turn module protects the long-lived member operation and its publication lease. Neither replaces the other. Do not add a generic `!isCurrent()` check to the normal responder loop that would erase its existing cross-thread late-reply behavior.
+8. Delete `shouldCommitMemberTurn()` from the round module once its per-turn classification lives in the turn module. Do not leave a second entry-anchor/token policy in the rounds module; the continuation guard is a drive-level policy, not a duplicate classifier.
+9. In `stopGroupThread`, retain the current synchronous epoch/hold/local activity mutation. After that mutation, call `turns.interrupt(onTurn, storedSessionId)` when an active speaker and stored session id exist, and preserve the best-effort catch. A missing/stopped module must not prevent the local hold/epoch stop. `GroupChatRoom.turn` stores only `member.name`, so preserve the existing name-based lookup; duplicate source-qualified members with the same name remain an existing ambiguity and do not get a new persisted identity shape in this refactor.
+10. Ensure the immediate and delayed `runGroupChatRounds(...).catch(...)` wrappers capture the same round-driver/turn instance. They must never call a later active transport by lookup, and their rejection cleanup must check the captured driver's `deactivate()` state and current room epoch so an old drive cannot set a new lifecycle's `running` flag to `false` after a restart. The drive `finally` block uses the same guard before recording settled/clearing `running`.
 
-- Change `installGroupEngine()` to forward the third argument:
-
-  `startGroupEngine((method, params, options) => this.runtime.rpc(method, params, options))`
-
-- Do not reorder the controller lifecycle in this plan. `teardownGatewayScope()` and `dispose()` already stop the Group engine before closing or disposing the runtime. `logout()` currently closes the runtime before entering shared teardown, and app-background handling calls `runtime.close()` without stopping the Group engine; reconnect reopens that same runtime and does not call `startGroupEngine()` again. The mirror's terminal-stop guarantees apply when `stopGroupEngine()` runs, while `SessionRuntime`'s own Scope guard handles in-flight runtime RPCs across a runtime close/reconnect without terminating the mirror instance. Test the signal-forwarding boundary without claiming that every runtime close stops the mirror.
-
-The third argument is optional, so existing two-argument test transports and member-turn calls remain valid.
-
-### Step 2 — Replace the global mirror job with the captured interface
-
-File: `client/src/features/groups/groups-sync.ts`
-
-- Replace the value import of `groupEngineRequest` with a type-only import of `GroupEngineRequest` if needed by the production adapter.
-- Leave the pure projection functions and their behavior unchanged unless a type adjustment is required.
-- Add the `GroupMirrorRemoteState`, `GroupMirrorWriteResult`, `GroupMirrorGateway`, `GroupMirrorSchedule`, and `GroupMirror` interfaces near the stateful section.
-- Add `createGroupMirrorGateway(transport)` with the exact route mapping described above.
-- Add `createGroupMirror(gateway)` and move `SyncPending`, mutable state, timers, debounce, initial-pull barrier, active-job preservation, pull, flush, retry, and stop logic into its closure.
-- Keep `mergePending()` and `syncPayloadEqual()` private to this module or the factory; they do not need to become public protocol vocabulary.
-- Remove the old module-global `disposed`, `inFlight`, `pending`, timers, and retry count.
-- Remove the old global `readRemoteSnapshot()`, `pullGroupChatState()`, `flushGroupChatSync()`, `scheduleGroupChatSync()`, `startGroupChatSync()`, and `stopGroupChatSync()` exports. Their behavior is now behind the factory interface.
-- Do not import or call `groupEngineRequest` anywhere in the file after the change.
-- Keep the meta key, byte limits, debounce duration, and retry constants local to this module.
-
-The production adapter and mirror must remain in this file so the interface has useful depth: callers receive lifecycle operations, while raw route mapping, projection semantics, CAS policy, read-back, retry policy, startup hydration, and stop isolation stay local to the module.
-
-### Step 3 — Make the engine own one active mirror instance
+### Step 3 — Make `group-engine.ts` own the active instance
 
 File: `client/src/features/groups/group-engine.ts`
 
-Add a module-local active mirror reference typed by the new `GroupMirror` interface.
+1. Import `createGroupMemberGateway`, `createGroupTurnModule`, and the turn-module type.
+2. Add a private `activeTurns` reference and a private captured round-driver reference next to `activeMirror`. Set and detach them as one lifecycle; do not let one reference outlive the other. The driver has an internal `deactivate()` hook for the short interval between detachment and module stop.
+3. In `startGroupEngine(transport)`:
+   - stop the previous engine first when any active lifecycle reference exists;
+   - create a new member gateway from `transport`;
+   - create a new turn module and a new round driver from that module;
+   - install the new references before the existing mirror pull/scheduler work;
+   - keep the existing mirror construction and startup barrier unchanged.
+4. In `stopGroupEngine()`:
+   - detach the active round driver and turn module so new public calls cannot use the old instance;
+   - call the detached driver's internal `deactivate()` hook before stopping the turn module, so delayed drives and outer rejection cleanup become inert immediately;
+   - stop the turn module and mirror;
+   - clear the scheduler;
+   - keep the existing room epoch/running transition;
+   - remove the `setEngineTransport(null)` call because the global slot no longer exists.
+5. Change `openGroupRoom()` to capture the current mirror and current turn module at call time. Pull through the captured mirror and harvest through the captured turn module when one exists; with no active turn module, skip the harvest rather than consulting a fallback. A later engine start must not change the adapter used by that open operation.
+6. Replace direct re-exports of `sendToGroupChat`, `stopGroupThread`, and `answerGroupPrompt` with thin public wrappers that delegate to the active captured driver/module while preserving their current signatures. Define the fail-closed behavior exactly: with no active lifecycle, `sendToGroupChat()` returns `null`, `stopGroupThread()` resolves without a local mutation, and `answerGroupPrompt()` resolves without sending or clearing a prompt. With an active but terminally stopped module, `answerGroupPrompt()` also resolves without sending or clearing; with an active driver whose turn module is already stopped, `stopGroupThread()` still performs its synchronous local epoch/hold/activity mutation before the best-effort interrupt no-op. No wrapper may fall back to a global transport.
+7. Keep the `GroupEngineTransport` type alias available from the engine's existing type surface, pointing to the shared raw `GroupEngineRequest` type. Do not expose `GroupTurnModule` through the public Group engine facade unless a compile-time need proves it necessary.
 
-`startGroupEngine(transport)` must:
+### Step 4 — Remove the mutable transport slot
 
-1. if an active engine exists, run the same teardown choreography first so the old mirror is stopped and old member loops receive the existing epoch invalidation before the new transport replaces the global member slot;
-2. install the captured transport for member turns with `setEngineTransport(transport)`;
-3. create a fresh production adapter with `createGroupMirrorGateway(transport)`;
-4. create a fresh mirror with `createGroupMirror(adapter)` and store it as the active instance;
-5. install `setGroupSyncScheduler(changedRoom => mirror.schedule({ changedRooms: [changedRoom] }))` so local durable mutations target this instance;
-6. fire `void mirror.pull().catch(() => undefined)`. The scheduler is intentionally installed before this pull so mutations during hydration are recorded, but the mirror's initial-pull barrier prevents any write until hydration settles.
+File: `client/src/features/groups/group-runtime.ts`
 
-`stopGroupEngine()` must:
+1. Delete `engineRequest`, `setEngineTransport()`, and `groupEngineRequest()`.
+2. Keep `GroupEngineRequest` as the raw callback type used by both captured adapters. Keep its optional signal-bearing options argument for the mirror path.
+3. Rewrite the module comment to say that the Group engine creates per-lifecycle member and mirror adapters from this type, while this file owns only runtime atoms and activity/prompt state.
+4. Do not move activity or prompt atoms into the turn module; the turn module owns their policy, while the existing runtime file remains their state owner.
 
-1. take the active mirror out of the module reference so later callers cannot reach it;
-2. clear the store scheduler;
-3. call `mirror.stop()` to abort and invalidate all mirror work;
-4. clear the member-turn transport with `setEngineTransport(null)`;
-5. bump room epochs and clear `running` so live member loops stop at their existing boundaries.
+Files: `client/src/state/gateway-controller.ts`, `client/src/gateway/session-runtime.ts`
 
-The exact ordering may be implemented with equivalent sequencing, but the active mirror must be invalidated before a later start can install a new scheduler or transport. A repeated `startGroupEngine()` without an explicit stop must also invalidate the prior engine lifecycle, not only its mirror.
+- Make no behavioral changes. Verify that `installGroupEngine()` still forwards `(method, params, options)` to `runtime.rpc()` for the mirror adapter.
+- At this revision, `GatewayController.logout()` calls `runtime.close()` before `teardownGatewayScope()` stops the Group engine. Preserve that order; the module's stop guard does not cover the interval before the stop call, and `SessionRuntime.close()` remains the existing mechanism that may abort its in-flight RPCs.
+- Do not stop/restart the Group engine on app background, transport-drop reconnect, or background reconnect as part of this work.
 
-Move the current `handleGatewayTransition()` room-state update into a private Group-engine helper. Its behavior must not change: clone every room, increment its epoch, and set `running: false`. Do not retain a public lifecycle helper in `groups-sync.ts`.
+### Step 5 — Migrate tests through the new seam
 
-The epoch bump is the existing member-loop boundary, not cancellation of a member RPC already awaiting `groupEngineRequest()`. This plan keeps that member transport behavior unchanged; only the mirror gets captured-request abort and stale-result guards.
+File: `client/src/features/groups/group-turns.test.ts`
 
-Update `openGroupRoom()` to call `activeMirror?.pull()` instead of the removed global `pullGroupChatState()`. Keep the existing error swallowing and stranded-reply harvest policy. Opening a room while the engine is stopped must not issue a gateway request.
+Replace global `setEngineTransport()` setup with a fake `GroupMemberGateway` and a `createGroupTurnModule()` instance per test or per lifecycle. Keep a small raw-transport contract suite for `createGroupMemberGateway()`.
 
-Keep all existing facade exports and all member-turn action implementations unchanged.
+Retain coverage for:
 
-### Step 4 — Update the domain glossary
+- profile injection and member-aware request mapping;
+- stored-id/title session resolution and session creation params;
+- non-`4007` resume failure becoming a `failed` result without an unintended session create;
+- `4001` submit recovery through the stored id;
+- normal reply, pass, poll cadence, prompt mirroring, clarify/approval answers, and batch answers;
+- explicit hold/stop abandoning the next poll;
+- timeout at the hard cap and stranded marker creation;
+- late harvest into the original thread and marker retention on unreachable/working sessions;
+- expected failure reason extraction in the `failed` result, while unexpected answer failures still reject; the round-driver activity assertions live in the rounds suite.
 
-File: `CONTEXT.md`
+Add coverage for:
 
-Update the **Group send engine** and **Group mirror** entries as described in the settled decisions.
+- a deferred member request that resolves after `turns.stop()` does not persist a session, update prompts, create a marker, append a reply, or issue another request;
+- stopping a module does not abort or interrupt the deferred request; its promise is allowed to settle and the result is discarded;
+- an old stopped module and a newly created module use different captured gateways even when the raw callback function is otherwise identical;
+- a newer same-thread user entry produces `newer-user` and cannot commit the old reply;
+- an explicit member hold produces `room-stopped`, including the case where the poll RPC was already in flight when the hold was written;
+- a cross-thread epoch bump preserves the existing late-reply commit behavior in the normal responder loop;
+- the commit lease rejects a result if the room changes after `run()` decides but before the caller invokes `commit()`;
+- an older prompt poll cannot clear or overwrite a newer prompt request;
+- an answer that settles after stop or after a newer request id leaves the current prompt intact;
+- a harvest with no current marker does not claim a token or invalidate an active run;
+- a non-empty harvest cannot clear or overwrite a newer stranded marker or prompt owned by a newer run;
+- stopping the module after a failure or timeout suppresses the corresponding stale result activity and publication.
 
-Use the repository's existing terms:
+Pure helper tests for pass text, reply selection, and error classification may remain direct because they are in-process functions rather than transport tests. Do not recreate a global transport slot in the migrated suite.
 
-- the Group mirror is a deep module;
-- `GroupMirrorGateway` is its semantic adapter seam;
-- the production adapter captures the engine transport and owns raw `profiles.*` mapping;
-- the mirror owns normalization/merge consumption, debounce, CAS, read-back, retry, abort, startup-barrier, and terminal-stop policy;
-- stopped instances are never restarted or reused;
-- `group-runtime.ts` remains the member-RPC transport seam.
+File: `client/src/features/groups/group-rounds.test.ts`
 
-Do not add a new glossary concept for every internal helper or timer.
-
-## 6. Test migration and additions
-
-### 6.1 Preserve the projection suite
-
-File: `client/src/features/groups/groups-sync.test.ts`
-
-Keep the existing tests for:
-
-- gateway byte sizing;
-- durable room keys;
-- stable entry keys and legacy-family collapse;
-- bounded v3 snapshots;
-- empty runtime tombstone filtering;
-- member/text/image limits;
-- the existing v1 normalization case, plus an explicit v2 name-keyed snapshot and its revisioned tombstone case;
-- log union, revision ordering, member ties, tombstones, and rename behavior;
-- local rich-copy preservation, runtime-state preservation, remote rename, and local deletion/preserve guards;
-- legacy thread assignment.
-
-These tests should continue to exercise the pure projection layer without installing a global engine transport. The v2 and malformed-input cases are additions, not claims about coverage that the current file does not have.
-
-Remove the current `stopGroupChatSync()`/`startGroupChatSync()` setup and the direct `setEngineTransport()` dependency from the mirror tests.
-
-### 6.2 Test the semantic mirror with deferred/in-memory adapters
-
-Migrate the current “flush job” tests to `createGroupMirror()` using a test-local adapter that stores semantic `snapshot`, `revision`, and `supportsCas` state. The fake should not know `profiles.list` or `profiles.configure` names.
-
-Cover at least:
-
-1. **Pull** — a remote snapshot merges into local rooms and preserves local sessions, watermarks, epochs, running flags, rich entries, and pending changed-room markers.
-2. **No remote snapshot** — `pull()` returns `false` and does not replace local state.
-3. **CAS write and read-back** — after priming the mirror with its initial pull, `schedule()` debounces, writes the merged snapshot with the remote revision as the expected revision, performs the required read-back, and merges the confirmed state without overwriting the captured local room.
-4. **Applied-revision race** — a fake write returns `applied: true` with a revision other than `writeRevision`; the job retries after the existing backoff with a fresh read.
-5. **Read-back revision race** — a fake write succeeds, but the next read reports a revision below `writeRevision`; the job retries after the existing backoff with a fresh read.
-6. **Non-CAS gateway** — the adapter receives `undefined` for the expected revision and the mirror does not require a CAS revision response.
-7. **No-empty-publish** — scheduling an empty local cache never calls `write()`; there is no current `allowEmpty` override or local disband producer.
-8. **Concurrent local mutation** — a change arriving while a write/read-back is in flight remains in the instance's pending queue and is flushed after the captured job.
-9. **Pull/flush overlap** — a pull requested after flush captured its job is serialized behind that protocol, while read-back preserves both the active job's changed room and any remaining pending marker, so a remote tombstone cannot delete the room being written.
-10. **Read-back no-op** — when the merged payload matches the remote payload and there are no changed-room markers, no write occurs, but a remote snapshot is still pulled into local state.
-11. **Retry exhaustion** — repeated active failures use exactly the bounded backoff and then drop the captured job, reset the retry count, and do not retry that job without a new schedule; separately queued markers may still flush.
-
-Use fake timers for debounce and retry assertions. Stop every created mirror in test cleanup.
-
-### 6.3 Test lifecycle races and stop guards
-
-Add deferred adapter tests that prove the lifecycle safety, not only the final happy state:
-
-1. **Initial-pull write barrier** — schedule a non-empty local change before the first read resolves; assert that no write occurs, resolve the read, and assert that the pull preserves the marker and only then releases the flush.
-2. **Initial-pull failure still settles the barrier** — reject the first read, assert that no write happened before it settled, then assert queued work follows the normal fresh-read/retry path rather than being abandoned or publishing stale local state.
-3. **Concurrent initial pulls settle together** — start two first pulls with separate deferred reads, resolve one, and assert queued work remains blocked until the other settles; after both settle, release exactly the queued work.
-4. **Stopped pull cannot publish** — start `pull()`, stop the mirror before `read()` resolves, resolve with a valid snapshot, and assert that `$groupChats` is unchanged and `pull()` resolves stale/false.
-5. **Stopped flush cannot write after read** — schedule a job, let its remote read resolve, stop before the write boundary, and assert that `write()` is never called.
-6. **Stopped in-flight write cannot read back or publish** — stop while `write()` is deferred, resolve it as applied, and assert there is no read-back and no local replacement.
-7. **Abort signal is delivered** — assert that `stop()` aborts the signal passed to the adapter and that an abort rejection does not create a retry.
-8. **Retry suppression** — make an active write fail, stop before the backoff timer, advance timers, and assert there is no second write.
-9. **Stopped timer guard** — capture a scheduled debounce or retry callback, stop the instance, and invoke or advance it; it must not call the adapter.
-10. **Stop/restart isolation** — start one mirror with a deferred old adapter, stop it, create a second mirror with a new adapter, then resolve the old adapter. The old snapshot and old retry must not alter the local store or call the second adapter.
-11. **Finalizer guard** — resolve an old operation after the next mirror has been created and assert that the old `finally` path cannot reset or drain the new instance's pending work.
-12. **Instance non-reuse** — after `stop()`, `schedule()` and `pull()` are no-ops; a new factory instance starts with empty pending/retry state and accepts fresh work.
-
-These tests should use deferred promises and explicit call counters, not sleeps. The terminal stop flag and private closure state are the guard; there is no generation counter to test.
-
-### 6.4 Pin the production adapter's wire contract
-
-Add adapter-focused tests in `groups-sync.test.ts` or a clearly named adjacent test file without adding a production module.
-
-Use a recording `GroupEngineRequest` and assert:
-
-- `read(signal)` calls exactly `profiles.list` with `{ include_sessions: false }` and forwards the same signal;
-- the adapter selects the row named exactly `default` rather than another profile;
-- no default row, or a default row with unusable `ui_meta` or snapshot metadata, maps to `snapshot: null` and revision `0`; CAS support is false when there is no default row or no own `ui_meta_revisions` property;
-- a usable snapshot remains present even when the default row has no `ui_meta_revisions` property, with revision `0` and `supportsCas: false`;
-- a default row whose own `ui_meta_revisions` property is present still has `supportsCas: true` even when its value is null or the key is absent, matching the property-presence capability rule;
-- array-valued `ui_meta` or snapshot metadata is rejected as absent; array-valued revision metadata yields revision `0` without discarding an otherwise usable snapshot, while its own-property capability remains `supportsCas: true`;
-- invalid read revisions normalize to `0`, while finite non-negative numeric revisions survive unchanged;
-- `write(snapshot, undefined, signal)` calls exactly `profiles.configure` with `name: 'default'` and the one-key `ui_meta` object, omitting `ui_meta_expected_revisions`;
-- `write(snapshot, 7, signal)` adds exactly `{ 'hermes-bots-groups': 7 }` under `ui_meta_expected_revisions`;
-- the adapter maps `applied.ui_meta` and a finite non-negative numeric returned revision without doing merge or retry policy;
-- a missing, negative, nonnumeric, or infinite returned revision maps to `undefined`;
-- the adapter forwards the signal to both route calls.
-
-These assertions are the byte-level guardrail. The semantic mirror tests must remain independent of route vocabulary.
-
-### 6.5 Update Group engine lifecycle tests
+- Remove the `group-turns` mock that replaces free global-dependent functions and remove `setEngineTransport()` setup.
+- Build a small fake `GroupTurnModule` with scripted `run`, `harvest`, `answer`, `interrupt`, and `stop` behavior; return typed `GroupTurnResult` values with controllable commit leases.
+- Exercise `createGroupRoundDriver(fakeTurns)` or the equivalent internal dependency seam.
+- Preserve coverage for mentions, holds, prompt construction, round sequencing, continuation rounds, failed-result-as-pass, normal failed-activity reasons, continuation no-reason failed activity, watermarks, caps, chained sends, and explicit interruption.
+- Add outcome/lease cases proving that a rejected `newer-user` result does not append a member reply or advance the old watermark; an accepted `room-stopped` result consumes the current member watermark without appending; an accepted cross-thread result lands in its original thread in the normal loop; and the continuation loop drops a cross-thread epoch change before result activity, commit, watermark, or append.
+- Verify result activity is published only after an accepted lease (with the explicit `newer-user` supersession-cancellation activity exception), while the normal loop still records that member-level `cancelled` activity and the room-level cancellation activity at a boundary.
 
 File: `client/src/features/groups/group-engine.test.ts`
 
-- Remove the direct import of `pullGroupChatState` from `groups-sync.ts`.
-- Keep the existing test that starts the engine, mutates a room, observes the CAS configure and the required read-back list, stops the engine, confirms no later scheduler write, and confirms `groupEngineRequest()` is disconnected after stop. Do not treat the immediate read-back merge of a preserved changed room as advancing that room's local `syncRevision`; replace the existing test's later direct `pullGroupChatState()` call with an engine facade path such as `openGroupRoom()` that delegates to the active mirror.
-- Keep the epoch/running teardown test.
-- Add an engine-level initial-pull barrier test: defer the first read, mutate a non-empty local room, assert no configure occurs before the read resolves, then resolve the read and assert the queued change flushes.
-- Add an engine-level stop/restart test with two captured transports: resolve a read from the first start after `stopGroupEngine()` and a second `startGroupEngine()`, then assert the first result cannot land in the new lifecycle or call the second transport.
-- Add a repeated-start test without an intervening explicit stop so the defensive start choreography invalidates the old mirror and bumps the old room lifecycle before installing the new transport.
-- Keep full-round tests and `stopGroupThread` coverage. Their member/session calls must continue to use the global `group-runtime` transport and must not be routed through `GroupMirrorGateway`; the existing epoch boundary, not mirror abort, remains their teardown behavior.
+Keep the existing mirror/lifecycle/full-round coverage and add the scope-capture cases:
+
+- start an old engine and begin a deferred member turn;
+- stop and start a new engine with a different transport;
+- resolve the old operation and assert that it makes no new old/new transport call and does not mutate the new lifecycle's room state;
+- verify a send after the restart uses the new captured module;
+- verify a delayed chained round drive retains the old module and becomes stale instead of consulting the new active module, and its finalizer/outer rejection cleanup cannot change the new lifecycle's `running` state;
+- verify `stopGroupThread` still changes epoch/holds locally and uses the current module's captured `session.interrupt` adapter;
+- verify member actions route through the captured module by recording old/new adapter calls; a repository search and typecheck must show that no engine code uses `groupEngineRequest`;
+- verify the no-active wrappers fail closed with their defined `null`/resolved-no-op behavior, while an active stopped driver still performs the local stop mutation;
+- verify `openGroupRoom()` harvests through the turn module captured by that lifecycle, not the currently active module.
+
+Update existing tests that currently assert the global transport is cleared. Their replacement assertion is lifecycle isolation, not a mutable-slot error message.
 
 File: `client/src/state/gateway-controller.test.ts`
 
-- Add one controller-boundary assertion that the initial mirror `profiles.list` receives a signal through `installGroupEngine()`. When the controller tears down the Group engine, the request's effective signal must be aborted; the test should assert forwarding and eventual cancellation, not object identity or whether the mirror or `SessionRuntime` signal supplied the abort. The mirror-specific test remains the authority for direct `stop()` cancellation.
+- Keep the existing optional-signal forwarding coverage for the mirror.
+- Add no new background/reconnect lifecycle contract unless an existing test needs a type adjustment; this plan intentionally preserves the current behavior that the Group engine remains installed across `SessionRuntime.close()` and reconnect.
 
-Files: `client/src/features/groups/group-rounds.test.ts` and `client/src/features/groups/group-turns.test.ts`
+### Step 6 — Update the glossary
 
-- Keep their direct `setEngineTransport()` test setup. It is testing the separate member-RPC seam.
-- Do not migrate these suites to the mirror adapter or add member-turn signal cancellation as part of this plan.
+File: `CONTEXT.md`
 
-### 6.6 Test cleanup requirements
+Update the Group send engine entry to say:
 
-Every test that creates a mirror must stop it in `afterEach`, even when the test fails. Semantic mirror tests must explicitly perform the initial pull before ordinary scheduled-write assertions, and deferred startup tests must leave that pull unresolved until they assert the write barrier. Fake timers must be restored. The test setup must reset `$groupChats`, localStorage, activity, prompts, and needs-you state as it does today.
+- the engine creates a per-lifecycle `GroupTurnModule` from a captured `GroupMemberGateway`;
+- the member-turn module owns session resolution, polling, prompt/stranded behavior, interruption, and stale-result policy;
+- the Group mirror has its separate captured adapter;
+- no mutable global member transport remains.
 
-Do not rely on module-global mirror state between tests. The purpose of this refactor is for each test and each engine start to own its own lifecycle instance. Member-RPC suites may continue to seed the separate global `group-runtime` transport, but must clear it in their existing cleanup.
+Update the Group mirror entry's final sentence from a global member transport to a separate per-lifecycle `GroupMemberGateway` captured by the engine. Its adapter and lifecycle remain separate from member turns. Add a `Group member-turn module` glossary entry only if the existing entries cannot state these ownership facts clearly without a new term.
 
-## 7. Verification sequence after implementation
+## 7. Verification and definition of done
 
-Run the narrow checks first, then the broader suite:
+Run checks in increasing scope after implementation:
 
-```bash
-cd client
-npm run test -- src/features/groups/groups-sync.test.ts src/features/groups/group-engine.test.ts src/state/gateway-controller.test.ts
-npm run test -- src/features/groups
-npm run typecheck
-npm run test
-npm run build
-```
+1. `cd client && npx vitest run src/features/groups/group-turns.test.ts src/features/groups/group-rounds.test.ts src/features/groups/group-engine.test.ts src/features/groups/groups-mirror.test.ts src/state/gateway-controller.test.ts`
+2. From the repository root: `rg -n "groupEngineRequest|setEngineTransport" client/src --glob '*.{ts,tsx}' --glob '!**/*.test.ts' --glob '!**/*.test.tsx'` and confirm there are no production references after the migration (test fixtures should use the captured seams, not suppress the search).
+3. `cd client && npm run typecheck`
+4. `cd client && npm test`
+5. `cd client && npm run build`
+6. From the repository root: `git diff --check`
 
-Also run repository hygiene checks from the repository root:
+Definition of done:
 
-```bash
-git diff --check
-git status --short --branch
-```
-
-Use the narrow test command to diagnose mirror behavior, the full `src/features/groups` command to catch member-turn regressions, and the full test/typecheck/build commands to verify the changed transport type and controller boundary.
-
-Before considering the work complete, inspect the diff for these structural assertions:
-
-```bash
-rg -n "groupEngineRequest" client/src/features/groups/groups-sync.ts
-rg -n "startGroupChatSync|stopGroupChatSync|scheduleGroupChatSync|pullGroupChatState" client/src
-rg -n "createGroupMirror|GroupMirrorGateway" client/src/features/groups
-```
-
-The first search must return no value import or call from `groups-sync.ts`; the second must show no stale global mirror API references; the third must show the new interface and its engine/adapter tests.
-
-## 8. Acceptance criteria
-
-The implementation is complete only when all of the following are true:
-
-### Interface and locality
-
-- `groups-sync.ts` exposes `createGroupMirror(gateway)` with `pull`, `schedule`, and `stop`.
-- The mirror's mutable state is per factory instance; no module-global pending queue, in-flight flag, timer, disposed flag, or retry count remains.
-- The production adapter is captured at factory construction and maps semantic reads/writes to the existing wire contract.
-- The mirror owns merge, debounce, CAS, read-back, retry, abort, startup-barrier, active-job preservation, and terminal-stop policy; the adapter does not.
-- `group-engine.ts` creates a new mirror on every engine start and never restarts a stopped instance.
-
-### Wire compatibility
-
-- Reads still use `profiles.list` with `{ include_sessions: false }`.
-- The `default` profile and `hermes-bots-groups` key are unchanged.
-- Writes still use `profiles.configure` with `name: 'default'` and the same `ui_meta` shape.
-- CAS expected revisions are sent only when the remote advertises `ui_meta_revisions` support.
-- No backend or route changes are required.
-
-### Lifecycle correctness
-
-- Stop marks the instance terminal, aborts adapter work, clears its timers and queued/active bookkeeping, and prevents later reuse.
-- Every post-await store publication, subsequent adapter request, retry timer, retry requeue, and finalizer is guarded by the instance's stopped flag and captured abort signal.
-- A stopped in-flight operation cannot publish into a later engine Scope.
-- A stale failure cannot schedule a retry.
-- Member-turn RPCs still use the global runtime transport; engine teardown bumps room epochs and clears `running` so member loops stop at their existing boundaries, but it does not cancel an already awaited member RPC.
-
-### Behavioral compatibility
-
-- Existing v3 snapshot size, normalization, merge, tombstone, rename, read-back, and no-empty-publish behavior remains intact.
-- Local rich log entries and runtime coordination fields remain protected from compact remote projections.
-- Local markers arriving during an in-flight mirror operation remain queued through the configured retry window; after retry exhaustion, the captured job is deliberately dropped as in the bounded best-effort policy, so this is not an at-least-once guarantee.
-- Full Group round behavior and prompt/activity tests remain green.
-
-### Documentation and verification
-
-- `CONTEXT.md` describes the new Group mirror seam and the remaining member transport seam accurately.
-- The projection suite, semantic mirror suite, lifecycle race suite, adapter wire-contract suite, Group engine suite, controller signal-forwarding test, typecheck, tests, build, and `git diff --check` pass.
-- The diff contains only the intended Group mirror implementation/test/documentation changes once implementation begins.
-
-## 9. Risks and mitigations
-
-### Old work reaches the new runtime
-
-A late continuation could call the mutable global runtime slot after a restart. Mitigation: the mirror never imports `groupEngineRequest`; it captures the transport adapter at creation, aborts on stop, and checks its stopped flag and captured signal before every next action and publication.
-
-### Abort rejection is mistaken for a retryable gateway failure
-
-Mitigation: check the stopped flag and `signal.aborted` in pull/flush catches before requeueing. Add a test whose fake rejects because its signal was aborted.
-
-### A stale finalizer affects a fresh instance
-
-Mitigation: keep all mutable state in the old instance's closure, guard the finalizer with that instance's stopped/current check, clear the active engine reference before stopping, and never reuse the object. Add a deferred stop/restart test.
-
-### Extending `GroupEngineRequest` breaks callers
-
-Mitigation: make the signal options third argument optional. Existing two-argument functions remain valid; run the Group suites and full typecheck.
-
-### Route bytes drift while extracting the adapter
-
-Mitigation: keep the adapter mapping in one function and add exact request-shape tests for both CAS and non-CAS writes.
-
-### Pending local changes are overwritten by read-back
-
-Mitigation: preserve both the captured `activeJob` markers and the remaining pending markers while a flush is in flight; use the existing local-store `preserveRooms` behavior when publishing read-back; check the stopped/current guard immediately before publication. Pure projection functions retain their explicit tombstone arguments, but the lifecycle scheduler does not expose an unused local `deletedRooms` option.
-
-### A new instance publishes before its initial pull
-
-Mitigation: install the fresh mirror and its scheduler, issue the initial `pull`, and hold queued writes behind the mirror's initial-pull barrier until all first pulls settle. Keep the no-empty-publish guard as a second line of defense.
-
-### Reconnect reuses the engine instance
-
-A runtime close followed by the existing reconnect path does not call `startGroupEngine()` again, so the captured controller callback does not freeze one particular `SessionRuntime` operation or create a new mirror for every temporary connection. That is intentional in this scope: `SessionRuntime` combines its current scope signal into each RPC and rejects an operation that began in a closed scope, while the mirror remains alive to retry on the reopened runtime. If reconnect isolation requires a terminal mirror per runtime reopen, the controller must stop and recreate the engine, which is outside this plan; do not claim captured transport alone provides that stronger guarantee.
-
-## 10. Explicitly out of scope
-
-- Adding or changing gateway backend routes, CAS semantics, metadata keys, or byte-budget rules.
-- Replacing `group-runtime.ts`'s global member transport with a second lifecycle system.
-- Adding immediate cancellation or signal plumbing to already in-flight member-turn RPCs; their existing epoch-boundary teardown remains unchanged.
-- Refactoring `group-rounds.ts`, `group-turns.ts`, prompt handling, session plumbing, or activity state.
-- Moving the mirror into a new file solely to rename the module.
-- Persisting pending mirror jobs across a Scope teardown.
-- Increasing retry limits or adding a durable offline queue.
-- Adding a local room-delete/disband producer or an `allowEmpty`/`deletedRooms` scheduler API absent from current production callers.
-- Changing how rooms are rendered, named, opened, or created.
-- Rewriting the existing pure projection algorithms without a failing test that requires it.
-- Running a migration or publishing a deployment.
-
-## 11. Implementation checklist
-
-1. Extend the request type and controller signal forwarding.
-2. Add the semantic adapter and factory interfaces to `groups-sync.ts`.
-3. Move the flush state into per-instance closure state.
-4. Add stopped-flag and abort checks at every listed asynchronous boundary.
-5. Preserve the existing read/merge/CAS/read-back/retry algorithm, including bounded retry exhaustion.
-6. Wire a fresh mirror instance into `group-engine.ts` start, open, scheduler, repeated-start, and stop paths.
-7. Keep member-turn calls on `group-runtime.ts` and update only their compatible types.
-8. Migrate stateful tests to semantic fakes.
-9. Add initial-barrier, active-job race, lifecycle-stop, abort, retry suppression, restart-isolation, repeated-start, controller-forwarding, and adapter wire-contract tests.
-10. Update `CONTEXT.md`.
-11. Run the narrow tests, Group tests, typecheck, full tests, build, diff check, and status check.
-12. Review the final diff for stale global mirror exports/imports and unrelated changes.
+- No production file imports or calls `groupEngineRequest` or `setEngineTransport`.
+- The only raw member transport call path is the captured `GroupMemberGateway` adapter created for one engine lifecycle.
+- Every delayed round drive and every long-lived turn uses the module instance captured when it began.
+- Stopping an engine prevents old continuations from starting new member RPCs or publishing stale state, while an already-running RPC is not actively cancelled by this refactor.
+- Same-thread newer-user results are cancelled without advancing the old watermark; an explicit room stop produces no reply but consumes the current member watermark in the normal loop; a normal-loop cross-thread late result retains its existing commit behavior, while the continuation loop still drops every epoch change.
+- Expected member-gateway failures become stale-aware `failed` results and preserve failed-as-pass sequencing/activity only when current.
+- Prompt and stranded markers cannot be cleared or overwritten by an older continuation.
+- The no-active public wrappers have the defined fail-closed `null`/resolved-no-op behavior.
+- Backend routes, wire params, Group screen imports/signatures, and mirror behavior remain unchanged.
+- Focused tests, typecheck, full suite, build, and diff whitespace checks pass. Do not claim any of these checks passed until they are actually run.

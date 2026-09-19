@@ -30,7 +30,6 @@ import {
 import {
   $groupActivity,
   $groupPrompts,
-  setEngineTransport,
   type GroupActivityEntry,
   type GroupEngineRequest,
   type GroupPrompt
@@ -41,11 +40,14 @@ import {
   groupChatRoomKey,
   type GroupMirror
 } from './groups-sync'
-import { harvestStrandedGroupReply } from './group-turns'
+import { createGroupRoundDriver, type EngineMember, type GroupRoundDriver } from './group-rounds'
+import { createGroupMemberGateway, createGroupTurnModule, type GroupTurnModule } from './group-turns'
 
 // --- Lifecycle — the GatewayController is the only caller. -------------------
 
 let activeMirror: GroupMirror | null = null
+let activeTurns: GroupTurnModule | null = null
+let activeDriver: GroupRoundDriver | null = null
 
 /** A gateway swap invalidates any in-flight room drive: bump every room's
  *  epoch so running loops bail at their next member boundary. */
@@ -57,28 +59,37 @@ function handleGatewayTransition(): void {
   $groupChats.set(rooms)
 }
 
-/** Point the engine at this scope's transport and arm a fresh mirror writer.
- *  The scheduler is installed before the initial pull so local mutations can
- *  queue room markers while hydration is still in flight. */
+/** Point the engine at this scope's transport and arm fresh per-lifecycle
+ *  member and mirror modules. The scheduler is installed before the initial
+ *  pull so local mutations can queue room markers while hydration is in flight. */
 export function startGroupEngine(transport: GroupEngineRequest): void {
-  if (activeMirror) stopGroupEngine()
+  if (activeMirror || activeTurns || activeDriver) stopGroupEngine()
 
-  setEngineTransport(transport)
+  const turns = createGroupTurnModule(createGroupMemberGateway(transport))
+  const driver = createGroupRoundDriver(turns)
   const mirror = createGroupMirror(createGroupMirrorGateway(transport))
+
+  activeTurns = turns
+  activeDriver = driver
   activeMirror = mirror
   setGroupSyncScheduler(changedRoom => mirror.schedule({ changedRooms: [changedRoom] }))
   void mirror.pull().catch(() => undefined)
 }
 
-/** Clear the transport and scheduler, bump every room's epoch so live drive
- *  loops bail at their next member boundary, and stop the active mirror.
+/** Detach and stop the current lifecycle, bump every room's epoch so live
+ *  drives bail at their next member boundary, and stop the active mirror.
  *  Scope teardown and dispose share this choreography. */
 export function stopGroupEngine(): void {
   const mirror = activeMirror
+  const turns = activeTurns
+  const driver = activeDriver
   activeMirror = null
+  activeTurns = null
+  activeDriver = null
+  driver?.deactivate()
+  turns?.stop()
   setGroupSyncScheduler(null)
   mirror?.stop()
-  setEngineTransport(null)
   handleGatewayTransition()
 }
 
@@ -90,10 +101,11 @@ export function stopGroupEngine(): void {
 export function openGroupRoom(room: GroupRoom): void {
   adoptMirrorRoom(room)
   const mirror = activeMirror
+  const turns = activeTurns
   if (mirror) void mirror.pull().catch(() => undefined)
   const local = getGroupRoom(room.name)
-  if (local.stranded && Object.keys(local.stranded).length > 0) {
-    void Promise.all(room.members.map(member => harvestStrandedGroupReply(room.name, member))).catch(
+  if (turns && local.stranded && Object.keys(local.stranded).length > 0) {
+    void Promise.all(room.members.map(member => turns.harvest(room.name, member))).catch(
       () => undefined
     )
   }
@@ -174,10 +186,25 @@ export function useGroupRooms(rosterGroups?: GroupRoom[]): GroupRoom[] {
 export { $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_MEMBERS, getGroupRoom } from './group-store'
 export { $groupActivity, $groupPrompts } from './group-runtime'
 
-// --- Actions re-exported from the drive (bodies stay in group-rounds/turns). -
+// --- Actions — thin wrappers over the active captured lifecycle. ------------
 
-export { sendToGroupChat, stopGroupThread } from './group-rounds'
-export { answerGroupPrompt } from './group-turns'
+export function sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string {
+  return activeDriver ? activeDriver.sendToGroupChat(group, members, text, thread) : null
+}
+
+export async function stopGroupThread(group: string, thread: null | string, members: EngineMember[] | null = null): Promise<void> {
+  if (!activeDriver) return
+  await activeDriver.stopGroupThread(group, thread, members)
+}
+
+export async function answerGroupPrompt(
+  entry: GroupPrompt,
+  member: GroupMember,
+  answers: Record<string, string> | string | undefined
+): Promise<void> {
+  if (!activeTurns) return
+  await activeTurns.answer(entry, member, answers)
+}
 
 // --- Types. ------------------------------------------------------------------
 
