@@ -6,12 +6,18 @@ import { Badge } from '~/compat/primitives'
 import { CronScreen } from '~/features/cron/cron-screen'
 import { OPERATION_RESOURCES, operationById } from '~/features/operations/api'
 import { RemoteResourceScreen } from '~/features/shared/remote-resource'
+import type { WorkspaceScreenApi } from '~/navigation/use-workspace-navigation'
 
 const ICONS = [IconCalendarClock, IconMessages, IconUserCheck, IconLink, IconRobot]
 
 export function OperationsScreen({ selected, onBack, onSelect }: { selected?: string; onBack(): void; onSelect(id: string): void }) {
   const definition = selected ? operationById(selected) : undefined
-  if (selected === 'cron') return <CronScreen onBack={onBack} />
+  if (selected === 'cron') {
+    // Operations embeds the cron list outside the Workspace module: static
+    // root route, no in-module navigation, and the embedder owns back.
+    const cronWorkspace: WorkspaceScreenApi<'cron'> = { back: onBack, navigate: () => undefined, route: { tab: 'cron', type: 'cron-root' } }
+    return <CronScreen workspace={cronWorkspace} />
+  }
   if (definition) return <RemoteResourceScreen definition={definition} onBack={onBack} />
 
   return (

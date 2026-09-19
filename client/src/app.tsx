@@ -29,9 +29,9 @@ import { CronScreen } from '~/features/cron/cron-screen'
 import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
-import { $activeRoute, $navigation, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
+import { $activeRoute, $navigation } from '~/navigation/navigation-store'
 import { useWorkspaceNavigation } from '~/navigation/use-workspace-navigation'
-import { narrowRoute, restoreWorkspacePath, workspaceBackLabel, workspaceDestinationFor, workspaceRouteTitle, workspaceTabTitle } from '~/navigation/workspace-navigation'
+import { groupIdFromRoute, restoreWorkspacePath } from '~/navigation/workspace-navigation'
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
 import { GatewayController } from '~/state/gateway-controller'
@@ -46,7 +46,7 @@ export function App() {
   const profileSwitching = useStore($profileSwitching)
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
-  const activeGroupId = routeForGroupRoom(activeRoute)
+  const activeGroupId = groupIdFromRoute(activeRoute)
   const groups = useGroupRooms()
   const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
   const chat = useStore($chat)
@@ -115,8 +115,7 @@ export function App() {
   const openAgent = (profile: null | string) => {
     // Enter the destination first; the wire work (profile switch, session
     // resume) streams into the already-visible chat shell.
-    workspace.clearReturn()
-    setTab('sessions')
+    workspace.openChatSurface()
     void controller.openProfile(profile)
   }
   const closeCreateProfile = () => {
@@ -140,40 +139,17 @@ export function App() {
     // known-rooms view picks the name up on the next publish tick.
     setCreateOptionsOpen(false)
     setCreateGroupOpen(false)
-    pushRoute('roster', { roomId: room.key, tab: 'roster', type: 'group-room' })
+    workspace.openGroupRoom(room.key)
   }
   const openSettingsFrom = () => {
     closeCreateProfile()
     setCreateOptionsOpen(false)
     setCreateGroupOpen(false)
-    workspace.clearReturn()
-    resetTabRoutes('settings')
-    setTab('settings')
+    workspace.openSettings()
   }
-  const nestedRoute = navigation.stacks[navigation.activeTab].length > 1
-  const activeBotConfiguration = workspaceDestinationFor(navigation.activeTab, activeRoute)
-  const backDestinationLabel = workspaceBackLabel(nestedRoute, activeBotConfiguration, workspace.returnOrigin !== null)
   const botName = displayNameFor({ name: preferences.profile || 'default' })
-  const headerTitle = workspaceTabTitle(navigation.activeTab)
   /** Chat shows the current session beneath the bot identity. */
   const headerSubtitle = (chat.info as { title?: string } | null)?.title || 'New conversation'
-  const foregroundVisible = navigation.activeTab !== 'roster' || Boolean(activeGroupId)
-  const foregroundDismissible = navigation.activeTab === 'sessions' || Boolean(activeGroupId)
-  const backFromForeground = () => {
-    if (activeGroupId) {
-      workspace.backOr('roster', workspace.closeToRoster)
-      return
-    }
-    if (navigation.activeTab === 'sessions') {
-      workspace.closeToRoster()
-      return
-    }
-    if (navigation.activeTab === 'settings' && activeRoute.type === 'settings-category' && activeRoute.category === 'model' && workspace.returnOrigin) {
-      workspace.exitToReturnOrigin()
-      return
-    }
-    workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin())
-  }
   const manageAgent = (agent: AgentRosterEntry) => {
     setActionsProfile(agent)
     setProfileNotice(null)
@@ -207,26 +183,26 @@ export function App() {
       {profileNotice && <p className="profile-notice" role="status">{profileNotice}</p>}
     </header>
   )
-  const foregroundHeader = !foregroundVisible
+  const foregroundHeader = !workspace.foregroundVisible
     ? null
-    : activeBotConfiguration
-      ? <BotWorkspaceHeader backLabel={backDestinationLabel} botName={botName} onBack={backFromForeground} subtitle={workspaceRouteTitle(activeBotConfiguration, activeRoute)} />
+    : workspace.header.destination
+      ? <BotWorkspaceHeader backLabel={workspace.header.backLabel} botName={botName} onBack={workspace.back} subtitle={workspace.header.title} />
       : (
           <header className="app-header">
             {activeGroupId ? (
               <>
-                <Button aria-label="Back to bots" className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+                <Button aria-label="Back to bots" className="header-back-button" onClick={workspace.back} variant="ghost"><IconChevronLeft className="size-6" /></Button>
                 <div aria-level={1} className="header-title" role="heading"><div><strong>{activeGroup?.name ?? 'Group chat'}</strong></div></div>
               </>
             ) : (
-              <Button aria-label={backDestinationLabel} className="header-back-button" onClick={backFromForeground} variant="ghost"><IconChevronLeft className="size-6" /></Button>
+              <Button aria-label={workspace.header.backLabel} className="header-back-button" onClick={workspace.back} variant="ghost"><IconChevronLeft className="size-6" /></Button>
             )}
             {navigation.activeTab === 'sessions' ? (
               <div className="header-bot-button">
                 <div><strong>{botName}</strong><small>{reconnecting ? 'Reconnecting…' : headerSubtitle}</small></div>
               </div>
             ) : inProfile ? (
-              <div aria-level={1} className="header-title" role="heading"><div><strong>{headerTitle}</strong></div></div>
+              <div aria-level={1} className="header-title" role="heading"><div><strong>{workspace.header.title}</strong></div></div>
             ) : null}
             {inProfile && (
               <Button aria-controls="sessions-menu" aria-expanded={workspace.menuOpen} aria-label="Open navigation" className="header-menu-button" onClick={workspace.openMenu} variant="ghost"><IconMenu2 className="size-6" /></Button>
@@ -239,9 +215,9 @@ export function App() {
         <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
       </div>
       {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen onBack={() => workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin('sessions'))} onNavigate={route => pushRoute('capabilities', route)} route={narrowRoute('capabilities', activeRoute)} />}
-      {navigation.activeTab === 'cron' && <CronScreen onBack={() => workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin('sessions'))} onNavigate={route => pushRoute('cron', route)} onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.clearReturn(); setTab('sessions') }} route={narrowRoute('cron', activeRoute)} />}
-      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} onBack={() => workspace.backOr(navigation.activeTab, () => workspace.exitToReturnOrigin())} onNavigate={route => pushRoute('settings', route)} route={narrowRoute('settings', activeRoute)} showModelBack={!workspace.returnOrigin} />}
+      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen workspace={workspace.screen('capabilities')} />}
+      {navigation.activeTab === 'cron' && <CronScreen onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.openChatSurface() }} workspace={workspace.screen('cron')} />}
+      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} workspace={workspace.screen('settings')} />}
     </>
   )
 
@@ -251,20 +227,15 @@ export function App() {
         navigationPage={workspace.menuOpen || inProfile ? <SessionsMenu controller={controller} onDismissRequest={workspace.dismissMenu} open={workspace.menuOpen} /> : null}
         navigationPageOpen={workspace.menuOpen}
         foreground={foregroundContent}
-        foregroundDismissible={foregroundDismissible}
+        foregroundDismissible={workspace.foregroundDismissible}
         foregroundHeader={foregroundHeader}
-        foregroundNavigation={activeBotConfiguration ? <BotWorkspaceNavigation active={activeBotConfiguration} onSelect={workspace.openWorkspaceDestination} /> : null}
-        foregroundVisible={foregroundVisible}
-        onDismissForeground={() => {
-          // A committed swipe always dismisses the whole foreground to the
-          // fixed roster. It changes only the in-memory route state.
-          if (activeGroupId) resetTabRoutes('roster')
-          if (navigation.activeTab === 'sessions' || activeGroupId) setTab('roster')
-        }}
+        foregroundNavigation={workspace.header.destination ? <BotWorkspaceNavigation active={workspace.header.destination} onSelect={workspace.openWorkspaceDestination} /> : null}
+        foregroundVisible={workspace.foregroundVisible}
+        onDismissForeground={workspace.dismissForeground}
         onRefresh={refresh}
         reconnecting={reconnecting}
         refreshing={refreshing}
-        roster={<RosterScreen onManageAgent={manageAgent} onOpenAgent={openAgent} onOpenGroup={roomId => pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })} query={rosterQuery} />}
+        roster={<RosterScreen onManageAgent={manageAgent} onOpenAgent={openAgent} onOpenGroup={workspace.openGroupRoom} query={rosterQuery} />}
         rosterHeader={rosterHeader}
       />
       <CreateOptionsDialog onCancel={() => setCreateOptionsOpen(false)} onNewBot={chooseCreateBot} onNewGroup={chooseCreateGroup} open={createOptionsOpen} />
@@ -283,8 +254,4 @@ export function App() {
       }} open />}
     </GatewayProvider>
   )
-}
-
-function routeForGroupRoom(route: ReturnType<typeof $activeRoute.get>): string | null {
-  return route.tab === 'roster' && route.type === 'group-room' ? route.roomId : null
 }

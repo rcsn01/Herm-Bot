@@ -1,12 +1,24 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import source from './workspace-navigation.ts?raw'
 
-import { $navigation, applyPathState, resetNavigation } from './navigation-store'
-import { ROOT_ROUTES } from './routes'
+import { $navigation, applyPathState, resetNavigation, setTab } from './navigation-store'
+import { MOBILE_TABS, ROOT_ROUTES } from './routes'
 import {
+  $workspacePolicy,
+  back,
+  dismissForeground,
+  dismissMenu,
+  groupIdFromRoute,
   isAppShellScreenPath,
   narrowRoute,
+  openChatSurface,
+  openGroupRoom,
+  openMenu,
+  openSettings,
+  openWorkspaceDestination,
+  resetWorkspace,
+  resetWorkspacePolicy,
   restoreWorkspacePath,
   SCREEN_URL_HEADS,
   workspaceBackLabel,
@@ -14,6 +26,7 @@ import {
   workspaceMenuIntent,
   workspaceRouteTitle,
   workspaceTabTitle,
+  WORKSPACE_BACK_FALLBACKS,
   WORKSPACE_DESTINATIONS
 } from './workspace-navigation'
 
@@ -39,7 +52,10 @@ const REJECTED_SCREEN_PATHS = [
   '/unknown'
 ]
 
-beforeEach(() => resetNavigation())
+beforeEach(() => {
+  resetNavigation()
+  resetWorkspacePolicy()
+})
 
 describe('WORKSPACE_DESTINATIONS', () => {
   it('lists the bottom-nav destinations in DOM order with their labels', () => {
@@ -128,6 +144,297 @@ describe('workspaceMenuIntent', () => {
     expect(workspaceMenuIntent('cron')).toEqual({ type: 'tab', tab: 'cron' })
     expect(workspaceMenuIntent('capabilities')).toEqual({ type: 'tab', tab: 'capabilities' })
     expect(workspaceMenuIntent('sessions')).toEqual({ type: 'tab', tab: 'sessions' })
+  })
+})
+
+describe('WORKSPACE_BACK_FALLBACKS', () => {
+  it('covers every tab: menu-entered destinations fall to sessions, the rest to the roster', () => {
+    expect(WORKSPACE_BACK_FALLBACKS).toEqual({ roster: 'roster', capabilities: 'sessions', cron: 'sessions', settings: 'roster', sessions: 'roster' })
+    for (const tab of MOBILE_TABS) expect(WORKSPACE_BACK_FALLBACKS[tab]).toBeDefined()
+  })
+})
+
+describe('groupIdFromRoute', () => {
+  it('decodes group-room routes and nulls everything else', () => {
+    expect(groupIdFromRoute({ roomId: 'g1', tab: 'roster', type: 'group-room' })).toBe('g1')
+    expect(groupIdFromRoute(ROOT_ROUTES.roster)).toBeNull()
+    expect(groupIdFromRoute(ROOT_ROUTES.cron)).toBeNull()
+    expect(groupIdFromRoute({ category: 'model', tab: 'settings', type: 'settings-category' })).toBeNull()
+  })
+})
+
+describe('openMenu / dismissMenu', () => {
+  it('latches the menu and captures the origin tab + stack, recapturing while open', () => {
+    openMenu()
+    expect($workspacePolicy.get()).toMatchObject({ menuOpen: true, menuOrigin: 'roster', menuOriginStack: [ROOT_ROUTES.roster] })
+
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    openMenu()
+    expect($workspacePolicy.get()).toMatchObject({ menuOpen: true, menuOrigin: 'cron', menuOriginStack: [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }] })
+  })
+
+  it('dismisses as a no-op when closed', () => {
+    dismissMenu()
+    dismissMenu({ type: 'tab', tab: 'cron' })
+    expect($workspacePolicy.get().menuOpen).toBe(false)
+    expect($navigation.get().activeTab).toBe('roster')
+  })
+
+  it('close intent closes and clears the captured origin pair only', () => {
+    openMenu()
+    dismissMenu({ type: 'close' })
+    expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+    expect($navigation.get().activeTab).toBe('roster')
+  })
+
+  it('tab intent stashes the origin pair and lands the destination fresh', () => {
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    openMenu()
+    dismissMenu({ type: 'tab', tab: 'capabilities' })
+    expect($navigation.get().activeTab).toBe('capabilities')
+    expect($navigation.get().stacks.capabilities).toEqual([ROOT_ROUTES.capabilities])
+    expect($workspacePolicy.get()).toMatchObject({
+      menuOpen: false,
+      menuOrigin: null,
+      menuOriginStack: null,
+      returnOrigin: 'cron',
+      returnStack: [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }]
+    })
+  })
+
+  it('tab intent for the origin tab closes without stashing', () => {
+    setTab('cron')
+    openMenu()
+    dismissMenu({ type: 'tab', tab: 'cron' })
+    expect($navigation.get().activeTab).toBe('cron')
+    expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+  })
+
+  it('model intent opens the model route fresh and stashes the origin pair', () => {
+    applyPathState('settings', [ROOT_ROUTES.settings, { category: 'appearance', tab: 'settings', type: 'settings-category' }])
+    openMenu()
+    dismissMenu({ type: 'model' })
+    expect($navigation.get().activeTab).toBe('settings')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings, { category: 'model', tab: 'settings', type: 'settings-category' }])
+    expect($workspacePolicy.get()).toMatchObject({ returnOrigin: 'settings', returnStack: [ROOT_ROUTES.settings, { category: 'appearance', tab: 'settings', type: 'settings-category' }] })
+  })
+
+  it('model intent closes only when the origin already sits on the model surface', () => {
+    applyPathState('settings', [ROOT_ROUTES.settings, { category: 'model', tab: 'settings', type: 'settings-category' }])
+    openMenu()
+    dismissMenu({ type: 'model' })
+    expect($navigation.get().activeTab).toBe('settings')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings, { category: 'model', tab: 'settings', type: 'settings-category' }])
+    expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+  })
+})
+
+describe('openWorkspaceDestination', () => {
+  it('opens the sessions menu for the sessions destination', () => {
+    openWorkspaceDestination('sessions')
+    expect($workspacePolicy.get()).toMatchObject({ menuOpen: true, menuOrigin: 'roster', menuOriginStack: [ROOT_ROUTES.roster] })
+  })
+
+  it('opens cron and capabilities fresh without stashing', () => {
+    openWorkspaceDestination('cron')
+    expect($navigation.get().activeTab).toBe('cron')
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron])
+    expect($workspacePolicy.get().returnOrigin).toBeNull()
+
+    openWorkspaceDestination('capabilities')
+    expect($navigation.get().activeTab).toBe('capabilities')
+    expect($navigation.get().stacks.capabilities).toEqual([ROOT_ROUTES.capabilities])
+  })
+
+  it('opens the model route fresh — the bottom-nav path never stashes and stays idempotent', () => {
+    openWorkspaceDestination('model')
+    expect($navigation.get().activeTab).toBe('settings')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings, { category: 'model', tab: 'settings', type: 'settings-category' }])
+    expect($workspacePolicy.get().returnOrigin).toBeNull()
+
+    openWorkspaceDestination('model')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings, { category: 'model', tab: 'settings', type: 'settings-category' }])
+  })
+})
+
+describe('back(source)', () => {
+  it('① pops a group-room route, staying on the roster', () => {
+    openGroupRoom('g1')
+    back('header')
+    expect($navigation.get().activeTab).toBe('roster')
+    expect($navigation.get().stacks.roster).toEqual([ROOT_ROUTES.roster])
+  })
+
+  it('② leaves the sessions surface to the roster and clears the return pair', () => {
+    openMenu()
+    dismissMenu({ type: 'tab', tab: 'sessions' })
+    expect($workspacePolicy.get().returnOrigin).toBe('roster')
+
+    back('header')
+    expect($navigation.get().activeTab).toBe('roster')
+    expect($workspacePolicy.get().returnOrigin).toBeNull()
+    expect($workspacePolicy.get().returnStack).toBeNull()
+  })
+
+  it('③ consumes the return pair from the model surface and reopens the menu on the restored origin', () => {
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    openMenu()
+    dismissMenu({ type: 'model' })
+    back('header')
+
+    expect($navigation.get().activeTab).toBe('cron')
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    expect($workspacePolicy.get()).toEqual({
+      menuOpen: true,
+      menuOrigin: 'cron',
+      menuOriginStack: [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }],
+      returnOrigin: null,
+      returnStack: null
+    })
+  })
+
+  it('④ pops nested detail routes on the active tab', () => {
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    back('screen')
+    expect($navigation.get().activeTab).toBe('cron')
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron])
+  })
+
+  it('④ at a destination root the header falls to the roster while the screen falls per tab', () => {
+    openWorkspaceDestination('capabilities')
+    back('header')
+    expect($navigation.get().activeTab).toBe('roster')
+
+    openWorkspaceDestination('capabilities')
+    back('screen')
+    expect($navigation.get().activeTab).toBe('sessions')
+  })
+
+  it('④ exits a settings root to the roster for both sources', () => {
+    openSettings()
+    back('header')
+    expect($navigation.get().activeTab).toBe('roster')
+
+    openSettings()
+    back('screen')
+    expect($navigation.get().activeTab).toBe('roster')
+  })
+
+  it('④ pops the model route when it was opened without a return origin', () => {
+    openWorkspaceDestination('model')
+    back('screen')
+    expect($navigation.get().activeTab).toBe('settings')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings])
+  })
+})
+
+describe('openChatSurface', () => {
+  it('lands the chat surface fresh: policy zeroed, sessions active — even from a menu-open state', () => {
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    openMenu()
+    dismissMenu({ type: 'model' })
+    expect($workspacePolicy.get().returnOrigin).toBe('cron')
+
+    openChatSurface()
+    expect($navigation.get().activeTab).toBe('sessions')
+    expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+  })
+})
+
+describe('openSettings', () => {
+  it('opens the settings root fresh and clears the return pair', () => {
+    applyPathState('settings', [ROOT_ROUTES.settings, { category: 'model', tab: 'settings', type: 'settings-category' }])
+    openMenu()
+    dismissMenu({ type: 'model' })
+
+    openSettings()
+    expect($navigation.get().activeTab).toBe('settings')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings])
+    expect($workspacePolicy.get().returnOrigin).toBeNull()
+  })
+})
+
+describe('openGroupRoom', () => {
+  it('pushes group-room routes onto the roster stack', () => {
+    openGroupRoom('g1')
+    expect($navigation.get().stacks.roster).toEqual([ROOT_ROUTES.roster, { roomId: 'g1', tab: 'roster', type: 'group-room' }])
+
+    openGroupRoom('g2')
+    expect($navigation.get().stacks.roster).toEqual([
+      ROOT_ROUTES.roster,
+      { roomId: 'g1', tab: 'roster', type: 'group-room' },
+      { roomId: 'g2', tab: 'roster', type: 'group-room' }
+    ])
+  })
+})
+
+describe('dismissForeground', () => {
+  it('resets a group-room foreground to the roster root, keeping the return pair', () => {
+    openMenu()
+    dismissMenu({ type: 'tab', tab: 'cron' })
+    setTab('roster')
+    openGroupRoom('g1')
+
+    dismissForeground()
+    expect($navigation.get().activeTab).toBe('roster')
+    expect($navigation.get().stacks.roster).toEqual([ROOT_ROUTES.roster])
+    expect($workspacePolicy.get().returnOrigin).toBe('roster')
+    expect($workspacePolicy.get().returnStack).toEqual([ROOT_ROUTES.roster])
+  })
+
+  it('returns the sessions surface to the roster', () => {
+    setTab('sessions')
+    dismissForeground()
+    expect($navigation.get().activeTab).toBe('roster')
+  })
+
+  it('is a no-op on bot-configuration tabs', () => {
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+
+    dismissForeground()
+    expect($navigation.get().activeTab).toBe('cron')
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+  })
+})
+
+describe('resetWorkspace', () => {
+  it('zeroes every route stack and the policy together (scope teardown, Δ2)', () => {
+    applyPathState('cron', [ROOT_ROUTES.cron, { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }])
+    openMenu()
+    dismissMenu({ type: 'model' })
+
+    resetWorkspace()
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron])
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings])
+    expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+  })
+})
+
+describe('history isolation', () => {
+  it('keeps every verb out of the browser history stack', () => {
+    const backSpy = vi.spyOn(window.history, 'back')
+    const pushSpy = vi.spyOn(window.history, 'pushState')
+    const replaceSpy = vi.spyOn(window.history, 'replaceState')
+    try {
+      openMenu()
+      dismissMenu({ type: 'model' })
+      openWorkspaceDestination('cron')
+      openGroupRoom('g1')
+      openChatSurface()
+      openSettings()
+      dismissForeground()
+      back('header')
+      back('screen')
+      resetWorkspace()
+
+      expect(backSpy).not.toHaveBeenCalled()
+      expect(pushSpy).not.toHaveBeenCalled()
+      expect(replaceSpy).not.toHaveBeenCalled()
+    } finally {
+      backSpy.mockRestore()
+      pushSpy.mockRestore()
+      replaceSpy.mockRestore()
+    }
   })
 })
 
@@ -309,9 +616,8 @@ describe('DOM-free guard', () => {
   it('keeps the core importable from the service-worker bundle (no React, no app imports)', () => {
     const specifiers = [...source.matchAll(/from '([^']+)'/g)].map(match => match[1])
     expect(specifiers.length).toBeGreaterThan(0)
-    for (const specifier of specifiers) {
-      expect(specifier.startsWith('./') || specifier.startsWith('~/navigation/')).toBe(true)
-    }
-    expect(specifiers).not.toContain('react')
+    // pwa/policy.ts → pwa/sw.ts pulls this file into the service-worker
+    // bundle; the import set must stay exactly these three.
+    expect(specifiers.sort()).toEqual(['./navigation-store', './routes', 'nanostores'])
   })
 })

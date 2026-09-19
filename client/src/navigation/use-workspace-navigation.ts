@@ -1,107 +1,152 @@
-import { useCallback, useRef, useState } from 'react'
+import { useStore } from '@nanostores/react'
 
-import { $navigation, applyPathState, popRoute, pushRoute, resetTabRoutes, setTab } from '~/navigation/navigation-store'
-import type { MobileRoute, MobileTab } from '~/navigation/routes'
-import type { WorkspaceDestination, WorkspaceMenuIntent } from '~/navigation/workspace-navigation'
+import { $activeRoute, $navigation, pushRoute } from '~/navigation/navigation-store'
+import type { CapabilitiesRoute, CronRoute, MobileTab, RouteForTab, SettingsRoute } from '~/navigation/routes'
+import {
+  $workspacePolicy,
+  back,
+  dismissForeground,
+  dismissMenu,
+  groupIdFromRoute,
+  narrowRoute,
+  openChatSurface,
+  openGroupRoom,
+  openMenu,
+  openSettings,
+  openWorkspaceDestination,
+  workspaceBackLabel,
+  workspaceDestinationFor,
+  workspaceRouteTitle,
+  workspaceTabTitle,
+  type BotConfigurationDestination,
+  type WorkspaceDestination,
+  type WorkspaceMenuIntent
+} from '~/navigation/workspace-navigation'
 
-export interface WorkspaceNavigation {
-  menuOpen: boolean                 // the navigation-page latch (StrictMode-safe, idempotent open)
-  returnOrigin: MobileTab | null    // drives back labels and showModelBack
-  openMenu(): void                  // captures origin tab + origin stack, then opens
-  dismissMenu(intent?: WorkspaceMenuIntent): void
-  openWorkspaceDestination(destination: WorkspaceDestination): void
-  exitToReturnOrigin(fallback?: MobileTab): void  // default fallback 'roster'
-  clearReturn(): void               // return origin + return stack, as a pair, without navigating
-  backOr(tab: MobileTab, fallback: () => void): void
-  closeToRoster(): void
+/** React adapter over the DOM-free Workspace navigation core. This file owns
+ *  no policy: it binds the policy/navigation stores for rendering, derives the
+ *  header model and visibility reads per render, and exposes the core verbs
+ *  plus the per-screen api. The core (workspace-navigation.ts) owns the
+ *  policy state and dispatch; the store (navigation-store.ts) stays the
+ *  engine. */
+
+export type WorkspaceScreenTab = 'capabilities' | 'cron' | 'settings'
+
+export interface WorkspaceScreenApi<Tab extends WorkspaceScreenTab> {
+  /** The tab's active route, narrowed; the tab root is the total fallback. */
+  route: RouteForTab<Tab>
+  /** Core back('screen'): popRoute; at root → exitToReturnOrigin(WORKSPACE_BACK_FALLBACKS[tab]).
+   *  Tree branches ①–③ are unreachable here — no group-room or sessions route can be active
+   *  under a capabilities/cron/settings api, and ③'s trigger (the model surface with a return
+   *  origin) hides ModelsScreen's in-page back — so this description holds for every reachable
+   *  state. */
+  back(): void
+  /** pushRoute(route.tab, route) — a cron screen cannot push a settings route. */
+  navigate(route: RouteForTab<Tab>): void
 }
 
+export interface WorkspaceSettingsScreenApi extends WorkspaceScreenApi<'settings'> {
+  /** ModelsScreen's in-page back: visible only when the model surface was
+   *  reached without a sessions-menu return origin. (Absorbs showModelBack.) */
+  showModelBack: boolean
+}
+
+export interface WorkspaceHeaderModel {
+  /** workspaceDestinationFor(activeTab, activeRoute) — null hides the
+   *  bot-workspace header AND the bottom nav. */
+  destination: BotConfigurationDestination | null
+  /** workspaceRouteTitle for bot destinations, else workspaceTabTitle. */
+  title: string
+  /** workspaceBackLabel(stackNested, destination, returnOrigin !== null). */
+  backLabel: 'Back' | 'Back to menu' | 'Back to bots'
+}
+
+export interface WorkspaceNavigation {
+  // reads
+  menuOpen: boolean
+  /** Read for labels/tests; written only by the core verbs. */
+  returnOrigin: MobileTab | null
+  /** activeTab !== 'roster' || group-room route */
+  foregroundVisible: boolean
+  /** sessions tab || group-room route */
+  foregroundDismissible: boolean
+  header: WorkspaceHeaderModel
+  // sessions menu
+  openMenu(): void
+  dismissMenu(intent?: WorkspaceMenuIntent): void
+  // destinations
+  openWorkspaceDestination(destination: WorkspaceDestination): void
+  openGroupRoom(roomId: string): void
+  // app-root intents
+  openChatSurface(): void
+  openSettings(): void
+  dismissForeground(): void
+  /** The header back: == core back('header'). */
+  back(): void
+  // per-screen injection
+  screen(tab: 'settings'): WorkspaceSettingsScreenApi
+  screen<Tab extends WorkspaceScreenTab>(tab: Tab): WorkspaceScreenApi<Tab>
+}
+
+/** Stable header-back verb: the core back with the header source. */
+const backFromHeader = (): void => back('header')
+
 export function useWorkspaceNavigation(): WorkspaceNavigation {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [returnOrigin, setReturnOrigin] = useState<MobileTab | null>(null)
-  const menuOpenRef = useRef(false)
-  const menuOriginRef = useRef<MobileTab | null>(null)
-  const menuOriginStackRef = useRef<MobileRoute[] | null>(null)
-  const returnStackRef = useRef<MobileRoute[] | null>(null)
+  const policy = useStore($workspacePolicy)
+  const navigation = useStore($navigation)
+  const activeRoute = useStore($activeRoute)
 
-  const openMenu = useCallback(() => {
-    const navigation = $navigation.get()
-    menuOriginRef.current = navigation.activeTab
-    menuOriginStackRef.current = [...navigation.stacks[navigation.activeTab]] as MobileRoute[]
-    if (menuOpenRef.current) return
-    menuOpenRef.current = true
-    setMenuOpen(true)
-  }, [])
+  const activeTab = navigation.activeTab
+  const stackNested = navigation.stacks[activeTab].length > 1
+  const groupId = groupIdFromRoute(activeRoute)
+  const destination = workspaceDestinationFor(activeTab, activeRoute)
 
-  const openDestination = useCallback((tab: MobileTab) => {
-    resetTabRoutes(tab)
-    setTab(tab)
-  }, [])
-
-  const openModelSettings = useCallback(() => {
-    setTab('settings')
-    const current = $navigation.get().stacks.settings.at(-1)
-    if (current?.type === 'settings-category' && current.category === 'model') return
-    resetTabRoutes('settings')
-    pushRoute('settings', { category: 'model', tab: 'settings', type: 'settings-category' })
-  }, [])
-
-  const clearReturn = useCallback(() => {
-    setReturnOrigin(null)
-    returnStackRef.current = null
-  }, [])
-
-  const dismissMenu = useCallback((intent: WorkspaceMenuIntent = { type: 'close' }) => {
-    if (!menuOpenRef.current) return
-    menuOpenRef.current = false
-    setMenuOpen(false)
-    const origin = menuOriginRef.current
-    const originStack = menuOriginStackRef.current
-    menuOriginRef.current = null
-    menuOriginStackRef.current = null
-    if (intent.type === 'tab') {
-      if (origin === intent.tab) return
-      setReturnOrigin(origin)
-      returnStackRef.current = originStack
-      openDestination(intent.tab)
-    } else if (intent.type === 'model') {
-      const originRoute = originStack?.at(-1)
-      if (origin === 'settings' && originRoute?.type === 'settings-category' && originRoute.category === 'model') return
-      setReturnOrigin(origin)
-      returnStackRef.current = originStack
-      openModelSettings()
+  function screen(tab: 'settings'): WorkspaceSettingsScreenApi
+  function screen<Tab extends WorkspaceScreenTab>(tab: Tab): WorkspaceScreenApi<Tab>
+  function screen(tab: WorkspaceScreenTab): WorkspaceSettingsScreenApi | WorkspaceScreenApi<'capabilities'> | WorkspaceScreenApi<'cron'> {
+    if (tab === 'settings') {
+      const settingsApi: WorkspaceSettingsScreenApi = {
+        route: narrowRoute('settings', activeRoute),
+        back: () => back('screen'),
+        navigate: (route: SettingsRoute) => pushRoute('settings', route),
+        showModelBack: policy.returnOrigin === null
+      }
+      return settingsApi
     }
-  }, [openDestination, openModelSettings])
-
-  const openWorkspaceDestination = useCallback((destination: WorkspaceDestination) => {
-    if (destination === 'sessions') {
-      openMenu()
-      return
+    if (tab === 'cron') {
+      const cronApi: WorkspaceScreenApi<'cron'> = {
+        route: narrowRoute(tab, activeRoute),
+        back: () => back('screen'),
+        navigate: (route: CronRoute) => pushRoute('cron', route)
+      }
+      return cronApi
     }
-    if (destination === 'model') openModelSettings()
-    else openDestination(destination)
-  }, [openDestination, openMenu, openModelSettings])
+    const capabilitiesApi: WorkspaceScreenApi<'capabilities'> = {
+      route: narrowRoute(tab, activeRoute),
+      back: () => back('screen'),
+      navigate: (route: CapabilitiesRoute) => pushRoute('capabilities', route)
+    }
+    return capabilitiesApi
+  }
 
-  const exitToReturnOrigin = useCallback((fallback: MobileTab = 'roster') => {
-    const destination = returnOrigin ?? fallback
-    const returnStack = returnStackRef.current
-    const reopenMenu = returnOrigin !== null && returnStack !== null
-    setReturnOrigin(null)
-    returnStackRef.current = null
-    if (returnStack) applyPathState(destination, returnStack)
-    else setTab(destination)
-    if (reopenMenu) openMenu()
-  }, [openMenu, returnOrigin])
-
-  const backOr = useCallback((tab: MobileTab, fallback: () => void) => {
-    if (popRoute(tab) === undefined) fallback()
-  }, [])
-
-  const closeToRoster = useCallback(() => {
-    setReturnOrigin(null)
-    returnStackRef.current = null
-    setTab('roster')
-  }, [])
-
-  return { menuOpen, returnOrigin, openMenu, dismissMenu, openWorkspaceDestination, exitToReturnOrigin, clearReturn, backOr, closeToRoster }
+  return {
+    menuOpen: policy.menuOpen,
+    returnOrigin: policy.returnOrigin,
+    foregroundVisible: activeTab !== 'roster' || groupId !== null,
+    foregroundDismissible: activeTab === 'sessions' || groupId !== null,
+    header: {
+      destination,
+      title: destination ? workspaceRouteTitle(destination, activeRoute) : workspaceTabTitle(activeTab),
+      backLabel: workspaceBackLabel(stackNested, destination, policy.returnOrigin !== null)
+    },
+    openMenu,
+    dismissMenu,
+    openWorkspaceDestination,
+    openGroupRoom,
+    openChatSurface,
+    openSettings,
+    dismissForeground,
+    back: backFromHeader,
+    screen
+  }
 }

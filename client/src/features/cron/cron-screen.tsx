@@ -6,21 +6,21 @@ import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery, useScopeReset } from '~/gateway/scope-guard'
-import type { CronRoute } from '~/navigation/routes'
+import type { WorkspaceScreenApi } from '~/navigation/use-workspace-navigation'
 import { CronBlueprintsScreen } from './cron-blueprints-screen'
 import { CronJobDetail } from './cron-job-detail'
 import { CronJobEditor } from './cron-job-editor'
 import { createCronApi, type CronJob } from './api'
 
-export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBack?: () => void; onNavigate?: (route: CronRoute) => void; onOpenSession?: (sessionId: string) => Promise<void>; route?: CronRoute }) {
+export function CronScreen({ onOpenSession, workspace }: { onOpenSession?: (sessionId: string) => Promise<void>; workspace: WorkspaceScreenApi<'cron'> }) {
   const cron = useApi(createCronApi)
   const scopeKey = useScopeKey('cron', ['jobs'])
   const jobs = useScopedQuery(scopeKey, { queryFn: signal => cron.list(signal) })
   const [search, setSearch] = useState('')
   const [showCreateOptions, setShowCreateOptions] = useState(false)
   const [status, setStatus] = useState<'all' | 'active' | 'paused' | 'error'>('all')
-  const activeRoute = route ?? { tab: 'cron', type: 'cron-root' as const }
-  const navigate = onNavigate ?? (() => undefined)
+  const activeRoute = workspace.route
+  const navigate = workspace.navigate
   useScopeReset(() => {
     setSearch('')
     setShowCreateOptions(false)
@@ -36,7 +36,7 @@ export function CronScreen({ onBack, onNavigate, onOpenSession, route }: { onBac
     })
   }, [jobs.data, search, status])
 
-  if (activeRoute.type === 'cron-job-detail') return <CronJobDetail jobId={activeRoute.jobId} onBack={() => onBack ? onBack() : navigate({ tab: 'cron', type: 'cron-root' })} onDeleted={() => navigate({ tab: 'cron', type: 'cron-root' })} onEdit={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-editor' })} onOpenSession={onOpenSession} />
+  if (activeRoute.type === 'cron-job-detail') return <CronJobDetail jobId={activeRoute.jobId} onBack={workspace.back} onDeleted={() => navigate({ tab: 'cron', type: 'cron-root' })} onEdit={job => navigate({ jobId: job.id, tab: 'cron', type: 'cron-job-editor' })} onOpenSession={onOpenSession} />
   if (activeRoute.type === 'cron-job-editor') {
     const job = activeRoute.jobId ? jobs.data?.find(item => item.id === activeRoute.jobId) : undefined
     return <CronJobEditor job={job} onCancel={() => navigate({ tab: 'cron', type: 'cron-root' })} onSaved={saved => navigate({ jobId: saved.id, tab: 'cron', type: 'cron-job-detail' })} />

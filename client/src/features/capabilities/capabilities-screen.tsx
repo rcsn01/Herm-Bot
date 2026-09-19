@@ -3,6 +3,7 @@ import { IconBrain, IconChevronRight, IconServer, IconSparkles, IconTools } from
 import { PageList, PageListButton } from '~/components/page-list'
 import { PageShell } from '~/components/page-shell'
 import type { CapabilitiesRoute, CapabilitySection } from '~/navigation/routes'
+import type { WorkspaceScreenApi } from '~/navigation/use-workspace-navigation'
 import { SkillsScreen } from './skills-screen'
 import { SkillDetail } from './skill-detail'
 import { SkillHubScreen } from './skill-hub-screen'
@@ -20,20 +21,18 @@ const sections: ReadonlyArray<{ description: string; icon: typeof IconBrain; id:
 ]
 
 interface CapabilitiesScreenProps {
-  onBack(): void
-  onNavigate(route: CapabilitiesRoute): void
-  route: CapabilitiesRoute
+  workspace: WorkspaceScreenApi<'capabilities'>
 }
 
-export function CapabilitiesScreen({ onBack, onNavigate, route }: CapabilitiesScreenProps) {
+export function CapabilitiesScreen({ workspace }: CapabilitiesScreenProps) {
+  const { back, navigate, route } = workspace
   if (route.type === 'capabilities-root') {
-    return <PageShell heading={false} title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => onNavigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
+    return <PageShell heading={false} title="Capabilities"><PageList className="capability-list">{sections.map(section => <PageListButton key={section.id} leading={<section.icon size={20} />} onClick={() => navigate({ section: section.id, tab: 'capabilities', type: 'capabilities-section' })} title={section.title} description={section.description} trailing={<IconChevronRight size={18} />} />)}</PageList></PageShell>
   }
 
   const section = route.section
   const selected = route.type === 'capability-detail' ? route.capabilityId : undefined
-  const back = () => onBack()
-  const navigateDetail = (capabilityId: string) => onNavigate({ capabilityId, section, tab: 'capabilities', type: 'capability-detail' })
+  const navigateDetail = (capabilityId: string) => navigate({ capabilityId, section, tab: 'capabilities', type: 'capability-detail' })
 
   if (section === 'skills') {
     if (selected === 'skills-hub') return <SkillHubScreen onBack={back} />

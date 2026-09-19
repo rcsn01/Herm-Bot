@@ -10,14 +10,10 @@ export interface NavigationState {
   stacks: NavigationStacks
 }
 
+/** Derived from the tab vocabulary: adding a tab to MOBILE_TABS/ROOT_ROUTES
+ *  cannot miss its root stack (guard-tested). */
 function initialStacks(): NavigationStacks {
-  return {
-    roster: [ROOT_ROUTES.roster],
-    capabilities: [ROOT_ROUTES.capabilities],
-    cron: [ROOT_ROUTES.cron],
-    settings: [ROOT_ROUTES.settings],
-    sessions: [ROOT_ROUTES.sessions]
-  }
+  return Object.fromEntries(MOBILE_TABS.map(tab => [tab, [ROOT_ROUTES[tab]]])) as NavigationStacks
 }
 
 export function initialNavigationState(activeTab: MobileTab = 'roster'): NavigationState {

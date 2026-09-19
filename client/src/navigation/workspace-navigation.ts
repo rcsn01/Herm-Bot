@@ -1,3 +1,5 @@
+import { atom } from 'nanostores'
+
 import {
   CAPABILITY_SECTIONS,
   ROOT_ROUTES,
@@ -10,7 +12,7 @@ import {
   type SettingsAdministrationPage,
   type SettingsCategory
 } from './routes'
-import { applyPathState } from './navigation-store'
+import { $navigation, applyPathState, popRoute, pushRoute, resetRoutes, resetTabRoutes, setTab } from './navigation-store'
 
 export type WorkspaceDestination = 'sessions' | 'cron' | 'capabilities' | 'model'
 
@@ -22,6 +24,221 @@ export type WorkspaceMenuIntent =
   | { type: 'close' }
   | { type: 'model' }
   | { type: 'tab'; tab: MobileTab }
+
+// ── Policy state + dispatch verbs ────────────────────────────────────────────
+// The core owns route policy: the menu latch, menu-origin capture, the
+// return-origin stack, and every dispatch decision (menu open/dismiss,
+// destination taps, the back tree, chat landing). The route-stack store
+// (navigation-store.ts) stays the engine — these verbs are its only sanctioned
+// callers. The React entry (use-workspace-navigation.ts) is a thin adapter,
+// not policy. This file must stay DOM-free: pwa/policy.ts → pwa/sw.ts pulls it
+// into the service-worker bundle (guard-tested), so the import set stays
+// ./routes + ./navigation-store + nanostores ONLY.
+
+/** Menu latch + menu-origin capture + return-origin stack. Written only by
+ *  the verbs below; readable for tests. */
+export interface WorkspacePolicyState {
+  menuOpen: boolean
+  menuOrigin: MobileTab | null
+  menuOriginStack: MobileRoute[] | null
+  returnOrigin: MobileTab | null
+  returnStack: MobileRoute[] | null
+}
+
+export const $workspacePolicy = atom<WorkspacePolicyState>({
+  menuOpen: false,
+  menuOrigin: null,
+  menuOriginStack: null,
+  returnOrigin: null,
+  returnStack: null
+})
+
+/** Test/setup verb, symmetric with resetNavigation. */
+export function resetWorkspacePolicy(): void {
+  $workspacePolicy.set({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+}
+
+/** Scope teardown: route stacks AND menu/return policy together (Δ2). */
+export function resetWorkspace(): void {
+  resetRoutes()
+  resetWorkspacePolicy()
+}
+
+/** Where a destination's screen back returns when its stack is already at root.
+ *  Menu-entered destinations fall back to the profile surface ('sessions');
+ *  the roster-entered surfaces and the header fall to the roster. */
+export const WORKSPACE_BACK_FALLBACKS: { readonly [Tab in MobileTab]: MobileTab } = {
+  roster: 'roster',
+  capabilities: 'sessions',
+  cron: 'sessions',
+  settings: 'roster',
+  sessions: 'roster'
+}
+
+/** Decoded read for render data (app root, dismissForeground, back internals). */
+export function groupIdFromRoute(route: MobileRoute): string | null {
+  return route.tab === 'roster' && route.type === 'group-room' ? route.roomId : null
+}
+
+// Private helpers — ported verbatim from use-workspace-navigation.ts with atom
+// reads/writes replacing refs; the old public hook methods became
+// module-internal because their only remaining callers are the verbs below.
+
+function openDestination(tab: MobileTab): void {
+  resetTabRoutes(tab)
+  setTab(tab)
+}
+
+/** model open, shared by both entry paths: setTab first, then the
+ *  top-of-stack model check, then reset + push. */
+function openModelSettings(): void {
+  setTab('settings')
+  const current = $navigation.get().stacks.settings.at(-1)
+  if (current?.type === 'settings-category' && current.category === 'model') return
+  resetTabRoutes('settings')
+  pushRoute('settings', { category: 'model', tab: 'settings', type: 'settings-category' })
+}
+
+function clearReturnPair(): void {
+  $workspacePolicy.set({ ...$workspacePolicy.get(), returnOrigin: null, returnStack: null })
+}
+
+function exitToReturnOrigin(fallback: MobileTab = 'roster'): void {
+  const policy = $workspacePolicy.get()
+  const destination = policy.returnOrigin ?? fallback
+  const returnStack = policy.returnStack
+  const reopenMenu = policy.returnOrigin !== null && returnStack !== null
+  $workspacePolicy.set({ ...policy, returnOrigin: null, returnStack: null })
+  if (returnStack) applyPathState(destination, returnStack)
+  else setTab(destination)
+  if (reopenMenu) openMenu()
+}
+
+function backOr(tab: MobileTab, fallback: () => void): void {
+  if (popRoute(tab) === undefined) fallback()
+}
+
+function closeToRoster(): void {
+  clearReturnPair()
+  setTab('roster')
+}
+
+/** Open the sessions menu: capture (activeTab, copy of its stack) first, then
+ *  latch if closed — capture-first order preserved; idempotent (open while
+ *  open recaptures the origin, exactly as today). */
+export function openMenu(): void {
+  const navigation = $navigation.get()
+  const menuOrigin = navigation.activeTab
+  const menuOriginStack = [...navigation.stacks[menuOrigin]] as MobileRoute[]
+  const policy = $workspacePolicy.get()
+  if (policy.menuOpen) {
+    $workspacePolicy.set({ ...policy, menuOrigin, menuOriginStack })
+    return
+  }
+  $workspacePolicy.set({ ...policy, menuOpen: true, menuOrigin, menuOriginStack })
+}
+
+/** Resolve a sessions-menu dismiss intent (default {type:'close'}). Closed →
+ *  no-op. close → close only. tab t → origin===t ? close only : stash pair +
+ *  resetTabRoutes(t) + setTab(t). model → origin already on settings-model ?
+ *  close only : stash + openModelSettings(). The menu-origin capture clears
+ *  as a pair with the latch. */
+export function dismissMenu(intent: WorkspaceMenuIntent = { type: 'close' }): void {
+  const policy = $workspacePolicy.get()
+  if (!policy.menuOpen) return
+  const origin = policy.menuOrigin
+  const originStack = policy.menuOriginStack
+  $workspacePolicy.set({ ...policy, menuOpen: false, menuOrigin: null, menuOriginStack: null })
+  if (intent.type === 'tab') {
+    if (origin === intent.tab) return
+    $workspacePolicy.set({ ...$workspacePolicy.get(), returnOrigin: origin, returnStack: originStack })
+    openDestination(intent.tab)
+  } else if (intent.type === 'model') {
+    const originRoute = originStack?.at(-1)
+    if (origin === 'settings' && originRoute?.type === 'settings-category' && originRoute.category === 'model') return
+    $workspacePolicy.set({ ...$workspacePolicy.get(), returnOrigin: origin, returnStack: originStack })
+    openModelSettings()
+  }
+}
+
+/** Bottom-nav destination tap (menu closed). 'sessions' → openMenu();
+ *  'model' → openModelSettings() (NO stash — bottom-nav path); else
+ *  resetTabRoutes(tab) + setTab(tab). */
+export function openWorkspaceDestination(destination: WorkspaceDestination): void {
+  if (destination === 'sessions') {
+    openMenu()
+    return
+  }
+  if (destination === 'model') openModelSettings()
+  else openDestination(destination)
+}
+
+/** Push a group-room route onto the roster stack (roster tap + created-group). */
+export function openGroupRoom(roomId: string): void {
+  pushRoute('roster', { roomId, tab: 'roster', type: 'group-room' })
+}
+
+/** Land on the chat surface fresh: clear the return pair, close the menu latch
+ *  and drop its captured origin (latch closed ⇒ no capture, as today; no
+ *  stash, no intent side effects), setTab('sessions'). One verb for roster
+ *  agent entry, cron run → session, and deep-link landing (Δ1). */
+export function openChatSurface(): void {
+  $workspacePolicy.set({ ...$workspacePolicy.get(), menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
+  setTab('sessions')
+}
+
+/** Header gear: clear the return pair, resetTabRoutes('settings'), setTab('settings'). */
+export function openSettings(): void {
+  clearReturnPair()
+  resetTabRoutes('settings')
+  setTab('settings')
+}
+
+/** Committed foreground swipe: group-room route → resetTabRoutes('roster');
+ *  sessions-or-group → setTab('roster'); else no-op (totality). Does NOT clear
+ *  the return pair (byte-for-byte with today's closure). */
+export function dismissForeground(): void {
+  const navigation = $navigation.get()
+  const stack = navigation.stacks[navigation.activeTab] as MobileRoute[]
+  const active = stack.at(-1)
+  const groupId = active ? groupIdFromRoute(active) : null
+  if (groupId) resetTabRoutes('roster')
+  if (navigation.activeTab === 'sessions' || groupId) setTab('roster')
+}
+
+/** The whole back tree, one owner:
+ *  ① group-room route → popRoute('roster'); at root → close-to-roster (clear
+ *     pair + setTab('roster'))
+ *  ② tab sessions → close-to-roster
+ *  ③ settings ∧ settings-category ∧ 'model' ∧ returnOrigin → consume the pair
+ *     (applyPathState(origin, returnStack) else setTab(origin)) and reopen the
+ *     menu — the reopen recaptures the restored surface as the menu origin
+ *  ④ else popRoute(activeTab); at root → exitToReturnOrigin(fallback) where
+ *     fallback = source === 'header' ? 'roster' : WORKSPACE_BACK_FALLBACKS[tab] */
+export function back(source: 'header' | 'screen'): void {
+  const navigation = $navigation.get()
+  const stack = navigation.stacks[navigation.activeTab] as MobileRoute[]
+  const active = stack.at(-1)
+  const groupId = active ? groupIdFromRoute(active) : null
+  if (groupId) {
+    backOr('roster', closeToRoster)
+    return
+  }
+  if (navigation.activeTab === 'sessions') {
+    closeToRoster()
+    return
+  }
+  if (
+    navigation.activeTab === 'settings' &&
+    active?.type === 'settings-category' &&
+    active.category === 'model' &&
+    $workspacePolicy.get().returnOrigin
+  ) {
+    exitToReturnOrigin()
+    return
+  }
+  backOr(navigation.activeTab, () => exitToReturnOrigin(source === 'header' ? 'roster' : WORKSPACE_BACK_FALLBACKS[navigation.activeTab]))
+}
 
 /** Single source for the bottom-nav destinations and their labels, in the
  *  current order (sessions, cron, capabilities, model — e2e asserts DOM

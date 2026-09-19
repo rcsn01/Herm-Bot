@@ -75,6 +75,7 @@ import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { $groupChats } from '~/features/groups/group-store'
 import { resetNavigation } from '~/navigation/navigation-store'
+import { resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'
 
 afterEach(cleanup)
@@ -86,6 +87,8 @@ beforeEach(() => {
   // The URL is an optional cold-start input; runtime routes stay in memory.
   window.history.replaceState(null, '', '/')
   resetNavigation()
+  // A stale open menu latch would render SessionsMenu over the app shell.
+  resetWorkspacePolicy()
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
   $chat.set({ ...emptyChatState(), info: { model: 'provider/test-model', title: 'Current chat' } as never, runtimeSessionId: 'runtime-1' })

@@ -8,6 +8,7 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences, savePreferences } from '~/state/store'
 import type { SettingsRoute, SettingsAdministrationPage, SettingsCategory } from '~/navigation/routes'
+import type { WorkspaceSettingsScreenApi } from '~/navigation/use-workspace-navigation'
 import type { ThemeMode } from '~/lib/types'
 import { ModelsScreen } from '~/features/models/models-screen'
 import { ConfigSectionScreen } from './config-section-screen'
@@ -41,24 +42,25 @@ const ICONS: Record<string, typeof IconSettings> = {
   workspace: IconWorld
 }
 
-export function SettingsScreen({ controller, onBack, onNavigate, route, showModelBack = true }: { controller: GatewayController; onBack(): void; onNavigate(route: SettingsRoute): void; route: SettingsRoute; showModelBack?: boolean }) {
+export function SettingsScreen({ controller, workspace }: { controller: GatewayController; workspace: WorkspaceSettingsScreenApi }) {
+  const { back, navigate, route, showModelBack } = workspace
   const preferences = useStore($preferences)
   const connection = useStore($connection)
   const profiles = (connection.status?.profiles ?? []).map(profile => typeof profile === 'string' ? profile : profile.name)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
 
   if (route.type === 'settings-category') {
-    if (route.category === 'model') return <ModelsScreen onBack={onBack} showBack={showModelBack} />
-    if (route.category === 'appearance') return <AppearanceSettings onBack={onBack} />
-    if (route.category === 'memory') return <MemorySettings onBack={onBack} />
-    if (route.category === 'notifications') return <NotificationsSettings onBack={onBack} />
-    if (route.category === 'keyboard-shortcuts') return <KeyboardShortcutsSettings onBack={onBack} />
-    if (route.category === 'about') return <AboutSettings onBack={onBack} />
-    return <ConfigSectionScreen category={route.category} onBack={onBack} />
+    if (route.category === 'model') return <ModelsScreen onBack={back} showBack={showModelBack} />
+    if (route.category === 'appearance') return <AppearanceSettings onBack={back} />
+    if (route.category === 'memory') return <MemorySettings onBack={back} />
+    if (route.category === 'notifications') return <NotificationsSettings onBack={back} />
+    if (route.category === 'keyboard-shortcuts') return <KeyboardShortcutsSettings onBack={back} />
+    if (route.category === 'about') return <AboutSettings onBack={back} />
+    return <ConfigSectionScreen category={route.category} onBack={back} />
   }
-  if (route.type === 'settings-administration') return <SettingsAdministrationScreen controller={controller} onBack={onBack} page={route.page} />
+  if (route.type === 'settings-administration') return <SettingsAdministrationScreen controller={controller} onBack={back} page={route.page} />
 
-  return <SettingsPageShell heading={false} subtitle="Profile defaults, mobile preferences, and gateway administration." title="Settings"><section className="settings-section"><h3>Connection</h3><div className="settings-list static"><div><span><strong>Gateway</strong><small>{preferences.remoteURL}</small></span><Badge>{connection.phase}</Badge></div><label><span><strong>Profile</strong><small>All remote settings and capability requests use this profile.</small></span><select onChange={event => void controller.switchProfile(event.target.value || null).catch(() => undefined)} value={preferences.profile ?? ''}><option value="">Default</option>{profiles.filter(name => name !== 'default').map(name => <option key={name} value={name}>{name}</option>)}</select></label></div></section><PageList className="capability-list">{SETTINGS_ENTRIES.map(entry => <SettingsRow entry={entry} key={`${entry.kind}:${entry.id}`} onClick={() => navigateEntry(entry, onNavigate)} />)}</PageList><Button className="touch-button" onClick={() => setConfirmSignOut(true)} variant="destructive">Sign out</Button>{confirmSignOut && <ConfirmDialog confirmLabel="Sign out" description="Sign out of this gateway? The remote agent keeps running, but this device will clear its active session." onCancel={() => setConfirmSignOut(false)} onConfirm={() => { setConfirmSignOut(false); void controller.logout().catch(() => undefined) }} title="Sign out" />}</SettingsPageShell>
+  return <SettingsPageShell heading={false} subtitle="Profile defaults, mobile preferences, and gateway administration." title="Settings"><section className="settings-section"><h3>Connection</h3><div className="settings-list static"><div><span><strong>Gateway</strong><small>{preferences.remoteURL}</small></span><Badge>{connection.phase}</Badge></div><label><span><strong>Profile</strong><small>All remote settings and capability requests use this profile.</small></span><select onChange={event => void controller.switchProfile(event.target.value || null).catch(() => undefined)} value={preferences.profile ?? ''}><option value="">Default</option>{profiles.filter(name => name !== 'default').map(name => <option key={name} value={name}>{name}</option>)}</select></label></div></section><PageList className="capability-list">{SETTINGS_ENTRIES.map(entry => <SettingsRow entry={entry} key={`${entry.kind}:${entry.id}`} onClick={() => navigateEntry(entry, navigate)} />)}</PageList><Button className="touch-button" onClick={() => setConfirmSignOut(true)} variant="destructive">Sign out</Button>{confirmSignOut && <ConfirmDialog confirmLabel="Sign out" description="Sign out of this gateway? The remote agent keeps running, but this device will clear its active session." onCancel={() => setConfirmSignOut(false)} onConfirm={() => { setConfirmSignOut(false); void controller.logout().catch(() => undefined) }} title="Sign out" />}</SettingsPageShell>
 }
 
 function navigateEntry(entry: SettingsEntry, onNavigate: (route: SettingsRoute) => void) {

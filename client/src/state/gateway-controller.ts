@@ -10,7 +10,7 @@ import { createGatewayApi } from '~/gateway/gateway-api'
 import { SessionRuntime, type RuntimeSession } from '~/gateway/session-runtime'
 import { createSessionsApi, humanSessions, type SessionsApi } from '~/features/sessions/api'
 import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
-import { resetRoutes } from '~/navigation/navigation-store'
+import { resetWorkspace } from '~/navigation/workspace-navigation'
 import { $chat, Conversation } from '~/state/conversation'
 import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
 import { startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'
@@ -369,7 +369,7 @@ export class GatewayController {
     if (options.cancelQueries) await cancelGatewayQueries() // switchProfile: cancel in-flight, KEEP the cache
     else clearGatewayQueries()                              // configure/logout: remove the gateway cache
     this.clearForegroundScope()
-    resetRoutes()
+    resetWorkspace()
   }
 
   private sessionsApi(scope: CurrentGatewayScope): SessionsApi {

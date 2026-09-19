@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
 import { $activeRoute, $navigation, pushRoute, resetNavigation, setTab } from '~/navigation/navigation-store'
+import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 
-beforeEach(() => resetNavigation())
+beforeEach(() => {
+  resetNavigation()
+  resetWorkspacePolicy()
+})
 
 describe('parseHermesDeepLink', () => {
   it('parses legacy session links without forcing a profile change', () => {
@@ -122,5 +126,32 @@ describe('deep link coordinator', () => {
 
     expect($navigation.get().activeTab).toBe('sessions')
     expect($activeRoute.get().type).toBe('sessions-root')
+  })
+
+  it('landing clears an open sessions menu (Δ1: openChatSurface owns the latch)', async () => {
+    const coordinator = new DeepLinkCoordinator({ resumeSession: vi.fn().mockResolvedValue(undefined), switchProfile: vi.fn() })
+    coordinator.setReady(true)
+    openMenu()
+
+    coordinator.accept('hermes://session/abc')
+    await coordinator.settled()
+
+    expect($workspacePolicy.get().menuOpen).toBe(false)
+    expect($navigation.get().activeTab).toBe('sessions')
+  })
+
+  it('landing clears a stashed return pair (Δ1: openChatSurface owns the policy)', async () => {
+    const coordinator = new DeepLinkCoordinator({ resumeSession: vi.fn().mockResolvedValue(undefined), switchProfile: vi.fn() })
+    coordinator.setReady(true)
+    openMenu()
+    dismissMenu({ type: 'tab', tab: 'cron' })
+    expect($workspacePolicy.get().returnOrigin).toBe('roster')
+
+    coordinator.accept('hermes://session/abc')
+    await coordinator.settled()
+
+    expect($workspacePolicy.get().returnOrigin).toBeNull()
+    expect($workspacePolicy.get().returnStack).toBeNull()
+    expect($navigation.get().activeTab).toBe('sessions')
   })
 })

@@ -26,6 +26,13 @@ describe('mobile navigation store', () => {
     expect(isMobileTab('operations')).toBe(false)
   })
 
+  it('initial navigation state carries a root stack for every MOBILE_TAB', () => {
+    const state = $navigation.get()
+    for (const tab of MOBILE_TABS) {
+      expect(state.stacks[tab]).toEqual([ROOT_ROUTES[tab]])
+    }
+  })
+
   it('keeps an independent stack for every destination', () => {
     pushRoute('capabilities', { section: 'skills', tab: 'capabilities', type: 'capabilities-section' })
     pushRoute('cron', { jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' })

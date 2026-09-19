@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('~/compat/primitives', () => ({
@@ -13,14 +13,37 @@ vi.mock('~/compat/primitives', () => ({
 
 import { CronScreen } from './cron-screen'
 import { GatewayProvider } from '~/gateway/gateway-context'
+import { $navigation, applyPathState, resetNavigation } from '~/navigation/navigation-store'
+import { ROOT_ROUTES, type CronRoute } from '~/navigation/routes'
+import { useWorkspaceNavigation } from '~/navigation/use-workspace-navigation'
+import { resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 beforeEach(() => {
+  resetNavigation()
+  resetWorkspacePolicy()
   $preferences.set({ authMode: 'token', profile: 'work', remoteURL: 'https://gateway.example', theme: 'system' })
 })
 
 afterEach(() => cleanup())
+
+/** Renders the real adapter + screen pair against the arranged route. */
+function renderCronScreen(route: CronRoute, gateway: MemoryGateway, onOpenSession?: (sessionId: string) => Promise<void>) {
+  applyPathState('cron', route.type === 'cron-root' ? [ROOT_ROUTES.cron] : [ROOT_ROUTES.cron, route])
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  function Harness() {
+    const workspace = useWorkspaceNavigation()
+    return <CronScreen onOpenSession={onOpenSession} workspace={workspace.screen('cron')} />
+  }
+  return render(
+    <QueryClientProvider client={client}>
+      <GatewayProvider gateway={gateway}>
+        <Harness />
+      </GatewayProvider>
+    </QueryClientProvider>
+  )
+}
 
 describe('cron jobs', () => {
   it('keeps job instructions collapsed until the user expands them', async () => {
@@ -34,9 +57,8 @@ describe('cron jobs', () => {
         state: 'Active'
       }))
       .handle('/api/cron/jobs/job-1/runs?limit=50&profile=work', () => ({ runs: [] }))
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+    renderCronScreen({ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }, gateway)
 
     const summary = await screen.findByText('Instructions')
     const details = summary.closest('details')!
@@ -61,9 +83,8 @@ describe('cron jobs', () => {
         state: 'Active'
       }))
       .handle('/api/cron/jobs/job-1/runs?limit=50&profile=work', () => ({ runs: [] }))
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+    renderCronScreen({ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }, gateway)
 
     expect(await screen.findByText(/Model override: openai-api · gpt-old/)).not.toBeNull()
   })
@@ -81,10 +102,14 @@ describe('cron jobs', () => {
     }
     const gateway = new MemoryGateway()
       .handle('/api/cron/jobs?profile=work', () => [job])
-      .handle('/api/cron/jobs/job-1?profile=work', value => { updateBody = value; return { ...job, model: null, provider: null } })
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      .handle('/api/cron/jobs/job-1?profile=work', value => {
+        // A successful save lands on the detail view, whose GET shares this
+        // handler — capture the PUT body only.
+        if ((value as { method?: string }).method === 'PUT') updateBody = value
+        return { ...job, model: null, provider: null }
+      })
 
-    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-editor' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+    renderCronScreen({ jobId: 'job-1', tab: 'cron', type: 'cron-job-editor' }, gateway)
 
     const provider = await screen.findByRole('button', { name: /^Provider/ })
     await waitFor(() => expect(provider.textContent).toContain('openai-api'))
@@ -109,15 +134,14 @@ describe('cron jobs', () => {
         state: 'Active'
       }))
       .handle('/api/cron/jobs/job-1/runs?limit=50&profile=work', () => ({ runs: [{ ended_at: 1_777_374_300, id: 'cron_job-1_20260827_090000', started_at: 1_777_374_000 }] }))
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen onOpenSession={onOpenSession} route={{ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }} onNavigate={() => undefined} /></GatewayProvider></QueryClientProvider>)
+    renderCronScreen({ jobId: 'job-1', tab: 'cron', type: 'cron-job-detail' }, gateway, onOpenSession)
 
     fireEvent.click(await screen.findByRole('button', { name: /Open cron session from/ }))
     await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('cron_job-1_20260827_090000'))
   })
 
-  it('renders the jobs returned for the selected profile', async () => {
+  it('renders the jobs returned for the selected profile and navigates through the workspace stack', async () => {
     const gateway = new MemoryGateway()
       .handle('/api/cron/jobs?profile=work', () => ([{
         enabled: true,
@@ -129,10 +153,8 @@ describe('cron jobs', () => {
         schedule_display: 'Every day at 9:00 AM',
         state: 'Active'
       }]))
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    const onNavigate = vi.fn()
 
-    const { container } = render(<QueryClientProvider client={client}><GatewayProvider gateway={gateway}><CronScreen route={{ tab: 'cron', type: 'cron-root' }} onNavigate={onNavigate} /></GatewayProvider></QueryClientProvider>)
+    const { container } = renderCronScreen({ tab: 'cron', type: 'cron-root' }, gateway)
 
     expect(await screen.findByText('Morning briefing')).not.toBeNull()
     expect(screen.queryByRole('heading', { name: 'Cron jobs' })).toBeNull()
@@ -143,20 +165,22 @@ describe('cron jobs', () => {
     expect(screen.queryByRole('button', { name: 'Blueprints' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Refresh cron jobs' })).toBeNull()
     expect(screen.queryByText('Showing cached jobs. Pull to refresh.')).toBeNull()
-
-    fireEvent.click(newAutomation)
-    expect(screen.getByRole('dialog', { name: 'New automation' })).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Use a blueprint' }))
-    expect(onNavigate).toHaveBeenCalledWith({ tab: 'cron', type: 'cron-blueprints' })
-
-    fireEvent.click(newAutomation)
-    fireEvent.click(screen.getByRole('button', { name: 'Create from scratch' }))
-    expect(onNavigate).toHaveBeenCalledWith({ tab: 'cron', type: 'cron-job-editor' })
     expect(screen.getByText('Every day at 9:00 AM')).not.toBeNull()
     expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('Remote automation')).toBeNull()
     expect(screen.queryByText(/Gateway-owned schedules/)).toBeNull()
     expect(screen.getAllByText(/2026/).length).toBe(2)
     expect(gateway.calls.at(-1)?.value).toMatchObject({ path: '/api/cron/jobs?profile=work' })
+
+    fireEvent.click(newAutomation)
+    expect(screen.getByRole('dialog', { name: 'New automation' })).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a blueprint' }))
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron, { tab: 'cron', type: 'cron-blueprints' }])
+
+    // Back at the root, create-from-scratch pushes the editor route the same way.
+    act(() => { applyPathState('cron', [ROOT_ROUTES.cron]) })
+    fireEvent.click(screen.getByRole('button', { name: 'New automations' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create from scratch' }))
+    expect($navigation.get().stacks.cron).toEqual([ROOT_ROUTES.cron, { tab: 'cron', type: 'cron-job-editor' }])
   })
 })

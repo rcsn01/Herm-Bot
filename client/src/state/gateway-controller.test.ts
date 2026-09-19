@@ -7,6 +7,7 @@ vi.mock('~/native/app-lifecycle', () => ({
 }))
 
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
+import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
@@ -137,6 +138,22 @@ describe('profile switching', () => {
     expect($preferences.get().profile).toBe('work')
     expect($chat.get().runtimeSessionId).toBeNull()
     expect($sessions.get()).toEqual([])
+    expect(connect).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('resets the menu/return policy together with the route stacks on teardown (Δ2)', async () => {
+    const controller = new GatewayController({} as never)
+    const connect = vi.spyOn(controller, 'connect').mockResolvedValue()
+
+    resetWorkspacePolicy()
+    openMenu()
+    dismissMenu({ type: 'tab', tab: 'cron' })
+    expect($workspacePolicy.get().returnOrigin).toBe('roster')
+
+    await controller.switchProfile('work')
+
+    expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
     expect(connect).toHaveBeenCalledOnce()
     controller.dispose()
   })
