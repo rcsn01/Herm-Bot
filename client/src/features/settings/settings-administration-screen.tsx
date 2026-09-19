@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { BillingStateResponse, SubscriptionPreviewResponse, SubscriptionStateResponse } from '~/compat/hermes-shared/billing'
 import { IconChevronLeft, IconChevronRight, IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primitives'
 import { PageList, PageListButton } from '~/components/page-list'
@@ -12,7 +12,7 @@ import { RemoteResourceScreen, type RemoteResourceDefinition } from '~/features/
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { beginScopedTask, useScopeKey, useScopedQuery, useScopeReset, useScopedTask, type ScopedTask } from '~/gateway/scope-guard'
-import { runRemoteAction } from '~/gateway/remote-action'
+import { useOAuthFlow } from '~/gateway/oauth-flow'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import { profileKey } from '~/gateway/profile-path'
 import { isNativeIOS } from '~/native/hermes-connection'
@@ -21,7 +21,8 @@ import type { SettingsAdministrationPage } from '~/navigation/routes'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences } from '~/state/store'
 import { useStore } from '@nanostores/react'
-import type { CustomEndpoint, EnvVarInfo, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '~/lib/types'
+import type { CustomEndpoint, EnvVarInfo, OAuthProvider } from '~/lib/types'
+import { createProviderOAuthAdapter } from './oauth-sources'
 import { createSettingsApi } from './settings-api'
 import { SettingsPageShell } from './settings-page-shell'
 
@@ -176,49 +177,26 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
   const endpointsKey = useScopeKey('settings', ['providers', 'endpoints'])
   const providers = useScopedQuery(oauthKey, { queryFn: signal => settings.oauthProviders(signal) })
   const endpoints = useScopedQuery(endpointsKey, { queryFn: signal => settings.customEndpoints(signal) })
-  const [oauth, setOAuth] = useState<{ provider: OAuthProvider; response: OAuthStartResponse } | null>(null)
+  const [oauthProvider, setOAuthProvider] = useState<OAuthProvider | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [endpoint, setEndpoint] = useState<CustomEndpoint | null>(null)
   const [removeEndpoint, setRemoveEndpoint] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [oauthBusy, setOAuthBusy] = useState(false)
   const [oauthCode, setOAuthCode] = useState('')
   const action = useScopedTask()
   useScopeReset(() => {
     // OAuth sessions and endpoint drafts belong to one gateway/profile.
-    setOAuth(null)
+    setOAuthProvider(null)
     setOAuthCode('')
     setEndpoint(null)
     setRemoveEndpoint(null)
     setShowForm(false)
-    setOAuthBusy(false)
     setError(null)
   })
-  const startOAuth = async (provider: OAuthProvider) => {
-    await action.run(async task => {
-      setError(null)
-      const response = await settings.oauthStart(provider.id)
-      if (!task.isCurrent()) return
-      setOAuth({ provider, response })
-      const url = 'auth_url' in response ? response.auth_url : response.verification_url
-      await action.run(() => platformActions.openExternal(url), { onError: error => setError(error.message) })
-    }, { onBusy: setOAuthBusy, onError: error => setError(error.message) })
-  }
-  const cancelOAuth = async () => {
-    if (!oauth) {
-      setOAuthCode('')
-      return
-    }
-    const sessionId = oauth.response.session_id
-    // A device code is a credential-like one-shot value. Clear the controlled
-    // input before and after the cancellation attempt, including when the
-    // gateway rejects the request or the scope changes while it is in flight.
+  const startOAuth = (provider: OAuthProvider) => {
+    setError(null)
     setOAuthCode('')
-    await action.run(async task => {
-      await settings.oauthCancel(sessionId)
-      if (task.isCurrent()) setOAuth(null)
-    }, { onError: error => setError(error.message) })
-    setOAuthCode('')
+    setOAuthProvider(provider)
   }
   const activateEndpoint = async (id: string) => {
     await action.run(async task => {
@@ -238,75 +216,68 @@ function ProvidersSettings({ onBack }: { onBack(): void }) {
     }, { onError: error => setError(error.message) })
   }
   const finishOAuth = () => {
-    setOAuth(null)
+    setOAuthProvider(null)
     setOAuthCode('')
+    setError(null)
     void providers.refetch()
   }
-  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Provider accounts and custom endpoints are stored by the selected gateway profile. Secrets stay in component-local drafts." title="Providers">{error && <div className="error-banner" role="alert">{error}</div>}<section className="settings-section"><h3>OAuth accounts</h3>{providers.isPending && <Skeleton className="h-16 w-full" />}{providers.error && <GatewayErrorBanner error={providers.error} unavailablePhrase="OAuth providers are unavailable" />}<div className="settings-list static">{providers.data?.providers.map(provider => <div key={provider.id}><span><strong>{provider.name}</strong><small>{provider.status.logged_in ? provider.status.token_preview || 'Connected' : provider.flow === 'device_code' ? 'Device code' : 'Not connected'}</small></span>{provider.status.logged_in ? <Badge>Connected</Badge> : <Button disabled={oauthBusy} onClick={() => void startOAuth(provider)} size="sm">Connect</Button>}</div>)}</div></section>{oauth && <ProviderOAuthFlow code={oauthCode} onCancel={() => void cancelOAuth()} onCode={setOAuthCode} onDone={finishOAuth} provider={oauth.provider} response={oauth.response} setError={setError} />}<section className="settings-section"><PageHeading actions={<Button onClick={() => { setEndpoint(null); setShowForm(true) }} size="sm">Add</Button>} level={3} title="Custom endpoints" />{endpoints.error && <GatewayErrorBanner error={endpoints.error} />}<div className="settings-list static">{endpoints.data?.endpoints.map(item => <div key={item.id}><span><strong>{item.name}</strong><small>{item.base_url} · {item.model} {item.is_current ? '· Active' : ''}</small></span><div className="button-row">{!item.is_current && <Button onClick={() => void activateEndpoint(item.id)} size="sm">Use</Button>}<Button onClick={() => { setEndpoint(item); setShowForm(true) }} size="sm" variant="secondary">Edit</Button><Button onClick={() => setRemoveEndpoint(item.id)} size="sm" variant="destructive">Delete</Button></div></div>)}{endpoints.data?.endpoints.length === 0 && <p className="muted">No custom endpoints.</p>}</div></section>{showForm && <CustomEndpointForm endpoint={endpoint} onCancel={() => setShowForm(false)} onSaved={() => { setShowForm(false); void endpoints.refetch() }} setError={setError} />}{removeEndpoint && <ConfirmDialog confirmLabel="Delete endpoint" description="Remove this custom endpoint and detach it from the profile if it is active?" onCancel={() => setRemoveEndpoint(null)} onConfirm={() => void remove()} title="Delete custom endpoint" />}</SettingsPageShell>
+  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Provider accounts and custom endpoints are stored by the selected gateway profile. Secrets stay in component-local drafts." title="Providers">{error && <div className="error-banner" role="alert">{error}</div>}<section className="settings-section"><h3>OAuth accounts</h3>{providers.isPending && <Skeleton className="h-16 w-full" />}{providers.error && <GatewayErrorBanner error={providers.error} unavailablePhrase="OAuth providers are unavailable" />}<div className="settings-list static">{providers.data?.providers.map(provider => <div key={provider.id}><span><strong>{provider.name}</strong><small>{provider.status.logged_in ? provider.status.token_preview || 'Connected' : provider.flow === 'device_code' ? 'Device code' : 'Not connected'}</small></span>{provider.status.logged_in ? <Badge>Connected</Badge> : <Button disabled={oauthProvider !== null} onClick={() => startOAuth(provider)} size="sm">Connect</Button>}</div>)}</div></section>{oauthProvider && <ProviderOAuthFlow code={oauthCode} key={oauthProvider.id} onCancel={() => { setOAuthProvider(null); setOAuthCode('') }} onCode={setOAuthCode} onDone={finishOAuth} provider={oauthProvider} setError={setError} />}<section className="settings-section"><PageHeading actions={<Button onClick={() => { setEndpoint(null); setShowForm(true) }} size="sm">Add</Button>} level={3} title="Custom endpoints" />{endpoints.error && <GatewayErrorBanner error={endpoints.error} />}<div className="settings-list static">{endpoints.data?.endpoints.map(item => <div key={item.id}><span><strong>{item.name}</strong><small>{item.base_url} · {item.model} {item.is_current ? '· Active' : ''}</small></span><div className="button-row">{!item.is_current && <Button onClick={() => void activateEndpoint(item.id)} size="sm">Use</Button>}<Button onClick={() => { setEndpoint(item); setShowForm(true) }} size="sm" variant="secondary">Edit</Button><Button onClick={() => setRemoveEndpoint(item.id)} size="sm" variant="destructive">Delete</Button></div></div>)}{endpoints.data?.endpoints.length === 0 && <p className="muted">No custom endpoints.</p>}</div></section>{showForm && <CustomEndpointForm endpoint={endpoint} onCancel={() => setShowForm(false)} onSaved={() => { setShowForm(false); void endpoints.refetch() }} setError={setError} />}{removeEndpoint && <ConfirmDialog confirmLabel="Delete endpoint" description="Remove this custom endpoint and detach it from the profile if it is active?" onCancel={() => setRemoveEndpoint(null)} onConfirm={() => void remove()} title="Delete custom endpoint" />}</SettingsPageShell>
 }
 
-function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response, setError }: { code: string; onCancel(): void; onCode(value: string): void; onDone(): void; provider: OAuthProvider; response: OAuthStartResponse; setError(value: string | null): void }) {
+function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, setError }: { code: string; onCancel(): void; onCode(value: string): void; onDone(): void; provider: OAuthProvider; setError(value: string | null): void }) {
   const api = useGatewayApi()
   const settings = useApi(createSettingsApi)
-  const [status, setStatus] = useState<OAuthPollResponse['status']>('pending')
+  const source = useMemo(() => createProviderOAuthAdapter(settings, api.gateway, provider.id), [api.gateway, provider.id, settings])
+  const openExternal = useCallback((url: string) => platformActions.openExternal(url), [])
+  const { busy, error: oauthError, openAuthorization, snapshot, start, stop } = useOAuthFlow({ openExternal })
   const [submitting, setSubmitting] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelFlowId, setCancelFlowId] = useState<string | null>(null)
   const action = useScopedTask()
-  const pollAbort = useRef<AbortController | null>(null)
   const onDoneRef = useRef(onDone)
   const setErrorRef = useRef(setError)
   const codeRef = useRef(code)
   const mountedRef = useRef(true)
+  const completedRef = useRef(false)
+  const cancelledRef = useRef(false)
   onDoneRef.current = onDone
   codeRef.current = code
   setErrorRef.current = setError
 
   useEffect(() => {
     mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
+    cancelledRef.current = false
+    completedRef.current = false
+    setCancelling(false)
+    setCancelFlowId(null)
+    start(source)
+    return () => {
+      mountedRef.current = false
+      stop()
+    }
+  }, [source, start, stop])
 
   useEffect(() => {
-    const task = beginScopedTask()
-    const pollController = new AbortController()
-    pollAbort.current = pollController
-    setStatus('pending')
-    setSubmitting(false)
-    void runRemoteAction<OAuthPollResponse>({
-      gateway: api.gateway,
-      isCurrentScope: () => task.isCurrent(),
-      intervalMs: 1_000,
-      maxAttempts: 60,
-      maxIntervalMs: 5_000,
-      poll: async (_transport, signal) => {
-        const next = await settings.oauthPoll(provider.id, response.session_id, signal)
-        if (task.isCurrent()) setStatus(next.status)
-        return { result: next, status: next.status }
-      },
-      signal: pollController.signal,
-      start: async () => ({ status: 'pending' }),
-      isComplete: state => ['approved', 'denied', 'error', 'expired'].includes(state.status)
-    }).then(state => {
-      if (pollController.signal.aborted || !mountedRef.current || !task.isCurrent()) return
-      if (state.result?.status === 'approved') onDoneRef.current()
-      else if (state.result && state.result.status !== 'pending') setErrorRef.current(state.result.error_message || `Provider authorization ${state.result.status}.`)
-    }).catch(caught => {
-      if (!pollController.signal.aborted && mountedRef.current && task.isCurrent()) setErrorRef.current(classifyGatewayError(caught).message)
-    })
-    return () => {
-      pollController.abort()
-      if (pollAbort.current === pollController) pollAbort.current = null
-    }
-  }, [api, provider.id, response.session_id, settings])
+    if (snapshot?.phase !== 'approved' || completedRef.current || cancelledRef.current || !mountedRef.current) return
+    completedRef.current = true
+    stop()
+    onDoneRef.current()
+  }, [snapshot?.phase, stop])
 
   const submit = async () => {
     const submittedCode = code.trim()
-    if (!submittedCode || !('flow' in response && response.flow === 'device_code')) return
+    const flowId = snapshot?.flowId
+    if (cancelledRef.current || !submittedCode || !flowId || snapshot?.userCode === undefined) return
     await action.run(async task => {
-      const result = await settings.oauthSubmit(provider.id, response.session_id, submittedCode)
-      if (!mountedRef.current || !task.isCurrent()) return
-      setStatus(result.status)
-      if (result.ok && result.status === 'approved') onDoneRef.current()
-      else if (!result.ok) setErrorRef.current(result.message || 'The provider rejected the code.')
+      const result = await settings.oauthSubmit(provider.id, flowId, submittedCode)
+      if (!mountedRef.current || cancelledRef.current || !task.isCurrent()) return
+      if (result.ok && result.status === 'approved') {
+        stop()
+        if (!completedRef.current) {
+          completedRef.current = true
+          onDoneRef.current()
+        }
+      } else if (!result.ok) setErrorRef.current(result.message || 'The provider rejected the code.')
     }, {
       onBusy: setSubmitting,
       onError: error => { if (mountedRef.current) setErrorRef.current(error.message) }
@@ -315,10 +286,32 @@ function ProviderOAuthFlow({ code, onCancel, onCode, onDone, provider, response,
     // to completion and the field still holds exactly that code.
     if (mountedRef.current && codeRef.current === submittedCode) onCode('')
   }
-  const openProvider = async () => {
-    await action.run(() => platformActions.openExternal('auth_url' in response ? response.auth_url : response.verification_url), { onError: error => setErrorRef.current(error.message) })
+
+  const cancel = async () => {
+    const flowId = snapshot?.flowId ?? cancelFlowId
+    cancelledRef.current = true
+    setErrorRef.current(null)
+    onCode('')
+    stop()
+    if (!flowId) {
+      if (mountedRef.current) onCancel()
+      return
+    }
+    setCancelFlowId(flowId)
+    await action.run(async task => {
+      await settings.oauthCancel(flowId)
+      if (mountedRef.current && task.isCurrent()) {
+        setCancelFlowId(null)
+        onCancel()
+      }
+    }, { onBusy: value => { if (mountedRef.current) setCancelling(value) }, onError: error => { if (mountedRef.current) setErrorRef.current(error.message) } })
+    if (mountedRef.current) onCode('')
   }
-  return <section className="data-card"><h3>Connect {provider.name}</h3>{'user_code' in response && <p>Enter code <strong>{response.user_code}</strong> at the verification page.</p>}<Button onClick={() => void openProvider()} variant="secondary"><IconExternalLink size={16} /> Open provider</Button>{'user_code' in response && <div className="button-row"><Input autoComplete="off" onChange={event => onCode(event.target.value)} placeholder="Code" value={code} /><Button disabled={submitting} onClick={() => void submit()}>{submitting ? 'Submitting…' : 'Submit'}</Button></div>}<p className="muted">Status: {status}. Polling stops after a bounded number of attempts.</p><Button onClick={() => { pollAbort.current?.abort(); onCancel() }} variant="destructive">Cancel</Button></section>
+
+  const flow = snapshot
+  const status = flow?.phase ?? (busy ? 'starting' : 'idle')
+  const canSubmit = flow?.userCode !== undefined && flow.flowId !== undefined
+  return <section className="data-card"><h3>Connect {provider.name}</h3>{flow?.userCode !== undefined && <p>Enter code <strong>{flow.userCode}</strong> at the verification page.</p>}{flow?.authorizationURL && <Button onClick={() => void openAuthorization()} variant="secondary"><IconExternalLink size={16} /> Open provider</Button>}{canSubmit && <div className="button-row"><Input autoComplete="off" onChange={event => onCode(event.target.value)} placeholder="Code" value={code} /><Button disabled={submitting || !code.trim()} onClick={() => void submit()}>{submitting ? 'Submitting…' : 'Submit'}</Button></div>}{oauthError && <div className="error-banner" role="alert">{oauthError.message}</div>}<p className="muted">Status: {flow?.message || status}. Polling stops after a bounded number of attempts.</p><Button disabled={cancelling} onClick={() => void cancel()} variant="destructive">{cancelling ? 'Cancelling…' : 'Cancel'}</Button></section>
 }
 
 function CustomEndpointForm({ endpoint, onCancel, onSaved, setError }: { endpoint: CustomEndpoint | null; onCancel(): void; onSaved(): void; setError(value: string | null): void }) {

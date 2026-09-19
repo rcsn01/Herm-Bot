@@ -1,19 +1,20 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useStore } from '@nanostores/react'
 import { Badge, Button, Input, Skeleton, Switch, Textarea } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
-import { beginScopedTask, useScopeKey, useScopedMutation, useScopedQuery, useScopeReset, useScopedTask } from '~/gateway/scope-guard'
+import { useScopeKey, useScopedMutation, useScopedQuery, useScopeReset } from '~/gateway/scope-guard'
+import { useOAuthFlow } from '~/gateway/oauth-flow'
 import { profileKey } from '~/gateway/profile-path'
-import { runRemoteAction } from '~/gateway/remote-action'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
 import type { MemoryProviderConfig, MemoryProviderField, MemoryProviderOAuthStatus } from '~/lib/types'
 import type { SettingsCategory } from '~/navigation/routes'
 import { $preferences } from '~/state/store'
+import { createMemoryOAuthAdapter } from './oauth-sources'
 import { createSettingsApi } from './settings-api'
 import { PageHeading } from '~/components/page-shell'
 import { SettingsPageShell } from './settings-page-shell'
@@ -33,11 +34,10 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     queryFn: signal => settings.memoryStatus(signal)
   })
   const [selectedProvider, setSelectedProvider] = useState('')
-  const [oauthPending, setOAuthPending] = useState(false)
-  const [oauthError, setOAuthError] = useState<string | null>(null)
   const [resetTarget, setResetTarget] = useState<'all' | 'memory' | 'user' | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const action = useScopedTask()
+  const oauthProviderRef = useRef('')
+  const oauth = useOAuthFlow({})
 
   const providers = status.data?.providers ?? []
   const providerKey = profileSupportsMemoryManagement ? selectedProvider || status.data?.active || providers[0]?.name || '' : ''
@@ -46,7 +46,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
     enabled: Boolean(providerKey),
     queryFn: signal => settings.memoryProviderConfig(providerKey, signal)
   })
-  const oauth = useScopedQuery(useScopeKey('settings', ['memory', 'oauth', providerKey]), {
+  const oauthStatus = useScopedQuery(useScopeKey('settings', ['memory', 'oauth', providerKey]), {
     enabled: Boolean(providerKey),
     queryFn: signal => settings.memoryOAuthStatus(providerKey, signal),
     retry: false
@@ -54,8 +54,8 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
 
   useScopeReset(() => {
     setSelectedProvider('')
-    setOAuthPending(false)
-    setOAuthError(null)
+    oauthProviderRef.current = ''
+    oauth.stop()
     setError(null)
     setResetTarget(null)
   })
@@ -100,62 +100,33 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
   })
 
   useEffect(() => {
-    if (!oauthPending || !providerKey) return
-    const controller = new AbortController()
-    const task = beginScopedTask()
-    void runRemoteAction<MemoryProviderOAuthStatus>({
-      gateway: api.gateway,
-      isCurrentScope: () => task.isCurrent(),
-      intervalMs: 2_000,
-      maxAttempts: 60,
-      maxIntervalMs: 10_000,
-      poll: async (_transport, signal) => {
-        const next = await settings.memoryOAuthStatus(providerKey, signal)
-        return { result: next, status: next.state }
-      },
-      signal: controller.signal,
-      start: async () => ({ result: oauth.data, status: 'pending' }),
-      isComplete: state => state.status !== 'pending'
-    }).then(state => {
-      if (controller.signal.aborted || !task.isCurrent()) return
-      setOAuthPending(false)
-      const next = state.result
-      if (next?.state === 'error') setOAuthError(next.detail || 'The provider rejected the connection.')
-      else {
-        setOAuthError(null)
-        void queryClient.invalidateQueries({ queryKey: [...statusKey, 'oauth', providerKey] })
-        void queryClient.invalidateQueries({ queryKey: statusKey })
-      }
-    }).catch(caught => {
-      if (controller.signal.aborted || !task.isCurrent()) return
-      setOAuthPending(false)
-      setOAuthError(classifyGatewayError(caught).message)
-    })
-    return () => controller.abort()
-  }, [api, oauth.data, oauthPending, preferences, providerKey, queryClient, settings])
+    return () => {
+      if (oauthProviderRef.current === providerKey) oauthProviderRef.current = ''
+      oauth.stop()
+    }
+  }, [oauth.stop, providerKey])
+
+  useEffect(() => {
+    if (oauth.snapshot?.phase !== 'approved' || oauthProviderRef.current !== providerKey) return
+    void queryClient.invalidateQueries({ queryKey: [...statusKey, 'oauth', providerKey] })
+    void queryClient.invalidateQueries({ queryKey: statusKey })
+    void oauthStatus.refetch()
+  }, [oauth.snapshot?.phase, oauthStatus.refetch, providerKey, queryClient])
 
   const chooseProvider = (name: string) => {
     setSelectedProvider(name)
-    setOAuthError(null)
+    oauthProviderRef.current = ''
+    oauth.stop()
     setError(null)
   }
 
-  const startOAuth = async () => {
+  const startOAuth = () => {
     if (!providerKey) return
-    await action.run(async task => {
-      setOAuthError(null)
-      const next = await settings.startMemoryOAuth(providerKey)
-      if (!task.isCurrent()) return
-      if (next.state === 'connected') {
-        void queryClient.invalidateQueries({ queryKey: statusKey })
-        void oauth.refetch()
-      } else {
-        setOAuthPending(true)
-      }
-    }, {
-      onError: error => setOAuthError(error.kind === 'unsupported' ? 'This memory provider does not offer OAuth.' : error.message)
-    })
+    setError(null)
+    oauthProviderRef.current = providerKey
+    oauth.start(createMemoryOAuthAdapter(settings, api.gateway, providerKey))
   }
+  const memoryOAuthError = oauth.error?.kind === 'unsupported' ? 'This memory provider does not offer OAuth.' : oauth.error?.message || null
 
   return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Provider configuration and memory files belong to the selected gateway profile. Changes apply to new sessions." title="Memory & context">
     {error && <div className="error-banner" role="alert">{error}</div>}
@@ -183,7 +154,7 @@ export function MemorySettings({ onBack }: { onBack(): void }) {
       </section>
     </>}
     {providerKey && <MemoryProviderEditor config={config.data} error={config.error} key={`${preferences.remoteURL}:${profile || 'default'}:${providerKey}`} loading={config.isPending} onSave={values => saveProvider.mutate(values)} onSetup={() => setupProvider.mutate()} provider={providerKey} providerStatus={selectedStatus} saving={saveProvider.isPending || setupProvider.isPending} />}
-    {providerKey && <MemoryOAuthCard error={oauthError} onStart={() => void startOAuth()} pending={oauthPending} status={oauth.data} />}
+    {providerKey && <MemoryOAuthCard error={oauth.snapshot?.message || memoryOAuthError} onStart={startOAuth} pending={oauth.busy} status={oauthStatus.data} />}
     {resetTarget && <ConfirmDialog confirmLabel="Reset memory" description={`Reset ${resetTarget === 'all' ? 'all built-in memory files' : `${resetTarget === 'memory' ? 'MEMORY.md' : 'USER.md'} in this profile`}? This cannot be undone.`} onCancel={() => setResetTarget(null)} onConfirm={() => reset.mutate(resetTarget)} title="Reset built-in memory" />}
   </SettingsPageShell>
 }

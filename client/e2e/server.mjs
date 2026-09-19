@@ -46,6 +46,7 @@ const stateFor = id => {
     calls: [],
     config: { display: { personality: 'default' } },
     messages: new Map(),
+    mcpOAuth: null,
     profiles: initialProfiles()
   })
   return clients.get(id)
@@ -161,6 +162,29 @@ const server = http.createServer(async (req, res) => {
           key: 'calendar-digest', tags: ['calendar', 'daily'], title: 'Daily calendar briefing'
         }
       ] })
+      if (url.pathname === '/api/mcp/servers' && req.method === 'GET') return json(res, 200, { servers: [
+        { args: [], auth: 'oauth', command: null, enabled: true, name: 'fixture-oauth', tools: [], transport: 'streamable_http', url: 'https://mcp.example' }
+      ] })
+      const mcpAuthMatch = /^\/api\/mcp\/servers\/([^/]+)\/auth$/.exec(url.pathname)
+      if (mcpAuthMatch && req.method === 'POST') {
+        state.mcpOAuth = { flowId: 'fixture-mcp-flow', polls: 0, cancelled: false, serverName: decodeURIComponent(mcpAuthMatch[1]) }
+        return json(res, 200, { authorization_url: 'https://auth.example/mcp', error: null, flow_id: state.mcpOAuth.flowId, server_name: state.mcpOAuth.serverName, status: 'authorization_required' })
+      }
+      const mcpFlowMatch = /^\/api\/mcp\/oauth\/flows\/([^/]+)$/.exec(url.pathname)
+      if (mcpFlowMatch && state.mcpOAuth?.flowId === decodeURIComponent(mcpFlowMatch[1])) {
+        if (req.method === 'DELETE') {
+          state.mcpOAuth.cancelled = true
+          return json(res, 200, { ok: true, status: 'cancelled' })
+        }
+        state.mcpOAuth.polls += 1
+        return json(res, 200, {
+          authorization_url: 'https://auth.example/mcp',
+          error: null,
+          flow_id: state.mcpOAuth.flowId,
+          server_name: state.mcpOAuth.serverName,
+          status: state.mcpOAuth.polls >= 2 ? 'approved' : 'authorization_required'
+        })
+      }
       if (url.pathname === '/api/private-fixture') return json(res, 200, { secret: 'cookie-private-response' })
       if (url.pathname === '/api/fixture-calls') return json(res, 200, { calls: state.calls })
       return json(res, 404, { detail: 'Fixture API route not found' })

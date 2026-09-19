@@ -214,6 +214,33 @@ test('desktop group chats list on the main screen and open with sending', async 
   await expect(row).toBeVisible()
 })
 
+test('runs the deterministic MCP OAuth flow through the browser adapter', async ({ page }) => {
+  await page.addInitScript(() => {
+    const opened: string[] = []
+    Object.defineProperty(window, '__oauthOpened', { configurable: true, value: opened })
+    window.open = ((url?: string | URL) => {
+      opened.push(String(url))
+      return null
+    }) as typeof window.open
+  })
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'Capabilities', exact: true }).click()
+  await page.getByRole('button', { name: /^MCP Servers/ }).click()
+  await page.getByRole('button', { name: 'Authenticate fixture-oauth' }).click()
+
+  await expect(page.getByText('Authorize the server in your browser, then return to Hermes.')).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (window as Window & { __oauthOpened?: string[] }).__oauthOpened ?? [])).toContain('https://auth.example/mcp')
+  await expect(page.getByText('Authentication complete.')).toBeVisible({ timeout: 10_000 })
+
+  const { calls } = await fixtureCalls(page)
+  const start = calls.find(call => call.method === 'POST' && call.path === '/api/mcp/servers/fixture-oauth/auth')
+  expect(start?.query).toEqual({ profile: 'default' })
+  const polls = calls.filter(call => call.method === 'GET' && call.path === '/api/mcp/oauth/flows/fixture-mcp-flow')
+  expect(polls.length).toBeGreaterThanOrEqual(2)
+  expect(polls.every(call => Object.keys(call.query || {}).length === 0)).toBe(true)
+})
+
 test('runtime screen and navigation routes stay out of the browser URL', async ({ page }) => {
   await login(page)
   const rootURL = page.url()

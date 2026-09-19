@@ -20,6 +20,7 @@ export interface RemoteActionOptions<T> {
   maxNetworkErrors?: number
   poll: (gateway: GatewayPort, signal: AbortSignal) => Promise<RemoteActionState<T>>
   signal?: AbortSignal
+  timeoutError?: (maxAttempts: number) => GatewayError
   start: (gateway: GatewayPort, signal: AbortSignal) => Promise<RemoteActionState<T>>
 }
 
@@ -94,7 +95,10 @@ export async function runRemoteAction<T>(options: RemoteActionOptions<T>): Promi
       }
     }
     assertScope()
-    if (!complete(state)) throw classifyGatewayError(new Error(`Remote action timed out after ${maxAttempts} polls.`))
+    if (!complete(state)) {
+      const timeout = options.timeoutError?.(maxAttempts)
+      throw timeout ?? classifyGatewayError(new Error(`Remote action timed out after ${maxAttempts} polls.`))
+    }
     return state
   } finally {
     options.signal?.removeEventListener('abort', abort)

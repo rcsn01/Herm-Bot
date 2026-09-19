@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { createGatewayApi } from './gateway-api'
+import { GatewayError } from './gateway-error'
 import { assertRemoteActionStart, remoteActionName, runGatewayAction, runRemoteAction, type GatewayActionState, type RemoteActionState } from './remote-action'
 import { MemoryGateway } from '~/test/memory-gateway'
 
@@ -142,6 +143,23 @@ describe('runRemoteAction', () => {
       poll: async () => { polls += 1; return { status: 'pending' } }
     })).rejects.toThrow('timed out after 3 polls')
     expect(polls).toBe(3)
+  })
+
+  it('uses a protocol-specific error for poll exhaustion when provided', async () => {
+    const gateway = new MemoryGateway()
+    await expect(runRemoteAction({
+      gateway,
+      intervalMs: 0,
+      maxAttempts: 2,
+      poll: async () => ({ status: 'pending' }),
+      start: async () => ({ status: 'pending' }),
+      timeoutError: attempts => new GatewayError('OAuth authorization timed out.', {
+        code: 'OAUTH_TIMEOUT',
+        details: { attempts },
+        kind: 'server',
+        retryable: false
+      })
+    })).rejects.toMatchObject({ code: 'OAUTH_TIMEOUT', details: { attempts: 2 }, retryable: false })
   })
 
   it('does not leave a timer behind when cancelled during backoff', async () => {

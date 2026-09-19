@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { IconChevronLeft, IconChevronRight, IconEdit, IconExternalLink, IconPlus, IconRefresh, IconServer, IconShieldCheck, IconTrash } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 
 import { Badge, Button, Input, Skeleton } from '~/compat/primitives'
 import { PageHeading, PageShell } from '~/components/page-shell'
@@ -8,14 +8,15 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { GatewayErrorBanner } from '~/gateway/gateway-error-banner'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { useApi, useGatewayApi } from '~/gateway/gateway-api-hooks'
-import { beginScopedTask, useScopeKey, useScopeReset, useScopedMutation, useScopedQuery, useScopedTask } from '~/gateway/scope-guard'
-import { runRemoteAction } from '~/gateway/remote-action'
+import { beginScopedTask, useScopeKey, useScopeReset, useScopedMutation, useScopedQuery } from '~/gateway/scope-guard'
+import { useOAuthFlow } from '~/gateway/oauth-flow'
 import { PlatformActions } from '~/native/platform-actions'
 import { useStore } from '@nanostores/react'
 import { $preferences } from '~/state/store'
 import { McpCatalogScreen } from './mcp-catalog-screen'
 import { McpServerEditor } from './mcp-server-editor'
-import { createMcpApi, type McpOAuthFlow, type McpServerSummary } from './mcp-api'
+import { createMcpOAuthAdapter } from './mcp-oauth'
+import { createMcpApi, type McpServerSummary } from './mcp-api'
 
 const platformActions = new PlatformActions()
 
@@ -30,11 +31,10 @@ export function McpScreen({ onAdd, onBack, onOpenCatalog, onSelect, selected }: 
   const [editor, setEditor] = useState<McpServerSummary | 'new' | null>(null)
   const [catalog, setCatalog] = useState(false)
   const [remove, setRemove] = useState<McpServerSummary | null>(null)
-  const [flow, setFlow] = useState<McpOAuthFlow | null>(null)
+  const [authServer, setAuthServer] = useState<string | null>(null)
+  const [cancelFlowId, setCancelFlowId] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ name: string; value: Awaited<ReturnType<typeof mcpApi.test>> } | null>(null)
-  const pollAbort = useRef<AbortController | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const action = useScopedTask()
   const toggle = useScopedMutation<unknown, { enabled: boolean; name: string }, { servers: McpServerSummary[] }>({
     mutationFn: ({ enabled, name }) => mcpApi.toggle(name, enabled),
     optimistic: {
@@ -54,71 +54,52 @@ export function McpScreen({ onAdd, onBack, onOpenCatalog, onSelect, selected }: 
     onError: caught => setError(classifyGatewayError(caught).message),
     onSuccess: (value, name) => { setTestResult({ name, value }); setError(null) }
   })
-  const authMutation = useScopedMutation<Awaited<ReturnType<typeof mcpApi.auth>>, string>({
-    mutationFn: name => mcpApi.auth(name),
-    onError: caught => setError(classifyGatewayError(caught).message),
-    onSuccess: async value => {
-      setFlow(value)
-      const url = value.authorization_url
-      if (url) {
-        await action.run(() => platformActions.openExternal(url), { onError: error => setError(error.message) })
-      }
-    }
-  })
+  const openExternal = useCallback((url: string) => platformActions.openExternal(url), [])
+  const oauth = useOAuthFlow({ openExternal })
   const cancelAuth = useScopedMutation<unknown, string>({
     mutationFn: flowId => mcpApi.cancelOAuth(flowId),
     onError: caught => setError(classifyGatewayError(caught).message),
-    onSuccess: () => setFlow(null)
+    onSuccess: () => {
+      oauth.stop()
+      setAuthServer(null)
+      setCancelFlowId(null)
+    }
   })
-
-  const openExternal = async (url: string) => {
-    await action.run(() => platformActions.openExternal(url), { onError: error => setError(error.message) })
-  }
 
   useScopeReset(() => {
     setEditor(null)
     setCatalog(false)
     setRemove(null)
-    setFlow(null)
+    setAuthServer(null)
+    setCancelFlowId(null)
     setTestResult(null)
     setError(null)
   })
 
-  useEffect(() => {
-    if (!flow || flow.status === 'approved' || flow.status === 'error') return
-    const task = beginScopedTask()
-    const controller = new AbortController()
-    pollAbort.current = controller
-    const flowId = flow.flow_id
-    void runRemoteAction<typeof flow>({
-      gateway: api.gateway,
-      isCurrentScope: () => task.isCurrent(),
-      intervalMs: 1_000,
-      maxAttempts: 60,
-      maxIntervalMs: 5_000,
-      poll: async (_gateway, signal) => {
-        const next = await mcpApi.oauthStatus(flowId, signal)
-        if (task.isCurrent()) setFlow(next)
-        return { result: next, status: next.status }
-      },
-      signal: controller.signal,
-      start: async () => ({ result: flow, status: flow.status }),
-      isComplete: state => state.status === 'approved' || state.status === 'error'
-    }).then(state => {
-      if (controller.signal.aborted || !task.isCurrent()) return
-      if (state.result) setFlow(state.result)
-      if (state.result?.status === 'error') setError(state.result.error || 'MCP authorization failed.')
-    }).catch(caught => {
-      if (controller.signal.aborted || !task.isCurrent()) return
-      setError(classifyGatewayError(caught).message.includes('timed out')
-        ? 'MCP authorization timed out. Start authentication again if needed.'
-        : classifyGatewayError(caught).message)
-    })
-    return () => {
-      controller.abort()
-      if (pollAbort.current === controller) pollAbort.current = null
+  const startAuth = (serverName: string) => {
+    setError(null)
+    setCancelFlowId(null)
+    setAuthServer(serverName)
+    oauth.start(createMcpOAuthAdapter(mcpApi, api.gateway, serverName))
+  }
+
+  const cancel = () => {
+    const flowId = oauth.snapshot?.flowId ?? cancelFlowId
+    oauth.stop()
+    if (flowId) {
+      setCancelFlowId(flowId)
+      cancelAuth.mutate(flowId)
+    } else {
+      setAuthServer(null)
+      setCancelFlowId(null)
     }
-  }, [api, flow?.flow_id, mcpApi])
+  }
+
+  const dismiss = () => {
+    oauth.stop()
+    setAuthServer(null)
+    setCancelFlowId(null)
+  }
 
   const selectedServer = selected ? servers.data?.servers.find(server => server.name === selected) : undefined
   if (selected === 'new') return <McpServerEditor onCancel={onBack} onSaved={() => { const task = beginScopedTask(); if (!task.isCurrent()) return; void queryClient.invalidateQueries({ queryKey }); onBack() }} />
@@ -127,7 +108,7 @@ export function McpScreen({ onAdd, onBack, onOpenCatalog, onSelect, selected }: 
   if (catalog) return <McpCatalogScreen onBack={() => { setCatalog(false); onBack() }} />
   if (editor) return <McpServerEditor onCancel={() => { const task = beginScopedTask(); if (task.isCurrent()) setEditor(null) }} onSaved={() => { const task = beginScopedTask(); if (!task.isCurrent()) return; setEditor(null); void queryClient.invalidateQueries({ queryKey }) }} server={editor === 'new' ? undefined : editor} />
 
-  return <PageShell actions={<div className="button-row"><Button aria-label="Refresh MCP servers" onClick={() => void servers.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => onAdd ? onAdd() : setEditor('new')} size="sm"><IconPlus size={16} /> Add</Button></div>} eyebrow="Capabilities" leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="MCP changes apply to new sessions. Hermes Mobile never reloads the active conversation's tool schema." title="MCP">{error && <div className="error-banner" role="alert">{error}</div>}<div className="button-row"><Button onClick={() => onOpenCatalog ? onOpenCatalog() : setCatalog(true)} variant="secondary"><IconServer size={16} /> Catalog</Button><Badge variant="muted">{profile || 'default'} profile</Badge></div>{servers.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-16 w-full" /></div>}{servers.error && <GatewayErrorBanner error={servers.error} unsupportedText="MCP is unavailable on this gateway." />}<div className="settings-list capability-list">{servers.data?.servers.map(server => <article className="capability-row" key={server.name}><button onClick={() => onSelect?.(server)}><IconServer size={20} /><span><strong>{server.name}</strong><small>{server.transport}{server.url ? ` · ${server.url}` : server.command ? ` · ${server.command}` : ''}</small><small>{server.tools?.length ?? 0} tools · {server.enabled ? 'Enabled' : 'Disabled'}</small></span><IconChevronRight size={18} /></button><div className="row-actions"><Button aria-label={`Test ${server.name}`} disabled={testMutation.isPending} onClick={() => testMutation.mutate(server.name)} size="icon-sm" variant="ghost"><IconShieldCheck size={16} /></Button>{server.auth === 'oauth' && <Button aria-label={`Authenticate ${server.name}`} disabled={authMutation.isPending} onClick={() => authMutation.mutate(server.name)} size="icon-sm" variant="ghost">Auth</Button>}<Button aria-label={`Edit ${server.name}`} onClick={() => setEditor(server)} size="icon-sm" variant="ghost"><IconEdit size={16} /></Button><Button aria-label={`Delete ${server.name}`} onClick={() => setRemove(server)} size="icon-sm" variant="ghost"><IconTrash size={16} /></Button><label className="row-switch"><span className="sr-only">Enable {server.name}</span><input checked={server.enabled} onChange={event => toggle.mutate({ enabled: event.target.checked, name: server.name })} type="checkbox" /></label></div></article>)}{servers.data?.servers.length === 0 && <div className="empty-panel">No MCP servers are configured.</div>}</div>{testResult && <section className="data-card"><PageHeading actions={<Button onClick={() => setTestResult(null)} variant="text">Close</Button>} level={3} title={`Test: ${testResult.name}`} />{testResult.value.ok ? <><p>Connected successfully. {testResult.value.tools.length} tools, {testResult.value.prompts ?? 0} prompts, {testResult.value.resources ?? 0} resources.</p><ul>{testResult.value.tools.map(tool => <li key={tool.name}>{tool.name}{tool.schema_chars ? ` · ${tool.schema_chars} schema chars` : ''}</li>)}</ul></> : <p className="muted">{testResult.value.error || 'The server test failed.'}</p>}</section>}{flow && <section className="data-card oauth-flow"><h3>MCP authentication</h3><p>{flow.status === 'authorization_required' ? 'Authorize the server in your browser, then return to Hermes.' : flow.status === 'approved' ? 'Authentication complete.' : flow.error || 'Starting authentication…'}</p>{flow.authorization_url && <Button onClick={() => void openExternal(flow.authorization_url!)} variant="secondary"><IconExternalLink size={16} /> Open authorization</Button>}{flow.status !== 'approved' && flow.status !== 'error' && <Button onClick={() => { pollAbort.current?.abort(); cancelAuth.mutate(flow.flow_id) }} variant="destructive">Cancel authentication</Button>}<Button onClick={() => { pollAbort.current?.abort(); setFlow(null) }} variant="text">Dismiss</Button></section>}{remove && <ConfirmDialog confirmLabel="Delete" description={`Remove MCP server ${remove.name}? Its configuration will be removed from the selected profile.`} onCancel={() => setRemove(null)} onConfirm={() => removeMutation.mutate(remove.name)} title="Delete MCP server" />}</PageShell>
+  return <PageShell actions={<div className="button-row"><Button aria-label="Refresh MCP servers" onClick={() => void servers.refetch()} size="icon-sm" variant="ghost"><IconRefresh size={18} /></Button><Button onClick={() => onAdd ? onAdd() : setEditor('new')} size="sm"><IconPlus size={16} /> Add</Button></div>} eyebrow="Capabilities" leading={<Button aria-label="Back" onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="MCP changes apply to new sessions. Hermes Mobile never reloads the active conversation's tool schema." title="MCP">{error && <div className="error-banner" role="alert">{error}</div>}<div className="button-row"><Button onClick={() => onOpenCatalog ? onOpenCatalog() : setCatalog(true)} variant="secondary"><IconServer size={16} /> Catalog</Button><Badge variant="muted">{profile || 'default'} profile</Badge></div>{servers.isPending && <div className="data-card"><Skeleton className="h-5 w-2/3" /><Skeleton className="mt-3 h-16 w-full" /></div>}{servers.error && <GatewayErrorBanner error={servers.error} unsupportedText="MCP is unavailable on this gateway." />}<div className="settings-list capability-list">{servers.data?.servers.map(server => <article className="capability-row" key={server.name}><button onClick={() => onSelect?.(server)}><IconServer size={20} /><span><strong>{server.name}</strong><small>{server.transport}{server.url ? ` · ${server.url}` : server.command ? ` · ${server.command}` : ''}</small><small>{server.tools?.length ?? 0} tools · {server.enabled ? 'Enabled' : 'Disabled'}</small></span><IconChevronRight size={18} /></button><div className="row-actions"><Button aria-label={`Test ${server.name}`} disabled={testMutation.isPending} onClick={() => testMutation.mutate(server.name)} size="icon-sm" variant="ghost"><IconShieldCheck size={16} /></Button>{server.auth === 'oauth' && <Button aria-label={`Authenticate ${server.name}`} disabled={oauth.busy || cancelAuth.isPending || cancelFlowId !== null} onClick={() => startAuth(server.name)} size="icon-sm" variant="ghost">Auth</Button>}<Button aria-label={`Edit ${server.name}`} onClick={() => setEditor(server)} size="icon-sm" variant="ghost"><IconEdit size={16} /></Button><Button aria-label={`Delete ${server.name}`} onClick={() => setRemove(server)} size="icon-sm" variant="ghost"><IconTrash size={16} /></Button><label className="row-switch"><span className="sr-only">Enable {server.name}</span><input checked={server.enabled} onChange={event => toggle.mutate({ enabled: event.target.checked, name: server.name })} type="checkbox" /></label></div></article>)}{servers.data?.servers.length === 0 && <div className="empty-panel">No MCP servers are configured.</div>}</div>{testResult && <section className="data-card"><PageHeading actions={<Button onClick={() => setTestResult(null)} variant="text">Close</Button>} level={3} title={`Test: ${testResult.name}`} />{testResult.value.ok ? <><p>Connected successfully. {testResult.value.tools.length} tools, {testResult.value.prompts ?? 0} prompts, {testResult.value.resources ?? 0} resources.</p><ul>{testResult.value.tools.map(tool => <li key={tool.name}>{tool.name}{tool.schema_chars ? ` · ${tool.schema_chars} schema chars` : ''}</li>)}</ul></> : <p className="muted">{testResult.value.error || 'The server test failed.'}</p>}</section>}{authServer && <section className="data-card oauth-flow"><h3>MCP authentication</h3><p>{oauth.snapshot?.phase === 'waiting' ? oauth.error?.message || (oauth.snapshot.authorizationURL ? 'Authorize the server in your browser, then return to Hermes.' : 'Starting authentication…') : oauth.snapshot?.phase === 'approved' ? 'Authentication complete.' : oauth.busy ? 'Starting authentication…' : oauth.snapshot?.message || oauth.error?.message || 'MCP authorization failed.'}</p>{oauth.snapshot?.authorizationURL && <Button onClick={() => void oauth.openAuthorization()} variant="secondary"><IconExternalLink size={16} /> Open authorization</Button>}{(oauth.snapshot?.phase === 'waiting' || cancelFlowId !== null) && <Button disabled={cancelAuth.isPending} onClick={cancel} variant="destructive">{cancelAuth.isPending ? 'Cancelling…' : 'Cancel authentication'}</Button>}<Button onClick={dismiss} variant="text">Dismiss</Button></section>}{remove && <ConfirmDialog confirmLabel="Delete" description={`Remove MCP server ${remove.name}? Its configuration will be removed from the selected profile.`} onCancel={() => setRemove(null)} onConfirm={() => removeMutation.mutate(remove.name)} title="Delete MCP server" />}</PageShell>
 }
 
 export function McpServerRoute({ onBack, onSaved, server }: { onBack(): void; onSaved(): boolean; server: McpServerSummary }) {

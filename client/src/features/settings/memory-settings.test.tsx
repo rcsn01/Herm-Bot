@@ -117,6 +117,48 @@ describe('MemorySettings', () => {
     await waitFor(() => expect(savedBody).toEqual({ values: { workspace: 'updated-without-secret' } }))
   })
 
+  it('starts a pending memory OAuth flow without fabricating a handle or URL', async () => {
+    let statusCalls = 0
+    const gateway = new MemoryGateway()
+      .handle('/api/memory', () => ({
+        active: 'honcho',
+        builtin_files: { memory: 0, user: 0 },
+        providers: [{ configured: true, description: 'Remote memory', name: 'honcho', status: 'ready' }]
+      }))
+      .handle('/api/memory/providers/honcho/config?surface=declared&profile=default', () => memoryProviderConfig())
+      .handle('/api/memory/providers/honcho/oauth/status?profile=default', () => {
+        statusCalls += 1
+        return statusCalls === 1
+          ? { auth: 'oauth', connected: false, detail: '', state: 'idle' }
+          : { auth: 'oauth', connected: false, detail: '', state: 'pending' }
+      })
+      .handle('/api/memory/providers/honcho/oauth/start?profile=default', () => ({ auth: 'oauth', connected: false, detail: '', state: 'pending' }))
+
+    renderMemorySettings(gateway)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect with OAuth' }))
+
+    await waitFor(() => expect(gateway.calls.some(call => (call.value as { path?: string }).path === '/api/memory/providers/honcho/oauth/start?profile=default')).toBe(true))
+    expect(screen.getByText('The gateway is waiting for provider authorization.')).not.toBeNull()
+    expect(gateway.calls.some(call => String((call.value as { path?: string }).path).includes('/oauth/flows'))).toBe(false)
+  })
+
+  it('shows an active memory OAuth idle response as an error without opening a URL', async () => {
+    const gateway = new MemoryGateway()
+      .handle('/api/memory', () => ({
+        active: 'honcho',
+        builtin_files: { memory: 0, user: 0 },
+        providers: [{ configured: true, description: 'Remote memory', name: 'honcho', status: 'ready' }]
+      }))
+      .handle('/api/memory/providers/honcho/config?surface=declared&profile=default', () => memoryProviderConfig())
+      .handle('/api/memory/providers/honcho/oauth/status?profile=default', () => ({ auth: 'oauth', connected: false, detail: '', state: 'idle' }))
+      .handle('/api/memory/providers/honcho/oauth/start?profile=default', () => ({ auth: 'oauth', connected: false, detail: '', state: 'idle' }))
+
+    renderMemorySettings(gateway)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect with OAuth' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('did not start memory provider authorization'))
+  })
+
   it('discards mutation errors after the gateway scope changes mid-flight', async () => {
     let rejectSave!: (reason?: unknown) => void
     const pendingSave = new Promise<never>((_, reject) => { rejectSave = reject })
