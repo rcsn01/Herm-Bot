@@ -17,7 +17,7 @@ import {
   unaddressedGroupMentions,
   type EngineMember
 } from './group-rounds'
-import type { GroupTurnModule, GroupTurnResult } from './group-turns'
+import { createGroupMemberGateway, createGroupTurnModule, type GroupTurnModule, type GroupTurnResult } from './group-turns'
 
 const MEMBERS: EngineMember[] = [
   { name: 'research' },
@@ -50,6 +50,12 @@ function result(kind: GroupTurnResult['kind'], commit: () => { accepted: true } 
 
 function accepted(kind: GroupTurnResult['kind'] = 'pass', text = 'reply', reason?: string): GroupTurnResult {
   return result(kind, () => ({ accepted: true }), text, reason)
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(res => { resolve = res })
+  return { promise, resolve }
 }
 
 function fakeTurns(run: GroupTurnModule['run'] = async () => accepted()): GroupTurnModule {
@@ -147,6 +153,7 @@ describe('round driver publication', () => {
     await settle('Quiet')
     expect($groupChats.get().Quiet.log).toHaveLength(1)
     expect($groupActivity.get().Quiet.map(item => item.kind)).toContain('failed')
+    expect($groupActivity.get().Quiet.find(item => item.kind === 'failed')?.reason).toBe('gateway hiccup')
     expect(turns.run).toHaveBeenCalledTimes(3)
   })
 
@@ -204,6 +211,18 @@ describe('round driver publication', () => {
     expect(result.watermarks['t1::research']).toBe(result.log.length)
   })
 
+  it('suppresses result activity when a room-stopped lease rejects', async () => {
+    const commit = vi.fn(() => ({ accepted: false as const, reason: 'room-stopped' as const }))
+    turns = fakeTurns(async () => ({ kind: 'reply', text: 'stale', commit }))
+    driver = createGroupRoundDriver(turns)
+    driver.sendToGroupChat('Rejected stop', [{ name: 'research' }], 'start', 't1')
+    await settle('Rejected stop')
+    const result = $groupChats.get()['Rejected stop']
+    expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
+    expect(result.watermarks['t1::research']).toBe(result.log.length)
+    expect($groupActivity.get()['Rejected stop'].some(item => item.kind === 'replied')).toBe(false)
+  })
+
   it('keeps a normal-loop cross-thread late reply in its original thread', async () => {
     turns = fakeTurns(async () => {
       const current = $groupChats.get().Cross
@@ -238,6 +257,49 @@ describe('round driver publication', () => {
     await new Promise(resolve => setTimeout(resolve, 30))
     expect(continuationCommit).not.toHaveBeenCalled()
     expect($groupChats.get().Room.log.some(item => item.text === 'continuation late')).toBe(false)
+    expect($groupChats.get().Room.watermarks['t1::builder']).toBeUndefined()
+    expect($groupActivity.get().Room.filter(item => item.member === 'builder')).toEqual([])
+  })
+
+  it('settles a live driver when an operation is invalidated without publishing', async () => {
+    turns = fakeTurns(async () => ({
+      kind: 'cancelled',
+      reason: 'engine-stopped',
+      commit: () => ({ accepted: true as const })
+    }))
+    driver = createGroupRoundDriver(turns)
+    driver.sendToGroupChat('Invalidated operation', [{ name: 'research' }], 'start', 't1')
+    await settle('Invalidated operation')
+    expect($groupChats.get()['Invalidated operation'].running).toBe(false)
+    expect($groupActivity.get()['Invalidated operation'].filter(item => item.member === 'research')).toEqual([])
+  })
+
+  it('does not publish an invalidated failure or timeout', async () => {
+    for (const kind of ['failed', 'timed-out'] as const) {
+      const pending = deferred<GroupTurnResult>()
+      let stopped = false
+      turns = {
+        ...fakeTurns(async () => pending.promise),
+        stop: vi.fn(() => { stopped = true })
+      }
+      driver = createGroupRoundDriver(turns)
+      const group = `Invalidated ${kind}`
+      driver.sendToGroupChat(group, [{ name: 'research' }], 'start', 't1')
+      pending.resolve({
+        kind,
+        ...(kind === 'failed' ? { reason: 'late failure' } : {}),
+        commit: () => stopped
+          ? { accepted: false as const, reason: 'engine-stopped' as const }
+          : { accepted: true as const }
+      } as GroupTurnResult)
+      turns.stop()
+      await Promise.resolve()
+      await Promise.resolve()
+      const result = $groupChats.get()[group]
+      expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
+      expect(result.watermarks).toEqual({})
+      expect($groupActivity.get()[group].some(item => item.kind === kind)).toBe(false)
+    }
   })
 })
 
@@ -291,5 +353,17 @@ describe('round lifecycle and guards', () => {
     driver.deactivate()
     expect(driver.sendToGroupChat('Noop', [{ name: 'research' }], 'text')).toBe(null)
     expect($groupChats.get().Noop).toBeUndefined()
+  })
+
+  it('keeps local stop state when the captured turn module is already stopped', async () => {
+    const transport = vi.fn(async () => ({}))
+    const stoppedTurns = createGroupTurnModule(createGroupMemberGateway(transport))
+    stoppedTurns.stop()
+    driver = createGroupRoundDriver(stoppedTurns)
+    replaceGroupChats({ Stopped: room({ name: 'Stopped', epoch: 2, running: true, turn: 'research', sessions: { research: 'stored' }, members: [{ name: 'research' }] }) })
+    await driver.stopGroupThread('Stopped', 't1', [{ name: 'research' }])
+    expect($groupChats.get().Stopped).toMatchObject({ epoch: 3, running: false, turn: null })
+    expect($groupChats.get().Stopped.holds?.research).toBeDefined()
+    expect(transport).not.toHaveBeenCalled()
   })
 })

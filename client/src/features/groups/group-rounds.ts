@@ -330,7 +330,10 @@ function publishTurnResult(
       recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
       return { abandoned: false, spoke: false, stop: true }
     }
-    return { abandoned: true, spoke: false, stop: true }
+    // A live module can invalidate one operation when a newer operation claims
+    // its token. That cancellation is a no-op, not a lifecycle abandonment;
+    // only a rejected engine-stopped lease suppresses the drive finalizer.
+    return { abandoned: false, spoke: false, stop: true }
   }
 
   if (result.kind === 'reply') {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { GroupMember } from './group-model'
-import { $groupPrompts, type GroupPrompt } from './group-runtime'
+import { $groupActivity, $groupPrompts, type GroupPrompt } from './group-runtime'
 import { $groupChats, $groupNeedsYou, replaceGroupChats, updateGroupChat, type GroupChatRoom } from './group-store'
 import {
   createGroupMemberGateway,
@@ -150,6 +150,32 @@ describe('session resolution and member results', () => {
       follow_profile_config: true
     })
     expect($groupChats.get().Room.sessions?.research).toBe('stored-created')
+  })
+
+  it('resumes a stored member session and persists its returned key', async () => {
+    replaceGroupChats({ Room: room({ sessions: { research: 'stored-old' } }) })
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
+        expect(params.session_id).toBe('stored-old')
+        return { session_id: 'runtime-live', session_key: 'stored-new' }
+      }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [{ role: 'assistant', content: '(pass)' }] }
+      }
+      return {}
+    })
+    vi.useFakeTimers()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await promise
+    expect(result.kind).toBe('pass')
+    expect($groupChats.get().Room.sessions?.research).toBe('stored-new')
+    expect(calls.filter(call => call.method === 'session.create')).toHaveLength(0)
   })
 
   it('does not fork a session after a transient resume failure', async () => {
@@ -341,6 +367,22 @@ describe('prompt ownership and answers', () => {
     await answer
     expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
   })
+
+  it('does not clear a prompt replaced while an answer is in flight', async () => {
+    const response = deferred<unknown>()
+    const entry: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      question: 'Old?', requestId: 'old', sessionId: 'rt'
+    }
+    const { turns } = makeModule(async () => response.promise)
+    $groupPrompts.set({ 'Room::research': entry })
+    const answer = turns.answer(entry, MEMBER, 'yes')
+    await Promise.resolve()
+    $groupPrompts.set({ 'Room::research': { ...entry, requestId: 'new', question: 'New?' } })
+    response.resolve({})
+    await answer
+    expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
+  })
 })
 
 describe('stale results and lifecycle ownership', () => {
@@ -366,6 +408,7 @@ describe('stale results and lifecycle ownership', () => {
     const { turns, poll } = deferredPollModule()
     const promise = turns.run(runInput())
     await vi.advanceTimersByTimeAsync(2000)
+    const callsAtHold = calls.length
     updateGroupChat('Room', r => ({
       ...r,
       epoch: 1,
@@ -375,6 +418,7 @@ describe('stale results and lifecycle ownership', () => {
     const result = await promise
     expect(result).toMatchObject({ kind: 'cancelled', reason: 'room-stopped' })
     expect(result.commit()).toEqual({ accepted: false, reason: 'room-stopped' })
+    expect(calls.length).toBe(callsAtHold)
   })
 
   it('classifies a newer same-thread user before a hold and rejects its commit lease', async () => {
@@ -425,6 +469,39 @@ describe('stale results and lifecycle ownership', () => {
     expect(result.commit()).toEqual({ accepted: false, reason: 'newer-user' })
   })
 
+  it('rejects failure and timeout leases after the module stops', async () => {
+    const failedTurns = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt' }
+      if (method === 'prompt.submit') throw new Error('provider unavailable')
+      return {}
+    }).turns
+    const failed = await failedTurns.run(runInput())
+    expect(failed.kind).toBe('failed')
+    failedTurns.stop()
+    expect(failed.commit()).toEqual({ accepted: false, reason: 'engine-stopped' })
+
+    vi.useFakeTimers()
+    let baseline = true
+    const timedOutTurns = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt' }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [], running: true }
+      }
+      return {}
+    }).turns
+    const timeoutPromise = timedOutTurns.run(runInput('late'))
+    await vi.advanceTimersByTimeAsync(20 * 60000 + 2000)
+    const timedOut = await timeoutPromise
+    expect(timedOut.kind).toBe('timed-out')
+    expect($groupChats.get().Room.stranded?.research).toEqual({ before: 0, thread: 'late' })
+    timedOutTurns.stop()
+    expect(timedOut.commit()).toEqual({ accepted: false, reason: 'engine-stopped' })
+  })
+
   it('stops without aborting an in-flight request and prevents every later request or write', async () => {
     const first = deferred<unknown>()
     const { turns } = makeModule(async (_member, method) => method === 'session.resume' ? first.promise : {})
@@ -437,6 +514,36 @@ describe('stale results and lifecycle ownership', () => {
     expect(calls).toHaveLength(1)
     expect($groupChats.get().Room.sessions).toBeUndefined()
     expect($groupPrompts.get()).toEqual({})
+  })
+
+  it('drops a deferred poll after stop without publishing a marker or reply', async () => {
+    vi.useFakeTimers()
+    const poll = deferred<unknown>()
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt' }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return poll.promise
+      }
+      return {}
+    })
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const callsAtStop = calls.length
+    turns.stop()
+    poll.resolve({ messages: [{ role: 'assistant', content: 'late reply' }] })
+    const result = await promise
+    expect(result).toMatchObject({ kind: 'cancelled', reason: 'engine-stopped' })
+    expect(calls.length).toBe(callsAtStop)
+    expect(calls.some(call => call.method === 'session.interrupt')).toBe(false)
+    expect($groupChats.get().Room.sessions).toBeUndefined()
+    expect($groupChats.get().Room.stranded).toBeUndefined()
+    expect($groupChats.get().Room.log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
+    expect($groupActivity.get().Room?.filter(entry => entry.kind !== 'working')).toEqual([])
   })
 
   it('does not submit after a room stop during the baseline resume', async () => {
@@ -485,6 +592,45 @@ describe('stale results and lifecycle ownership', () => {
     await harvest
     expect($groupChats.get().Room.stranded?.research).toEqual(replacement)
     expect($groupChats.get().Room.log).toHaveLength(0)
+  })
+
+  it('does not let an older poll clear a newer prompt after token ownership changes', async () => {
+    vi.useFakeTimers()
+    const oldPoll = deferred<unknown>()
+    const harvestRead = deferred<unknown>()
+    let resumeCount = 0
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt' }
+      if (method === 'session.resume') {
+        resumeCount += 1
+        if (resumeCount === 1) return { messages: [] }
+        if (resumeCount === 2) return oldPoll.promise
+        return harvestRead.promise
+      }
+      return {}
+    })
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    updateGroupChat('Room', r => ({
+      ...r,
+      sessions: { research: 'stored' },
+      stranded: { research: { before: 0, thread: 't1' } }
+    }))
+    const harvest = turns.harvest('Room', MEMBER)
+    await Promise.resolve()
+    const newer: GroupPrompt = {
+      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      question: 'New?', requestId: 'new', sessionId: 'rt'
+    }
+    $groupPrompts.set({ 'Room::research': newer })
+    oldPoll.resolve({ pending_clarify: null, messages: [{ role: 'assistant', content: 'old' }] })
+    const result = await promise
+    expect(result.kind).toBe('cancelled')
+    expect(result.commit()).toEqual({ accepted: false, reason: 'engine-stopped' })
+    expect($groupPrompts.get()['Room::research']).toBe(newer)
+    harvestRead.resolve({ messages: [], running: true })
+    await harvest
+    expect(resumeCount).toBe(3)
   })
 })
 

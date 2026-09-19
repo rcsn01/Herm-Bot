@@ -2,9 +2,9 @@
 
 ## Status
 
-Design finalized; implementation has not started.
+The initial captured-lifecycle implementation landed in `9b3237a` (`Refactor group member turns around captured lifecycles`). The follow-up ownership, lifecycle, and coverage fixes are currently uncommitted in the working tree. This file is retained as the design and verification checklist.
 
-This replacement plan covers architecture-review Candidate 01: **capture member turns behind one seam**. The previous repository-root `plan.md` was explicitly deleted before this replacement. Do not stage or commit this file as part of the implementation work.
+This replacement plan covers architecture-review Candidate 01: **capture member turns behind one seam**. The previous repository-root `plan.md` was explicitly deleted before this replacement.
 
 Repository root: `/Users/mac/Syncthing/Projects/Moirasia/apps/standalone/Herm-Bot`
 

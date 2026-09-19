@@ -374,7 +374,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     let decided: GroupTurnCommit | null = null
     return () => {
       if (decided) return decided
-      const reason = staleReason(capture)
+      const reason = staleReason(capture) || (!owns(capture) ? 'engine-stopped' : null)
       decided = reason ? { accepted: false, reason } : { accepted: true }
       return decided
     }
@@ -400,10 +400,19 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     method: string,
     params: Record<string, unknown> = {}
   ): Promise<unknown> => {
-    if (!live()) throw new TurnStoppedError()
-    const result = await gateway.request(capture.member, method, params)
-    if (!live()) throw new TurnStoppedError()
-    return result
+    // Token loss does not abort the handed-off promise, but it must prevent
+    // this operation from starting a recovery, poll, or follow-up request.
+    if (!owns(capture)) throw new TurnStoppedError()
+    try {
+      const result = await gateway.request(capture.member, method, params)
+      if (!owns(capture)) throw new TurnStoppedError()
+      return result
+    } catch (error) {
+      // A rejected request has no post-await success path, so check ownership
+      // here as well before callers classify 4007/4001 or retry the request.
+      if (!owns(capture)) throw new TurnStoppedError()
+      throw error
+    }
   }
 
   const ensureGroupChatSession = async (capture: TurnCapture): Promise<GroupMemberSessionHandle> => {
@@ -547,7 +556,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, GROUP_TURN_POLL_MS))
 
-      if (!live()) return cancelled(capture, 'engine-stopped')
+      if (!owns(capture)) return cancelled(capture, 'engine-stopped')
       const staleBeforePoll = staleReason(capture)
       if (staleBeforePoll) return cancelled(capture, staleBeforePoll)
 
@@ -561,7 +570,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
         continue
       }
 
-      if (!live()) return cancelled(capture, 'engine-stopped')
+      if (!owns(capture)) return cancelled(capture, 'engine-stopped')
       const staleAfterPoll = staleReason(capture)
       if (staleAfterPoll) return cancelled(capture, staleAfterPoll)
 
@@ -593,20 +602,19 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       }
     }
 
+    if (!owns(capture)) return cancelled(capture, 'engine-stopped')
     const staleAtTimeout = staleReason(capture)
     if (staleAtTimeout) return cancelled(capture, staleAtTimeout)
 
-    if (owns(capture)) {
-      syncGroupClarify(input.group, input.member, null, capture.promptRequestId)
-      updateGroupChat(input.group, (r: GroupChatRoom) => {
-        r.stranded = {
-          ...(r.stranded || {}),
-          [capture.memberKey]: { before, thread: input.thread }
-        }
-        markerVersions.set(operationKey(input.group, input.member), capture.token)
-        return r
-      })
-    }
+    syncGroupClarify(input.group, input.member, null, capture.promptRequestId)
+    updateGroupChat(input.group, (r: GroupChatRoom) => {
+      r.stranded = {
+        ...(r.stranded || {}),
+        [capture.memberKey]: { before, thread: input.thread }
+      }
+      markerVersions.set(operationKey(input.group, input.member), capture.token)
+      return r
+    })
 
     return { kind: 'timed-out', commit: commitFor(capture) }
   }
