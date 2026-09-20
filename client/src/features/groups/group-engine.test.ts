@@ -1,20 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createElement, Fragment } from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { createElement } from 'react'
 
 import {
   $groupActivity,
   $groupChats,
   $groupNeedsYou,
   $groupPrompts,
+  $knownRooms,
   answerGroupPrompt,
   groupRoomsView,
   openGroupRoom,
+  publishRosterRooms,
+  resetKnownRooms,
   sendToGroupChat,
   startGroupEngine,
   stopGroupEngine,
   stopGroupThread,
-  useGroupRooms
+  useGroupRooms,
+  useKnownRooms
 } from './group-engine'
 import { replaceGroupChats, updateGroupChat, type GroupChatRoom, type GroupPrompt } from './group-store'
 import type { GroupMember, GroupMessage, GroupRoom } from './group-model'
@@ -76,6 +80,7 @@ function makeSyncHandlers() {
 beforeEach(() => {
   localStorage.clear()
   replaceGroupChats({})
+  resetKnownRooms()
   $groupActivity.set({})
   $groupPrompts.set({})
   $groupNeedsYou.set({})
@@ -575,29 +580,107 @@ describe('groupRoomsView', () => {
   })
 })
 
-describe('useGroupRooms', () => {
+describe('known rooms', () => {
   function Publisher({ roster }: { roster: GroupRoom[] }) {
     useGroupRooms(roster)
     return null
   }
   function Reader() {
-    const rooms = useGroupRooms()
+    const rooms = useKnownRooms()
     return createElement('div', { 'data-testid': 'known-rooms-count' }, String(rooms.length))
   }
 
-  it('publishes the merged view with roster data; provider-free callers read the last view', () => {
+  it('retains the roster half across local clears', () => {
+    const gatewayRoom: GroupRoom = {
+      key: 'id:r-1',
+      log: [memberEntry('ada', 'from the gateway')],
+      members: [{ name: 'ada' }],
+      name: 'Room',
+      roomId: 'r-1'
+    }
+    publishRosterRooms([gatewayRoom])
+    replaceGroupChats({})
+    expect($knownRooms.get().map(room => room.key)).toEqual(['id:r-1'])
+  })
+
+  it('publishes by content signature, never array identity', () => {
+    const gatewayRoom: GroupRoom = {
+      key: 'id:r-2',
+      log: [],
+      members: [{ name: 'ada' }],
+      name: 'Room',
+      roomId: 'r-2'
+    }
+    publishRosterRooms([gatewayRoom])
+    // listen, not subscribe: subscribe calls the listener immediately with
+    // the current value, so the no-op assertion below could never pass.
+    const listener = vi.fn()
+    const unsubscribe = $knownRooms.listen(listener)
+    // A freshly built content-equal roster is a no-op.
+    publishRosterRooms([{ ...gatewayRoom }])
+    expect(listener).not.toHaveBeenCalled()
+    // A changed name is one write.
+    publishRosterRooms([{ ...gatewayRoom, name: 'Renamed' }])
+    expect(listener).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it('recomputes on $groupChats writes with no roster publish at all', () => {
     replaceGroupChats({
-      'id:r-1': room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }),
+      'id:r-3': room({ name: 'Local only', roomId: 'r-3', members: [{ name: 'ada' }] })
+    })
+    expect($knownRooms.get().map(room => room.key)).toContain('id:r-3')
+  })
+
+  it('resetKnownRooms clears the retained roster half and the signature state', () => {
+    const gatewayRoom: GroupRoom = {
+      key: 'id:r-4',
+      log: [],
+      members: [{ name: 'ada' }],
+      name: 'Room',
+      roomId: 'r-4'
+    }
+    publishRosterRooms([gatewayRoom])
+    replaceGroupChats({
+      'id:local': room({ name: 'Local', roomId: 'local', members: [{ name: 'ada' }] })
+    })
+    resetKnownRooms()
+    expect($knownRooms.get().map(room => room.key)).toEqual(['id:local'])
+    // The signature state is cleared: the same content publishes again.
+    const listener = vi.fn()
+    const unsubscribe = $knownRooms.listen(listener)
+    publishRosterRooms([gatewayRoom])
+    expect(listener).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it('useGroupRooms publishes the roster input; the view is retained after unmount', () => {
+    replaceGroupChats({
+      'id:r-5': room({ name: 'Room', roomId: 'r-5', members: [{ name: 'ada' }] }),
       'name:Ghost': room({ name: 'Ghost', log: [] })
     })
-    render(
-      createElement(Fragment, null, createElement(Publisher, { roster: [] }), createElement(Reader))
-    )
-    // The just-created room survives the tombstone filter; the ghost does not.
-    expect(screen.getByTestId('known-rooms-count').textContent).toBe('1')
+    render(createElement(Publisher, { roster: [{
+      key: 'id:r-gw',
+      log: [memberEntry('ada', 'from the gateway')],
+      members: [{ name: 'ada' }],
+      name: 'Gateway room',
+      roomId: 'r-gw'
+    }] }))
+    expect($knownRooms.get().map(room => room.key)).toEqual(['id:r-gw', 'id:r-5'])
     cleanup()
-    // The app-header contract: no roster data, read the last published view.
+    // The app-header contract: the roster half outlives the publisher.
     render(createElement(Reader))
+    expect(screen.getByTestId('known-rooms-count').textContent).toBe('2')
+  })
+
+  it('useKnownRooms re-renders on $groupChats writes without any publisher', () => {
+    render(createElement(Reader))
+    expect(screen.getByTestId('known-rooms-count').textContent).toBe('0')
+    act(() => {
+      replaceGroupChats({
+        'id:r-6': room({ name: 'Seeded', roomId: 'r-6', members: [{ name: 'ada' }] })
+      })
+    })
     expect(screen.getByTestId('known-rooms-count').textContent).toBe('1')
   })
 })

@@ -33,31 +33,21 @@ vi.mock('~/components/chat-screen', async () => {
   let nextId = 0
   return { ChatScreen: () => { const id = useRef(++nextId); return <div data-testid="chat-instance">Chat {id.current}</div> } }
 })
-vi.mock('~/features/agents/roster-screen', async () => {
-  // The real RosterScreen is a roster-carrying useGroupRooms caller — the
-  // publisher of the engine's known-rooms view the app header reads. The
-  // mock keeps that contract: it mounts the engine hook (no roster data)
-  // so $groupChats seeds publish through the same path.
-  const { useGroupRooms } = await import('~/features/groups/group-engine')
-  return {
-    RosterScreen: ({ onManageAgent, onOpenAgent }: { onManageAgent?(agent: { isDefault: boolean; name: string }): void; onOpenAgent(profile: null | string): void }) => {
-      useGroupRooms([])
-      return (
-        <div>Roster screen
-          <button onClick={() => onOpenAgent('work')}>Open agent work</button>
-          <button onClick={() => onOpenAgent(null)}>Open agent default</button>
-          <button onClick={() => onManageAgent?.({
-            avatar: 'data:image/png;base64,AA==',
-            description: 'Operator',
-            isDefault: false,
-            meta: { color: '#3b82f6', shape: 'circle', title: 'Work' },
-            name: 'work'
-          } as never)}>Manage work</button>
-        </div>
-      )
-    }
-  }
-})
+vi.mock('~/features/agents/roster-screen', () => ({
+  RosterScreen: ({ onManageAgent, onOpenAgent }: { onManageAgent?(agent: { isDefault: boolean; name: string }): void; onOpenAgent(profile: null | string): void }) => (
+    <div>Roster screen
+      <button onClick={() => onOpenAgent('work')}>Open agent work</button>
+      <button onClick={() => onOpenAgent(null)}>Open agent default</button>
+      <button onClick={() => onManageAgent?.({
+        avatar: 'data:image/png;base64,AA==',
+        description: 'Operator',
+        isDefault: false,
+        meta: { color: '#3b82f6', shape: 'circle', title: 'Work' },
+        name: 'work'
+      } as never)}>Manage work</button>
+    </div>
+  )
+}))
 vi.mock('~/features/agents/create-profile-dialog', () => ({
   CreateProfileDialog: (props: unknown) => { createProfileDialogProps(props); return <div data-testid="create-profile-dialog" /> }
 }))

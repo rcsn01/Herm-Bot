@@ -19,7 +19,7 @@ import { EditProfileDialog } from '~/features/agents/edit-profile-dialog'
 import { ProfileActionsDialog } from '~/features/agents/profile-actions-dialog'
 import { CreateGroupChatDialog } from '~/features/groups/create-group-chat-dialog'
 import { GroupChatScreen } from '~/features/groups/group-screen'
-import { useGroupRooms } from '~/features/groups/group-engine'
+import { useKnownRooms } from '~/features/groups/group-engine'
 import type { GroupRoom } from '~/features/groups/group-model'
 import { applyTheme } from '~/features/settings/settings-screen'
 import { CreateProfileDialog } from '~/features/agents/create-profile-dialog'
@@ -47,7 +47,7 @@ export function App() {
   const navigation = useStore($navigation)
   const activeRoute = useStore($activeRoute)
   const activeGroupId = groupIdFromRoute(activeRoute)
-  const groups = useGroupRooms()
+  const groups = useKnownRooms()
   const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
   const chat = useStore($chat)
   const [refreshing, setRefreshing] = useState(false)
@@ -135,8 +135,9 @@ export function App() {
     setCreateGroupOpen(true)
   }
   const openCreatedGroup = (room: GroupRoom) => {
-    // The dialog already wrote the room into the engine store; the published
-    // known-rooms view picks the name up on the next publish tick.
+    // The dialog already wrote the room into the engine store; the projection
+    // reads $groupChats directly, so the header name resolves on the same
+    // commit — no publish tick.
     setCreateOptionsOpen(false)
     setCreateGroupOpen(false)
     workspace.openGroupRoom(room.key)

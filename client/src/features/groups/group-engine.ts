@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo } from 'react'
 import { useStore } from '@nanostores/react'
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import type { EngineMember, GroupEngineRequest, GroupMember, GroupRoom } from './group-model'
 import {
@@ -115,15 +115,14 @@ export function createGroupChat(
   return { key: `id:${roomId}`, log: [], members, name, roomId }
 }
 
-// --- Reads. ------------------------------------------------------------------
+// --- Known rooms — the engine's read projection. ----------------------------
 
-const $knownRooms = atom<GroupRoom[]>([])
-const EMPTY_ROOMS: GroupRoom[] = []
-
-/** The known-rooms projection: the gateway roster snapshot ∪ local engine
- *  rooms, unioned by durable room key (roster rows win a shared key — they
- *  are the gateway's richer copy); empty runtime tombstones are filtered.
- *  The one merge, behind one pure function. */
+/** The known-rooms merge: the gateway roster snapshot ∪ local engine rooms,
+ *  unioned by durable room key (roster rows win a shared key — they are the
+ *  gateway's richer copy); empty runtime tombstones (no transcript, no
+ *  durable identity) never render — the create dialog always sets roomId and
+ *  members, so a just-created room is retained. The one merge, behind one
+ *  pure function. */
 export function groupRoomsView(rosterGroups: GroupRoom[], localRooms: Record<string, GroupChatRoom>): GroupRoom[] {
   const merged = new Map(rosterGroups.map(room => [room.key, room]))
   for (const [key, room] of Object.entries(localRooms)) {
@@ -145,31 +144,72 @@ export function groupRoomsView(rosterGroups: GroupRoom[], localRooms: Record<str
   return [...merged.values()]
 }
 
-/** The known rooms. Callers holding roster data pass it and the hook runs the
- *  one merge, publishing the view to the engine-internal $knownRooms atom
- *  (provider-free callers — the app header — call without arguments and read
- *  the last published view). Callers pass freshly built
- *  `roster.data?.groups ?? []` arrays whose identity changes every render
- *  while the query is pending: the stable roster copy is keyed on a content
- *  signature (the room-key list), never array identity, or the publish
- *  effect below loops. */
-export function useGroupRooms(rosterGroups?: GroupRoom[]): GroupRoom[] {
+/** The retained roster snapshot: the last roster half any roster-carrying
+ *  caller published. Internal — writers are publishRosterRooms only. */
+const $rosterRooms = atom<GroupRoom[]>([])
+
+/** The engine's known-rooms projection: recomputes whenever the retained
+ *  roster snapshot or $groupChats changes — roster-carrying screens mounted
+ *  or not. Retention: always holds the last-known view; the roster snapshot
+ *  outlives every roster screen. Read-only: the writers are
+ *  publishRosterRooms and the group-store room verbs. */
+export const $knownRooms = computed([$rosterRooms, $groupChats], groupRoomsView)
+
+let rosterSignature = ''
+
+/** Publish a roster snapshot into the engine — the one writer of the
+ *  retained roster half, wrapped by `useGroupRooms(rosterRooms)` and callable
+ *  without React (tests; a future push-sync roster source). The content
+ *  signature is the room-key list plus names: freshly built arrays are
+ *  content-equal no-ops, and array identity never triggers a write. `[]`
+ *  clears the roster half, matching a pending roster query's publish. Last
+ *  publish wins. */
+export function publishRosterRooms(rosterRooms: readonly GroupRoom[]): void {
+  const signature = rosterRooms.map(room => `${room.key}::${room.name}`).join('|')
+  if (signature === rosterSignature) return
+  rosterSignature = signature
+  $rosterRooms.set([...rosterRooms])
+}
+
+/** Clear the retained roster half. The one beforeEach verb for the
+ *  projection's own state; the local half resets through
+ *  `replaceGroupChats({})` — the store owns rooms. */
+export function resetKnownRooms(): void {
+  rosterSignature = ''
+  $rosterRooms.set([])
+}
+
+/** The known rooms for roster-free callers (the app header): one
+ *  subscription to the live projection, no roster data required. Recomputes
+ *  whenever $groupChats or the retained roster contribution changes, whether
+ *  or not any roster-carrying screen is mounted. */
+export function useKnownRooms(): GroupRoom[] {
+  return useStore($knownRooms)
+}
+
+/** The known rooms for roster-carrying callers. Pass the freshly built
+ *  `roster.data?.groups ?? []`: the hook publishes it through
+ *  publishRosterRooms — a content-signature publish (room keys + names,
+ *  never array identity; the stable copy below exists so the publish effect
+ *  cannot loop) — and returns that render's merged view synchronously, no
+ *  effect round-trip. Two callers holding the same roster publish identical
+ *  content; the dedupe makes the second a no-op (last publish wins). */
+export function useGroupRooms(rosterGroups: GroupRoom[]): GroupRoom[] {
   const localRooms = useStore($groupChats)
-  const rosterKeys = (rosterGroups ?? EMPTY_ROOMS).map(room => room.key).join('|')
+  const signature = rosterGroups.map(room => `${room.key}::${room.name}`).join('|')
   // Content signature, not identity: the memo closure holds the roster array
   // from the render where the signature last changed — content-equal arrays
-  // produce the identical view.
-  const stableRoster = useMemo(() => rosterGroups ?? EMPTY_ROOMS, [rosterKeys])
+  // produce the identical view and never re-fire the publish effect.
+  const stableRoster = useMemo(() => rosterGroups, [signature])
   const rooms = useMemo(
     () => groupRoomsView(stableRoster, localRooms),
     [stableRoster, localRooms]
   )
   useEffect(() => {
-    // rooms is exactly the derived value being published; identity-stable.
-    if (rosterGroups !== undefined) $knownRooms.set(rooms)
-  }, [rooms])
-  const knownRooms = useStore($knownRooms)
-  return rosterGroups !== undefined ? rooms : knownRooms
+    // publishRosterRooms dedupes content-equal snapshots internally.
+    publishRosterRooms(stableRoster)
+  }, [stableRoster])
+  return rooms
 }
 
 // --- Read surface (re-exported; writers stay inside the engine). -------------
