@@ -1,6 +1,6 @@
 # Plan — One member key wins in the Group send engine
 
-**Status:** finalized design, ready to implement · **Cluster:** `client/src/features/groups/` (group-model, group-store, group-rounds, group-turns, groups-sync) + their suites
+**Status:** implemented (commit e6ba0e9) — §1 records the pre-change evidence it was justified against · **Cluster:** `client/src/features/groups/` (group-model, group-store, group-rounds, group-turns, groups-sync) + their suites
 **Origin:** architecture review pass 3 (2026-09-20), candidate 1 ("One member-identity key wins"), selected from a 7-candidate report. CONTEXT.md gained the **Member key** entry as part of this decision.
 
 ---
@@ -23,9 +23,9 @@ The churn record backs the boundary: member-identity logic keeps being re-derive
 |---|---|---|
 | Single key shape | **Qualify on `connectionId` presence:** `connectionId ? \`${connectionId}::${name}\` : name` | Keys are computed locally from member rows and never ride the wire (the sync compact shape writes member rows, never keys: groups-sync.ts:223–229; entry keys carry `from.kind/name/source`, not member keys: groupChatSyncEntryKey, groups-sync.ts:102), so the shape is free to choose. This shape keeps today's persisted values for both consistent member classes: a connectionless member keys as the bare name (unchanged), a `sourceScoped` member with a connectionId keys as `conn::name` (already identical under both functions). It also kills the collision class by construction: any row with a connectionId qualifies, whether or not the flag made the round trip. The `legacy::` rung buys nothing: member names are unique per gateway, so two connectionless members of one room cannot collide on a bare name. |
 | Name and home of the function | **`groupMemberKey`, in group-model.ts** | One export, one home. group-model is the leaf both the engine and the mirror already import from, so the two identity computations become the same function call rather than two functions with a convention. `groupDurableMemberKey` is deleted; its doc comment's contract (display strings never key membership) moves onto the survivor. |
-| Fate of `sourceScoped` | **Display and protocol flag only** | It still drives the peer `[label]` suffix in turn prompts (group-turns.ts:183), the log entry's `source` label (:780, :944), and the mirror row passthrough (groups-sync.ts:229). It stops gating identity. |
-| Room-log attribution | **A pure matcher, no log-shape change:** `groupAuthorMemberKey(from, members)` in group-model.ts | The log author already carries `(name, source)` where `source` is `connectionLabel || connectionId` (group-turns.ts:780). The matcher finds members by name, then disambiguates among same-named members by comparing `connectionLabel || connectionId` against `from.source`. Strictly more precise than the bare-name find, uses only existing data, and adds nothing to the wire projection. Same-named members on distinct connections are distinguished; same-named members with no distinguishing source stay ambiguous exactly as far as the log's display vocabulary can see — the matcher then returns the first bare-name match, never null, so attribution is a strict refinement of today's behavior; null is reserved for user entries and names with no member row. That residual ambiguity is a data problem upstream of this module. |
-| `room.turn` shape | **Member key instead of member name** | Runtime-only state: `durableGroupChatRooms` persists `turn: null` (group-store.ts:230). Writing `memberKey` (group-turns.ts:836) makes the interrupt-target lookup a key read (group-rounds.ts:410) and deletes the third bare-name match. The activity feed keeps `member: member.name`, which is display. One display consumer follows the shape: the room screen's turn indicator renders `room.turn` directly (`` `${engineRoom.turn} is thinking…` ``, group-screen.tsx:193), so it resolves the display name through the member row by key and falls back to the unnamed copy ('Bots are working') when no row matches — a drifted key never renders as raw text. |
+| Fate of `sourceScoped` | **Display and protocol flag only** | It still drives the peer `[label]` suffix in turn prompts (group-turns.ts:182), the log entry's `source` label (:779, :943), and the mirror row passthrough (groups-sync.ts:229). It stops gating identity. |
+| Room-log attribution | **A pure matcher, no log-shape change:** `groupAuthorMemberKey(from, members)` in group-model.ts | The log author already carries `(name, source)` where `source` is `connectionLabel || connectionId` (group-turns.ts:779). The matcher finds members by name, then disambiguates among same-named members by comparing `connectionLabel || connectionId` against `from.source`. Strictly more precise than the bare-name find, uses only existing data, and adds nothing to the wire projection. Same-named members on distinct connections are distinguished; same-named members with no distinguishing source stay ambiguous exactly as far as the log's display vocabulary can see — the matcher then returns the first bare-name match, never null, so attribution is a strict refinement of today's behavior; null is reserved for user entries and names with no member row. That residual ambiguity is a data problem upstream of this module. |
+| `room.turn` shape | **Member key instead of member name** | Runtime-only state: `durableGroupChatRooms` persists `turn: null` (group-store.ts:312). Writing `memberKey` (group-turns.ts:835) makes the interrupt-target lookup a key read (group-rounds.ts:408–409) and deletes the third bare-name match. The activity feed keeps `member: member.name`, which is display. One display consumer follows the shape: the room screen's turn indicator renders the row-resolved name (`` `${turnMemberName} is thinking…` ``, group-screen.tsx:197–198), so it resolves the display name through the member row by key and falls back to the unnamed copy ('Bots are working') when no row matches — a drifted key never renders as raw text. |
 | Persisted-state migration | **Bump to `hermes.group-chats.v2`; re-key on load; leave v1 in place** | A member row that gains a `connectionId` changes its key, and the coordination state must follow or the member loses its plumbing session (its memory of the room) and its watermark (it gets re-fed history). The same shape change happens live, not only across releases, so the re-key becomes a reusable invariant keeper rather than a one-time migration: run it at the two boundaries where persisted coordination state meets the current member rows — the storage load and the mirror merge write. |
 | Re-key direction | **Bare → qualified only, never backward** | Guard: move a map entry only when the member row has a `connectionId`, the qualified key is absent, and the bare key is present. Row drift that drops a connectionId orphans that member's coordination state, which is today's behavior for the same drift and strictly bounded: session-gone recovery and room-open harvests already handle missing state. |
 | Mention resolution for same-named members | **Unchanged, documented** | `@research` in text is singular no matter how many members it could reach; the handles map stays last-wins (deterministic). The model disambiguates through the `[label]` suffix in the peer list. This fix is about identity, not about teaching the model to address members. |
@@ -45,14 +45,14 @@ group-rounds.ts  imports the key from group-model; hold stamping, sessions looku
                  and mention resolution keep working unchanged; unaddressedGroupMentions
                  resolves authors through groupAuthorMemberKey; stopGroupThread finds the
                  interrupt target by room.turn as a member key
-group-turns.ts   import swap; the turn capture writes r.turn = memberKey (:836); everything
+group-turns.ts   import swap; the turn capture writes r.turn = memberKey (:835); everything
                  else is mechanical
 groups-sync.ts   import swap; the merge calls rekeyRoomCoordination on the merged room before
                  it lands in the store
 CONTEXT.md       done (Member key entry)
 ```
 
-Screens: `create-group-chat-dialog.tsx` constructs `{ name }` rows and stays untouched. `group-screen.tsx` reads `prompt.memberKey` (:144), which is unaffected — but its turn indicator renders `room.turn` as display (:193, `${engineRoom.turn} is thinking…`), so Phase 2 adds one resolution there: the member row matching the key supplies the display name (importing the one `groupMemberKey` from group-model), falling back to the unnamed copy when no row matches.
+Screens: `create-group-chat-dialog.tsx` constructs `{ name }` rows and stays untouched. `group-screen.tsx` reads `prompt.memberKey` (:148), which is unaffected — but its turn indicator renders the turn as display (:197–198, `${turnMemberName} is thinking…`), so Phase 2 adds one resolution there: the member row matching the key supplies the display name (importing the one `groupMemberKey` from group-model), falling back to the unnamed copy when no row matches.
 
 ### 3.2 group-model.ts after the change
 
@@ -83,7 +83,9 @@ export function groupAuthorMemberKey(
 /** Coordination maps are keyed by the current member rows' keys. When a row
  *  gains a connectionId (desktop projection arrives, v1 state loaded), move
  *  its coordination state from the bare key to the qualified key. Never moves
- *  qualified → bare, and never overwrites an existing qualified entry. */
+ *  qualified → bare, and never overwrites an existing qualified entry. Also
+ *  carries the runtime turn indicator, so a mid-turn enrichment keeps the
+ *  stop/interrupt path and the room display on the member's current key. */
 export function rekeyRoomCoordination(room: GroupChatRoom): GroupChatRoom
 ```
 
@@ -92,8 +94,9 @@ Mechanics per member with a `connectionId`:
 - `bareKey = member.name`, `qualifiedKey = \`${connectionId}::${name}\``
 - `holds`, `sessions`, `stranded`: direct key move, skipped when the qualified key already exists.
 - `watermarks`: keys are `${thread}::${memberKey}`. Split each key at the FIRST `::` (thread ids are minted `t…` or `legacy`, never containing `::`, while member keys may, for qualified members — a first split recovers them; a right split would mistag an already-qualified member's persisted key as bare and double-qualify it). When the member-key part equals `bareKey`, rewrite to `${thread}::${qualifiedKey}`.
+- `turn`: runtime-only, same bare → qualified rewrite, so a mid-turn enrichment keeps the stop/interrupt path and the room screen's display on the member's current key.
 
-Call sites: the storage load (v1 → v2, section 3.4) and the mirror merge, where groups-sync applies it to the room it is about to write (groups-sync.ts:519–545 region, after the member map is finalized). `adoptMirrorRoom` needs no call: it only seeds rooms that do not exist locally, and their coordination maps are empty.
+Call sites: the storage load (v1 → v2, section 3.4) and the mirror merge, where groups-sync applies it to the room it is about to write (groups-sync.ts:541, after the member map is finalized). `adoptMirrorRoom` needs no call: it only seeds rooms that do not exist locally, and their coordination maps are empty.
 
 ### 3.4 Storage v1 → v2
 
@@ -110,7 +113,7 @@ No wire change. Member rows already carry the identity fields in both directions
 **Phase 1 — the pure core (group-model.ts).** Add the unified `groupMemberKey`, add `groupAuthorMemberKey`, widen `coerceGroupMember`. Nothing else moves: group-store keeps exporting its twin, and group-rounds/group-turns keep importing `groupMemberKey` from group-store while groups-sync/group-rounds keep importing `groupDurableMemberKey` from group-model — the deletion of `groupDurableMemberKey` and the group-store twin happens in Phase 2 together with the import swap (deleting in Phase 1 would break those imports).
 Verify: `npm test` (group-model.test.ts green with the new describes), `npm run typecheck` red only where planned (none expected).
 
-**Phase 2 — the engine swap (store, rounds, turns, sync).** Point all five files at group-model's key; delete the twin from group-store.ts; switch `room.turn` to the member key (group-turns.ts:836 write, group-rounds.ts:395/:410 read) and add the group-screen turn-indicator resolution (member row by key, unnamed fallback); rewire `unaddressedGroupMentions` through `groupAuthorMemberKey`; stopGroupThread's interrupt lookup by key.
+**Phase 2 — the engine swap (store, rounds, turns, sync).** Point all five files at group-model's key; delete the twin from group-store.ts; switch `room.turn` to the member key (group-turns.ts:835 write, group-rounds.ts:408–409 read) and add the group-screen turn-indicator resolution (member row by key, unnamed fallback); rewire `unaddressedGroupMentions` through `groupAuthorMemberKey`; stopGroupThread's interrupt lookup by key.
 Verify: `npm test` with the suite updates from section 5, `npm run typecheck`.
 
 **Phase 3 — storage v2 + merge re-key.** Bump `STORAGE_KEY`, add the v1 load pass, call `rekeyRoomCoordination` from the mirror merge write.
