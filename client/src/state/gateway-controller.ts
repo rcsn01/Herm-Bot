@@ -1,18 +1,19 @@
 import { observeAppLifecycle, type AppLifecycleHandle } from '~/native/app-lifecycle'
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
-import type { GatewayPort } from '~/gateway/gateway-port'
+import type { GatewayPort, GatewayTransport } from '~/gateway/gateway-port'
 import { cancelGatewayQueries, clearGatewayQueries, queryClient } from '~/gateway/query-client'
 import { RemoteGateway } from '~/gateway/remote-gateway'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { createGatewayApi } from '~/gateway/gateway-api'
-import { SessionRuntime, type RuntimeSession } from '~/gateway/session-runtime'
-import { createSessionsApi, humanSessions, type SessionsApi } from '~/features/sessions/api'
+import { SessionRuntime } from '~/gateway/session-runtime'
+import { createSessionsApi, type SessionsApi } from '~/features/sessions/api'
 import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetWorkspace } from '~/navigation/workspace-navigation'
-import { $chat, Conversation } from '~/state/conversation'
+import { Conversation } from '~/state/conversation'
 import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
+import { createSessionSelection, type SessionSelection } from '~/state/session-selection'
 import { startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'
 
 export const MINIMUM_CONTRACT = 6
@@ -23,11 +24,12 @@ export class GatewayController {
   readonly conversation: Conversation
   readonly gateway: GatewayPort
   private readonly runtime: SessionRuntime
+  private readonly transport: GatewayTransport
+  private readonly selection: SessionSelection
   private lifecycleGeneration = 0
   private reconnectGeneration = 0
   private appBackgrounded = false
   private logoutInProgress = false
-  private sessionSelectionGeneration = 0
   private sessionListLimit = SESSION_LIST_PAGE_SIZE
   private disposed = false
   private activeListener?: AppLifecycleHandle
@@ -36,16 +38,21 @@ export class GatewayController {
 
   constructor(
     private readonly connection: HermesConnectionPlugin = HermesConnection,
-    gateway?: GatewayPort
+    gateway?: GatewayTransport
   ) {
-    const transport = gateway ?? new RemoteGateway(connection)
-    this.runtime = new SessionRuntime(transport, {
+    this.transport = gateway ?? new RemoteGateway(connection)
+    this.runtime = new SessionRuntime(this.transport, {
       minimumContract: MINIMUM_CONTRACT,
       retryDelays: RETRY_DELAYS,
       sessionSource: isNativeIOS() ? 'ios' : 'mobile'
     })
     this.gateway = this.runtime
     this.conversation = new Conversation(this.runtime)
+    this.selection = createSessionSelection({
+      runtime: this.runtime,
+      conversation: this.conversation,
+      refreshSessions: scope => this.refreshSessions(scope)
+    })
     this.subscribeRuntime()
   }
 
@@ -109,26 +116,23 @@ export class GatewayController {
     const generation = ++this.reconnectGeneration
     const scope = currentGatewayScope()
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
-    const storedSessionId = $chat.get().storedSessionId ?? this.readSessionBookmark(scope)
-    let opened
+    let restored
     try {
-      opened = await this.runtime.open(
-        { profile: scope.profile, storedSessionId },
-        () => this.connection.probe()
+      restored = await this.selection.restore(
+        stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored }, () => this.connection.probe()),
+        () => this.isCurrentReconnect(generation)
       )
     } catch (error) {
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
       this.applyConnectionError(error)
       throw error
     }
-    if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
+    if (!restored) return
+    const { opened } = restored
     const { authMode, status } = opened.preparation
     savePreferences({ authMode })
-    $connection.set({ authMode, error: null, phase: 'connecting', status })
-    if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
-    if (storedSessionId && !opened.resumed) this.clearSessionBookmark(scope)
-    this.selectSession(opened.session)
-    // The session is selected: paint the destination now. History and the
+    // The session is already selected — restore() adopted it and wrote the
+    // bookmark before resolving. Paint the destination now; history and the
     // session list continue loading underneath (both use the captured scope,
     // so a profile change mid-open cannot publish another profile's data).
     $connection.set({ authMode, error: null, phase: 'connected', status })
@@ -191,61 +195,18 @@ export class GatewayController {
   }
 
   async newSession() {
-    const selection = ++this.sessionSelectionGeneration
-    const scope = currentGatewayScope()
-    const session = await this.runtime.createSession(scope.profile)
-    if (selection !== this.sessionSelectionGeneration || !isCurrentGatewayScope(scope)) return
-    this.selectSession(session)
-    // Every other session mutation (branch/rename/archive/delete) refreshes
-    // the list; a create must too — the roster tap picks the newest session
-    // from this store, so a stale list sends the next tap into an older
-    // conversation. Best-effort: the create already succeeded, and a failed
-    // listing must not fail the new chat.
-    try {
-      await this.refreshSessions(scope)
-    } catch {
-      /* store stays stale; the next connect/tap re-lists */
-    }
+    const outcome = await this.selection.select({ kind: 'create' })
+    if (!outcome) return
   }
 
   async resumeSession(storedSessionId: string) {
-    const selection = ++this.sessionSelectionGeneration
-    const scope = currentGatewayScope()
-    const session = await this.runtime.resumeSession(scope.profile, storedSessionId)
-    if (selection !== this.sessionSelectionGeneration || !isCurrentGatewayScope(scope)) return
-    this.selectSession(session)
-    await this.conversation.reconcileHistory()
+    return this.selection.select({ kind: 'resume', storedSessionId })
   }
 
-  /**
-   * Roster tap: enter a profile's latest conversation. Switches profiles when
-   * needed, resumes the newest session from the refreshed list, and starts a
-   * fresh session when none exist or the newest one is gone. A switch lets
-   * connect() resume the profile's bookmarked session directly, so when that
-   * is already the newest conversation no second resume happens.
-   */
   async openProfile(profile: null | string) {
     const switched = profile !== $preferences.get().profile
     if (switched) await this.switchProfile(profile)
-    const sessions = humanSessions($sessions.get())
-    const latest = sessions.reduce<null | (typeof sessions)[number]>((newest, session) =>
-      !newest || session.started_at > newest.started_at ? session : newest, null)
-    const active = $chat.get()
-    if (latest && active.runtimeSessionId && latest.id === active.storedSessionId) {
-      // Already inside the target conversation; a switch reconciled it in
-      // passing, a warm tap only needs a freshen.
-      if (!switched) await this.conversation.reconcileHistory()
-      return
-    }
-    if (latest) {
-      try {
-        await this.resumeSession(latest.id)
-        return
-      } catch {
-        // The stored conversation may no longer exist; start a fresh one instead.
-      }
-    }
-    await this.newSession()
+    return this.selection.select({ kind: 'latest', freshen: !switched })
   }
 
   async refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()) {
@@ -259,7 +220,7 @@ export class GatewayController {
     const sessions = response.sessions ?? []
     $sessions.set(sessions)
     $sessionsHasMore.set(sessions.length >= limit)
-    const activeId = $chat.get().storedSessionId
+    const activeId = this.selection.activeStoredSessionId()
     if (activeId) {
       const source = sessions.find(session => session.id === activeId)?.source
       this.conversation.setSessionSource(activeId, typeof source === 'string' ? source : null)
@@ -294,7 +255,7 @@ export class GatewayController {
     const scope = currentGatewayScope()
     await this.sessionsApi(scope).remove(storedSessionId)
     if (!isCurrentGatewayScope(scope)) return
-    if ($chat.get().storedSessionId === storedSessionId) await this.newSession()
+    if (this.selection.activeStoredSessionId() === storedSessionId) await this.newSession()
     if (isCurrentGatewayScope(scope)) await this.refreshSessions()
   }
 
@@ -305,14 +266,7 @@ export class GatewayController {
   }
 
   async branchSession() {
-    const current = $chat.get()
-    if (!current.runtimeSessionId || !current.storedSessionId) return
-    const selection = ++this.sessionSelectionGeneration
-    const scope = currentGatewayScope()
-    const session = await this.runtime.branchSession(current.runtimeSessionId)
-    if (selection !== this.sessionSelectionGeneration || !isCurrentGatewayScope(scope)) return
-    this.selectSession(session)
-    await this.refreshSessions()
+    await this.selection.select({ kind: 'branch' })
   }
 
   async request<T>(method: string, params: Record<string, unknown> = {}) {
@@ -327,7 +281,7 @@ export class GatewayController {
     ++this.lifecycleGeneration
     this.invalidateReconnect()
     this.appBackgrounded = false
-    ++this.sessionSelectionGeneration
+    this.selection.invalidate()
     stopGroupEngine()
     this.unsubscribeEvents?.()
     this.unsubscribeEvents = undefined
@@ -384,8 +338,8 @@ export class GatewayController {
   }
 
   private subscribeRuntime() {
-    this.unsubscribeEvents = this.runtime.subscribe(event => this.conversation.onGatewayEvent(event))
-    this.unsubscribeState = this.runtime.subscribeState(state => {
+    this.unsubscribeEvents = this.transport.subscribe(event => this.conversation.onGatewayEvent(event))
+    this.unsubscribeState = this.transport.subscribeState(state => {
       if (state === 'closed' && !this.disposed && !this.appBackgrounded && !this.logoutInProgress && $connection.get().phase === 'connected') {
         $connection.set({ ...$connection.get(), error: null, phase: 'reconnecting' })
         void this.reconnect(true)
@@ -398,18 +352,18 @@ export class GatewayController {
     const generation = ++this.reconnectGeneration
     const scope = currentGatewayScope()
     const previousPhase = $connection.get().phase
-    const hasCachedSession = previousPhase === 'reconnecting' && Boolean($chat.get().runtimeSessionId)
+    const hasCachedSession = previousPhase === 'reconnecting' && this.selection.hasLiveSession()
     $connection.set({
       ...$connection.get(),
       error: null,
       phase: hasCachedSession ? 'reconnecting' : 'connecting'
     })
-    const storedSessionId = $chat.get().storedSessionId ?? this.readSessionBookmark(scope)
     try {
-      const opened = await this.runtime.reopen({ profile: scope.profile, storedSessionId })
-      if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
-      if (storedSessionId && !opened.resumed) this.clearSessionBookmark(scope)
-      this.selectSession(opened.session)
+      const restored = await this.selection.restore(
+        stored => this.runtime.reopen({ profile: scope.profile, storedSessionId: stored }),
+        () => this.isCurrentReconnect(generation)
+      )
+      if (!restored) return
       if (reconcile) await this.conversation.reconcileHistory(scope)
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
       $connection.set({ ...$connection.get(), error: null, phase: 'connected' })
@@ -418,15 +372,6 @@ export class GatewayController {
       if (classified.kind === 'aborted' || !this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
       this.applyConnectionError(error)
     }
-  }
-
-  /** Install the session as the open conversation and remember it for reconnects. */
-  private selectSession(session: RuntimeSession) {
-    const source = session.storedSessionId
-      ? $sessions.get().find(candidate => candidate.id === session.storedSessionId)?.source
-      : null
-    this.conversation.adopt(session, typeof source === 'string' ? source : null)
-    if (session.storedSessionId) localStorage.setItem(this.sessionBookmarkKey(), session.storedSessionId)
   }
 
   private applyConnectionError(error: unknown) {
@@ -454,22 +399,5 @@ export class GatewayController {
 
   private isCurrentReconnect(generation: number) {
     return !this.disposed && generation === this.reconnectGeneration
-  }
-
-  private scopeSnapshot() {
-    const preferences = $preferences.get()
-    return { connectionKey: preferences.remoteURL, profile: preferences.profile }
-  }
-
-  private sessionBookmarkKey(scope: { connectionKey: string; profile: null | string } = this.scopeSnapshot()) {
-    return `hermes.mobile.session:${encodeURIComponent(scope.connectionKey)}:${encodeURIComponent(scope.profile ?? 'default')}`
-  }
-
-  private readSessionBookmark(scope: { connectionKey: string; profile: null | string } = this.scopeSnapshot()) {
-    return localStorage.getItem(this.sessionBookmarkKey(scope))
-  }
-
-  private clearSessionBookmark(scope: { connectionKey: string; profile: null | string } = this.scopeSnapshot()) {
-    localStorage.removeItem(this.sessionBookmarkKey(scope))
   }
 }

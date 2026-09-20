@@ -161,59 +161,77 @@ describe('profile switching', () => {
 
 describe('roster tap flow', () => {
   it('switches to the tapped profile and resumes its newest session', async () => {
-    const controller = new GatewayController({} as never)
-    const switchProfile = vi.spyOn(controller, 'switchProfile').mockResolvedValue()
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
-    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
-    $sessions.set([
-      { id: 'older', message_count: 1, preview: '', source: 'ios', started_at: 100, title: 'Older' },
-      { id: 'newest', message_count: 2, preview: '', source: 'ios', started_at: 300, title: 'Newest' },
-      { id: 'middle', message_count: 1, preview: '', source: 'ios', started_at: 200, title: 'Middle' }
-    ])
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-switch' }))
+      .handle('session.list', () => ({
+        sessions: [
+          { id: 'older', message_count: 1, preview: '', source: 'ios', started_at: 100, title: 'Older' },
+          { id: 'newest', message_count: 2, preview: '', source: 'ios', started_at: 300, title: 'Newest' },
+          { id: 'middle', message_count: 1, preview: '', source: 'ios', started_at: 200, title: 'Middle' }
+        ]
+      }))
+      .handle('session.resume', params => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: (params as { session_id: string }).session_id },
+        session_id: `runtime-${(params as { session_id: string }).session_id}`
+      }))
+      .handle('/api/sessions/newest/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
+        messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
+      }))
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
-    expect(switchProfile).toHaveBeenCalledWith('work')
-    expect(resumeSession).toHaveBeenCalledWith('newest')
-    expect(newSession).not.toHaveBeenCalled()
+    const resumes = gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')
+    expect(resumes.map(call => (call.value as { session_id: string }).session_id)).toEqual(['newest'])
+    expect((resumes[0]?.value as { profile: string }).profile).toBe('work')
+    expect($chat.get().storedSessionId).toBe('newest')
     controller.dispose()
   })
 
   it("skips cron-run sessions when resuming the profile's newest conversation", async () => {
-    const controller = new GatewayController({} as never)
-    vi.spyOn(controller, 'switchProfile').mockResolvedValue()
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
-    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
-    $sessions.set([
-      { id: 'cron-newest', message_count: 9, preview: '', source: 'cron', started_at: 400, title: 'Nightly digest' },
-      { id: 'human-newest', message_count: 2, preview: '', source: 'ios', started_at: 300, title: 'Human' }
-    ])
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-switch' }))
+      .handle('session.list', () => ({
+        sessions: [
+          { id: 'cron-newest', message_count: 9, preview: '', source: 'cron', started_at: 400, title: 'Nightly digest' },
+          { id: 'human-newest', message_count: 2, preview: '', source: 'ios', started_at: 300, title: 'Human' }
+        ]
+      }))
+      .handle('session.resume', params => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: (params as { session_id: string }).session_id },
+        session_id: `runtime-${(params as { session_id: string }).session_id}`
+      }))
+      .handle('/api/sessions/human-newest/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
+        messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
+      }))
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
-    expect(resumeSession).toHaveBeenCalledWith('human-newest')
-    expect(newSession).not.toHaveBeenCalled()
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')
+      .map(call => (call.value as { session_id: string }).session_id)).toEqual(['human-newest'])
     controller.dispose()
   })
 
   it('starts a fresh session when the profile has no conversations yet', async () => {
-    const controller = new GatewayController({} as never)
-    vi.spyOn(controller, 'switchProfile').mockResolvedValue()
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
-    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
-    $sessions.set([])
+    let createCount = 0
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: `runtime-${++createCount}` }))
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
-    expect(newSession).toHaveBeenCalledOnce()
-    expect(resumeSession).not.toHaveBeenCalled()
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')).toEqual([])
+    // connect's restore create, then the pick's create: an empty roster starts fresh.
+    expect($chat.get().runtimeSessionId).toBe('runtime-2')
     controller.dispose()
   })
 
   it('lands in a freshly created session on the next roster tap', async () => {
     // The "create a session, send, leave, tap the agent again" flow: the pick
     // reads $sessions, so a created session must land in the store immediately
-    // (newSession is the only session mutation that used to skip the refresh).
+    // (the create's best-effort refresh keeps the roster fresh).
     const gateway = new MemoryGateway()
       .handle('session.create', () => ({ session_id: 'runtime-created', stored_session_id: 'created-1', info: {} }))
       .handle('session.list', () => ({
@@ -222,93 +240,114 @@ describe('roster tap flow', () => {
           { id: 'created-1', message_count: 0, preview: '', source: 'ios', started_at: 500, title: 'created-1' }
         ]
       }))
+      .handle('/api/sessions/created-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
+      }))
     const controller = new GatewayController({} as never, gateway)
-    const reconcile = vi.spyOn(controller.conversation, 'reconcileHistory').mockResolvedValue()
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
     $sessions.set([{ id: 'old', message_count: 1, preview: '', source: 'ios', started_at: 100, title: 'Old' }])
 
     await controller.newSession()
     await controller.openProfile(null) // same profile: the warm-tap path
 
     expect($chat.get().storedSessionId).toBe('created-1')
-    expect(resumeSession).not.toHaveBeenCalled() // already inside the newest
-    expect(reconcile).toHaveBeenCalled()
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')).toEqual([]) // already inside the newest
+    expect(gateway.calls.some(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/created-1/messages'))).toBe(true) // the warm tap reconciled
     controller.dispose()
   })
 
   it('falls back to a fresh session when resuming the newest conversation fails', async () => {
-    const controller = new GatewayController({} as never)
-    vi.spyOn(controller, 'switchProfile').mockResolvedValue()
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockRejectedValue(new Error('conversation gone'))
-    const newSession = vi.spyOn(controller, 'newSession').mockResolvedValue()
-    $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 300, title: 'Newest' }])
+    let createCount = 0
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: `runtime-${++createCount}` }))
+      .handle('session.list', () => ({ sessions: [{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 300, title: 'Newest' }] }))
+      .handle('session.resume', () => { throw new Error('conversation gone') })
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
-    expect(newSession).toHaveBeenCalledOnce()
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')
+      .map(call => (call.value as { session_id: string }).session_id)).toEqual(['newest'])
+    expect($chat.get().runtimeSessionId).toBe('runtime-2') // the fallback create
     controller.dispose()
   })
 
   it('keeps the current profile connected without a redundant switch', async () => {
     $preferences.set({ authMode: 'token', profile: 'work', remoteURL: '', theme: 'system' })
-    const controller = new GatewayController({} as never)
-    const switchProfile = vi.spyOn(controller, 'switchProfile').mockResolvedValue()
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
+    const gateway = new MemoryGateway()
+      .handle('session.resume', params => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: (params as { session_id: string }).session_id },
+        session_id: `runtime-${(params as { session_id: string }).session_id}`
+      }))
+      .handle('/api/sessions/newest/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
+        messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
+      }))
+    const controller = new GatewayController({} as never, gateway)
     $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Newest' }])
 
     await controller.openProfile('work')
 
-    expect(switchProfile).not.toHaveBeenCalled()
-    expect(resumeSession).toHaveBeenCalledWith('newest')
+    expect(gateway.calls.filter(call => call.kind === 'connect')).toEqual([]) // no redundant switch
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')
+      .map(call => (call.value as { session_id: string }).session_id)).toEqual(['newest'])
     controller.dispose()
   })
 
   it('does not re-resume a conversation that is already open, only refreshes it', async () => {
     $preferences.set({ authMode: 'token', profile: 'work', remoteURL: '', theme: 'system' })
-    const controller = new GatewayController({} as never)
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
-    const reconcile = vi.spyOn(controller.conversation, 'reconcileHistory').mockResolvedValue()
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/current/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
+        messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
+      }))
+    const controller = new GatewayController({} as never, gateway)
     $sessions.set([{ id: 'current', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Current' }])
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'current' })
 
     await controller.openProfile('work')
 
-    expect(resumeSession).not.toHaveBeenCalled()
-    expect(reconcile).toHaveBeenCalledOnce()
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')).toEqual([])
+    expect(gateway.calls.some(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/current/messages'))).toBe(true)
     controller.dispose()
   })
 
   it('does not resume again when the profile switch already landed on the newest session', async () => {
-    const controller = new GatewayController({} as never)
-    const resumeSession = vi.spyOn(controller, 'resumeSession').mockResolvedValue()
-    vi.spyOn(controller, 'switchProfile').mockImplementation(async () => {
-      // connect() resumes the scope bookmark and refreshes the list in passing
-      $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Newest' }])
-      $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-9', storedSessionId: 'newest' })
-    })
+    // A profile switch clears the foreground conversation; the scope bookmark
+    // is what connect() restores from.
+    localStorage.setItem('hermes.mobile.session::work', 'newest')
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.resume', params => ({
+        info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: (params as { session_id: string }).session_id },
+        session_id: `runtime-${(params as { session_id: string }).session_id}`
+      }))
+      .handle('session.list', () => ({ sessions: [{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 5, title: 'Newest' }] }))
+      .handle('/api/sessions/newest/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
+        messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
+      }))
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
-    expect(resumeSession).not.toHaveBeenCalled()
+    // connect() resumed the stored session in passing; the warm tap must not re-resume or re-reconcile.
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.resume')
+      .map(call => (call.value as { session_id: string }).session_id)).toEqual(['newest'])
+    expect(gateway.calls.filter(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/newest/messages'))).toHaveLength(1)
     controller.dispose()
   })
 
   it('reports connected as soon as a session is selected, before the list loads', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
-    const connection = {
-      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
-    }
+    let releaseList!: () => void
+    const listGate = new Promise<void>(resolve => { releaseList = resolve })
     const gateway = new ConnectionAwareGateway()
       .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-default' }))
-    const controller = new GatewayController(connection as never, gateway)
-    let phaseWhenListSettled = 'never-called'
-    vi.spyOn(controller, 'refreshSessions').mockImplementation(async () => {
-      phaseWhenListSettled = $connection.get().phase
-    })
+      .handle('session.list', () => listGate.then(() => ({ sessions: [] })))
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
-    await controller.connect()
+    const connecting = controller.connect()
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'rpc' && call.method === 'session.list')).toBe(true))
+    expect($connection.get().phase).toBe('connected')
 
-    expect(phaseWhenListSettled).toBe('connected')
+    releaseList()
+    await connecting
     expect($connection.get().phase).toBe('connected')
     controller.dispose()
   })
@@ -731,6 +770,7 @@ describe('conversation delegation', () => {
     await controller.connect()
 
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-open', storedSessionId: null })
+    expect(gateway.calls.some(call => call.kind === 'rpc' && call.method === 'session.create')).toBe(true)
     controller.dispose()
   })
 })

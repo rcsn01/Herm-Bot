@@ -9,6 +9,7 @@ vi.mock('~/compat/primitives', () => ({
 import { SessionsMenu } from '~/components/sessions-menu'
 import { $chat, emptyChatState } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
+import type { SelectionOutcome } from '~/state/session-selection'
 import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 function controllerStub() {
@@ -21,10 +22,13 @@ function controllerStub() {
   } as unknown as GatewayController
 }
 
-function deferred() {
-  let resolve!: () => void
+function deferred<T = void>() {
+  let resolve!: (value?: T | PromiseLike<T>) => void
   let reject!: (error: Error) => void
-  const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+  const promise = new Promise<T>((done, fail) => {
+    resolve = value => done(value as T)
+    reject = fail
+  })
   return { promise, reject, resolve }
 }
 
@@ -224,7 +228,7 @@ describe('SessionsMenu', () => {
 
   it('waits for resume before navigating and closing', async () => {
     const controller = controllerStub()
-    const resume = deferred()
+    const resume = deferred<SelectionOutcome | undefined>()
     vi.mocked(controller.resumeSession).mockReturnValue(resume.promise)
     const { onClose, onNavigate } = renderNavigationPage(controller)
 

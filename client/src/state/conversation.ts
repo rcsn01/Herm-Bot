@@ -17,8 +17,8 @@ import { createTranscript, updateTranscript } from '~/transcript/transcript'
  * steer / redirect / retry-from), interactive-prompt responses, attachments,
  * and transcript history (reconcile + paging, including the
  * reconcile-on-`message.complete` policy). The GatewayController constructs
- * it, forwards runtime events into it, and owns session *selection*; the
- * Conversation owns session *content*.
+ * it and forwards runtime events into it. The Session selection module owns
+ * *which* session is live; the Conversation owns session *content*.
  */
 export const emptyChatState = (): ChatState => ({
   contractVersion: null,

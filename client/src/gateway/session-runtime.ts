@@ -1,9 +1,7 @@
-import type { GatewayEvent } from '~/compat/hermes-shared'
-
 import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
 import { abortError, combineSignals, throwIfAborted } from './abort'
 import { profileKey, profilePath } from './profile-path'
-import type { GatewayPort, GatewayRequestOptions, GatewayUploadOptions } from '~/gateway/gateway-port'
+import type { GatewayPort, GatewayRequestOptions, GatewayTransport, GatewayUploadOptions } from '~/gateway/gateway-port'
 import type { SessionMessage } from '~/compat/hermes-types'
 import type { ChatState } from '~/lib/types'
 
@@ -69,17 +67,9 @@ export class SessionRuntime implements GatewayPort {
   private disposed = false
 
   constructor(
-    private readonly transport: GatewayPort,
+    private readonly transport: GatewayTransport,
     private readonly options: SessionRuntimeOptions
   ) {}
-
-  subscribe(handler: (event: GatewayEvent) => void): () => void {
-    return this.transport.subscribe(handler)
-  }
-
-  subscribeState(handler: (state: string) => void): () => void {
-    return this.transport.subscribeState(handler)
-  }
 
   async open<T = void>(
     options: OpenSessionOptions,
@@ -113,10 +103,6 @@ export class SessionRuntime implements GatewayPort {
       }
     }
     throw lastError ?? new GatewayError('Gateway reconnect failed.', { kind: 'network' })
-  }
-
-  async connect(profile?: null | string, options: { signal?: AbortSignal } = {}): Promise<void> {
-    return this.transport.connect(profile, options)
   }
 
   close(): void {

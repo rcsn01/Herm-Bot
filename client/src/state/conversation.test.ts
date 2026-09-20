@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatInteraction } from '~/features/chat/chat-interaction'
-import type { GatewayPort } from '~/gateway/gateway-port'
+import type { GatewayTransport } from '~/gateway/gateway-port'
 import type { ChatState } from '~/lib/types'
 import { SessionRuntime } from '~/gateway/session-runtime'
 import { MINIMUM_CONTRACT } from '~/state/gateway-controller'
@@ -11,7 +11,7 @@ import { $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
-function subject(gateway: GatewayPort) {
+function subject(gateway: GatewayTransport) {
   const runtime = new SessionRuntime(gateway, { minimumContract: MINIMUM_CONTRACT, retryDelays: [0] })
   const conversation = new Conversation(runtime)
   return { conversation, dispose: () => runtime.dispose(), runtime }
