@@ -7,13 +7,15 @@ import {
   adoptMirrorRoom,
   appendGroupChatEntry,
   durableGroupChatRooms,
+  rekeyRoomCoordination,
   replaceGroupChats,
   updateGroupChat,
   type GroupChatRoom
 } from './group-store'
 import type { GroupMember, GroupMessage } from './group-model'
 
-const STORAGE_KEY = 'hermes.group-chats.v1'
+const STORAGE_KEY_V2 = 'hermes.group-chats.v2'
+const STORAGE_KEY_V1 = 'hermes.group-chats.v1'
 
 function room(overrides: Partial<GroupChatRoom> = {}): GroupChatRoom {
   return {
@@ -105,7 +107,7 @@ describe('persistence', () => {
       'Just created': room({ log: [], roomId: 'r-1', members: [{ name: 'a' }, { name: 'b' }] })
     })
     updateGroupChat('Room', r => r) // any write persists the whole store
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as Record<string, GroupChatRoom>
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY_V2)!) as Record<string, GroupChatRoom>
     expect(Object.keys(stored).sort()).toEqual(['Just created', 'Room'])
     expect(stored.Room.running).toBe(false)
     expect(stored.Room.turn).toBeNull()
@@ -115,7 +117,7 @@ describe('persistence', () => {
 
   it('rehydrates the durable shape at import time', async () => {
     updateGroupChat('Room', r => ({ ...r, log: [memberEntry('ada', 'x')], running: true, turn: 'ada' }))
-    expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_V2)).not.toBeNull()
     vi.resetModules()
     const fresh = await import('./group-store')
     const rehydrated = fresh.$groupChats.get().Room
@@ -151,6 +153,114 @@ describe('durableGroupChatRooms', () => {
     expect(Object.keys(durable).sort()).toEqual(['Created', 'Real'])
     expect(durable.Real).toMatchObject({ running: false, turn: null, syncRevision: 0 })
     expect(durable.Created.roomId).toBe('r-2')
+  })
+})
+
+describe('rekeyRoomCoordination', () => {
+  it('moves coordination state when a row gains a connectionId', () => {
+    const next = rekeyRoomCoordination(room({
+      members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
+      holds: { research: { at: 1, thread: 't1' } },
+      sessions: { research: 'stored-1' },
+      stranded: { research: { before: 0, thread: 'legacy' } },
+      watermarks: { 't1::research': 5, 't2::ada': 1 }
+    }))
+    expect(next.holds).toEqual({ 'gw-2::research': { at: 1, thread: 't1' } })
+    expect(next.sessions).toEqual({ 'gw-2::research': 'stored-1' })
+    expect(next.stranded).toEqual({ 'gw-2::research': { before: 0, thread: 'legacy' } })
+    expect(next.watermarks).toEqual({ 't1::gw-2::research': 5, 't2::ada': 1 })
+  })
+
+  it('is a no-op for rows already keyed qualified', () => {
+    const seeded = room({
+      members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
+      holds: { 'gw-2::research': { at: 1 } }
+    })
+    expect(rekeyRoomCoordination(seeded).holds).toEqual({ 'gw-2::research': { at: 1 } })
+  })
+
+  it('leaves the bare entry in place when the qualified key already exists', () => {
+    const next = rekeyRoomCoordination(room({
+      members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
+      holds: { research: { at: 1 }, 'gw-2::research': { at: 2 } }
+    }))
+    expect(next.holds).toEqual({ research: { at: 1 }, 'gw-2::research': { at: 2 } })
+  })
+
+  it('leaves the maps alone when the member list lost its rows', () => {
+    const seeded = room({ members: [], holds: { research: { at: 1 } } })
+    expect(rekeyRoomCoordination(seeded).holds).toEqual({ research: { at: 1 } })
+  })
+})
+
+describe('storage v1 → v2', () => {
+  it('migrates v1 coordination state to the qualified member keys on load', async () => {
+    localStorage.setItem(STORAGE_KEY_V1, JSON.stringify({
+      Room: {
+        name: 'Room',
+        log: [memberEntry('research', 'x')],
+        members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
+        watermarks: { 't1::research': 3, 't1::ada': 1 },
+        holds: { research: { at: 1, thread: 't1' } },
+        sessions: { research: 'stored-1' },
+        stranded: { research: { before: 0, thread: 'legacy' } },
+        epoch: 2,
+        running: true,
+        turn: 'research'
+      }
+    }))
+    vi.resetModules()
+    const fresh = await import('./group-store')
+    const migrated = fresh.$groupChats.get().Room
+    expect(migrated.holds).toEqual({ 'gw-2::research': { at: 1, thread: 't1' } })
+    expect(migrated.sessions).toEqual({ 'gw-2::research': 'stored-1' })
+    expect(migrated.stranded).toEqual({ 'gw-2::research': { before: 0, thread: 'legacy' } })
+    expect(migrated.watermarks).toEqual({ 't1::gw-2::research': 3, 't1::ada': 1 })
+    // Runtime state is stripped by the durable guards.
+    expect(migrated.running).toBe(false)
+    expect(migrated.turn).toBeNull()
+    // v1 stays untouched as the rollback copy.
+    expect(localStorage.getItem(STORAGE_KEY_V1)).not.toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_V2)).toBeNull()
+  })
+
+  it('loads v2 verbatim without re-keying', async () => {
+    localStorage.setItem(STORAGE_KEY_V2, JSON.stringify({
+      Room: {
+        name: 'Room',
+        log: [memberEntry('research', 'x')],
+        members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
+        watermarks: { 't1::gw-2::research': 3 },
+        holds: { 'gw-2::research': { at: 1 } },
+        sessions: { 'gw-2::research': 'stored-1' },
+        epoch: 1,
+        running: false,
+        turn: null
+      }
+    }))
+    vi.resetModules()
+    const fresh = await import('./group-store')
+    const loaded = fresh.$groupChats.get().Room
+    expect(loaded.watermarks).toEqual({ 't1::gw-2::research': 3 })
+    expect(loaded.holds).toEqual({ 'gw-2::research': { at: 1 } })
+    expect(loaded.sessions).toEqual({ 'gw-2::research': 'stored-1' })
+  })
+
+  it('keeps connectionless members and already-qualified rooms as no-ops across the load', async () => {
+    localStorage.setItem(STORAGE_KEY_V1, JSON.stringify({
+      Room: {
+        name: 'Room',
+        log: [memberEntry('research', 'x')],
+        members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }, { name: 'ada' }],
+        watermarks: { 't1::gw-2::research': 3, 't1::ada': 1 },
+        epoch: 0,
+        running: false,
+        turn: null
+      }
+    }))
+    vi.resetModules()
+    const fresh = await import('./group-store')
+    expect(fresh.$groupChats.get().Room.watermarks).toEqual({ 't1::gw-2::research': 3, 't1::ada': 1 })
   })
 })
 

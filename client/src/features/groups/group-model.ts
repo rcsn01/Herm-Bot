@@ -59,12 +59,34 @@ export function botHandle(name: string, member?: { handle?: string }): string {
   return name.trim().toLowerCase() === 'default' ? 'hermes' : name.trim().toLowerCase()
 }
 
-/** Durable member identity shared by every surface that must agree on
- *  membership: the mirror's member dedupe/merge key (groups-sync) and the
- *  send engine's roster-dedup key. Display strings (label, handle) never
- *  key membership. */
-export function groupDurableMemberKey(member: GroupMember): string {
-  return `${member?.connectionId || 'legacy'}::${member?.name || 'default'}`
+/** The one member identity inside a room. Qualified when the row carries a
+ *  connectionId so same-named agents on two machines never share holds,
+ *  watermarks, or plumbing sessions; bare name otherwise. Display strings
+ *  (label, handle) never key membership. Computed locally; never rides the
+ *  wire. */
+export function groupMemberKey(member: GroupMember | EngineMember): string {
+  return member?.connectionId ? `${member.connectionId}::${member.name}` : member?.name
+}
+
+/** Room-log author → member key. Matches members by name; a lone match wins.
+ *  Same-named members disambiguate by the author's source label
+ *  (connectionLabel || connectionId): exactly one source match wins, an
+ *  unresolvable field falls back to the first bare-name match (the old
+ *  bare-name find's behavior). Returns null for user entries and names with
+ *  no member row. */
+export function groupAuthorMemberKey(
+  from: GroupMessageAuthor,
+  members: ReadonlyArray<EngineMember | GroupMember>
+): string | null {
+  if (!from || from.kind !== 'member') return null
+  const name = String(from.name || '')
+  if (!name) return null
+  const candidates = members.filter(member => member?.name === name)
+  if (candidates.length === 0) return null
+  if (candidates.length === 1) return groupMemberKey(candidates[0])
+  const source = String(from.source || '')
+  const matched = candidates.filter(member => String(member.connectionLabel || member.connectionId || '') === source)
+  return groupMemberKey(matched.length === 1 ? matched[0] : candidates[0])
 }
 
 /** Raw transport contract the engine adapts per lifecycle (member gateway,
@@ -140,14 +162,18 @@ function coerceGroupMessage(raw: unknown): GroupMessage {
   }
 }
 
-function coerceGroupMember(raw: unknown): { handle?: string; name: string }[] {
+function coerceGroupMember(raw: unknown): GroupMember[] {
   if (typeof raw !== 'object' || raw === null) return []
   const member = raw as Record<string, unknown>
   const name = typeof member.name === 'string' && member.name ? member.name : null
   if (!name) return []
   return [{
     name,
-    ...(typeof member.handle === 'string' && member.handle ? { handle: member.handle } : {})
+    ...(typeof member.handle === 'string' && member.handle ? { handle: member.handle } : {}),
+    ...(typeof member.connectionId === 'string' && member.connectionId ? { connectionId: member.connectionId } : {}),
+    ...(typeof member.connectionKind === 'string' && member.connectionKind ? { connectionKind: member.connectionKind } : {}),
+    ...(typeof member.connectionLabel === 'string' && member.connectionLabel ? { connectionLabel: member.connectionLabel } : {}),
+    ...(member.sourceScoped ? { sourceScoped: true } : {})
   }]
 }
 

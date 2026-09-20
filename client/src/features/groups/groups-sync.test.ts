@@ -302,6 +302,114 @@ describe('merge remote into rooms', () => {
     expect(merged.Renamed).toBeTruthy()
     expect(merged.Old).toBeUndefined()
   })
+
+  it('dedupes an identity-carrying local row with its remote twin to one member', () => {
+    replaceGroupChats({
+      Room: room({
+        log: [userEntry('local', 10)],
+        members: [{ name: 'research', connectionId: 'conn-1', sourceScoped: true }],
+        syncRevision: 2
+      })
+    })
+    const remote: GroupChatSyncSnapshot = {
+      version: 3,
+      rooms: {
+        'name:Room': {
+          name: 'Room',
+          revision: 2,
+          log: [userEntry('local', 10)],
+          members: [{ name: 'research', connectionId: 'conn-1', sourceScoped: true }]
+        }
+      }
+    }
+    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote).Room.members).toEqual([
+      { name: 'research', connectionId: 'conn-1', sourceScoped: true }
+    ])
+  })
+
+  it('keeps a bare local row and its qualified remote twin as two rows on a revision tie', () => {
+    replaceGroupChats({
+      Room: room({ log: [userEntry('local', 10)], members: [{ name: 'research' }], syncRevision: 2 })
+    })
+    const remote: GroupChatSyncSnapshot = {
+      version: 3,
+      rooms: {
+        'name:Room': {
+          name: 'Room',
+          revision: 2,
+          log: [userEntry('local', 10)],
+          members: [{ name: 'research', connectionId: 'conn-1', sourceScoped: true }]
+        }
+      }
+    }
+    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote).Room.members).toEqual([
+      { name: 'research' },
+      { name: 'research', connectionId: 'conn-1', sourceScoped: true }
+    ])
+  })
+
+  it('moves coordination state to the qualified key at the merge boundary', () => {
+    replaceGroupChats({
+      Room: room({
+        log: [userEntry('local', 10)],
+        members: [{ name: 'research' }],
+        sessions: { research: 'stored-1' },
+        holds: { research: { at: 1, byMessageId: null, thread: 't1' } },
+        stranded: { research: { before: 0, thread: 'legacy' } },
+        watermarks: { 'legacy::research': 5 },
+        epoch: 7,
+        running: true,
+        syncRevision: 2
+      })
+    })
+    const remote: GroupChatSyncSnapshot = {
+      version: 3,
+      rooms: {
+        'name:Room': {
+          name: 'Room',
+          revision: 2,
+          log: [userEntry('local', 10)],
+          members: [{ name: 'research', connectionId: 'conn-1', sourceScoped: true }]
+        }
+      }
+    }
+    const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
+    expect(merged.Room.members).toEqual([
+      { name: 'research' },
+      { name: 'research', connectionId: 'conn-1', sourceScoped: true }
+    ])
+    expect(merged.Room.sessions).toEqual({ 'conn-1::research': 'stored-1' })
+    expect(merged.Room.holds).toEqual({ 'conn-1::research': { at: 1, byMessageId: null, thread: 't1' } })
+    expect(merged.Room.stranded).toEqual({ 'conn-1::research': { before: 0, thread: 'legacy' } })
+    expect(merged.Room.watermarks['legacy::conn-1::research']).toBe(5)
+  })
+
+  it('carries coordination state to the qualified key when the desktop enriches the roster', () => {
+    replaceGroupChats({
+      Room: room({
+        log: [userEntry('local', 10)],
+        members: [{ name: 'research' }],
+        sessions: { research: 'stored-1' },
+        watermarks: { 't1::research': 3 },
+        syncRevision: 1
+      })
+    })
+    const remote: GroupChatSyncSnapshot = {
+      version: 3,
+      rooms: {
+        'name:Room': {
+          name: 'Room',
+          revision: 3,
+          log: [userEntry('local', 10)],
+          members: [{ name: 'research', connectionId: 'conn-1', sourceScoped: true }]
+        }
+      }
+    }
+    const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
+    expect(merged.Room.members).toEqual([{ name: 'research', connectionId: 'conn-1', sourceScoped: true }])
+    expect(merged.Room.sessions).toEqual({ 'conn-1::research': 'stored-1' })
+    expect(merged.Room.watermarks['t1::conn-1::research']).toBe(3)
+  })
 })
 
 describe('legacy threads', () => {

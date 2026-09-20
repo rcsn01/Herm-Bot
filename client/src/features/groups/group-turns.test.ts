@@ -825,6 +825,42 @@ describe('drive step and publication', () => {
     expect($groupActivity.get().Room.map(item => item.kind)).toContain('replied')
   })
 
+  it('keys watermarks, sessions, and holds per connection for same-named members', async () => {
+    const researchA: GroupMember = { name: 'research', connectionId: 'gw-1', connectionLabel: 'gw-1', sourceScoped: true }
+    const researchB: GroupMember = { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true }
+    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    const submitted = new Set<string>()
+    const { turns } = makeModule((member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt', session_key: 'stored' }
+      if (method === 'prompt.submit') {
+        submitted.add(member.connectionId || member.name)
+        return 'ok'
+      }
+      if (method === 'session.resume') {
+        // Baseline resumes read the pre-submit snapshot; polls read the reply.
+        if (!submitted.has(member.connectionId || member.name)) return { messages: [] }
+        return { messages: [{ role: 'assistant', content: 'from the room' }] }
+      }
+      return {}
+    })
+
+    const first = await turns.takeTurn(turnSpec('round', { member: researchA, members: [researchA, researchB] }))
+    const second = await turns.takeTurn(turnSpec('round', { member: researchB, members: [researchA, researchB] }))
+    expect(first).toEqual({ abandoned: false, spoke: true, stop: false })
+    expect(second).toEqual({ abandoned: false, spoke: true, stop: false })
+    const driven = $groupChats.get().Room
+    expect(Object.keys(driven.sessions || {}).sort()).toEqual(['gw-1::research', 'gw-2::research'])
+
+    // A hold under one member's key consumes only that member's delta.
+    updateGroupChat('Room', r => ({ ...r, holds: { 'gw-1::research': { at: 1, byMessageId: null, thread: 't1' } } }))
+    const heldA = await turns.takeTurn(turnSpec('round', { member: researchA, members: [researchA, researchB] }))
+    expect(heldA).toEqual({ abandoned: false, spoke: false, stop: false })
+    const afterHold = $groupChats.get().Room
+    expect(afterHold.log.filter(entry => entry.from.kind === 'member')).toHaveLength(2)
+    expect(afterHold.watermarks['t1::gw-1::research']).toBe(afterHold.log.length)
+    expect(afterHold.watermarks['t1::gw-2::research']).toBe(afterHold.log.length)
+  })
+
   it('treats a failed result as silence but records its reason in the normal loop', async () => {
     replaceGroupChats({ Room: room({ log: [userEntry('fyi')] }) })
     const { turns } = makeModule(failingHandler)

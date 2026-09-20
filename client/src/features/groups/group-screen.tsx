@@ -8,7 +8,7 @@ import { createAgentsApi } from '~/features/agents/agents-api'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 
-import type { GroupMember, GroupRoom } from './group-model'
+import { groupMemberKey, type GroupMember, type GroupRoom } from './group-model'
 import {
   $groupActivity,
   $groupChats,
@@ -103,6 +103,10 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
 
   const engineRoom: GroupChatRoom = engine.room ?? getGroupRoom(room.name)
   const targetThread = newThreadNext ? null : (latestThreadId(engineRoom.log) ?? null)
+  // room.turn is a member key; the display name comes from the matching row.
+  const turnMemberName = engineRoom.turn
+    ? engineRoom.members.find(member => groupMemberKey(member) === engineRoom.turn)?.name
+    : undefined
 
   const send = () => {
     const text = draft.trim()
@@ -190,8 +194,8 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
           <span aria-hidden className="status-dot" />
           <span>
             {engineRoom.running
-              ? engineRoom.turn
-                ? `${engineRoom.turn} is thinking…`
+              ? engineRoom.turn && turnMemberName
+                ? `${turnMemberName} is thinking…`
                 : 'Bots are working'
               : 'Ready'}
           </span>

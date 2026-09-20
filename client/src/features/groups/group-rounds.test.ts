@@ -118,6 +118,20 @@ describe('holds and pure continuation detection', () => {
     ] }) })
     expect(unaddressedGroupMentions('Room', [{ name: 'research' }, { name: 'builder' }], 't1')).toEqual(['builder'])
   })
+
+  it('attributes same-named posters by source so a cited member is not re-driven', () => {
+    const members = [
+      { name: 'research', connectionId: 'gw-1', connectionLabel: 'gw-1', sourceScoped: true },
+      { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true },
+      { name: 'builder' }
+    ]
+    replaceGroupChats({ Room: room({ log: [
+      entry('user', 'You', 'start', 't1', 1),
+      entry('member', 'builder', '@research report the deploy', 't1', 2),
+      { at: 3, from: { kind: 'member', name: 'research', source: 'gw-2' }, id: 'm2', text: 'deploy is green', thread: 't1' }
+    ] }) })
+    expect(unaddressedGroupMentions('Room', members, 't1')).toEqual([])
+  })
 })
 
 describe('round lifecycle and guards', () => {
@@ -146,6 +160,43 @@ describe('round lifecycle and guards', () => {
     driver.sendToGroupChat('Room', [{ name: 'research' }, { name: 'research' }, { name: 'builder' }], 'hello', 't1')
     expect($groupNeedsYou.get().Room).toBe(false)
     expect($groupChats.get().Room.members.map(member => member.name)).toEqual(['research', 'builder'])
+  })
+
+  it('stamps holds under the qualified key and keeps a connectionless twin distinct', async () => {
+    driver.sendToGroupChat('Keys', [
+      { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true, title: 'Researcher' },
+      { name: 'research' }
+    ], 'stop @Researcher', 't1')
+    await settle('Keys')
+    const holds = $groupChats.get().Keys.holds || {}
+    expect(holds['gw-2::research']).toBeTruthy()
+    expect(holds.research).toBeUndefined()
+  })
+
+  it('interrupts the current speaker by member key', async () => {
+    const interrupt = vi.fn(async () => undefined)
+    turns = { ...fakeTurns(), interrupt }
+    driver = createGroupRoundDriver(turns)
+    const connected = { name: 'research', connectionId: 'gw-2', sourceScoped: true }
+    replaceGroupChats({
+      Stop: room({ name: 'Stop', running: true, epoch: 2, turn: 'gw-2::research', sessions: { 'gw-2::research': 'stored' }, members: [connected] })
+    })
+    await driver.stopGroupThread('Stop', 't1', [connected])
+    expect($groupChats.get().Stop).toMatchObject({ epoch: 3, running: false, turn: null })
+    expect($groupChats.get().Stop.holds?.['gw-2::research']).toBeDefined()
+    expect(interrupt).toHaveBeenCalledWith(connected, 'stored')
+  })
+
+  it('misses the interrupt on a stale turn key', async () => {
+    const interrupt = vi.fn(async () => undefined)
+    turns = { ...fakeTurns(), interrupt }
+    driver = createGroupRoundDriver(turns)
+    const connected = { name: 'research', connectionId: 'gw-2', sourceScoped: true }
+    replaceGroupChats({
+      Stop: room({ name: 'Stop', running: true, epoch: 2, turn: 'research', sessions: { 'gw-2::research': 'stored' }, members: [connected] })
+    })
+    await driver.stopGroupThread('Stop', 't1', [connected])
+    expect(interrupt).not.toHaveBeenCalled()
   })
 
   it('caps chatty members at the room message limit', async () => {

@@ -21,7 +21,7 @@
  * saw the room.
  */
 
-import { botHandle, groupDurableMemberKey, type EngineMember, type GroupMessage } from './group-model'
+import { botHandle, groupAuthorMemberKey, groupMemberKey, type EngineMember, type GroupMessage } from './group-model'
 import {
   $groupNeedsYou,
   GROUP_CHAT_MAX_CONTINUATIONS,
@@ -30,7 +30,6 @@ import {
   GROUP_CHAT_MAX_ROUNDS,
   appendGroupChatEntry,
   getGroupRoom,
-  groupMemberKey,
   groupThreadOf,
   mintGroupThreadId,
   recordGroupActivity,
@@ -190,18 +189,17 @@ export function unaddressedGroupMentions(group: string, members: EngineMember[],
   for (const entry of log) {
     const parsed = parseGroupChatMentions(entry.text || '', members)
     if (entry.from.kind !== 'member') continue
+    const citingKey = groupAuthorMemberKey(entry.from, members)
+    if (!citingKey) continue
     for (const key of parsed.mentioned) {
-      const citingMember = members.find(m => m.name === entry.from?.name)
-      const citingKey = citingMember ? groupMemberKey(citingMember) : null
-      if (citingKey && citingKey !== key) citedAt.set(key, log.indexOf(entry))
+      if (citingKey !== key) citedAt.set(key, log.indexOf(entry))
     }
   }
 
   const lastPostAt = new Map<string, number>()
   for (const entry of log) {
     if (entry.from.kind !== 'member') continue
-    const speaker = members.find(m => m.name === entry.from?.name)
-    const speakerKey = speaker ? groupMemberKey(speaker) : null
+    const speakerKey = groupAuthorMemberKey(entry.from, members)
     if (speakerKey) lastPostAt.set(speakerKey, log.indexOf(entry))
   }
 
@@ -352,7 +350,7 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
     const seen = new Set<string>()
     const roster = members
       .filter(member => {
-        const key = groupDurableMemberKey(member)
+        const key = groupMemberKey(member)
         if (seen.has(key)) return false
         seen.add(key)
         return true
@@ -407,7 +405,7 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
 
     recordGroupActivity(group, { kind: 'stopped', member: 'You', thread: thread || null })
 
-    const onTurn = turnName ? roster.find(member => member?.name === turnName) : null
+    const onTurn = turnName ? roster.find(member => groupMemberKey(member) === turnName) : null
     const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
     if (onTurn && sessionId) {

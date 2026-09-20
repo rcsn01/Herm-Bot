@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { groupRoomsFromRoster, parseGroupSnapshot, type GroupRoom } from './group-model'
+import { groupAuthorMemberKey, groupMemberKey, groupRoomsFromRoster, parseGroupSnapshot, type GroupRoom } from './group-model'
 
 const snapshot = {
   version: 3,
@@ -43,7 +43,7 @@ describe('parseGroupSnapshot', () => {
       key: 'id:r-old',
       name: 'Research crew',
       roomId: 'r-old',
-      members: [{ name: 'codex', handle: '@codex' }, { name: 'scout', handle: '@scout' }]
+      members: [{ name: 'codex', handle: '@codex' }, { name: 'scout', handle: '@scout', connectionId: 'gw-2', connectionKind: 'remote', sourceScoped: true }]
     } satisfies Partial<GroupRoom>)
     expect(rooms[0].log).toHaveLength(3)
     expect(rooms[0].log[2]).toMatchObject({ from: { kind: 'member', name: 'Scout', source: 'h-lap02' }, text: 'Also on it', thread: 't-1' })
@@ -88,6 +88,50 @@ describe('parseGroupSnapshot', () => {
     expect(parseGroupSnapshot('nope')).toEqual([])
     expect(parseGroupSnapshot({ rooms: 'nope' })).toEqual([])
     expect(parseGroupSnapshot({ version: 3 })).toEqual([])
+  })
+})
+
+describe('groupMemberKey', () => {
+  it('qualifies on connectionId presence, not the sourceScoped flag', () => {
+    expect(groupMemberKey({ name: 'research', connectionId: 'gw-2', sourceScoped: true })).toBe('gw-2::research')
+    expect(groupMemberKey({ name: 'research', connectionId: 'gw-2' })).toBe('gw-2::research')
+    expect(groupMemberKey({ name: 'research' })).toBe('research')
+  })
+
+  it('separates same-named members on two connections', () => {
+    expect(groupMemberKey({ name: 'research', connectionId: 'gw-1' })).not.toBe(groupMemberKey({ name: 'research', connectionId: 'gw-2' }))
+  })
+
+  it('keeps the legacy engine key for already-qualified rows (migration no-op)', () => {
+    expect(groupMemberKey({ name: 'research', connectionId: 'gw-2', sourceScoped: true })).toBe('gw-2::research')
+  })
+})
+
+describe('groupAuthorMemberKey', () => {
+  const members = [
+    { name: 'research', connectionId: 'gw-1', connectionLabel: 'gw-1', sourceScoped: true },
+    { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true },
+    { name: 'builder' }
+  ]
+
+  it('resolves a lone name match by name', () => {
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'builder' }, members)).toBe('builder')
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'research' }, [{ name: 'research' }])).toBe('research')
+  })
+
+  it('disambiguates same-named members by the author source label', () => {
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'research', source: 'gw-1' }, members)).toBe('gw-1::research')
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'research', source: 'gw-2' }, members)).toBe('gw-2::research')
+  })
+
+  it('falls back to the first bare-name match when the source cannot resolve', () => {
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'research', source: 'zzz' }, members)).toBe('gw-1::research')
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'research' }, [{ name: 'research' }, { name: 'research' }])).toBe('research')
+  })
+
+  it('returns null for user entries and unknown authors', () => {
+    expect(groupAuthorMemberKey({ kind: 'user', name: 'You' }, members)).toBeNull()
+    expect(groupAuthorMemberKey({ kind: 'member', name: 'nobody' }, members)).toBeNull()
   })
 })
 

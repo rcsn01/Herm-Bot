@@ -16,14 +16,13 @@
  * group-rounds.ts, which keeps publication in its round driver.
  */
 
-import { botHandle, type EngineMember, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
+import { botHandle, groupMemberKey, type EngineMember, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
 import {
   $groupChats,
   $groupNeedsYou,
   $groupPrompts,
   GROUP_CHAT_HISTORY_LIMIT,
   appendGroupChatEntry,
-  groupMemberKey,
   groupSpeakerLabel,
   groupThreadOf,
   recordGroupActivity,
@@ -833,7 +832,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, spec.member.name))
     })
 
-    updateGroupChat(spec.group, r => ({ ...r, turn: spec.member.name }), { sync: false })
+    updateGroupChat(spec.group, r => ({ ...r, turn: memberKey }), { sync: false })
     const result = await run({ group: spec.group, member: spec.member, prompt, thread: spec.thread })
 
     // Continuations deliberately retain their strict drive-level epoch policy.

@@ -11,8 +11,8 @@
  * connection per scope, so the per-connection job maps collapse.
  */
 
-import { groupDurableMemberKey, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
-import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
+import { groupMemberKey, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
+import { $groupChats, rekeyRoomCoordination, replaceGroupChats, type GroupChatRoom } from './group-store'
 
 const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
@@ -390,7 +390,7 @@ export function mergeGroupChatSyncSnapshots(
       const byId = new Map<string, GroupMember>()
 
       for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
-        byId.set(groupDurableMemberKey(member), member)
+        byId.set(groupMemberKey(member), member)
       }
 
       members = [...byId.values()]
@@ -493,7 +493,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     )
 
     const members = new Map<string, GroupMember>(
-      (Array.isArray(existing.members) ? existing.members : []).map(member => [groupDurableMemberKey(member), member])
+      (Array.isArray(existing.members) ? existing.members : []).map(member => [groupMemberKey(member), member])
     )
 
     for (const entry of projected.log) {
@@ -516,7 +516,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       }
 
       for (const member of Array.isArray(projected.members) ? projected.members : []) {
-        members.set(groupDurableMemberKey(member), { ...member, sourceScoped: member.sourceScoped })
+        members.set(groupMemberKey(member), { ...member, sourceScoped: member.sourceScoped })
       }
     }
 
@@ -538,7 +538,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       delete rooms[localName]
     }
 
-    rooms[targetName] = {
+    rooms[targetName] = rekeyRoomCoordination({
       ...existing,
       log: bounded.log,
       watermarks: bounded.watermarks,
@@ -555,7 +555,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
-    }
+    })
   }
 
   for (const [key, deletedAt] of Object.entries(remoteNorm.deleted || {})) {

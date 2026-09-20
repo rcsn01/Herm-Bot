@@ -16,7 +16,7 @@
 
 import { atom } from 'nanostores'
 
-import type { GroupMember, GroupMessage, GroupMessageAuthor } from './group-model'
+import { groupMemberKey, type GroupMember, type GroupMessage, type GroupMessageAuthor } from './group-model'
 
 /** Every ceiling a single user send can spend — same values the desktop
  *  ships (group-chat.ts GROUP_CHAT_MAX_*), one block on purpose. */
@@ -53,8 +53,6 @@ export interface GroupChatRoom {
   turn?: null | string
   watermarks: Record<string, number>
 }
-
-const STORAGE_KEY = 'hermes.group-chats.v1'
 
 /** Groups whose latest room activity mentions @user — the needs-you badge.
  *  Lives beside the rooms (not in group-engine) so the append path can set
@@ -157,14 +155,6 @@ const GROUP_EMPTY_FRIENDLY =
   '⚠️ The model returned no response after processing tool results. ' +
   'This can happen with some models — try again or rephrase your question.'
 
-/** Stable per-member identity inside a room. Local members keep their bare
- *  name; source-qualified remote members get the connection-qualified key
- *  (group-membership.ts groupMemberKey) so same-named agents on two
- *  machines never share watermarks or sessions. */
-export function groupMemberKey(member: { connectionId?: string; name: string; sourceScoped?: boolean }): string {
-  return member?.sourceScoped && member?.connectionId ? `${member.connectionId}::${member.name}` : member?.name
-}
-
 /** Transcript form of a speaker's name: 'default' reads as Hermes, matching
  *  the roster label (group-chat.ts groupSpeakerLabel — the meta-title rung
  *  is applied by callers that hold a roster). */
@@ -183,13 +173,105 @@ function trimGroupChatLog(log: GroupMessage[], watermarks: Record<string, number
   return { log: log.slice(drop), watermarks: trimmed }
 }
 
+const STORAGE_KEY = 'hermes.group-chats.v2'
+
+/** The pre-migration copy: read only when v2 is absent, left in place as a
+ *  rollback snapshot — never written, never read once v2 exists. */
+const STORAGE_KEY_V1 = 'hermes.group-chats.v1'
+
+/** Coordination maps are keyed by the current member rows' keys. When a row
+ *  gains a connectionId (desktop projection arrives, v1 state loaded), move
+ *  its coordination state from the bare key to the qualified key. Never moves
+ *  qualified → bare, and never overwrites an existing qualified entry. Also
+ *  carries the runtime turn indicator, so a mid-turn enrichment keeps the
+ *  stop/interrupt path and the room display on the member's current key. */
+export function rekeyRoomCoordination(room: GroupChatRoom): GroupChatRoom {
+  const next: GroupChatRoom = {
+    ...room,
+    holds: { ...(room.holds || {}) },
+    sessions: { ...(room.sessions || {}) },
+    stranded: { ...(room.stranded || {}) },
+    watermarks: { ...room.watermarks }
+  }
+  const hasKey = (map: Record<string, unknown>, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(map, key)
+  let changed = false
+
+  for (const member of Array.isArray(room.members) ? room.members : []) {
+    if (!member?.connectionId || !member.name) continue
+    const bareKey = member.name
+    const qualifiedKey = `${member.connectionId}::${member.name}`
+
+    const holds = { ...(next.holds || {}) }
+    if (!hasKey(holds, qualifiedKey) && hasKey(holds, bareKey)) {
+      holds[qualifiedKey] = holds[bareKey]
+      delete holds[bareKey]
+      next.holds = holds
+      changed = true
+    }
+
+    const sessions = { ...(next.sessions || {}) }
+    if (!hasKey(sessions, qualifiedKey) && hasKey(sessions, bareKey)) {
+      sessions[qualifiedKey] = sessions[bareKey]
+      delete sessions[bareKey]
+      next.sessions = sessions
+      changed = true
+    }
+
+    const stranded = { ...(next.stranded || {}) }
+    if (!hasKey(stranded, qualifiedKey) && hasKey(stranded, bareKey)) {
+      stranded[qualifiedKey] = stranded[bareKey]
+      delete stranded[bareKey]
+      next.stranded = stranded
+      changed = true
+    }
+
+    // Watermark keys are `${thread}::${memberKey}`. Thread ids are minted
+    // `t…` or `legacy` and never contain `::`, so the FIRST `::` separates
+    // thread from member key even when a qualified member key carries its
+    // own `::` (a right split would mistag an already-qualified member's
+    // persisted key as bare).
+    for (const [key, value] of Object.entries(next.watermarks)) {
+      const split = key.indexOf('::')
+      if (split === -1) continue
+      const memberPart = key.slice(split + 2)
+      if (memberPart !== bareKey) continue
+      const target = `${key.slice(0, split)}::${qualifiedKey}`
+      if (hasKey(next.watermarks, target)) continue
+      next.watermarks[target] = value
+      delete next.watermarks[key]
+      changed = true
+    }
+
+    if (next.turn === bareKey) {
+      next.turn = qualifiedKey
+      changed = true
+    }
+  }
+
+  return changed ? next : room
+}
+
 function loadPersistedRooms(): Record<string, GroupChatRoom> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, GroupChatRoom>
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, GroupChatRoom>
+      // v2 loading runs no migration — the pass already executed before this
+      // copy was written.
+      return typeof parsed !== 'object' || parsed === null ? {} : parsed
+    }
+    // v1 is the pre-migration copy: run the durable shape guards, carry the
+    // coordination state to the current member keys, and keep v1 in place —
+    // v2 is written on the next persist.
+    const v1 = localStorage.getItem(STORAGE_KEY_V1)
+    if (!v1) return {}
+    const parsed = JSON.parse(v1) as Record<string, GroupChatRoom>
     if (typeof parsed !== 'object' || parsed === null) return {}
-    return parsed
+    const guarded = durableGroupChatRooms(parsed)
+    return Object.fromEntries(
+      Object.entries(guarded).map(([key, room]) => [key, rekeyRoomCoordination(room)])
+    )
   } catch {
     return {}
   }
