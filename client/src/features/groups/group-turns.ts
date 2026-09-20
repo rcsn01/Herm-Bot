@@ -48,7 +48,7 @@ export function createGroupMemberGateway(transport: GroupEngineRequest): GroupMe
 }
 
 export interface GroupTurnInput {
-  group: string
+  roomKey: string
   member: GroupMember
   prompt: string
   thread: string
@@ -91,7 +91,7 @@ export type GroupTurnResult =
 export type GroupTurnPolicy = 'round' | 'continuation'
 
 export interface GroupTurnSpec {
-  group: string
+  roomKey: string
   thread: string
   member: EngineMember
   /** Room roster — feeds the prompt's peer list. */
@@ -117,9 +117,9 @@ export interface GroupTurnModule {
    *  (network error classifies as 'failed' ⇒ silent). Never claims a token
    *  when it returns a no-op outcome. */
   takeTurn(spec: GroupTurnSpec): Promise<GroupTurnReport>
-  harvest(group: string, member: GroupMember): Promise<void>
+  harvest(roomKey: string, member: GroupMember): Promise<void>
   /** Harvest every member holding a stranded marker (engine facade: room open). */
-  harvestRoom(group: string, members: readonly GroupMember[]): Promise<void>
+  harvestRoom(roomKey: string, members: readonly GroupMember[]): Promise<void>
   answer(
     entry: GroupPrompt,
     member: GroupMember,
@@ -132,10 +132,10 @@ export interface GroupTurnModule {
   run(input: GroupTurnInput): Promise<GroupTurnResult>
 }
 
-function roomOf(group: string): GroupChatRoom {
+function roomOf(roomKey: string): GroupChatRoom {
   return (
-    $groupChats.get()[group] || {
-      name: group,
+    $groupChats.get()[roomKey] || {
+      name: roomKey,
       log: [],
       watermarks: {},
       epoch: 0,
@@ -305,7 +305,7 @@ class TurnStoppedError extends Error {
 interface TurnCapture {
   anchorId: null | string
   epoch: number
-  group: string
+  roomKey: string
   member: GroupMember
   memberKey: string
   promptRequestId: null | string
@@ -330,12 +330,12 @@ function hasPendingPrompt(state: GroupSessionSnapshot | null): boolean {
 
 /** Mirror a member's pending clarify/approval prompt into the runtime atoms. */
 function syncGroupClarify(
-  group: string,
+  roomKey: string,
   member: GroupMember,
   state: GroupSessionSnapshot | null,
   expectedRequestId: null | string | undefined = undefined
 ): boolean {
-  const key = `${group}::${groupMemberKey(member)}`
+  const key = `${roomKey}::${groupMemberKey(member)}`
   const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
   const approval = (state && typeof state.pending_approval === 'object' ? state.pending_approval : null) as GroupPendingApproval
 
@@ -361,7 +361,7 @@ function syncGroupClarify(
 
   const base = {
     requestId,
-    group,
+    roomKey,
     member: member.name,
     memberKey: groupMemberKey(member),
     // approval.respond keys on the session, not just the request — carry the
@@ -399,7 +399,7 @@ function syncGroupClarify(
         }
   })
   // A blocked member is a question for the human — badge the room.
-  $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: true })
+  $groupNeedsYou.set({ ...$groupNeedsYou.get(), [roomKey]: true })
 
   return true
 }
@@ -410,42 +410,42 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
   const latestTokens = new Map<string, number>()
   const markerVersions = new Map<string, number>()
 
-  const operationKey = (group: string, member: GroupMember) => `${group}::${groupMemberKey(member)}`
+  const operationKey = (roomKey: string, member: GroupMember) => `${roomKey}::${groupMemberKey(member)}`
 
   /** The one owner of the per-member watermark key format. */
   const watermarkKey = (thread: string, memberKey: string): string => `${thread}::${memberKey}`
 
-  const claimToken = (group: string, member: GroupMember): number => {
+  const claimToken = (roomKey: string, member: GroupMember): number => {
     const token = ++nextToken
-    latestTokens.set(operationKey(group, member), token)
+    latestTokens.set(operationKey(roomKey, member), token)
     return token
   }
 
   const owns = (capture: TurnCapture): boolean =>
-    !stopped && latestTokens.get(operationKey(capture.group, capture.member)) === capture.token
+    !stopped && latestTokens.get(operationKey(capture.roomKey, capture.member)) === capture.token
 
   const live = (): boolean => !stopped
 
   const captureTurn = (input: GroupTurnInput): TurnCapture => {
-    const room = roomOf(input.group)
+    const room = roomOf(input.roomKey)
     const last = room.log[room.log.length - 1]
     const anchorId = typeof last?.id === 'string' && last.id ? last.id : null
     return {
       anchorId,
       epoch: room.epoch || 0,
-      group: input.group,
+      roomKey: input.roomKey,
       member: input.member,
       memberKey: groupMemberKey(input.member),
       promptRequestId: null,
       thread: input.thread,
-      token: claimToken(input.group, input.member)
+      token: claimToken(input.roomKey, input.member)
     }
   }
 
   const staleReason = (capture: TurnCapture): GroupTurnCancelReason | null => {
     if (stopped) return 'engine-stopped'
 
-    const room = roomOf(capture.group)
+    const room = roomOf(capture.roomKey)
     if ((room.epoch || 0) === capture.epoch) return null
 
     const anchorIndex = capture.anchorId === null
@@ -505,8 +505,11 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
   }
 
   const ensureGroupChatSession = async (capture: TurnCapture): Promise<GroupMemberSessionHandle> => {
-    const room = roomOf(capture.group)
-    const title = `Group: ${room.roomId || capture.group}`
+    const room = roomOf(capture.roomKey)
+    // Session title keeps the display name (never the durable key — the
+    // desktop addresses plumbing sessions as `Group: <name>`); for an
+    // id-keyed room the durable id IS the desktop's title, so roomId wins.
+    const title = `Group: ${room.roomId || room.name}`
     const known = room.sessions?.[capture.memberKey]
 
     for (const target of [known, title]) {
@@ -521,7 +524,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
         if (res?.session_id) {
           const stored = res.session_key || known || null
           if (stored && owns(capture)) {
-            updateGroupChat(capture.group, (current: GroupChatRoom) => {
+            updateGroupChat(capture.roomKey, (current: GroupChatRoom) => {
               current.sessions = { ...(current.sessions || {}), [capture.memberKey]: stored }
               return current
             })
@@ -551,7 +554,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
     const stored = created?.stored_session_id || null
     if (stored && owns(capture)) {
-      updateGroupChat(capture.group, (r: GroupChatRoom) => {
+      updateGroupChat(capture.roomKey, (r: GroupChatRoom) => {
         r.sessions = { ...(r.sessions || {}), [capture.memberKey]: stored }
         return r
       })
@@ -610,7 +613,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     if (!session.runtime) return { kind: 'pass', commit: commitFor(capture) }
 
     if (owns(capture)) {
-      recordGroupActivity(input.group, { kind: 'working', member: input.member.name, thread: input.thread })
+      recordGroupActivity(input.roomKey, { kind: 'working', member: input.member.name, thread: input.thread })
     }
 
     let before = 0
@@ -668,8 +671,8 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       const awaitingUser = hasPendingPrompt(state)
       if (owns(capture)) {
         const expectedPromptId = capture.promptRequestId
-        syncGroupClarify(input.group, input.member, state, expectedPromptId)
-        const currentPrompt = $groupPrompts.get()[`${input.group}::${capture.memberKey}`]
+        syncGroupClarify(input.roomKey, input.member, state, expectedPromptId)
+        const currentPrompt = $groupPrompts.get()[`${input.roomKey}::${capture.memberKey}`]
         if (awaitingUser || !currentPrompt || currentPrompt.requestId === expectedPromptId) {
           capture.promptRequestId = currentPrompt?.requestId || null
         }
@@ -695,13 +698,13 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     const staleAtTimeout = staleReason(capture)
     if (staleAtTimeout) return cancelled(capture, staleAtTimeout)
 
-    syncGroupClarify(input.group, input.member, null, capture.promptRequestId)
-    updateGroupChat(input.group, (r: GroupChatRoom) => {
+    syncGroupClarify(input.roomKey, input.member, null, capture.promptRequestId)
+    updateGroupChat(input.roomKey, (r: GroupChatRoom) => {
       r.stranded = {
         ...(r.stranded || {}),
         [capture.memberKey]: { before, thread: input.thread }
       }
-      markerVersions.set(operationKey(input.group, input.member), capture.token)
+      markerVersions.set(operationKey(input.roomKey, input.member), capture.token)
       return r
     })
 
@@ -713,7 +716,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
    * same-thread send records only supersession, and an engine stop abandons the
    * drive without running its finalizer. */
   const publishTurn = (
-    group: string,
+    roomKey: string,
     member: EngineMember,
     thread: string,
     markKey: string,
@@ -724,14 +727,14 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
     if (!lease.accepted) {
       if (lease.reason === 'room-stopped') {
-        updateGroupChat(group, r => {
+        updateGroupChat(roomKey, r => {
           r.watermarks[markKey] = r.log.length
           return r
         }, { sync: false })
         return { abandoned: false, spoke: false, stop: true }
       }
       if (lease.reason === 'newer-user') {
-        recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+        recordGroupActivity(roomKey, { kind: 'cancelled', member: member.name, thread })
         return { abandoned: false, spoke: false, stop: true }
       }
       return { abandoned: true, spoke: false, stop: true }
@@ -739,14 +742,14 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
     if (result.kind === 'cancelled') {
       if (result.reason === 'room-stopped') {
-        updateGroupChat(group, r => {
+        updateGroupChat(roomKey, r => {
           r.watermarks[markKey] = r.log.length
           return r
         }, { sync: false })
         return { abandoned: false, spoke: false, stop: true }
       }
       if (result.reason === 'newer-user') {
-        recordGroupActivity(group, { kind: 'cancelled', member: member.name, thread })
+        recordGroupActivity(roomKey, { kind: 'cancelled', member: member.name, thread })
         return { abandoned: false, spoke: false, stop: true }
       }
       // A live module can invalidate one operation when a newer operation claims
@@ -756,29 +759,29 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     }
 
     if (result.kind === 'reply') {
-      recordGroupActivity(group, { kind: 'replied', member: member.name, thread })
+      recordGroupActivity(roomKey, { kind: 'replied', member: member.name, thread })
     } else if (result.kind === 'pass') {
-      recordGroupActivity(group, { kind: 'passed', member: member.name, thread })
+      recordGroupActivity(roomKey, { kind: 'passed', member: member.name, thread })
     } else if (result.kind === 'timed-out') {
-      recordGroupActivity(group, { kind: 'timed-out', member: member.name, thread })
+      recordGroupActivity(roomKey, { kind: 'timed-out', member: member.name, thread })
     } else if (result.kind === 'failed') {
       const reason = includeFailureReason ? result.reason : undefined
-      recordGroupActivity(group, { kind: 'failed', member: member.name, thread, ...(reason ? { reason } : {}) })
+      recordGroupActivity(roomKey, { kind: 'failed', member: member.name, thread, ...(reason ? { reason } : {}) })
     }
 
-    updateGroupChat(group, r => {
+    updateGroupChat(roomKey, r => {
       r.watermarks[markKey] = r.log.length
       return r
     }, { sync: false })
 
     if (result.kind !== 'reply') return { abandoned: false, spoke: false, stop: false }
 
-    appendGroupChatEntry(group, {
+    appendGroupChatEntry(roomKey, {
       kind: 'member',
       name: member.name,
       ...(member.connectionLabel || member.sourceScoped ? { source: member.connectionLabel || member.connectionId } : {})
     }, result.text, thread)
-    updateGroupChat(group, r => {
+    updateGroupChat(roomKey, r => {
       r.watermarks[markKey] = r.log.length
       return r
     }, { sync: false })
@@ -788,7 +791,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
   /** One member's turn end to end: the drive step the round driver used to
    *  copy-paste into both of its loops, plus that turn's publication. */
   const takeTurn = async (spec: GroupTurnSpec): Promise<GroupTurnReport> => {
-    const room = roomOf(spec.group)
+    const room = roomOf(spec.roomKey)
     const memberKey = groupMemberKey(spec.member)
 
     // A member with a standing stranded marker takes no new turn. Checked
@@ -811,7 +814,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     if (heldEntry) {
       if (spec.policy === 'round') {
         const advance = heldMemberWatermarkAdvance(seen, room.log.length)
-        updateGroupChat(spec.group, r => {
+        updateGroupChat(spec.roomKey, r => {
           if (advance !== null) r.watermarks[markKey] = advance
           if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
             r.holds = { ...r.holds, [memberKey]: { ...r.holds[memberKey], noted: true } }
@@ -819,21 +822,23 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
           return r
         })
         if (!heldEntry.noted) {
-          recordGroupActivity(spec.group, { kind: 'held', member: spec.member.name, thread: spec.thread })
+          recordGroupActivity(spec.roomKey, { kind: 'held', member: spec.member.name, thread: spec.thread })
         }
       }
       return { abandoned: false, spoke: false, stop: false }
     }
 
     const prompt = buildGroupChatTurnPrompt({
-      groupName: spec.group,
+      // The prompt header is model-visible (the desktop prompt carries the
+      // display name) — it must never be the durable key.
+      groupName: room.name,
       members: spec.members,
       viewer: spec.member,
       deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, spec.member.name))
     })
 
-    updateGroupChat(spec.group, r => ({ ...r, turn: memberKey }), { sync: false })
-    const result = await run({ group: spec.group, member: spec.member, prompt, thread: spec.thread })
+    updateGroupChat(spec.roomKey, r => ({ ...r, turn: memberKey }), { sync: false })
+    const result = await run({ roomKey: spec.roomKey, member: spec.member, prompt, thread: spec.thread })
 
     // Continuations deliberately retain their strict drive-level epoch policy.
     // Do not inherit normal-loop cross-thread acceptance: bail before the lease
@@ -842,44 +847,44 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     // the driver, stops the turn module, and bumps every room epoch
     // synchronously — no interleaving point — so this epoch check catches it;
     // in-loop abandonment returns immediately and can never be observed here.
-    if (spec.policy === 'continuation' && (roomOf(spec.group).epoch || 0) !== spec.driveEpoch) {
+    if (spec.policy === 'continuation' && (roomOf(spec.roomKey).epoch || 0) !== spec.driveEpoch) {
       return { abandoned: false, spoke: false, stop: true }
     }
 
-    return publishTurn(spec.group, spec.member, spec.thread, markKey, result, spec.policy === 'round')
+    return publishTurn(spec.roomKey, spec.member, spec.thread, markKey, result, spec.policy === 'round')
   }
 
   const markerIsCurrent = (
-    group: string,
+    roomKey: string,
     member: GroupMember,
     marker: number | { before: number; thread?: string },
     markerVersion: number
   ): boolean => {
-    const current = roomOf(group).stranded?.[groupMemberKey(member)]
+    const current = roomOf(roomKey).stranded?.[groupMemberKey(member)]
     if (current !== marker) {
       if (typeof marker !== 'number' || current !== marker) return false
     }
-    return (markerVersions.get(operationKey(group, member)) || 0) === markerVersion
+    return (markerVersions.get(operationKey(roomKey, member)) || 0) === markerVersion
   }
 
-  const harvest = async (group: string, member: GroupMember): Promise<void> => {
+  const harvest = async (roomKey: string, member: GroupMember): Promise<void> => {
     if (!live()) return
 
     const memberKey = groupMemberKey(member)
-    const room = roomOf(group)
+    const room = roomOf(roomKey)
     const marker = room.stranded?.[memberKey]
     const strandedBefore = typeof marker === 'number' ? marker : marker?.before
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
     if (typeof strandedBefore !== 'number' || marker === undefined) return
 
-    const token = claimToken(group, member)
-    const markerVersion = markerVersions.get(operationKey(group, member)) || 0
-    const promptKey = `${group}::${memberKey}`
+    const token = claimToken(roomKey, member)
+    const markerVersion = markerVersions.get(operationKey(roomKey, member)) || 0
+    const promptKey = `${roomKey}::${memberKey}`
     const observedPromptId = $groupPrompts.get()[promptKey]?.requestId || null
     const capture: TurnCapture = {
       anchorId: null,
       epoch: room.epoch || 0,
-      group,
+      roomKey,
       member,
       memberKey,
       promptRequestId: observedPromptId,
@@ -888,12 +893,12 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     }
 
     const ownsMarker = () =>
-      live() && owns(capture) && markerIsCurrent(group, member, marker, markerVersion)
+      live() && owns(capture) && markerIsCurrent(roomKey, member, marker, markerVersion)
 
     let state: GroupSessionSnapshot | null = null
     try {
       state = (await memberRequest(capture, 'session.resume', {
-        session_id: room.sessions?.[memberKey] || `Group: ${room.roomId || group}`
+        session_id: room.sessions?.[memberKey] || `Group: ${room.roomId || room.name}`
       })) as GroupSessionSnapshot
     } catch {
       return // source unreachable — leave the marker for the next boundary
@@ -905,7 +910,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     // A stranded member blocked on a clarify is not "grinding" — surface the
     // question card (#90694) and keep the marker until it resolves.
     if (ownsMarker()) {
-      const pending = syncGroupClarify(group, member, state, capture.promptRequestId)
+      const pending = syncGroupClarify(roomKey, member, state, capture.promptRequestId)
       const currentPrompt = $groupPrompts.get()[promptKey]
       if (pending) {
         capture.promptRequestId = currentPrompt?.requestId || null
@@ -919,24 +924,24 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     if (!ownsMarker()) return
 
     // Done (or dead): consume the marker either way.
-    updateGroupChat(group, (r: GroupChatRoom) => {
+    updateGroupChat(roomKey, (r: GroupChatRoom) => {
       const next = { ...(r.stranded || {}) }
       delete next[memberKey]
       r.stranded = next
       return r
     })
-    markerVersions.delete(operationKey(group, member))
+    markerVersions.delete(operationKey(roomKey, member))
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
     if (messages.length <= strandedBefore) return
 
     const reply = pickGroupTurnReply(messages, strandedBefore)
     if (reply && !isGroupPassText(reply) && live() && owns(capture)) {
-      recordGroupActivity(group, { kind: 'delivered', member: member.name, thread: strandedThread })
+      recordGroupActivity(roomKey, { kind: 'delivered', member: member.name, thread: strandedThread })
       // The ownership check and the append are synchronous, so an older
       // harvest cannot yield between them and publish after a newer operation.
       appendGroupChatEntry(
-        group,
+        roomKey,
         {
           kind: 'member',
           name: member.name,
@@ -948,7 +953,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
         strandedThread
       )
       updateGroupChat(
-        group,
+        roomKey,
         (r: GroupChatRoom) => {
           r.watermarks[watermarkKey(strandedThread, memberKey)] = r.log.length
           return r
@@ -961,11 +966,11 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
   /** Harvest every member holding a stranded marker (engine facade: room
    *  open). The module owns the stranded-marker invariant, so the facade no
    *  longer reads the marker shape to decide whom to harvest. */
-  const harvestRoom = async (group: string, members: readonly GroupMember[]): Promise<void> => {
+  const harvestRoom = async (roomKey: string, members: readonly GroupMember[]): Promise<void> => {
     for (const member of members) {
-      const room = roomOf(group)
+      const room = roomOf(roomKey)
       if (room.stranded && Object.prototype.hasOwnProperty.call(room.stranded, groupMemberKey(member))) {
-        await harvest(group, member)
+        await harvest(roomKey, member)
       }
     }
   }
@@ -1011,7 +1016,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     }
 
     if (!live()) return
-    const key = `${entry.group}::${entry.memberKey}`
+    const key = `${entry.roomKey}::${entry.memberKey}`
     const all = $groupPrompts.get()
     if (all[key]?.requestId === entry.requestId) {
       const next = { ...all }

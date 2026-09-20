@@ -26,18 +26,18 @@ import {
 } from './group-engine'
 
 /** One room's engine state: the local coordination store, activity feed,
- *  and pending prompts, narrowed to this room's display name. */
-function useGroupEngineState(name: string) {
+ *  and pending prompts, narrowed to this room's durable key. */
+function useGroupEngineState(roomKey: string) {
   const rooms = useStore($groupChats)
   const activityAll = useStore($groupActivity)
   const promptsAll = useStore($groupPrompts)
   const needsYouAll = useStore($groupNeedsYou)
 
   return {
-    room: rooms[name],
-    activity: activityAll[name] ?? [],
-    prompts: Object.values(promptsAll).filter(prompt => prompt.group === name),
-    needsYou: Boolean(needsYouAll[name])
+    room: rooms[roomKey],
+    activity: activityAll[roomKey] ?? [],
+    prompts: Object.values(promptsAll).filter(prompt => prompt.roomKey === roomKey),
+    needsYou: Boolean(needsYouAll[roomKey])
   }
 }
 
@@ -80,16 +80,17 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
   const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
   const rooms = useGroupRooms(roster.data?.groups ?? [])
   const room = rooms.find(candidate => candidate.key === roomId)
-  const engine = useGroupEngineState(room?.name ?? roomId)
+  const engine = useGroupEngineState(roomId)
   const [draft, setDraft] = useState('')
   const [newThreadNext, setNewThreadNext] = useState(false)
   const pulledRef = useRef<string | null>(null)
 
   // Adopt + pull + stranded harvest live in the engine (openGroupRoom); the
-  // screen owns the mount-once guard.
+  // screen owns the mount-once guard, keyed by the durable room key so a
+  // display-name rename cannot re-trigger the adopt half.
   useEffect(() => {
-    if (!room || pulledRef.current === room.name) return
-    pulledRef.current = room.name
+    if (!room || pulledRef.current === room.key) return
+    pulledRef.current = room.key
     openGroupRoom(room)
   }, [room])
 
@@ -101,7 +102,7 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
     )
   }
 
-  const engineRoom: GroupChatRoom = engine.room ?? getGroupRoom(room.name)
+  const engineRoom: GroupChatRoom = engine.room ?? getGroupRoom(room.key)
   const targetThread = newThreadNext ? null : (latestThreadId(engineRoom.log) ?? null)
   // room.turn is a member key; the display name comes from the matching row.
   const turnMemberName = engineRoom.turn
@@ -113,7 +114,7 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
     if (!text || room.members.length === 0) return
     setDraft('')
     setNewThreadNext(false)
-    sendToGroupChat(room.name, room.members, text, targetThread)
+    sendToGroupChat(room.key, room.members, text, targetThread)
   }
 
   return (
@@ -168,7 +169,7 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
           {engineRoom.running ? (
         <Button
           aria-label="Interrupt"
-          onClick={() => void stopGroupThread(room.name, targetThread, room.members)}
+          onClick={() => void stopGroupThread(room.key, targetThread, room.members)}
           size="icon"
           variant="destructive"
         >

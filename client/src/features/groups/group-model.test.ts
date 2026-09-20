@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { groupAuthorMemberKey, groupMemberKey, groupRoomsFromRoster, parseGroupSnapshot, type GroupRoom } from './group-model'
+import { groupAuthorMemberKey, groupMemberKey, groupRoomKey, groupRoomsFromRoster, parseGroupSnapshot, type GroupRoom } from './group-model'
 
 const snapshot = {
   version: 3,
@@ -104,6 +104,23 @@ describe('groupMemberKey', () => {
 
   it('keeps the legacy engine key for already-qualified rows (migration no-op)', () => {
     expect(groupMemberKey({ name: 'research', connectionId: 'gw-2', sourceScoped: true })).toBe('gw-2::research')
+  })
+})
+
+describe('groupRoomKey', () => {
+  it('keys by the durable roomId when present, whatever the display name', () => {
+    expect(groupRoomKey('Launch', { roomId: 'r-1' })).toBe('id:r-1')
+    expect(groupRoomKey('Renamed', { roomId: 'r-1' })).toBe('id:r-1')
+  })
+
+  it('keys by display name for rooms without a roomId', () => {
+    expect(groupRoomKey('Launch', { roomId: null })).toBe('name:Launch')
+    expect(groupRoomKey('Launch', {})).toBe('name:Launch')
+  })
+
+  it('never collides distinct roomIds or the two identity classes', () => {
+    expect(groupRoomKey('Room', { roomId: 'r-1' })).not.toBe(groupRoomKey('Room', { roomId: 'r-2' }))
+    expect(groupRoomKey('id:r-1', {})).not.toBe(groupRoomKey('Room', { roomId: 'r-1' }))
   })
 })
 

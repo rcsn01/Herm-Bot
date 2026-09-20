@@ -112,11 +112,11 @@ describe('holds and pure continuation detection', () => {
   })
 
   it('finds a cited member who has not posted after the handoff', () => {
-    replaceGroupChats({ Room: room({ log: [
+    replaceGroupChats({ 'name:Room': room({ log: [
       entry('member', 'research', 'handing to @builder', 't1', 1),
       entry('member', 'research', 'still waiting', 't1', 2)
     ] }) })
-    expect(unaddressedGroupMentions('Room', [{ name: 'research' }, { name: 'builder' }], 't1')).toEqual(['builder'])
+    expect(unaddressedGroupMentions('name:Room', [{ name: 'research' }, { name: 'builder' }], 't1')).toEqual(['builder'])
   })
 
   it('attributes same-named posters by source so a cited member is not re-driven', () => {
@@ -125,12 +125,12 @@ describe('holds and pure continuation detection', () => {
       { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true },
       { name: 'builder' }
     ]
-    replaceGroupChats({ Room: room({ log: [
+    replaceGroupChats({ 'name:Room': room({ log: [
       entry('user', 'You', 'start', 't1', 1),
       entry('member', 'builder', '@research report the deploy', 't1', 2),
       { at: 3, from: { kind: 'member', name: 'research', source: 'gw-2' }, id: 'm2', text: 'deploy is green', thread: 't1' }
     ] }) })
-    expect(unaddressedGroupMentions('Room', members, 't1')).toEqual([])
+    expect(unaddressedGroupMentions('name:Room', members, 't1')).toEqual([])
   })
 })
 
@@ -138,37 +138,37 @@ describe('round lifecycle and guards', () => {
   it('stamps member holds from a stop send', async () => {
     turns = fakeTurns()
     driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Holds', [{ name: 'research' }, { name: 'builder' }], 'stop @research', 't1')
-    await settle('Holds')
-    expect($groupChats.get().Holds.holds?.research).toBeTruthy()
+    driver.sendToGroupChat('name:Holds', [{ name: 'research' }, { name: 'builder' }], 'stop @research', 't1')
+    await settle('name:Holds')
+    expect($groupChats.get()['name:Holds'].holds?.research).toBeTruthy()
   })
 
   it('settles a quiet round with the settled finalizer', async () => {
     turns = fakeTurns()
     driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Quiet', MEMBERS, 'fyi, deploy went out', 't1')
-    await settle('Quiet')
-    expect($groupChats.get().Quiet.running).toBe(false)
-    expect($groupActivity.get().Quiet.map(item => item.kind)).toContain('settled')
+    driver.sendToGroupChat('name:Quiet', MEMBERS, 'fyi, deploy went out', 't1')
+    await settle('name:Quiet')
+    expect($groupChats.get()['name:Quiet'].running).toBe(false)
+    expect($groupActivity.get()['name:Quiet'].map(item => item.kind)).toContain('settled')
     expect(vi.mocked(turns.takeTurn)).toHaveBeenCalledTimes(MEMBERS.length)
   })
 
   it('clears the needs-you badge on send and dedupes the roster on durable identity', () => {
-    $groupNeedsYou.set({ Room: true })
+    $groupNeedsYou.set({ 'name:Room': true })
     turns = fakeTurns()
     driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Room', [{ name: 'research' }, { name: 'research' }, { name: 'builder' }], 'hello', 't1')
-    expect($groupNeedsYou.get().Room).toBe(false)
-    expect($groupChats.get().Room.members.map(member => member.name)).toEqual(['research', 'builder'])
+    driver.sendToGroupChat('name:Room', [{ name: 'research' }, { name: 'research' }, { name: 'builder' }], 'hello', 't1')
+    expect($groupNeedsYou.get()['name:Room']).toBe(false)
+    expect($groupChats.get()['name:Room'].members.map(member => member.name)).toEqual(['research', 'builder'])
   })
 
   it('stamps holds under the qualified key and keeps a connectionless twin distinct', async () => {
-    driver.sendToGroupChat('Keys', [
+    driver.sendToGroupChat('name:Keys', [
       { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true, title: 'Researcher' },
       { name: 'research' }
     ], 'stop @Researcher', 't1')
-    await settle('Keys')
-    const holds = $groupChats.get().Keys.holds || {}
+    await settle('name:Keys')
+    const holds = $groupChats.get()['name:Keys'].holds || {}
     expect(holds['gw-2::research']).toBeTruthy()
     expect(holds.research).toBeUndefined()
   })
@@ -179,11 +179,11 @@ describe('round lifecycle and guards', () => {
     driver = createGroupRoundDriver(turns)
     const connected = { name: 'research', connectionId: 'gw-2', sourceScoped: true }
     replaceGroupChats({
-      Stop: room({ name: 'Stop', running: true, epoch: 2, turn: 'gw-2::research', sessions: { 'gw-2::research': 'stored' }, members: [connected] })
+      'name:Stop': room({ name: 'Stop', running: true, epoch: 2, turn: 'gw-2::research', sessions: { 'gw-2::research': 'stored' }, members: [connected] })
     })
-    await driver.stopGroupThread('Stop', 't1', [connected])
-    expect($groupChats.get().Stop).toMatchObject({ epoch: 3, running: false, turn: null })
-    expect($groupChats.get().Stop.holds?.['gw-2::research']).toBeDefined()
+    await driver.stopGroupThread('name:Stop', 't1', [connected])
+    expect($groupChats.get()['name:Stop']).toMatchObject({ epoch: 3, running: false, turn: null })
+    expect($groupChats.get()['name:Stop'].holds?.['gw-2::research']).toBeDefined()
     expect(interrupt).toHaveBeenCalledWith(connected, 'stored')
   })
 
@@ -193,9 +193,9 @@ describe('round lifecycle and guards', () => {
     driver = createGroupRoundDriver(turns)
     const connected = { name: 'research', connectionId: 'gw-2', sourceScoped: true }
     replaceGroupChats({
-      Stop: room({ name: 'Stop', running: true, epoch: 2, turn: 'research', sessions: { 'gw-2::research': 'stored' }, members: [connected] })
+      'name:Stop': room({ name: 'Stop', running: true, epoch: 2, turn: 'research', sessions: { 'gw-2::research': 'stored' }, members: [connected] })
     })
-    await driver.stopGroupThread('Stop', 't1', [connected])
+    await driver.stopGroupThread('name:Stop', 't1', [connected])
     expect(interrupt).not.toHaveBeenCalled()
   })
 
@@ -216,11 +216,11 @@ describe('round lifecycle and guards', () => {
     })
     turns = createGroupTurnModule(gateway)
     driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Loud', [{ name: 'research' }, { name: 'builder' }], 'go wild', 't1')
+    driver.sendToGroupChat('name:Loud', [{ name: 'research' }, { name: 'builder' }], 'go wild', 't1')
     await vi.advanceTimersByTimeAsync(30000)
-    const result = $groupChats.get().Loud
+    const result = $groupChats.get()['name:Loud']
     expect(result.log.filter(item => item.from.kind === 'member').length).toBeLessThanOrEqual(10)
-    expect($groupActivity.get().Loud.map(item => item.kind)).toContain('capped')
+    expect($groupActivity.get()['name:Loud'].map(item => item.kind)).toContain('capped')
     expect(result.running).toBe(false)
   })
 
@@ -233,12 +233,12 @@ describe('round lifecycle and guards', () => {
       .mockResolvedValue({ ...NOOP_REPORT })
     turns = fakeTurns(takeTurn)
     driver = createGroupRoundDriver(turns)
-    driver.sendToGroupChat('Chain', [{ name: 'research' }], 'first', 't1')
-    driver.sendToGroupChat('Chain', [{ name: 'research' }], 'second', 't1')
+    driver.sendToGroupChat('name:Chain', [{ name: 'research' }], 'first', 't1')
+    driver.sendToGroupChat('name:Chain', [{ name: 'research' }], 'second', 't1')
     release({ abandoned: false, spoke: true, stop: false })
     await vi.advanceTimersByTimeAsync(400)
-    expect($groupChats.get().Chain.log.filter(item => item.from.kind === 'user')).toHaveLength(2)
-    expect($groupChats.get().Chain.running).toBe(false)
+    expect($groupChats.get()['name:Chain'].log.filter(item => item.from.kind === 'user')).toHaveLength(2)
+    expect($groupChats.get()['name:Chain'].running).toBe(false)
     expect(vi.mocked(turns.takeTurn).mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
@@ -246,17 +246,17 @@ describe('round lifecycle and guards', () => {
     const interrupt = vi.fn(async () => undefined)
     turns = { ...fakeTurns(), interrupt }
     driver = createGroupRoundDriver(turns)
-    replaceGroupChats({ Stop: room({ name: 'Stop', running: true, epoch: 2, turn: 'research', sessions: { research: 'stored' }, members: [{ name: 'research' }] }) })
-    await driver.stopGroupThread('Stop', 't1', [{ name: 'research' }])
-    expect($groupChats.get().Stop).toMatchObject({ epoch: 3, running: false, turn: null })
-    expect($groupChats.get().Stop.holds?.research).toBeDefined()
+    replaceGroupChats({ 'name:Stop': room({ name: 'Stop', running: true, epoch: 2, turn: 'research', sessions: { research: 'stored' }, members: [{ name: 'research' }] }) })
+    await driver.stopGroupThread('name:Stop', 't1', [{ name: 'research' }])
+    expect($groupChats.get()['name:Stop']).toMatchObject({ epoch: 3, running: false, turn: null })
+    expect($groupChats.get()['name:Stop'].holds?.research).toBeDefined()
     expect(interrupt).toHaveBeenCalledWith({ name: 'research' }, 'stored')
   })
 
   it('does not start a delayed send after driver deactivation', async () => {
     driver.deactivate()
-    expect(driver.sendToGroupChat('Noop', [{ name: 'research' }], 'text')).toBe(null)
-    expect($groupChats.get().Noop).toBeUndefined()
+    expect(driver.sendToGroupChat('name:Noop', [{ name: 'research' }], 'text')).toBe(null)
+    expect($groupChats.get()['name:Noop']).toBeUndefined()
   })
 
   it('keeps local stop state when the captured turn module is already stopped', async () => {
@@ -264,10 +264,10 @@ describe('round lifecycle and guards', () => {
     const stoppedTurns = createGroupTurnModule(createGroupMemberGateway(transport))
     stoppedTurns.stop()
     driver = createGroupRoundDriver(stoppedTurns)
-    replaceGroupChats({ Stopped: room({ name: 'Stopped', epoch: 2, running: true, turn: 'research', sessions: { research: 'stored' }, members: [{ name: 'research' }] }) })
-    await driver.stopGroupThread('Stopped', 't1', [{ name: 'research' }])
-    expect($groupChats.get().Stopped).toMatchObject({ epoch: 3, running: false, turn: null })
-    expect($groupChats.get().Stopped.holds?.research).toBeDefined()
+    replaceGroupChats({ 'name:Stopped': room({ name: 'Stopped', epoch: 2, running: true, turn: 'research', sessions: { research: 'stored' }, members: [{ name: 'research' }] }) })
+    await driver.stopGroupThread('name:Stopped', 't1', [{ name: 'research' }])
+    expect($groupChats.get()['name:Stopped']).toMatchObject({ epoch: 3, running: false, turn: null })
+    expect($groupChats.get()['name:Stopped'].holds?.research).toBeDefined()
     expect(transport).not.toHaveBeenCalled()
   })
 })

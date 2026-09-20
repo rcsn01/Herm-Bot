@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { $groupChats, replaceGroupChats, type GroupChatRoom } from './group-store'
+import { $groupActivity, $groupChats, $groupNeedsYou, $groupPrompts, replaceGroupChats, type GroupChatRoom } from './group-store'
 import {
   assignLegacyThreads,
   groupChatGatewayJsonSize,
-  groupChatRoomKey,
   groupChatSyncEntryKey,
   groupChatSyncSnapshot,
   mergeGroupChatSyncSnapshots,
@@ -48,14 +47,6 @@ describe('sizing', () => {
   })
 })
 
-describe('room keys', () => {
-  it('keys by durable roomId when present, else by name', () => {
-    expect(groupChatRoomKey('Launch', { roomId: 'r-1' })).toBe('id:r-1')
-    expect(groupChatRoomKey('Launch', { roomId: null })).toBe('name:Launch')
-    expect(groupChatRoomKey('Launch', {})).toBe('name:Launch')
-  })
-})
-
 describe('entry keys', () => {
   it('keys by id when present, collapsing the synthetic legacy family', () => {
     expect(groupChatSyncEntryKey(userEntry('hi'))).toBe('id:u-hi')
@@ -70,7 +61,7 @@ describe('sync snapshot', () => {
   it('builds a v3 envelope with bounded logs, members, and text', () => {
     const longLog = Array.from({ length: 30 }, (_, i) => memberEntry('research', `msg ${i}`, i))
     replaceGroupChats({
-      Room: room({ log: longLog, members: Array.from({ length: 9 }, (_, i) => ({ name: `bot${i}` })), syncRevision: 4 })
+      'name:Room': room({ log: longLog, members: Array.from({ length: 9 }, (_, i) => ({ name: `bot${i}` })), syncRevision: 4 })
     })
     const snapshot = groupChatSyncSnapshot()
     const projected = snapshot.rooms['name:Room']
@@ -84,14 +75,23 @@ describe('sync snapshot', () => {
   it('skips empty runtime tombstones and bounds deleted to 64', () => {
     const deleted: Record<string, number> = {}
     for (let i = 0; i < 70; i++) deleted[`name:gone-${i}`] = i
-    const snapshot = groupChatSyncSnapshot({ Empty: room({ log: [] }) }, deleted)
+    const snapshot = groupChatSyncSnapshot({ 'name:Empty': room({ name: 'Empty', log: [] }) }, deleted)
     expect(Object.keys(snapshot.rooms)).toHaveLength(0)
     expect(Object.keys(snapshot.deleted ?? {})).toHaveLength(64)
   })
 
+  it('derives the envelope key and the name field from the room row, not the map key', () => {
+    replaceGroupChats({
+      'id:r-1': room({ name: 'Room', roomId: 'r-1', log: [userEntry('hi')] })
+    })
+    const snapshot = groupChatSyncSnapshot()
+    expect(Object.keys(snapshot.rooms)).toEqual(['id:r-1'])
+    expect(snapshot.rooms['id:r-1'].name).toBe('Room')
+  })
+
   it('truncates text and drops images past the char cap', () => {
     replaceGroupChats({
-      Room: room({ log: [memberEntry('research', 'x'.repeat(5000))], image: 'z'.repeat(30000) })
+      'name:Room': room({ log: [memberEntry('research', 'x'.repeat(5000))], image: 'z'.repeat(30000) })
     })
     const projected = groupChatSyncSnapshot().rooms['name:Room']
     expect(projected.log[0].text).toHaveLength(1200)
@@ -101,7 +101,7 @@ describe('sync snapshot', () => {
   it('shrinks logs then drops rooms to fit the byte cap', () => {
     const rooms: Record<string, GroupChatRoom> = {}
     for (let i = 0; i < 60; i++) {
-      rooms[`Room ${i}`] = room({
+      rooms[`name:Room ${i}`] = room({
         name: `Room ${i}`,
         log: Array.from({ length: 16 }, (_, j) => memberEntry('research', `${i}-${j}`.padEnd(300, 'y'), j))
       })
@@ -218,12 +218,21 @@ describe('merge snapshots', () => {
     )
     expect(merged.rooms['id:r-2']?.name).toBe('New Name')
   })
+
+  it('accepts durable-key labels in the rename pass', () => {
+    const merged = mergeGroupChatSyncSnapshots(
+      { version: 3, rooms: {} },
+      { version: 3, rooms: { 'id:r-2': { name: 'New Name', revision: 3, log: [userEntry('hi')] } } },
+      { changedRooms: ['id:r-2'], deletedRooms: [], writeRevision: 3 }
+    )
+    expect(merged.rooms['id:r-2']?.revision).toBe(3)
+  })
 })
 
 describe('merge remote into rooms', () => {
   it('merges the compact projection without discarding local engine state', () => {
     replaceGroupChats({
-      Room: room({
+      'name:Room': room({
         log: [userEntry('local rich', 10)],
         members: [{ name: 'builder' }],
         sessions: { builder: 'stored-1' },
@@ -245,7 +254,7 @@ describe('merge remote into rooms', () => {
       }
     }
     const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
-    const mergedRoom = merged.Room
+    const mergedRoom = merged['name:Room']
     expect(mergedRoom.sessions).toEqual({ builder: 'stored-1' })
     expect(mergedRoom.watermarks['legacy::builder']).toBe(5)
     expect(mergedRoom.epoch).toBe(7)
@@ -257,7 +266,7 @@ describe('merge remote into rooms', () => {
 
   it('prefers the local rich copy when the same entry exists compact', () => {
     replaceGroupChats({
-      Room: room({ log: [{ ...userEntry('full text', 10), id: 'shared' }], syncRevision: 1 })
+      'name:Room': room({ log: [{ ...userEntry('full text', 10), id: 'shared' }], syncRevision: 1 })
     })
     const remote: GroupChatSyncSnapshot = {
       version: 3,
@@ -269,13 +278,13 @@ describe('merge remote into rooms', () => {
         }
       }
     }
-    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote).Room.log[0].text).toBe('full text')
+    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote)['name:Room'].log[0].text).toBe('full text')
   })
 
   it('honors tombstones but preserves rooms mid-write', () => {
     replaceGroupChats({
-      Gone: room({ log: [userEntry('hi')], roomId: 'r-9' }),
-      Keep: room({ log: [userEntry('hi')] })
+      'id:r-9': room({ name: 'Gone', log: [userEntry('hi')], roomId: 'r-9' }),
+      'name:Keep': room({ name: 'Keep', log: [userEntry('hi')] })
     })
     const remote: GroupChatSyncSnapshot = {
       version: 3,
@@ -284,28 +293,77 @@ describe('merge remote into rooms', () => {
     }
     const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote, $groupChats.get(), {
       deletedRooms: [],
-      preserveRooms: ['Keep']
+      preserveRooms: ['name:Keep']
     })
-    expect(merged.Gone).toBeUndefined()
-    expect(merged.Keep).toBeTruthy()
+    expect(merged['id:r-9']).toBeUndefined()
+    expect(merged['name:Keep']).toBeTruthy()
   })
 
-  it('follows a remote rename to the new display name', () => {
+  it('renames an id-keyed room in place: the map key never moves, the name field follows', () => {
     replaceGroupChats({
-      Old: room({ log: [userEntry('hi')], roomId: 'r-3', syncRevision: 1 })
+      'id:r-3': room({ name: 'Old', log: [userEntry('hi')], roomId: 'r-3', syncRevision: 1 })
     })
     const remote: GroupChatSyncSnapshot = {
       version: 3,
       rooms: { 'id:r-3': { name: 'Renamed', roomId: 'r-3', revision: 2, log: [userEntry('hi')] } }
     }
     const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
-    expect(merged.Renamed).toBeTruthy()
-    expect(merged.Old).toBeUndefined()
+    expect(merged['id:r-3']).toBeTruthy()
+    expect(merged['id:r-3'].name).toBe('Renamed')
+    expect(merged['name:Old']).toBeUndefined()
+  })
+
+  it('renames a name-keyed room through the old envelope key and sweeps the feed atoms', () => {
+    replaceGroupChats({
+      'name:Old': room({ name: 'Old', log: [userEntry('local')], epoch: 7, syncRevision: 1 })
+    })
+    $groupActivity.set({ 'name:Old': [{ at: 1, epoch: 7, kind: 'queued', member: 'research', thread: 'legacy' }] })
+    $groupPrompts.set({
+      'name:Old::research': { at: 1, kind: 'clarify', member: 'research', memberKey: 'research', question: '?', requestId: 'p1', roomKey: 'name:Old' }
+    })
+    $groupNeedsYou.set({ 'name:Old': true })
+
+    const remote: GroupChatSyncSnapshot = {
+      version: 3,
+      rooms: { 'name:Old': { name: 'New', revision: 5, log: [userEntry('local')] } }
+    }
+    const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
+
+    expect(merged['name:New']).toBeTruthy()
+    expect(merged['name:New'].name).toBe('New')
+    expect(merged['name:New'].epoch).toBe(7)
+    expect(merged['name:Old']).toBeUndefined()
+    expect($groupActivity.get()['name:New']).toHaveLength(1)
+    expect($groupActivity.get()['name:Old']).toBeUndefined()
+    expect($groupPrompts.get()['name:New::research'].roomKey).toBe('name:New')
+    expect($groupPrompts.get()['name:Old::research']).toBeUndefined()
+    expect($groupNeedsYou.get()).toEqual({ 'name:New': true })
+  })
+
+  it('recreates a tombstone-and-renamed room when the desktop re-keyed first; the atoms strand', () => {
+    replaceGroupChats({
+      'name:Old': room({ name: 'Old', log: [userEntry('local')], syncRevision: 1 })
+    })
+    $groupActivity.set({ 'name:Old': [{ at: 1, epoch: 0, kind: 'queued', member: 'research', thread: 'legacy' }] })
+
+    const remote: GroupChatSyncSnapshot = {
+      version: 3,
+      rooms: { 'name:New': { name: 'New', revision: 5, log: [userEntry('local')] } },
+      deleted: { 'name:Old': 5 }
+    }
+    const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
+
+    expect(merged['name:New']).toBeTruthy()
+    expect(merged['name:New'].log.map(entry => entry.text)).toEqual(['local'])
+    expect(merged['name:Old']).toBeUndefined()
+    // No pairing is attempted across a tombstone + creation — the atoms strand.
+    expect($groupActivity.get()['name:Old']).toHaveLength(1)
+    expect($groupActivity.get()['name:New']).toBeUndefined()
   })
 
   it('dedupes an identity-carrying local row with its remote twin to one member', () => {
     replaceGroupChats({
-      Room: room({
+      'name:Room': room({
         log: [userEntry('local', 10)],
         members: [{ name: 'research', connectionId: 'conn-1', sourceScoped: true }],
         syncRevision: 2
@@ -322,14 +380,14 @@ describe('merge remote into rooms', () => {
         }
       }
     }
-    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote).Room.members).toEqual([
+    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote)['name:Room'].members).toEqual([
       { name: 'research', connectionId: 'conn-1', sourceScoped: true }
     ])
   })
 
   it('keeps a bare local row and its qualified remote twin as two rows on a revision tie', () => {
     replaceGroupChats({
-      Room: room({ log: [userEntry('local', 10)], members: [{ name: 'research' }], syncRevision: 2 })
+      'name:Room': room({ log: [userEntry('local', 10)], members: [{ name: 'research' }], syncRevision: 2 })
     })
     const remote: GroupChatSyncSnapshot = {
       version: 3,
@@ -342,7 +400,7 @@ describe('merge remote into rooms', () => {
         }
       }
     }
-    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote).Room.members).toEqual([
+    expect(mergeRemoteGroupChatSnapshotIntoRooms(remote)['name:Room'].members).toEqual([
       { name: 'research' },
       { name: 'research', connectionId: 'conn-1', sourceScoped: true }
     ])
@@ -350,7 +408,7 @@ describe('merge remote into rooms', () => {
 
   it('moves coordination state to the qualified key at the merge boundary', () => {
     replaceGroupChats({
-      Room: room({
+      'name:Room': room({
         log: [userEntry('local', 10)],
         members: [{ name: 'research' }],
         sessions: { research: 'stored-1' },
@@ -374,19 +432,19 @@ describe('merge remote into rooms', () => {
       }
     }
     const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
-    expect(merged.Room.members).toEqual([
+    expect(merged['name:Room'].members).toEqual([
       { name: 'research' },
       { name: 'research', connectionId: 'conn-1', sourceScoped: true }
     ])
-    expect(merged.Room.sessions).toEqual({ 'conn-1::research': 'stored-1' })
-    expect(merged.Room.holds).toEqual({ 'conn-1::research': { at: 1, byMessageId: null, thread: 't1' } })
-    expect(merged.Room.stranded).toEqual({ 'conn-1::research': { before: 0, thread: 'legacy' } })
-    expect(merged.Room.watermarks['legacy::conn-1::research']).toBe(5)
+    expect(merged['name:Room'].sessions).toEqual({ 'conn-1::research': 'stored-1' })
+    expect(merged['name:Room'].holds).toEqual({ 'conn-1::research': { at: 1, byMessageId: null, thread: 't1' } })
+    expect(merged['name:Room'].stranded).toEqual({ 'conn-1::research': { before: 0, thread: 'legacy' } })
+    expect(merged['name:Room'].watermarks['legacy::conn-1::research']).toBe(5)
   })
 
   it('carries coordination state to the qualified key when the desktop enriches the roster', () => {
     replaceGroupChats({
-      Room: room({
+      'name:Room': room({
         log: [userEntry('local', 10)],
         members: [{ name: 'research' }],
         sessions: { research: 'stored-1' },
@@ -406,9 +464,9 @@ describe('merge remote into rooms', () => {
       }
     }
     const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
-    expect(merged.Room.members).toEqual([{ name: 'research', connectionId: 'conn-1', sourceScoped: true }])
-    expect(merged.Room.sessions).toEqual({ 'conn-1::research': 'stored-1' })
-    expect(merged.Room.watermarks['t1::conn-1::research']).toBe(3)
+    expect(merged['name:Room'].members).toEqual([{ name: 'research', connectionId: 'conn-1', sourceScoped: true }])
+    expect(merged['name:Room'].sessions).toEqual({ 'conn-1::research': 'stored-1' })
+    expect(merged['name:Room'].watermarks['t1::conn-1::research']).toBe(3)
   })
 })
 

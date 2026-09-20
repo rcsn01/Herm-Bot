@@ -16,7 +16,7 @@
 
 import { atom } from 'nanostores'
 
-import { groupMemberKey, type GroupMember, type GroupMessage, type GroupMessageAuthor } from './group-model'
+import { groupMemberKey, groupRoomKey, type GroupMember, type GroupMessage, type GroupMessageAuthor, type GroupRoom } from './group-model'
 
 /** Every ceiling a single user send can spend — same values the desktop
  *  ships (group-chat.ts GROUP_CHAT_MAX_*), one block on purpose. */
@@ -77,19 +77,19 @@ export interface GroupActivityEntry {
 export const $groupActivity = atom<Record<string, GroupActivityEntry[]>>({})
 const GROUP_ACTIVITY_LIMIT = 30
 
-export function recordGroupActivity(group: string, event: Omit<GroupActivityEntry, 'at' | 'epoch'>): void {
+export function recordGroupActivity(roomKey: string, event: Omit<GroupActivityEntry, 'at' | 'epoch'>): void {
   const entry: GroupActivityEntry = {
     ...event,
     at: Date.now(),
-    epoch: getRoomEpoch(group)
+    epoch: getRoomEpoch(roomKey)
   }
   const all = $groupActivity.get()
-  const list = [...(all[group] || []), entry]
-  $groupActivity.set({ ...all, [group]: list.slice(-GROUP_ACTIVITY_LIMIT) })
+  const list = [...(all[roomKey] || []), entry]
+  $groupActivity.set({ ...all, [roomKey]: list.slice(-GROUP_ACTIVITY_LIMIT) })
 }
 
-function getRoomEpoch(group: string): number {
-  return $groupChats.get()[group]?.epoch || 0
+function getRoomEpoch(roomKey: string): number {
+  return $groupChats.get()[roomKey]?.epoch || 0
 }
 
 /** A pending clarify question / command approval blocking inside a member's
@@ -98,7 +98,7 @@ export interface GroupPrompt {
   at: number
   choices?: string[]
   command?: string
-  group: string
+  roomKey: string
   kind: 'approval' | 'clarify'
   member: string
   memberKey: string
@@ -173,7 +173,11 @@ function trimGroupChatLog(log: GroupMessage[], watermarks: Record<string, number
   return { log: log.slice(drop), watermarks: trimmed }
 }
 
-const STORAGE_KEY = 'hermes.group-chats.v2'
+const STORAGE_KEY = 'hermes.group-chats.v3'
+
+/** The pre-re-key copy: read only when v3 is absent, left in place as a
+ *  rollback snapshot — never written, never read once v3 exists. */
+const STORAGE_KEY_V2 = 'hermes.group-chats.v2'
 
 /** The pre-migration copy: read only when v2 is absent, left in place as a
  *  rollback snapshot — never written, never read once v2 exists. */
@@ -252,25 +256,53 @@ export function rekeyRoomCoordination(room: GroupChatRoom): GroupChatRoom {
   return changed ? next : room
 }
 
+/** Re-key a name-keyed persistence map to durable room keys. Two rooms
+ *  colliding on re-key is structurally impossible (roomIds are unique, names
+ *  are unique per room set), so the guard only documents the impossibility:
+ *  when the canonical key is already occupied, the entry is skipped rather
+ *  than inventing resolution policy. */
+function rekeyRoomMapKeys(rooms: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
+  const next: Record<string, GroupChatRoom> = {}
+  for (const room of Object.values(rooms)) {
+    const key = groupRoomKey(room.name, room)
+    if (next[key]) continue
+    next[key] = room
+  }
+  return next
+}
+
 function loadPersistedRooms(): Record<string, GroupChatRoom> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, GroupChatRoom>
-      // v2 loading runs no migration — the pass already executed before this
+      // v3 loading runs no migration — the pass already executed before this
       // copy was written.
       return typeof parsed !== 'object' || parsed === null ? {} : parsed
     }
+    // v2 is the pre-re-key copy: its coordination state is guaranteed
+    // post-member-re-key (the only build that wrote v2 always ran
+    // rekeyRoomCoordination at load), so only the map re-key runs. v2 stays
+    // in place as the rollback snapshot — v3 is written on the next persist.
+    const v2 = localStorage.getItem(STORAGE_KEY_V2)
+    if (v2) {
+      const parsed = JSON.parse(v2) as Record<string, GroupChatRoom>
+      if (typeof parsed !== 'object' || parsed === null) return {}
+      return rekeyRoomMapKeys(parsed)
+    }
     // v1 is the pre-migration copy: run the durable shape guards, carry the
-    // coordination state to the current member keys, and keep v1 in place —
-    // v2 is written on the next persist.
+    // coordination state to the current member keys, re-key the map to
+    // durable room keys, and keep v1 in place — v3 is written on the next
+    // persist.
     const v1 = localStorage.getItem(STORAGE_KEY_V1)
     if (!v1) return {}
     const parsed = JSON.parse(v1) as Record<string, GroupChatRoom>
     if (typeof parsed !== 'object' || parsed === null) return {}
     const guarded = durableGroupChatRooms(parsed)
-    return Object.fromEntries(
-      Object.entries(guarded).map(([key, room]) => [key, rekeyRoomCoordination(room)])
+    return rekeyRoomMapKeys(
+      Object.fromEntries(
+        Object.entries(guarded).map(([key, room]) => [key, rekeyRoomCoordination(room)])
+      )
     )
   } catch {
     return {}
@@ -334,27 +366,41 @@ export function setGroupSyncScheduler(scheduler: SyncScheduler | null): void {
   scheduleSync = scheduler
 }
 
+/** The missing-room stub for an unknown key: fields derive from the key so
+ *  the stub's identity agrees with its own map key (`name:` → display part;
+ *  `id:` → roomId from the key, display name = the raw key). Documented
+ *  defensive path — the drive always has an adopted room. */
+function stubRoomFromKey(roomKey: string): GroupChatRoom {
+  if (roomKey.startsWith('id:')) {
+    return { name: roomKey, roomId: roomKey.slice(3), log: [], members: [], watermarks: {}, epoch: 0, running: false }
+  }
+  if (roomKey.startsWith('name:')) {
+    return { name: roomKey.slice(5), log: [], members: [], watermarks: {}, epoch: 0, running: false }
+  }
+  return { name: roomKey, log: [], members: [], watermarks: {}, epoch: 0, running: false }
+}
+
 /** Mutate one room through the atom, trim, persist, and schedule a mirror sync. */
 export function updateGroupChat(
-  group: string,
+  roomKey: string,
   mutate: (room: GroupChatRoom) => GroupChatRoom,
   { sync = true }: UpdateGroupChatOptions = {}
 ): GroupChatRoom {
   const all = { ...$groupChats.get() }
-  const current: GroupChatRoom = all[group] || { name: group, log: [], watermarks: {}, epoch: 0, running: false }
+  const current: GroupChatRoom = all[roomKey] || stubRoomFromKey(roomKey)
   const next = mutate({ ...current, log: [...current.log], watermarks: { ...current.watermarks } })
   const bounded = trimGroupChatLog(next.log, next.watermarks)
   next.log = bounded.log
   next.watermarks = bounded.watermarks
-  all[group] = next
+  all[roomKey] = next
   $groupChats.set(all)
   persistRooms(all)
-  if (sync) scheduleSync?.(group)
+  if (sync) scheduleSync?.(roomKey)
   return next
 }
 
-export function getGroupRoom(group: string): GroupChatRoom {
-  return $groupChats.get()[group] || { name: group, log: [], watermarks: {}, epoch: 0, running: false }
+export function getGroupRoom(roomKey: string): GroupChatRoom {
+  return $groupChats.get()[roomKey] || stubRoomFromKey(roomKey)
 }
 
 /** Wholesale replace (mirror pull / sync read-back): set + persist. */
@@ -383,7 +429,7 @@ function isDuplicateGroupAppend(
   return String(lastEntry.text || '') === String(text || '').trim()
 }
 
-export function appendGroupChatEntry(group: string, from: GroupMessageAuthor, text: string, thread?: null | string): GroupMessage {
+export function appendGroupChatEntry(roomKey: string, from: GroupMessageAuthor, text: string, thread?: null | string): GroupMessage {
   const entry: GroupMessage = {
     at: Date.now(),
     from,
@@ -391,34 +437,75 @@ export function appendGroupChatEntry(group: string, from: GroupMessageAuthor, te
     text: normalizeGroupChatText(text),
     thread: thread || 'legacy'
   }
-  const priorLog = getGroupRoom(group).log
+  const priorLog = getGroupRoom(roomKey).log
   const lastEntry = priorLog[priorLog.length - 1]
   if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) return lastEntry
 
-  updateGroupChat(group, room => {
+  updateGroupChat(roomKey, room => {
     room.log.push(entry)
     return room
   })
 
-  // Needs-you: a member addressing @user badges the group header.
+  // Needs-you: a member addressing @user badges the room header.
   if (from.kind === 'member' && /@user\b/i.test(entry.text)) {
-    $groupNeedsYou.set({ ...$groupNeedsYou.get(), [group]: true })
+    $groupNeedsYou.set({ ...$groupNeedsYou.get(), [roomKey]: true })
   }
 
   return entry
 }
+
+/** Move one room's runtime feed state to a new room key — the sweep for a
+ *  name-keyed room's remote rename that rides the old envelope key (the
+ *  id-keyed class never moves, so this never fires for it). Appends to the
+ *  target's activity list and never overwrites a non-empty target-side
+ *  entry, so a re-applied merge cannot duplicate or clobber. */
+export function renameRoomState(previousKey: string, nextKey: string): void {
+  if (previousKey === nextKey) return
+
+  const activity = $groupActivity.get()
+  if (activity[previousKey]) {
+    const next = { ...activity }
+    next[nextKey] = [...(next[nextKey] || []), ...next[previousKey]].slice(-GROUP_ACTIVITY_LIMIT)
+    delete next[previousKey]
+    $groupActivity.set(next)
+  }
+
+  const prompts = $groupPrompts.get()
+  const prefix = `${previousKey}::`
+  const moved = Object.entries(prompts).filter(([key]) => key.startsWith(prefix))
+  if (moved.length) {
+    const next = { ...prompts }
+    for (const [key, prompt] of moved) {
+      delete next[key]
+      const targetKey = `${nextKey}${key.slice(previousKey.length)}`
+      if (!next[targetKey]) next[targetKey] = { ...prompt, roomKey: nextKey }
+    }
+    $groupPrompts.set(next)
+  }
+
+  const needsYou = $groupNeedsYou.get()
+  if (Object.prototype.hasOwnProperty.call(needsYou, previousKey)) {
+    const next = { ...needsYou }
+    const value = next[previousKey]
+    delete next[previousKey]
+    if (!next[nextKey]) next[nextKey] = value
+    $groupNeedsYou.set(next)
+  }
+}
+
 /** Adopt a mirror row into the engine store on room open (local, no RPC):
  *  a room this client has never driven starts with watermarks at zero,
  *  exactly like the desktop's mergeRemoteGroupChatSnapshotIntoRooms seeds a
- *  fresh local twin. */
-export function adoptMirrorRoom(room: { log: GroupMessage[]; members: GroupMember[]; name: string; roomId?: null | string }): void {
+ *  fresh local twin. The row is keyed by its durable room key; an `id:`-keyed
+ *  row backfills its roomId from the key so the map-key invariant holds. */
+export function adoptMirrorRoom(room: GroupRoom): void {
   const all = $groupChats.get()
-  if (all[room.name]) return
+  if (all[room.key]) return
   replaceGroupChats({
     ...all,
-    [room.name]: {
+    [room.key]: {
       name: room.name,
-      roomId: room.roomId ?? null,
+      roomId: room.roomId ?? (room.key.startsWith('id:') ? room.key.slice(3) : null),
       log: [...room.log],
       members: [...room.members],
       watermarks: {},

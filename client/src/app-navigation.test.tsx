@@ -198,7 +198,7 @@ describe('App navigation', () => {
     // and a member, or the engine's empty-tombstone filter drops it.
     act(() => {
       $groupChats.set({
-        'Research crew': {
+        'id:r-crew': {
           epoch: 0,
           log: [],
           members: [{ name: 'default' }],

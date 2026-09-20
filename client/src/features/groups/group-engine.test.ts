@@ -96,7 +96,7 @@ describe('lifecycle', () => {
       calls.push({ method, params: params ?? {} })
       return sync(method, params ?? {})
     })
-    updateGroupChat('Room', r => ({
+    updateGroupChat('id:r-1', r => ({
       ...r,
       roomId: 'r-1',
       members: [{ name: 'ada' }],
@@ -115,23 +115,23 @@ describe('lifecycle', () => {
     expect(Object.keys(snapshot.rooms)).toContain('id:r-1')
     // A plain pull through the engine facade confirms the read-back revision.
     openGroupRoom({ key: 'id:r-1', log: [], members: [{ name: 'ada' }], name: 'Room', roomId: 'r-1' })
-    await vi.waitFor(() => expect($groupChats.get().Room.syncRevision).toBe(1))
-    expect($groupChats.get().Room.syncRevision).toBe(1)
+    await vi.waitFor(() => expect($groupChats.get()['id:r-1'].syncRevision).toBe(1))
+    expect($groupChats.get()['id:r-1'].syncRevision).toBe(1)
     // stop clears pending work and the transport
     stopGroupEngine()
-    updateGroupChat('Room', r => r) // scheduler gone — nothing scheduled
+    updateGroupChat('id:r-1', r => r) // scheduler gone — nothing scheduled
     await vi.advanceTimersByTimeAsync(1000)
     expect(calls.filter(call => call.method === 'profiles.configure')).toHaveLength(1)
-    expect(sendToGroupChat('Room', [{ name: 'ada' }], 'after stop')).toBe(null)
-    await stopGroupThread('Room', 't1', [{ name: 'ada' }])
+    expect(sendToGroupChat('id:r-1', [{ name: 'ada' }], 'after stop')).toBe(null)
+    await stopGroupThread('id:r-1', 't1', [{ name: 'ada' }])
     await expect(Promise.resolve()).resolves.toBeUndefined()
   })
 
   it('bumps every room epoch and clears running on scope teardown', () => {
-    replaceGroupChats({ Room: room({ running: true, epoch: 5 }) })
+    replaceGroupChats({ 'name:Room': room({ running: true, epoch: 5 }) })
     startGroupEngine(async () => ({}))
     stopGroupEngine()
-    const stopped = $groupChats.get().Room
+    const stopped = $groupChats.get()['name:Room']
     expect(stopped.running).toBe(false)
     expect(stopped.epoch).toBe(6)
   })
@@ -164,7 +164,7 @@ describe('lifecycle', () => {
     }
 
     startGroupEngine(transport)
-    updateGroupChat('Room', current => ({
+    updateGroupChat('id:r-barrier', current => ({
       ...current,
       roomId: 'r-barrier',
       members: [{ name: 'ada' }],
@@ -210,7 +210,7 @@ describe('lifecycle', () => {
     await vi.waitFor(() => expect(oldCalls).toBe(1))
     stopGroupEngine()
     startGroupEngine(nextTransport)
-    await vi.waitFor(() => expect($groupChats.get().Next).toBeTruthy())
+    await vi.waitFor(() => expect($groupChats.get()['name:Next']).toBeTruthy())
 
     releaseOld({
       profiles: [{
@@ -227,8 +227,8 @@ describe('lifecycle', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect($groupChats.get().Old).toBeUndefined()
-    expect($groupChats.get().Next).toBeTruthy()
+    expect($groupChats.get()['name:Old']).toBeUndefined()
+    expect($groupChats.get()['name:Next']).toBeTruthy()
   })
 
   it('isolates an old member turn when a new lifecycle replaces its transport', async () => {
@@ -249,8 +249,8 @@ describe('lifecycle', () => {
       return {}
     }
     startGroupEngine(oldTransport)
-    replaceGroupChats({ Room: room({ roomId: 'r-old', members: [{ name: 'ada' }] }) })
-    sendToGroupChat('Room', [{ name: 'ada' }], 'old request', 't-old')
+    replaceGroupChats({ 'id:r-old': room({ name: 'Room', roomId: 'r-old', members: [{ name: 'ada' }] }) })
+    sendToGroupChat('id:r-old', [{ name: 'ada' }], 'old request', 't-old')
     await vi.advanceTimersByTimeAsync(2000)
     const oldCallsAtStop = oldMemberCalls
 
@@ -272,11 +272,11 @@ describe('lifecycle', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(oldMemberCalls).toBe(oldCallsAtStop)
-    expect($groupChats.get().Room.log.some(item => item.text === 'old reply')).toBe(false)
+    expect($groupChats.get()['id:r-old'].log.some(item => item.text === 'old reply')).toBe(false)
 
-    sendToGroupChat('Room', [{ name: 'ada' }], 'new request', 't-new')
+    sendToGroupChat('id:r-old', [{ name: 'ada' }], 'new request', 't-new')
     await vi.advanceTimersByTimeAsync(2000)
-    expect($groupChats.get().Room.log.some(item => item.text === 'new reply')).toBe(true)
+    expect($groupChats.get()['id:r-old'].log.some(item => item.text === 'new reply')).toBe(true)
   })
 
   it('keeps a stopped module inert when the same raw transport is reused', async () => {
@@ -307,8 +307,8 @@ describe('lifecycle', () => {
       return {}
     }
     startGroupEngine(transport)
-    replaceGroupChats({ Room: room({ roomId: 'same-transport', members: [{ name: 'ada' }] }) })
-    sendToGroupChat('Room', [{ name: 'ada' }], 'old request', 't-old')
+    replaceGroupChats({ 'id:same-transport': room({ name: 'Room', roomId: 'same-transport', members: [{ name: 'ada' }] }) })
+    sendToGroupChat('id:same-transport', [{ name: 'ada' }], 'old request', 't-old')
     await vi.advanceTimersByTimeAsync(2000)
     const callsAtStop = memberCalls
 
@@ -318,11 +318,11 @@ describe('lifecycle', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(memberCalls).toBe(callsAtStop)
-    expect($groupChats.get().Room.log.some(item => item.text === 'old reply')).toBe(false)
+    expect($groupChats.get()['id:same-transport'].log.some(item => item.text === 'old reply')).toBe(false)
 
-    sendToGroupChat('Room', [{ name: 'ada' }], 'new request', 't-new')
+    sendToGroupChat('id:same-transport', [{ name: 'ada' }], 'new request', 't-new')
     await vi.advanceTimersByTimeAsync(2000)
-    expect($groupChats.get().Room.log.some(item => item.text === 'new lifecycle reply')).toBe(true)
+    expect($groupChats.get()['id:same-transport'].log.some(item => item.text === 'new lifecycle reply')).toBe(true)
   })
 
   it('deactivates delayed drives so they cannot consult the next lifecycle', async () => {
@@ -342,8 +342,8 @@ describe('lifecycle', () => {
       if (method === 'prompt.submit') { oldMemberCalls += 1; return {} }
       return {}
     })
-    sendToGroupChat('Room', [{ name: 'ada' }], 'first', 't1')
-    sendToGroupChat('Room', [{ name: 'ada' }], 'second', 't1')
+    sendToGroupChat('name:Room', [{ name: 'ada' }], 'first', 't1')
+    sendToGroupChat('name:Room', [{ name: 'ada' }], 'second', 't1')
     stopGroupEngine()
     const callsAtStop = oldMemberCalls
     let newResume = 0
@@ -355,14 +355,14 @@ describe('lifecycle', () => {
         : { messages: [{ role: 'assistant', content: 'new lifecycle' }] }
       return {}
     })
-    sendToGroupChat('Room', [{ name: 'ada' }], 'new lifecycle request', 't2')
+    sendToGroupChat('name:Room', [{ name: 'ada' }], 'new lifecycle request', 't2')
     release({ messages: [{ role: 'assistant', content: 'old' }] })
     await vi.advanceTimersByTimeAsync(400)
     expect(oldMemberCalls).toBe(callsAtStop)
-    expect($groupChats.get().Room.log.some(item => item.text === 'old')).toBe(false)
+    expect($groupChats.get()['name:Room'].log.some(item => item.text === 'old')).toBe(false)
     await vi.advanceTimersByTimeAsync(2000)
-    expect($groupChats.get().Room.log.some(item => item.text === 'new lifecycle')).toBe(true)
-    expect($groupChats.get().Room.running).toBe(false)
+    expect($groupChats.get()['name:Room'].log.some(item => item.text === 'new lifecycle')).toBe(true)
+    expect($groupChats.get()['name:Room'].running).toBe(false)
   })
 
   it('harvests an opened room through its captured lifecycle', async () => {
@@ -378,7 +378,8 @@ describe('lifecycle', () => {
       }
       return {}
     })
-    replaceGroupChats({ Room: room({
+    replaceGroupChats({ 'id:r-open': room({
+      name: 'Room',
       roomId: 'r-open',
       sessions: { ada: 'old-stored' },
       stranded: { ada: { before: 0, thread: 't1' } }
@@ -398,24 +399,24 @@ describe('lifecycle', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(newMemberCalls).toBe(0)
-    expect($groupChats.get().Room.log.some(item => item.text === 'old harvest')).toBe(false)
-    expect($groupChats.get().Room.stranded?.ada).toBeTruthy()
+    expect($groupChats.get()['id:r-open'].log.some(item => item.text === 'old harvest')).toBe(false)
+    expect($groupChats.get()['id:r-open'].stranded?.ada).toBeTruthy()
   })
 
   it('fails closed when no lifecycle is active', async () => {
-    replaceGroupChats({ Room: room({ epoch: 2 }) })
-    await stopGroupThread('Room', 't1', [{ name: 'ada' }])
-    expect(sendToGroupChat('Room', [{ name: 'ada' }], 'no transport')).toBe(null)
+    replaceGroupChats({ 'name:Room': room({ epoch: 2 }) })
+    await stopGroupThread('name:Room', 't1', [{ name: 'ada' }])
+    expect(sendToGroupChat('name:Room', [{ name: 'ada' }], 'no transport')).toBe(null)
     const prompt: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
       question: 'old', requestId: 'q1', sessionId: 'rt'
     }
-    $groupPrompts.set({ 'Room::ada': prompt })
-    const before = $groupChats.get().Room
+    $groupPrompts.set({ 'name:Room::ada': prompt })
+    const before = $groupChats.get()['name:Room']
     const answer = await answerGroupPrompt(prompt, { name: 'ada' }, 'yes')
     expect(answer).toBeUndefined()
-    expect($groupPrompts.get()['Room::ada']).toBe(prompt)
-    expect($groupChats.get().Room.epoch).toBe(before.epoch)
+    expect($groupPrompts.get()['name:Room::ada']).toBe(prompt)
+    expect($groupChats.get()['name:Room'].epoch).toBe(before.epoch)
   })
 
   it('routes prompt answers through the active captured member adapter', async () => {
@@ -425,28 +426,28 @@ describe('lifecycle', () => {
       return {}
     })
     const prompt: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
       question: 'Proceed?', requestId: 'q1', sessionId: 'runtime'
     }
-    $groupPrompts.set({ 'Room::ada': prompt })
+    $groupPrompts.set({ 'name:Room::ada': prompt })
     await answerGroupPrompt(prompt, { name: 'ada' }, 'yes')
     expect(calls).toContainEqual({
       method: 'clarify.respond',
       params: { request_id: 'q1', answer: 'yes', profile: 'ada' }
     })
-    expect($groupPrompts.get()['Room::ada']).toBeUndefined()
+    expect($groupPrompts.get()['name:Room::ada']).toBeUndefined()
   })
 
   it('tears down the old lifecycle on a repeated start', async () => {
     const firstTransport = async () => ({})
-    replaceGroupChats({ Room: room({ epoch: 5, running: true }) })
+    replaceGroupChats({ 'name:Room': room({ epoch: 5, running: true }) })
     startGroupEngine(firstTransport)
 
     let secondRead!: (value: unknown) => void
     const secondPending = new Promise<unknown>(resolve => { secondRead = resolve })
     startGroupEngine(async method => method === 'profiles.list' ? secondPending : {})
 
-    expect($groupChats.get().Room).toMatchObject({ epoch: 6, running: false })
+    expect($groupChats.get()['name:Room']).toMatchObject({ epoch: 6, running: false })
     secondRead({ profiles: [{ name: 'default', ui_meta: {}, ui_meta_revisions: {} }] })
     await Promise.resolve()
   })
@@ -485,13 +486,13 @@ describe('full round', () => {
   it('delivers a member reply, advances watermarks, and fires the mirror flush', async () => {
     vi.useFakeTimers()
     installRoundTransport('Found three candidates in the specs.')
-    replaceGroupChats({ Room: room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }) })
-    const thread = sendToGroupChat('Room', [{ name: 'ada' }], 'hello @ada')
+    replaceGroupChats({ 'id:r-1': room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }) })
+    const thread = sendToGroupChat('id:r-1', [{ name: 'ada' }], 'hello @ada')
     expect(thread).not.toBeNull()
     await vi.advanceTimersByTimeAsync(2000) // turn poll → reply lands
     await vi.advanceTimersByTimeAsync(2000) // next round boundary → settle
 
-    const driven = $groupChats.get().Room
+    const driven = $groupChats.get()['id:r-1']
     const replies = driven.log.filter(entry => entry.from.kind === 'member')
     expect(replies).toHaveLength(1)
     expect(replies[0].text).toBe('Found three candidates in the specs.')
@@ -501,7 +502,7 @@ describe('full round', () => {
     const submit = calls.find(call => call.method === 'prompt.submit')
     expect(submit?.params.profile).toBe('ada')
     // Activity: queued → working → replied → settled.
-    expect($groupActivity.get().Room.map(entry => entry.kind)).toEqual(['queued', 'working', 'replied', 'settled'])
+    expect($groupActivity.get()['id:r-1'].map(entry => entry.kind)).toEqual(['queued', 'working', 'replied', 'settled'])
     // The mirror flush published through the injected transport.
     expect(calls.some(call => call.method === 'profiles.configure')).toBe(true)
   })
@@ -509,13 +510,13 @@ describe('full round', () => {
   it('records a "(pass)" reply as silence and appends nothing', async () => {
     vi.useFakeTimers()
     installRoundTransport('(pass)')
-    replaceGroupChats({ Room: room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }) })
-    sendToGroupChat('Room', [{ name: 'ada' }], 'hello @ada')
+    replaceGroupChats({ 'id:r-1': room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }) })
+    sendToGroupChat('id:r-1', [{ name: 'ada' }], 'hello @ada')
     await vi.advanceTimersByTimeAsync(2000)
     await vi.advanceTimersByTimeAsync(2000)
-    const driven = $groupChats.get().Room
+    const driven = $groupChats.get()['id:r-1']
     expect(driven.log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
-    expect($groupActivity.get().Room.map(entry => entry.kind)).toEqual(['queued', 'working', 'passed', 'settled'])
+    expect($groupActivity.get()['id:r-1'].map(entry => entry.kind)).toEqual(['queued', 'working', 'passed', 'settled'])
   })
 })
 
@@ -527,7 +528,7 @@ describe('stopGroupThread', () => {
       return sync(method, params ?? {})
     })
     replaceGroupChats({
-      Room: room({
+      'name:Room': room({
         running: true,
         epoch: 2,
         turn: 'ada',
@@ -536,8 +537,8 @@ describe('stopGroupThread', () => {
         log: [userEntry('go', 1, 't1')]
       })
     })
-    await stopGroupThread('Room', 't1', [{ name: 'ada' }, { name: 'scout' }])
-    const stopped = $groupChats.get().Room
+    await stopGroupThread('name:Room', 't1', [{ name: 'ada' }, { name: 'scout' }])
+    const stopped = $groupChats.get()['name:Room']
     expect(stopped.epoch).toBe(3)
     expect(stopped.running).toBe(false)
     expect(stopped.turn).toBeNull()
@@ -559,13 +560,13 @@ describe('groupRoomsView', () => {
     }
     const view = groupRoomsView([rosterRoom], {
       // Same durable key — the roster's richer copy wins.
-      Room: room({ name: 'Room', roomId: 'r-1', log: [] }),
+      'id:r-1': room({ name: 'Room', roomId: 'r-1', log: [] }),
       // Empty tombstone: no transcript, no durable identity — filtered.
-      Ghost: room({ name: 'Ghost', log: [] }),
+      'name:Ghost': room({ name: 'Ghost', log: [] }),
       // Just-created: durable identity + members with an empty log — retained.
-      'Just created': room({ name: 'Just created', roomId: 'r-2', members: [{ name: 'a' }] }),
+      'id:r-2': room({ name: 'Just created', roomId: 'r-2', members: [{ name: 'a' }] }),
       // Local-only named room with transcript — included under its name key.
-      Local: room({ name: 'Local', log: [userEntry('hi', 1, 'legacy')] })
+      'name:Local': room({ name: 'Local', log: [userEntry('hi', 1, 'legacy')] })
     })
     expect(view.map(entry => entry.key).sort()).toEqual(['Ghost-undefined', 'id:r-1', 'id:r-2', 'name:Local'].filter(k => k !== 'Ghost-undefined'))
     expect(view.find(entry => entry.key === 'id:r-1')?.log[0].text).toBe('from the gateway')
@@ -586,8 +587,8 @@ describe('useGroupRooms', () => {
 
   it('publishes the merged view with roster data; provider-free callers read the last view', () => {
     replaceGroupChats({
-      Room: room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }),
-      Ghost: room({ name: 'Ghost', log: [] })
+      'id:r-1': room({ name: 'Room', roomId: 'r-1', members: [{ name: 'ada' }] }),
+      'name:Ghost': room({ name: 'Ghost', log: [] })
     })
     render(
       createElement(Fragment, null, createElement(Publisher, { roster: [] }), createElement(Reader))

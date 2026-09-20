@@ -34,7 +34,6 @@ import {
 import {
   createGroupMirror,
   createGroupMirrorGateway,
-  groupChatRoomKey,
   type GroupMirror
 } from './groups-sync'
 import { createGroupRoundDriver, type GroupRoundDriver } from './group-rounds'
@@ -100,7 +99,7 @@ export function openGroupRoom(room: GroupRoom): void {
   const mirror = activeMirror
   const turns = activeTurns
   if (mirror) void mirror.pull().catch(() => undefined)
-  if (turns) void turns.harvestRoom(room.name, room.members).catch(() => undefined)
+  if (turns) void turns.harvestRoom(room.key, room.members).catch(() => undefined)
 }
 
 /** Mint a durable room identity, keep the display name unique, write the room,
@@ -112,7 +111,7 @@ export function createGroupChat(
 ): GroupRoom {
   const name = uniqueGroupChatName(baseName, takenNames)
   const roomId = mintGroupRoomId()
-  updateGroupChat(name, room => ({ ...room, members, name, roomId }))
+  updateGroupChat(`id:${roomId}`, room => ({ ...room, members, name, roomId }))
   return { key: `id:${roomId}`, log: [], members, name, roomId }
 }
 
@@ -127,12 +126,12 @@ const EMPTY_ROOMS: GroupRoom[] = []
  *  The one merge, behind one pure function. */
 export function groupRoomsView(rosterGroups: GroupRoom[], localRooms: Record<string, GroupChatRoom>): GroupRoom[] {
   const merged = new Map(rosterGroups.map(room => [room.key, room]))
-  for (const room of Object.values(localRooms)) {
+  for (const [key, room] of Object.entries(localRooms)) {
     // Empty runtime tombstones (no transcript, no durable identity) never
     // render — the create dialog always sets roomId and members, so a
     // just-created room is retained.
     if (room.log.length === 0 && (!room.roomId || room.members.length === 0)) continue
-    const key = groupChatRoomKey(room.name, room)
+    // The map key now IS the durable room key; trust it instead of recomputing.
     if (merged.has(key)) continue
     merged.set(key, {
       key,
@@ -179,13 +178,13 @@ export { $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_MEMBERS, getGroupRoom } fro
 export { $groupActivity, $groupPrompts } from './group-store'
 // --- Actions — thin wrappers over the active captured lifecycle. ------------
 
-export function sendToGroupChat(group: string, members: EngineMember[], text: string, thread?: null | string): null | string {
-  return activeDriver ? activeDriver.sendToGroupChat(group, members, text, thread) : null
+export function sendToGroupChat(roomKey: string, members: EngineMember[], text: string, thread?: null | string): null | string {
+  return activeDriver ? activeDriver.sendToGroupChat(roomKey, members, text, thread) : null
 }
 
-export async function stopGroupThread(group: string, thread: null | string, members: EngineMember[] | null = null): Promise<void> {
+export async function stopGroupThread(roomKey: string, thread: null | string, members: EngineMember[] | null = null): Promise<void> {
   if (!activeDriver) return
-  await activeDriver.stopGroupThread(group, thread, members)
+  await activeDriver.stopGroupThread(roomKey, thread, members)
 }
 
 export async function answerGroupPrompt(

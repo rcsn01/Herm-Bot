@@ -68,6 +68,17 @@ export function groupMemberKey(member: GroupMember | EngineMember): string {
   return member?.connectionId ? `${member.connectionId}::${member.name}` : member?.name
 }
 
+/** Durable room identity, shared with the mirror's wire projection:
+ *  `id:<roomId>` when the room carries one (a display-name rename is then a
+ *  field update — the map key, the feed atoms, and the mirror entry never
+ *  move), `name:<name>` otherwise. The local store's map key, the runtime
+ *  feed atoms, and the sync snapshot all key rooms by it. Computed locally
+ *  from the room row; the `name:` class is the escape hatch for desktop
+ *  rooms that never carried a roomId. */
+export function groupRoomKey(name: string, room: { roomId?: null | string }): string {
+  return typeof room?.roomId === 'string' && room.roomId ? `id:${room.roomId}` : `name:${String(name)}`
+}
+
 /** Room-log author → member key. Matches members by name; a lone match wins.
  *  Same-named members disambiguate by the author's source label
  *  (connectionLabel || connectionId): exactly one source match wins, an

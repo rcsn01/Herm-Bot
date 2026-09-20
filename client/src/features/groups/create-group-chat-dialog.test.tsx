@@ -63,8 +63,8 @@ describe('create group chat dialog', () => {
     expect(onCreated).toHaveBeenCalledOnce()
     const room = onCreated.mock.calls[0][0]
     expect(room).toEqual(expect.objectContaining({ key: expect.stringMatching(/^id:r/), members: [{ name: 'default' }, { name: 'work' }], name: 'Research team' }))
-    expect($groupChats.get()['Research team']).toEqual(expect.objectContaining({ members: [{ name: 'default' }, { name: 'work' }], roomId: room.roomId }))
-    expect(JSON.parse(localStorage.getItem('hermes.group-chats.v2') || '{}')['Research team']).toEqual(expect.objectContaining({ members: [{ name: 'default' }, { name: 'work' }], roomId: room.roomId }))
+    expect($groupChats.get()[room.key]).toEqual(expect.objectContaining({ members: [{ name: 'default' }, { name: 'work' }], roomId: room.roomId }))
+    expect(JSON.parse(localStorage.getItem('hermes.group-chats.v3') || '{}')[room.key]).toEqual(expect.objectContaining({ members: [{ name: 'default' }, { name: 'work' }], roomId: room.roomId }))
   })
 
   it('requires at least two selected bots', async () => {

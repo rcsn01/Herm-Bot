@@ -56,12 +56,12 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 }
 
 function runInput(thread = 't1') {
-  return { group: 'Room', member: MEMBER, prompt: 'room delta', thread }
+  return { roomKey: 'name:Room', member: MEMBER, prompt: 'room delta', thread }
 }
 
 beforeEach(() => {
   localStorage.clear()
-  replaceGroupChats({ Room: room() })
+  replaceGroupChats({ 'name:Room': room() })
   $groupPrompts.set({})
   $groupActivity.set({})
   $groupNeedsYou.set({})
@@ -165,10 +165,10 @@ describe('session resolution and member results', () => {
       }
       return {}
     })
-    replaceGroupChats({ Room: room({ roomId: 'r-1' }) })
+    replaceGroupChats({ 'id:r-1': room({ name: 'Room', roomId: 'r-1' }) })
     vi.useFakeTimers()
 
-    const promise = turns.run(runInput())
+    const promise = turns.run({ ...runInput(), roomKey: 'id:r-1' })
     await vi.advanceTimersByTimeAsync(2000)
     const result = await promise
 
@@ -179,11 +179,41 @@ describe('session resolution and member results', () => {
       room_plumbing: true,
       follow_profile_config: true
     })
-    expect($groupChats.get().Room.sessions?.research).toBe('stored-created')
+    expect($groupChats.get()['id:r-1'].sessions?.research).toBe('stored-created')
+  })
+
+  it('titles a name-keyed room by its display name, never the room key', async () => {
+    const created: Record<string, unknown> = {}
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
+        throw Object.assign(new Error('gone'), { code: 4007 })
+      }
+      if (method === 'session.create') {
+        Object.assign(created, params)
+        return { session_id: 'rt-created' }
+      }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [{ role: 'assistant', content: 'done' }] }
+      }
+      return {}
+    })
+    vi.useFakeTimers()
+
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await promise
+
+    expect(result.kind).toBe('reply')
+    expect(created).toMatchObject({ title: 'Group: Room' })
   })
 
   it('resumes a stored member session and persists its returned key', async () => {
-    replaceGroupChats({ Room: room({ sessions: { research: 'stored-old' } }) })
+    replaceGroupChats({ 'name:Room': room({ sessions: { research: 'stored-old' } }) })
     let baseline = true
     const { turns } = makeModule(async (_member, method, params) => {
       if (method === 'session.resume' && params.omit_messages) {
@@ -204,7 +234,7 @@ describe('session resolution and member results', () => {
     await vi.advanceTimersByTimeAsync(2000)
     const result = await promise
     expect(result.kind).toBe('pass')
-    expect($groupChats.get().Room.sessions?.research).toBe('stored-new')
+    expect($groupChats.get()['name:Room'].sessions?.research).toBe('stored-new')
     expect(calls.filter(call => call.method === 'session.create')).toHaveLength(0)
   })
 
@@ -253,10 +283,10 @@ describe('session resolution and member results', () => {
       }
       return {}
     })
-    replaceGroupChats({ Room: room({ roomId: 'r-2', sessions: { research: 'stored-old' } }) })
+    replaceGroupChats({ 'id:r-2': room({ name: 'Room', roomId: 'r-2', sessions: { research: 'stored-old' } }) })
     vi.useFakeTimers()
 
-    const promise = turns.run(runInput())
+    const promise = turns.run({ ...runInput(), roomKey: 'id:r-2' })
     await vi.advanceTimersByTimeAsync(2000)
     const result = await promise
 
@@ -308,7 +338,7 @@ describe('session resolution and member results', () => {
 
     const entry: GroupPrompt = {
       at: Date.now(),
-      group: 'Room',
+      roomKey: 'name:Room',
       member: 'research',
       memberKey: 'research',
       kind: 'clarify',
@@ -345,10 +375,10 @@ describe('prompt ownership and answers', () => {
 
     const promise = turns.run(runInput())
     await vi.advanceTimersByTimeAsync(2000)
-    const key = 'Room::research'
+    const key = 'name:Room::research'
     const first = $groupPrompts.get()[key]
     expect(first?.requestId).toBe('q1')
-    expect($groupNeedsYou.get().Room).toBe(true)
+    expect($groupNeedsYou.get()['name:Room']).toBe(true)
     const sameModuleAnswer = turns.answer(first!, MEMBER, 'ops')
     await sameModuleAnswer
     expect(calls.some(call => call.method === 'clarify.respond')).toBe(true)
@@ -359,22 +389,22 @@ describe('prompt ownership and answers', () => {
   it('routes clarify batches and approvals through the captured gateway', async () => {
     const { turns } = makeModule(async () => ({}))
     const clarify: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
       question: '', requestId: 'batch', sessionId: 'rt', questions: [{ qid: 'a' }, { id: 'b' }]
     }
-    $groupPrompts.set({ 'Room::research': clarify })
+    $groupPrompts.set({ 'name:Room::research': clarify })
     await turns.answer(clarify, MEMBER, { a: 'one', b: 'two' })
     expect(calls.filter(call => call.method === 'clarify.respond').map(call => call.params)).toEqual([
       { request_id: 'batch', question_id: 'a', answer: 'one' },
       { request_id: 'batch', question_id: 'b', answer: 'two' }
     ])
-    expect($groupPrompts.get()['Room::research']).toBeUndefined()
+    expect($groupPrompts.get()['name:Room::research']).toBeUndefined()
 
     const approval: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'approval',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'approval',
       question: '', requestId: 'approval', sessionId: 'rt', choices: ['once', 'deny']
     }
-    $groupPrompts.set({ 'Room::research': approval })
+    $groupPrompts.set({ 'name:Room::research': approval })
     await turns.answer(approval, MEMBER, 'once')
     expect(calls.find(call => call.method === 'approval.respond')?.params).toEqual({
       session_id: 'rt', request_id: 'approval', choice: 'once'
@@ -384,34 +414,34 @@ describe('prompt ownership and answers', () => {
   it('does not clear a newer prompt when an answer settles after stop', async () => {
     const response = deferred<unknown>()
     const entry: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
     const newer = { ...entry, requestId: 'new', question: 'New?' }
-    $groupPrompts.set({ 'Room::research': newer })
+    $groupPrompts.set({ 'name:Room::research': newer })
     const { turns } = makeModule(async () => response.promise)
     const answer = turns.answer(entry, MEMBER, 'yes')
     await Promise.resolve()
     turns.stop()
     response.resolve({})
     await answer
-    expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
+    expect($groupPrompts.get()['name:Room::research']?.requestId).toBe('new')
   })
 
   it('does not clear a prompt replaced while an answer is in flight', async () => {
     const response = deferred<unknown>()
     const entry: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
     const { turns } = makeModule(async () => response.promise)
-    $groupPrompts.set({ 'Room::research': entry })
+    $groupPrompts.set({ 'name:Room::research': entry })
     const answer = turns.answer(entry, MEMBER, 'yes')
     await Promise.resolve()
-    $groupPrompts.set({ 'Room::research': { ...entry, requestId: 'new', question: 'New?' } })
+    $groupPrompts.set({ 'name:Room::research': { ...entry, requestId: 'new', question: 'New?' } })
     response.resolve({})
     await answer
-    expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
+    expect($groupPrompts.get()['name:Room::research']?.requestId).toBe('new')
   })
 })
 
@@ -439,7 +469,7 @@ describe('stale results and lifecycle ownership', () => {
     const promise = turns.run(runInput())
     await vi.advanceTimersByTimeAsync(2000)
     const callsAtHold = calls.length
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       holds: { research: { at: Date.now(), thread: 't1' } }
@@ -456,7 +486,7 @@ describe('stale results and lifecycle ownership', () => {
     const { turns, poll } = deferredPollModule()
     const promise = turns.run(runInput())
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       log: [...r.log, { id: 'new-user', at: Date.now(), from: { kind: 'user', name: 'You' }, text: 'new', thread: 't1' }]
@@ -465,7 +495,7 @@ describe('stale results and lifecycle ownership', () => {
     const result = await promise
     expect(result).toMatchObject({ kind: 'cancelled', reason: 'newer-user' })
     expect(result.commit()).toEqual({ accepted: false, reason: 'newer-user' })
-    expect($groupChats.get().Room.watermarks).toEqual({})
+    expect($groupChats.get()['name:Room'].watermarks).toEqual({})
   })
 
   it('accepts a normal-loop cross-thread late result', async () => {
@@ -473,7 +503,7 @@ describe('stale results and lifecycle ownership', () => {
     const { turns, poll } = deferredPollModule()
     const promise = turns.run(runInput('t1'))
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       log: [...r.log, { id: 'other-thread', at: Date.now(), from: { kind: 'user', name: 'You' }, text: 'other', thread: 't2' }]
@@ -491,7 +521,7 @@ describe('stale results and lifecycle ownership', () => {
     await vi.advanceTimersByTimeAsync(2000)
     poll.resolve({ messages: [{ role: 'assistant', content: 'answer' }] })
     const result = await promise
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       log: [...r.log, { id: 'later', at: Date.now(), from: { kind: 'user', name: 'You' }, text: 'later', thread: 't1' }]
@@ -527,7 +557,7 @@ describe('stale results and lifecycle ownership', () => {
     await vi.advanceTimersByTimeAsync(20 * 60000 + 2000)
     const timedOut = await timeoutPromise
     expect(timedOut.kind).toBe('timed-out')
-    expect($groupChats.get().Room.stranded?.research).toEqual({ before: 0, thread: 'late' })
+    expect($groupChats.get()['name:Room'].stranded?.research).toEqual({ before: 0, thread: 'late' })
     timedOutTurns.stop()
     expect(timedOut.commit()).toEqual({ accepted: false, reason: 'engine-stopped' })
   })
@@ -542,7 +572,7 @@ describe('stale results and lifecycle ownership', () => {
     const result = await promise
     expect(result).toMatchObject({ kind: 'cancelled', reason: 'engine-stopped' })
     expect(calls).toHaveLength(1)
-    expect($groupChats.get().Room.sessions).toBeUndefined()
+    expect($groupChats.get()['name:Room'].sessions).toBeUndefined()
     expect($groupPrompts.get()).toEqual({})
   })
 
@@ -570,10 +600,10 @@ describe('stale results and lifecycle ownership', () => {
     expect(result).toMatchObject({ kind: 'cancelled', reason: 'engine-stopped' })
     expect(calls.length).toBe(callsAtStop)
     expect(calls.some(call => call.method === 'session.interrupt')).toBe(false)
-    expect($groupChats.get().Room.sessions).toBeUndefined()
-    expect($groupChats.get().Room.stranded).toBeUndefined()
-    expect($groupChats.get().Room.log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
-    expect($groupActivity.get().Room?.filter(entry => entry.kind !== 'working')).toEqual([])
+    expect($groupChats.get()['name:Room'].sessions).toBeUndefined()
+    expect($groupChats.get()['name:Room'].stranded).toBeUndefined()
+    expect($groupChats.get()['name:Room'].log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
+    expect($groupActivity.get()['name:Room']?.filter(entry => entry.kind !== 'working')).toEqual([])
   })
 
   it('does not submit after a room stop during the baseline resume', async () => {
@@ -588,7 +618,7 @@ describe('stale results and lifecycle ownership', () => {
     const promise = turns.run(runInput())
     await Promise.resolve()
     await Promise.resolve()
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: r.epoch + 1,
       holds: { research: { at: Date.now(), thread: 't1' } }
@@ -604,7 +634,7 @@ describe('stale results and lifecycle ownership', () => {
     const { turns, poll } = deferredPollModule()
     const promise = turns.run(runInput())
     await vi.advanceTimersByTimeAsync(2000)
-    await turns.harvest('Room', MEMBER)
+    await turns.harvest('name:Room', MEMBER)
     poll.resolve({ messages: [{ role: 'assistant', content: 'reply' }] })
     expect((await promise).kind).toBe('reply')
   })
@@ -612,16 +642,16 @@ describe('stale results and lifecycle ownership', () => {
   it('keeps a replacement stranded marker when an older harvest resolves', async () => {
     const oldMarker = { before: 0, thread: 'old' }
     const read = deferred<unknown>()
-    replaceGroupChats({ Room: room({ stranded: { research: oldMarker }, sessions: { research: 'stored' } }) })
+    replaceGroupChats({ 'name:Room': room({ stranded: { research: oldMarker }, sessions: { research: 'stored' } }) })
     const { turns } = makeModule(async () => read.promise)
-    const harvest = turns.harvest('Room', MEMBER)
+    const harvest = turns.harvest('name:Room', MEMBER)
     await Promise.resolve()
     const replacement = { before: 2, thread: 'new' }
-    updateGroupChat('Room', r => ({ ...r, stranded: { research: replacement } }))
+    updateGroupChat('name:Room', r => ({ ...r, stranded: { research: replacement } }))
     read.resolve({ messages: [{ role: 'assistant', content: 'old reply' }] })
     await harvest
-    expect($groupChats.get().Room.stranded?.research).toEqual(replacement)
-    expect($groupChats.get().Room.log).toHaveLength(0)
+    expect($groupChats.get()['name:Room'].stranded?.research).toEqual(replacement)
+    expect($groupChats.get()['name:Room'].log).toHaveLength(0)
   })
 
   it('does not let an older poll clear a newer prompt after token ownership changes', async () => {
@@ -641,23 +671,23 @@ describe('stale results and lifecycle ownership', () => {
     })
     const promise = turns.run(runInput())
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       sessions: { research: 'stored' },
       stranded: { research: { before: 0, thread: 't1' } }
     }))
-    const harvest = turns.harvest('Room', MEMBER)
+    const harvest = turns.harvest('name:Room', MEMBER)
     await Promise.resolve()
     const newer: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
       question: 'New?', requestId: 'new', sessionId: 'rt'
     }
-    $groupPrompts.set({ 'Room::research': newer })
+    $groupPrompts.set({ 'name:Room::research': newer })
     oldPoll.resolve({ pending_clarify: null, messages: [{ role: 'assistant', content: 'old' }] })
     const result = await promise
     expect(result.kind).toBe('cancelled')
     expect(result.commit()).toEqual({ accepted: false, reason: 'engine-stopped' })
-    expect($groupPrompts.get()['Room::research']).toBe(newer)
+    expect($groupPrompts.get()['name:Room::research']).toBe(newer)
     harvestRead.resolve({ messages: [], running: true })
     await harvest
     expect(resumeCount).toBe(3)
@@ -685,19 +715,19 @@ describe('timeouts and stranded harvest', () => {
     await vi.advanceTimersByTimeAsync(20 * 60000 + 2000)
     const result = await promise
     expect(result.kind).toBe('timed-out')
-    expect($groupChats.get().Room.stranded?.research).toEqual({ before: 0, thread: 'late' })
+    expect($groupChats.get()['name:Room'].stranded?.research).toEqual({ before: 0, thread: 'late' })
   })
 
   it('harvests a legacy zero baseline marker', async () => {
-    replaceGroupChats({ Room: room({ stranded: { research: 0 }, sessions: { research: 'stored' } }) })
+    replaceGroupChats({ 'name:Room': room({ stranded: { research: 0 }, sessions: { research: 'stored' } }) })
     const { turns } = makeModule(async () => ({ messages: [{ role: 'assistant', content: 'zero baseline reply' }] }))
-    await turns.harvest('Room', MEMBER)
-    expect($groupChats.get().Room.stranded?.research).toBeUndefined()
-    expect($groupChats.get().Room.log.find(entry => entry.text === 'zero baseline reply')).toBeTruthy()
+    await turns.harvest('name:Room', MEMBER)
+    expect($groupChats.get()['name:Room'].stranded?.research).toBeUndefined()
+    expect($groupChats.get()['name:Room'].log.find(entry => entry.text === 'zero baseline reply')).toBeTruthy()
   })
 
   it('harvests a late substantive reply into its original thread and watermark', async () => {
-    replaceGroupChats({ Room: room({
+    replaceGroupChats({ 'name:Room': room({
       sessions: { research: 'stored' },
       stranded: { research: { before: 1, thread: 'late-thread' } },
       log: [{ id: 'user', at: 1, from: { kind: 'user', name: 'You' }, text: 'ask', thread: 'late-thread' }]
@@ -709,8 +739,8 @@ describe('timeouts and stranded harvest', () => {
       ],
       running: false
     }))
-    await turns.harvest('Room', MEMBER)
-    const result = $groupChats.get().Room
+    await turns.harvest('name:Room', MEMBER)
+    const result = $groupChats.get()['name:Room']
     expect(result.stranded?.research).toBeUndefined()
     expect(result.log.find(entry => entry.from.kind === 'member')).toMatchObject({ text: 'finished late', thread: 'late-thread' })
     expect(result.watermarks['late-thread::research']).toBe(result.log.length)
@@ -719,40 +749,40 @@ describe('timeouts and stranded harvest', () => {
   it('clears the prompt observed by a harvest but retains a newer prompt', async () => {
     const marker = { before: 0, thread: 't1' }
     const oldPrompt: GroupPrompt = {
-      at: Date.now(), group: 'Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
-    replaceGroupChats({ Room: room({ stranded: { research: marker }, sessions: { research: 'stored' } }) })
-    $groupPrompts.set({ 'Room::research': oldPrompt })
+    replaceGroupChats({ 'name:Room': room({ stranded: { research: marker }, sessions: { research: 'stored' } }) })
+    $groupPrompts.set({ 'name:Room::research': oldPrompt })
     const first = makeModule(async () => ({ messages: [], running: false })).turns
-    await first.harvest('Room', MEMBER)
-    expect($groupPrompts.get()['Room::research']).toBeUndefined()
-    expect($groupChats.get().Room.stranded?.research).toBeUndefined()
+    await first.harvest('name:Room', MEMBER)
+    expect($groupPrompts.get()['name:Room::research']).toBeUndefined()
+    expect($groupChats.get()['name:Room'].stranded?.research).toBeUndefined()
 
     const read = deferred<unknown>()
     const newerMarker = { before: 0, thread: 't2' }
-    replaceGroupChats({ Room: room({ stranded: { research: newerMarker }, sessions: { research: 'stored' } }) })
-    $groupPrompts.set({ 'Room::research': oldPrompt })
+    replaceGroupChats({ 'name:Room': room({ stranded: { research: newerMarker }, sessions: { research: 'stored' } }) })
+    $groupPrompts.set({ 'name:Room::research': oldPrompt })
     const second = makeModule(async () => read.promise).turns
-    const harvest = second.harvest('Room', MEMBER)
+    const harvest = second.harvest('name:Room', MEMBER)
     await Promise.resolve()
     const newerPrompt = { ...oldPrompt, requestId: 'new', question: 'New?' }
-    $groupPrompts.set({ 'Room::research': newerPrompt })
+    $groupPrompts.set({ 'name:Room::research': newerPrompt })
     read.resolve({ messages: [], running: false })
     await harvest
-    expect($groupPrompts.get()['Room::research']?.requestId).toBe('new')
-    expect($groupChats.get().Room.stranded?.research).toEqual(newerMarker)
+    expect($groupPrompts.get()['name:Room::research']?.requestId).toBe('new')
+    expect($groupChats.get()['name:Room'].stranded?.research).toEqual(newerMarker)
   })
 
   it('keeps a stranded marker for unreachable or still-working sessions', async () => {
-    replaceGroupChats({ Room: room({ stranded: { research: { before: 0, thread: 't1' } } }) })
+    replaceGroupChats({ 'name:Room': room({ stranded: { research: { before: 0, thread: 't1' } } }) })
     const unreachable = makeModule(async () => { throw new Error('unreachable') }).turns
-    await unreachable.harvest('Room', MEMBER)
-    expect($groupChats.get().Room.stranded?.research).toBeTruthy()
+    await unreachable.harvest('name:Room', MEMBER)
+    expect($groupChats.get()['name:Room'].stranded?.research).toBeTruthy()
 
     const working = makeModule(async () => ({ running: true, messages: [] })).turns
-    await working.harvest('Room', MEMBER)
-    expect($groupChats.get().Room.stranded?.research).toBeTruthy()
+    await working.harvest('name:Room', MEMBER)
+    expect($groupChats.get()['name:Room'].stranded?.research).toBeTruthy()
   })
 })
 
@@ -763,11 +793,11 @@ describe('drive step and publication', () => {
 
   function turnSpec(policy: GroupTurnPolicy = 'round', overrides: Partial<GroupTurnSpec> = {}): GroupTurnSpec {
     return {
-      group: 'Room',
+      roomKey: 'name:Room',
       thread: 't1',
       member: MEMBER,
       members: [MEMBER],
-      driveEpoch: $groupChats.get().Room?.epoch || 0,
+      driveEpoch: $groupChats.get()['name:Room']?.epoch || 0,
       policy,
       ...overrides
     }
@@ -812,23 +842,23 @@ describe('drive step and publication', () => {
   }
 
   it('publishes only after an accepted reply lease and advances the member watermark', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('investigate', 't9', 'u9')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('investigate', 't9', 'u9')] }) })
     vi.useFakeTimers()
     const { turns } = makeModule(replyHandler('found the bug'))
     const promise = turns.takeTurn(turnSpec('round', { thread: 't9' }))
     await vi.advanceTimersByTimeAsync(2000)
     const report = await promise
     expect(report).toEqual({ abandoned: false, spoke: true, stop: false })
-    const result = $groupChats.get().Room
+    const result = $groupChats.get()['name:Room']
     expect(result.log.find(item => item.from.kind === 'member')).toMatchObject({ text: 'found the bug', thread: 't9' })
     expect(result.watermarks['t9::research']).toBe(result.log.length)
-    expect($groupActivity.get().Room.map(item => item.kind)).toContain('replied')
+    expect($groupActivity.get()['name:Room'].map(item => item.kind)).toContain('replied')
   })
 
   it('keys watermarks, sessions, and holds per connection for same-named members', async () => {
     const researchA: GroupMember = { name: 'research', connectionId: 'gw-1', connectionLabel: 'gw-1', sourceScoped: true }
     const researchB: GroupMember = { name: 'research', connectionId: 'gw-2', connectionLabel: 'gw-2', sourceScoped: true }
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     const submitted = new Set<string>()
     const { turns } = makeModule((member, method, params) => {
       if (method === 'session.resume' && params.omit_messages) return { session_id: 'rt', session_key: 'stored' }
@@ -848,52 +878,52 @@ describe('drive step and publication', () => {
     const second = await turns.takeTurn(turnSpec('round', { member: researchB, members: [researchA, researchB] }))
     expect(first).toEqual({ abandoned: false, spoke: true, stop: false })
     expect(second).toEqual({ abandoned: false, spoke: true, stop: false })
-    const driven = $groupChats.get().Room
+    const driven = $groupChats.get()['name:Room']
     expect(Object.keys(driven.sessions || {}).sort()).toEqual(['gw-1::research', 'gw-2::research'])
 
     // A hold under one member's key consumes only that member's delta.
-    updateGroupChat('Room', r => ({ ...r, holds: { 'gw-1::research': { at: 1, byMessageId: null, thread: 't1' } } }))
+    updateGroupChat('name:Room', r => ({ ...r, holds: { 'gw-1::research': { at: 1, byMessageId: null, thread: 't1' } } }))
     const heldA = await turns.takeTurn(turnSpec('round', { member: researchA, members: [researchA, researchB] }))
     expect(heldA).toEqual({ abandoned: false, spoke: false, stop: false })
-    const afterHold = $groupChats.get().Room
+    const afterHold = $groupChats.get()['name:Room']
     expect(afterHold.log.filter(entry => entry.from.kind === 'member')).toHaveLength(2)
     expect(afterHold.watermarks['t1::gw-1::research']).toBe(afterHold.log.length)
     expect(afterHold.watermarks['t1::gw-2::research']).toBe(afterHold.log.length)
   })
 
   it('treats a failed result as silence but records its reason in the normal loop', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('fyi')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('fyi')] }) })
     const { turns } = makeModule(failingHandler)
     const report = await turns.takeTurn(turnSpec('round'))
     expect(report).toEqual({ abandoned: false, spoke: false, stop: false })
-    const result = $groupChats.get().Room
+    const result = $groupChats.get()['name:Room']
     expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
     expect(result.watermarks['t1::research']).toBe(result.log.length)
-    const failed = $groupActivity.get().Room.find(item => item.kind === 'failed')
+    const failed = $groupActivity.get()['name:Room'].find(item => item.kind === 'failed')
     expect(failed?.reason).toBe('gateway hiccup')
   })
 
   it('records a failed reason in the normal loop but hides it for continuation failures', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     const normal = makeModule(failingHandler).turns
     await normal.takeTurn(turnSpec('round'))
-    expect($groupActivity.get().Room.find(item => item.kind === 'failed')?.reason).toBe('gateway hiccup')
+    expect($groupActivity.get()['name:Room'].find(item => item.kind === 'failed')?.reason).toBe('gateway hiccup')
 
     $groupActivity.set({})
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     const continuation = makeModule(failingHandler).turns
     await continuation.takeTurn(turnSpec('continuation'))
-    expect($groupActivity.get().Room.find(item => item.kind === 'failed')?.reason).toBeUndefined()
+    expect($groupActivity.get()['name:Room'].find(item => item.kind === 'failed')?.reason).toBeUndefined()
   })
 
   it('does not append or advance on a rejected newer-user lease, but records supersession', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
     const promise = turns.takeTurn(turnSpec('round'))
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       log: [...r.log, userEntry('newer', 't1', 'u2')]
@@ -901,20 +931,20 @@ describe('drive step and publication', () => {
     poll.resolve({ messages: [{ role: 'assistant', content: 'old reply' }] })
     const report = await promise
     expect(report).toEqual({ abandoned: false, spoke: false, stop: true })
-    const result = $groupChats.get().Room
+    const result = $groupChats.get()['name:Room']
     expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
     expect(result.watermarks).toEqual({})
-    expect($groupActivity.get().Room.map(item => item.kind)).toContain('cancelled')
+    expect($groupActivity.get()['name:Room'].map(item => item.kind)).toContain('cancelled')
   })
 
   it('consumes a room-stopped watermark without appending a reply', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
     const promise = turns.takeTurn(turnSpec('round'))
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       holds: { research: { at: Date.now(), thread: 't1' } }
@@ -922,39 +952,39 @@ describe('drive step and publication', () => {
     poll.resolve({ messages: [{ role: 'assistant', content: 'late reply' }] })
     const report = await promise
     expect(report).toEqual({ abandoned: false, spoke: false, stop: true })
-    const result = $groupChats.get().Room
+    const result = $groupChats.get()['name:Room']
     expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
     expect(result.watermarks['t1::research']).toBe(result.log.length)
   })
 
   it('suppresses result activity when a room-stopped lease rejects', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
     const promise = turns.takeTurn(turnSpec('round'))
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       holds: { research: { at: Date.now(), thread: 't1' } }
     }))
     poll.resolve({ messages: [{ role: 'assistant', content: 'stale' }] })
     await promise
-    const result = $groupChats.get().Room
+    const result = $groupChats.get()['name:Room']
     expect(result.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
     expect(result.watermarks['t1::research']).toBe(result.log.length)
-    expect($groupActivity.get().Room.some(item => item.kind === 'replied')).toBe(false)
+    expect($groupActivity.get()['name:Room'].some(item => item.kind === 'replied')).toBe(false)
   })
 
   it('keeps a normal-loop cross-thread late reply in its original thread', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
     const promise = turns.takeTurn(turnSpec('round'))
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       log: [...r.log, userEntry('other', 't2', 'u2')]
@@ -962,17 +992,17 @@ describe('drive step and publication', () => {
     poll.resolve({ messages: [{ role: 'assistant', content: 'late original' }] })
     const report = await promise
     expect(report).toEqual({ abandoned: false, spoke: true, stop: false })
-    expect($groupChats.get().Room.log.find(item => item.text === 'late original')).toMatchObject({ thread: 't1' })
+    expect($groupChats.get()['name:Room'].log.find(item => item.text === 'late original')).toMatchObject({ thread: 't1' })
   })
 
   it('drops a continuation after any epoch change before commit or publication', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
     const promise = turns.takeTurn(turnSpec('continuation'))
     await vi.advanceTimersByTimeAsync(2000)
-    updateGroupChat('Room', r => ({
+    updateGroupChat('name:Room', r => ({
       ...r,
       epoch: 1,
       log: [...r.log, userEntry('other', 't2', 'u2')]
@@ -980,13 +1010,13 @@ describe('drive step and publication', () => {
     poll.resolve({ messages: [{ role: 'assistant', content: 'continuation late' }] })
     const report = await promise
     expect(report).toEqual({ abandoned: false, spoke: false, stop: true })
-    expect($groupChats.get().Room.log.some(item => item.text === 'continuation late')).toBe(false)
-    expect($groupChats.get().Room.watermarks['t1::research']).toBeUndefined()
-    expect($groupActivity.get().Room.filter(item => item.member === 'research' && item.kind !== 'working')).toEqual([])
+    expect($groupChats.get()['name:Room'].log.some(item => item.text === 'continuation late')).toBe(false)
+    expect($groupChats.get()['name:Room'].watermarks['t1::research']).toBeUndefined()
+    expect($groupActivity.get()['name:Room'].filter(item => item.member === 'research' && item.kind !== 'working')).toEqual([])
   })
 
   it('does not publish an operation invalidated by a newer operation', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
@@ -997,13 +1027,13 @@ describe('drive step and publication', () => {
     poll.resolve({ messages: [{ role: 'assistant', content: 'superseded reply' }] })
     const report = await promise
     expect(report).toEqual({ abandoned: true, spoke: false, stop: true })
-    expect($groupChats.get().Room.log.some(item => item.text === 'superseded reply')).toBe(false)
-    expect($groupChats.get().Room.watermarks['t1::research']).toBeUndefined()
-    expect($groupActivity.get().Room.filter(item => item.kind !== 'working')).toEqual([])
+    expect($groupChats.get()['name:Room'].log.some(item => item.text === 'superseded reply')).toBe(false)
+    expect($groupChats.get()['name:Room'].watermarks['t1::research']).toBeUndefined()
+    expect($groupActivity.get()['name:Room'].filter(item => item.kind !== 'working')).toEqual([])
   })
 
   it('does not publish an invalidated failure or timeout', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     vi.useFakeTimers()
     const { handler, poll } = deferredPollHandler()
     const { turns } = makeModule(handler)
@@ -1013,34 +1043,34 @@ describe('drive step and publication', () => {
     poll.resolve({ messages: [{ role: 'assistant', content: 'late reply' }] })
     const report = await promise
     expect(report).toEqual({ abandoned: true, spoke: false, stop: true })
-    expect($groupChats.get().Room.log.filter(item => item.from.kind === 'member')).toHaveLength(0)
-    expect($groupChats.get().Room.watermarks).toEqual({})
-    expect($groupChats.get().Room.stranded).toBeUndefined()
-    expect($groupActivity.get().Room.filter(item => item.kind !== 'working')).toEqual([])
+    expect($groupChats.get()['name:Room'].log.filter(item => item.from.kind === 'member')).toHaveLength(0)
+    expect($groupChats.get()['name:Room'].watermarks).toEqual({})
+    expect($groupChats.get()['name:Room'].stranded).toBeUndefined()
+    expect($groupActivity.get()['name:Room'].filter(item => item.kind !== 'working')).toEqual([])
   })
 
   it('consumes a held member delta exactly once and notes the hold', async () => {
-    replaceGroupChats({ Room: room({
+    replaceGroupChats({ 'name:Room': room({
       log: [userEntry('stop @research')],
       holds: { research: { at: 1, byMessageId: null, thread: 't1' } }
     }) })
     const { turns } = makeModule(async () => { throw new Error('must not be called') })
     const first = await turns.takeTurn(turnSpec('round'))
     expect(first).toEqual({ abandoned: false, spoke: false, stop: false })
-    const result = $groupChats.get().Room
+    const result = $groupChats.get()['name:Room']
     expect(result.watermarks['t1::research']).toBe(result.log.length)
     expect(result.holds?.research?.noted).toBe(true)
-    expect($groupActivity.get().Room.filter(item => item.kind === 'held')).toHaveLength(1)
+    expect($groupActivity.get()['name:Room'].filter(item => item.kind === 'held')).toHaveLength(1)
     expect(calls).toHaveLength(0)
 
     // The consumed delta never re-triggers the skip (empty delta skips first).
     const second = await turns.takeTurn(turnSpec('round'))
     expect(second).toEqual({ abandoned: false, spoke: false, stop: false })
-    expect($groupActivity.get().Room.filter(item => item.kind === 'held')).toHaveLength(1)
+    expect($groupActivity.get()['name:Room'].filter(item => item.kind === 'held')).toHaveLength(1)
   })
 
   it('refuses a stranded member without claiming a token', async () => {
-    replaceGroupChats({ Room: room({
+    replaceGroupChats({ 'name:Room': room({
       log: [userEntry('start')],
       stranded: { research: { before: 0, thread: 't1' } },
       sessions: { research: 'stored' }
@@ -1049,16 +1079,16 @@ describe('drive step and publication', () => {
     const report = await turns.takeTurn(turnSpec('round'))
     expect(report).toEqual({ abandoned: false, spoke: false, stop: false })
     expect(calls).toHaveLength(0)
-    expect($groupChats.get().Room.stranded?.research).toEqual({ before: 0, thread: 't1' })
+    expect($groupChats.get()['name:Room'].stranded?.research).toEqual({ before: 0, thread: 't1' })
 
     // No token was claimed: the subsequent harvest still owns the marker.
-    await turns.harvest('Room', MEMBER)
-    expect($groupChats.get().Room.stranded?.research).toBeUndefined()
-    expect($groupChats.get().Room.log.find(item => item.text === 'late reply')).toBeTruthy()
+    await turns.harvest('name:Room', MEMBER)
+    expect($groupChats.get()['name:Room'].stranded?.research).toBeUndefined()
+    expect($groupChats.get()['name:Room'].log.find(item => item.text === 'late reply')).toBeTruthy()
   })
 
   it('skips without a token when the thread delta is empty', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('other thread', 't2', 'u2')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('other thread', 't2', 'u2')] }) })
     const { turns } = makeModule(async () => { throw new Error('must not be called') })
     const report = await turns.takeTurn(turnSpec('round'))
     expect(report).toEqual({ abandoned: false, spoke: false, stop: false })
@@ -1066,9 +1096,9 @@ describe('drive step and publication', () => {
   })
 
   it('sets the turn indicator unsynced before the run starts', async () => {
-    replaceGroupChats({ Room: room({ log: [userEntry('start')] }) })
+    replaceGroupChats({ 'name:Room': room({ log: [userEntry('start')] }) })
     const syncs: string[] = []
-    setGroupSyncScheduler(group => syncs.push(group))
+    setGroupSyncScheduler(roomKey => syncs.push(roomKey))
     vi.useFakeTimers()
     const first = deferred<unknown>()
     let baseline = true
@@ -1086,7 +1116,7 @@ describe('drive step and publication', () => {
     const promise = turns.takeTurn(turnSpec('round'))
     await Promise.resolve()
     await Promise.resolve()
-    expect($groupChats.get().Room.turn).toBe('research')
+    expect($groupChats.get()['name:Room'].turn).toBe('research')
     expect(syncs).toEqual([])
     first.resolve({ session_id: 'rt', session_key: 'stored' })
     await vi.advanceTimersByTimeAsync(2000)
@@ -1095,7 +1125,7 @@ describe('drive step and publication', () => {
   })
 
   it('skips a held continuation silently without consuming its delta', async () => {
-    replaceGroupChats({ Room: room({
+    replaceGroupChats({ 'name:Room': room({
       log: [userEntry('start')],
       holds: { research: { at: 1, byMessageId: null, thread: 't1' } }
     }) })
@@ -1103,23 +1133,23 @@ describe('drive step and publication', () => {
     const report = await turns.takeTurn(turnSpec('continuation'))
     expect(report).toEqual({ abandoned: false, spoke: false, stop: false })
     expect(calls).toHaveLength(0)
-    expect($groupChats.get().Room.watermarks['t1::research']).toBeUndefined()
-    expect($groupChats.get().Room.holds?.research?.noted).toBeFalsy()
-    expect($groupActivity.get().Room?.some(item => item.kind === 'held') ?? false).toBe(false)
+    expect($groupChats.get()['name:Room'].watermarks['t1::research']).toBeUndefined()
+    expect($groupChats.get()['name:Room'].holds?.research?.noted).toBeFalsy()
+    expect($groupActivity.get()['name:Room']?.some(item => item.kind === 'held') ?? false).toBe(false)
   })
 
   it('harvestRoom harvests only members holding a stranded marker', async () => {
     const builder: GroupMember = { name: 'builder' }
-    replaceGroupChats({ Room: room({
+    replaceGroupChats({ 'name:Room': room({
       members: [MEMBER, builder],
       log: [userEntry('start')],
       stranded: { research: { before: 0, thread: 't1' } },
       sessions: { research: 'stored' }
     }) })
     const { turns } = makeModule(async () => ({ messages: [{ role: 'assistant', content: 'late reply' }] }))
-    await turns.harvestRoom('Room', [MEMBER, builder])
+    await turns.harvestRoom('name:Room', [MEMBER, builder])
     expect(calls.every(item => item.member === MEMBER)).toBe(true)
-    expect($groupChats.get().Room.stranded?.research).toBeUndefined()
-    expect($groupChats.get().Room.log.find(item => item.text === 'late reply')).toBeTruthy()
+    expect($groupChats.get()['name:Room'].stranded?.research).toBeUndefined()
+    expect($groupChats.get()['name:Room'].log.find(item => item.text === 'late reply')).toBeTruthy()
   })
 })

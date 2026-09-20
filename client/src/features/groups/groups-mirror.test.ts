@@ -184,10 +184,10 @@ describe('Group mirror lifecycle', () => {
       .mockResolvedValueOnce(emptyState())
       .mockResolvedValueOnce(emptyState(1))
     const write = vi.fn().mockResolvedValue({ applied: true, revision: 1 })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     const initialPull = mirror.pull()
     expect(write).not.toHaveBeenCalled()
 
@@ -199,7 +199,7 @@ describe('Group mirror lifecycle', () => {
 
   it('returns false without replacing local state when no snapshot exists', async () => {
     const read = vi.fn().mockResolvedValue({ snapshot: null, revision: 0, supportsCas: false })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const before = $groupChats.get()
     const mirror = makeMirror({ read, write: vi.fn() })
 
@@ -225,11 +225,11 @@ describe('Group mirror lifecycle', () => {
     vi.useFakeTimers()
     const read = vi.fn().mockResolvedValue(emptyState(4, false))
     const write = vi.fn().mockResolvedValue({ applied: true })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledWith(expect.anything(), undefined, expect.any(AbortSignal))
   })
@@ -242,11 +242,11 @@ describe('Group mirror lifecycle', () => {
       writes += 1
       return { applied: true, revision: writes === 1 ? 1 : 2 }
     })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(1000)
@@ -261,14 +261,14 @@ describe('Group mirror lifecycle', () => {
       writes += 1
       return writes === 1 ? { applied: false } : { applied: true }
     })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledOnce()
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(650)
@@ -281,9 +281,9 @@ describe('Group mirror lifecycle', () => {
       .mockReturnValueOnce(firstRead.promise)
       .mockResolvedValue(emptyState())
     const write = vi.fn().mockResolvedValue({ applied: true })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     const pull = mirror.pull()
     expect(write).not.toHaveBeenCalled()
 
@@ -300,9 +300,9 @@ describe('Group mirror lifecycle', () => {
       .mockReturnValueOnce(secondRead.promise)
       .mockResolvedValue(emptyState(1))
     const write = vi.fn().mockResolvedValue({ applied: true, revision: 1 })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     const firstPull = mirror.pull()
     const secondPull = mirror.pull()
     expect(read).toHaveBeenCalledOnce()
@@ -342,11 +342,11 @@ describe('Group mirror lifecycle', () => {
       .mockResolvedValueOnce(emptyState())
       .mockResolvedValueOnce(emptyState(1))
     const write = vi.fn().mockReturnValue(writePending.promise)
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledOnce()
 
@@ -365,11 +365,11 @@ describe('Group mirror lifecycle', () => {
       .mockResolvedValueOnce(emptyState(1))
       .mockReturnValueOnce(readBack.promise)
     const write = vi.fn().mockResolvedValue({ applied: true, revision: 2 })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(read).toHaveBeenCalledTimes(3)
 
@@ -381,7 +381,7 @@ describe('Group mirror lifecycle', () => {
     })
     await vi.advanceTimersByTimeAsync(0)
 
-    expect($groupChats.get().Remote).toBeUndefined()
+    expect($groupChats.get()['name:Remote']).toBeUndefined()
   })
 
   it('preserves a local mutation that arrives while a write is in flight', async () => {
@@ -399,14 +399,14 @@ describe('Group mirror lifecycle', () => {
       writes.push(snapshot)
       return writes.length === 1 ? writePending.promise : Promise.resolve({ applied: true, revision: 2 })
     })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
-    replaceGroupChats({ Room: room(), New: room({ name: 'New', log: [userEntry('new')] }) })
-    mirror.schedule({ changedRooms: ['New'] })
+    replaceGroupChats({ 'name:Room': room(), 'name:New': room({ name: 'New', log: [userEntry('new')] }) })
+    mirror.schedule({ changedRooms: ['name:New'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(writes).toHaveLength(1)
 
@@ -430,11 +430,11 @@ describe('Group mirror lifecycle', () => {
       applied: true,
       revision: (expectedRevision as number) + 1
     }))
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledOnce()
 
@@ -447,18 +447,18 @@ describe('Group mirror lifecycle', () => {
     vi.useFakeTimers()
     const read = vi.fn().mockResolvedValue(emptyState())
     const write = vi.fn().mockResolvedValue({ applied: false })
-    replaceGroupChats({ Room: room() })
+    replaceGroupChats({ 'name:Room': room() })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]) {
       await vi.advanceTimersByTimeAsync(delay)
     }
     expect(write).toHaveBeenCalledTimes(9)
 
-    mirror.schedule({ changedRooms: ['Room'] })
+    mirror.schedule({ changedRooms: ['name:Room'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(write).toHaveBeenCalledTimes(10)
   })
@@ -480,15 +480,15 @@ describe('Group mirror lifecycle', () => {
     })
     const write = vi.fn().mockResolvedValue({ applied: true, revision: 2 })
     replaceGroupChats({
-      Old: room({ name: 'Old', roomId: 'old' }),
-      Job: room({ name: 'Job', roomId: 'job' })
+      'id:old': room({ name: 'Old', roomId: 'old' }),
+      'id:job': room({ name: 'Job', roomId: 'job' })
     })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
     const oldPull = mirror.pull()
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
-    mirror.schedule({ changedRooms: ['Job'] })
+    mirror.schedule({ changedRooms: ['id:job'] })
     await vi.advanceTimersByTimeAsync(350)
     expect(read).toHaveBeenCalledTimes(2)
 
@@ -499,7 +499,7 @@ describe('Group mirror lifecycle', () => {
     })
     await expect(oldPull).resolves.toBe(true)
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4))
-    expect($groupChats.get().Old).toBeUndefined()
+    expect($groupChats.get()['name:Old']).toBeUndefined()
   })
 
   it('queues a pull behind deferred read-back publication', async () => {
@@ -518,13 +518,13 @@ describe('Group mirror lifecycle', () => {
     })
     const write = vi.fn().mockResolvedValue({ applied: true, revision: 1 })
     replaceGroupChats({
-      Old: room({ name: 'Old', roomId: 'old' }),
-      Job: room({ name: 'Job', roomId: 'job' })
+      'id:old': room({ name: 'Old', roomId: 'old' }),
+      'id:job': room({ name: 'Job', roomId: 'job' })
     })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Job'] })
+    mirror.schedule({ changedRooms: ['id:job'] })
     await vi.advanceTimersByTimeAsync(350)
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3))
     const queuedPull = mirror.pull()
@@ -533,7 +533,7 @@ describe('Group mirror lifecycle', () => {
     readBack.resolve(emptyState(1))
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4))
     await expect(queuedPull).resolves.toBe(true)
-    expect($groupChats.get().Old).toBeUndefined()
+    expect($groupChats.get()['name:Old']).toBeUndefined()
   })
 
   it('preserves the active flush markers during read-back', async () => {
@@ -555,15 +555,15 @@ describe('Group mirror lifecycle', () => {
       })
     })
     const write = vi.fn().mockResolvedValue({ applied: true, revision: 1 })
-    replaceGroupChats({ Gone: room({ name: 'Gone', roomId: 'r-1' }) })
+    replaceGroupChats({ 'id:r-1': room({ name: 'Gone', roomId: 'r-1' }) })
     const mirror = makeMirror({ read, write })
     await mirror.pull()
 
-    mirror.schedule({ changedRooms: ['Gone'] })
+    mirror.schedule({ changedRooms: ['id:r-1'] })
     await vi.advanceTimersByTimeAsync(350)
     flushRead.resolve(emptyState())
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3))
-    expect($groupChats.get().Gone).toBeTruthy()
+    expect($groupChats.get()['id:r-1']).toBeTruthy()
 
     const queuedPull = mirror.pull()
     mirror.stop()

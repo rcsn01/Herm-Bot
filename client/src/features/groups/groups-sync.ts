@@ -11,8 +11,8 @@
  * connection per scope, so the per-connection job maps collapse.
  */
 
-import { groupMemberKey, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
-import { $groupChats, rekeyRoomCoordination, replaceGroupChats, type GroupChatRoom } from './group-store'
+import { groupMemberKey, groupRoomKey, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
+import { $groupChats, rekeyRoomCoordination, renameRoomState, replaceGroupChats, type GroupChatRoom } from './group-store'
 
 const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
@@ -87,13 +87,6 @@ export function groupChatGatewayJsonSize(value: unknown): number {
   }
 
   return bytes
-}
-
-/** Durable room identity for the sync projection: `id:<roomId>` when the
- *  room carries one (rename = field update, tombstones follow the room),
- *  else `name:<name>`. */
-export function groupChatRoomKey(name: string, room: { roomId?: null | string }): string {
-  return typeof room?.roomId === 'string' && room.roomId ? `id:${room.roomId}` : `name:${String(name)}`
 }
 
 /** Stable message identity for concurrent log union. Synthetic `legacy-N`
@@ -216,7 +209,7 @@ export function groupChatSyncSnapshot(
     }))
 
     const compact: GroupChatSyncRoom = {
-      name: String(name).slice(0, 64),
+      name: String(room.name).slice(0, 64),
       ...(typeof room?.roomId === 'string' && room.roomId ? { roomId: String(room.roomId).slice(0, 128) } : {}),
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? 0)),
@@ -231,7 +224,10 @@ export function groupChatSyncSnapshot(
       ...(typeof room?.image === 'string' && room.image.length <= GROUP_CHAT_SYNC_IMAGE_CHARS ? { image: room.image } : {})
     }
 
-    const key = groupChatRoomKey(name, room)
+    // The envelope key derives from the room row: keying by the map entry
+    // would double-prefix name-keyed rows, and compact.name must stay the
+    // display name even under a durable-keyed map.
+    const key = groupRoomKey(room.name, room)
     rooms[key] = compact
 
     while (compact.log.length > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
@@ -446,9 +442,9 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   // finds its local twin even when the display name changed remotely.
   const localByRoomId = new Map<string, string>()
 
-  for (const [name, room] of Object.entries(rooms)) {
+  for (const [key, room] of Object.entries(rooms)) {
     if (typeof room?.roomId === 'string' && room.roomId) {
-      localByRoomId.set(room.roomId, name)
+      localByRoomId.set(room.roomId, key)
     }
   }
 
@@ -457,30 +453,39 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     const projectedRoomId = projected.roomId || (key.startsWith('id:') ? key.slice(3) : null)
 
-    const localName =
+    // Twin resolution, in order: the durable roomId, then the envelope key
+    // itself (the local map is durable-keyed, so a name-keyed rename that
+    // rides the old key resolves here — today's fallback never tried it and
+    // forked the room), then the projected display name.
+    const localKey =
       projectedRoomId && localByRoomId.has(projectedRoomId)
         ? localByRoomId.get(projectedRoomId)!
-        : projected.name && rooms[projected.name]
-          ? projected.name
-          : null
+        : rooms[key]
+          ? key
+          : projected.name && rooms[`name:${projected.name}`]
+            ? `name:${projected.name}`
+            : null
 
-    const displayName = String(projected.name || localName || (key.startsWith('name:') ? key.slice(5) : key))
+    const displayName = String(
+      projected.name || (localKey ? rooms[localKey].name : '') || (key.startsWith('name:') ? key.slice(5) : key)
+    )
 
-    if (locallyDeleted.has(displayName) || (localName && locallyDeleted.has(localName))) {
-      // Mid-rename guard: the remote copy may still be under the OLD display
-      // name while the local record was already re-keyed.
-      if (localName && localName !== displayName && !locallyDeleted.has(localName)) {
+    if (locallyDeleted.has(key) || locallyDeleted.has(displayName) || (localKey !== null && locallyDeleted.has(localKey))) {
+      // Mid-rename guard: the remote copy may still be under the OLD durable
+      // key while the local record was already re-keyed.
+      if (localKey !== null && localKey !== key && !locallyDeleted.has(localKey)) {
         continue
       }
 
-      delete rooms[displayName]
-      if (localName) delete rooms[localName]
+      delete rooms[key]
+      if (localKey !== null) delete rooms[localKey]
       continue
     }
 
-    const existing = (localName ? rooms[localName] : rooms[displayName]) || {
+    const existing: GroupChatRoom = (localKey !== null ? rooms[localKey] : undefined) || {
       name: displayName,
       log: [],
+      members: [],
       watermarks: {},
       epoch: 0,
       running: false
@@ -508,7 +513,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       }
     }
 
-    const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
+    const isPreserved = preserved.has(key) || preserved.has(displayName) || (localKey !== null && preserved.has(localKey))
 
     if (!isPreserved) {
       if (remoteRevision > localRevision) {
@@ -529,23 +534,35 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     const bounded = trimLocalLog(log, existing.watermarks || {})
 
-    // A remote rename with a higher revision moves the local record to the
-    // new display name; local views keyed by the old name follow on the
-    // next repaint.
-    const targetName = !isPreserved && remoteRevision > localRevision ? displayName : localName || displayName
+    // The output row is keyed by its CANONICAL durable key, which makes the
+    // rename branch two-shape: for an id-keyed room the canonical key equals
+    // the twin's map key, so `room.name` updates in place and nothing keyed
+    // by identity moves. For a name-keyed room whose envelope still carries
+    // the old key, the canonical key differs from the twin's — the map entry
+    // moves and renameRoomState sweeps the feed atoms. When no twin resolves
+    // (the desktop re-keyed its own snapshot first: tombstone for the old key
+    // plus the room under the new key), the row recreates from the projection
+    // exactly as today and the atoms strand — no tombstone/creation pairing
+    // is attempted, because a disband plus an unrelated create in one
+    // envelope would mis-sweep the atoms onto the wrong room.
+    const outputRoomId = existing.roomId || projectedRoomId || null
+    const outputName = !isPreserved && remoteRevision > localRevision ? displayName : existing.name || displayName
+    const targetKey = groupRoomKey(outputName, { roomId: outputRoomId })
 
-    if (localName && targetName !== localName) {
-      delete rooms[localName]
+    if (localKey !== null && targetKey !== localKey) {
+      renameRoomState(localKey, targetKey)
+      delete rooms[localKey]
     }
 
-    rooms[targetName] = rekeyRoomCoordination({
+    rooms[targetKey] = rekeyRoomCoordination({
       ...existing,
+      name: outputName,
       log: bounded.log,
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
       members: [...members.values()],
-      ...(projectedRoomId || existing.roomId ? { roomId: existing.roomId || projectedRoomId } : {}),
+      ...(outputRoomId ? { roomId: outputRoomId } : {}),
       image:
         isPreserved
           ? existing.image || null
@@ -561,28 +578,28 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   for (const [key, deletedAt] of Object.entries(remoteNorm.deleted || {})) {
     const deletedRoomId = key.startsWith('id:') ? key.slice(3) : null
 
-    const targetName =
+    const targetKey =
       deletedRoomId && localByRoomId.has(deletedRoomId)
         ? localByRoomId.get(deletedRoomId)!
         : key.startsWith('name:')
-          ? key.slice(5)
+          ? key
           : null
 
-    if (!targetName || preserved.has(targetName)) continue
+    if (!targetKey || preserved.has(targetKey)) continue
 
     if (deletedRoomId) {
       // Id tombstones are final — the id is never reused.
-      delete rooms[targetName]
+      delete rooms[targetKey]
     } else {
       const deletedRevision = Math.max(0, Number(deletedAt || 0))
-      if (deletedRevision >= Number(rooms[targetName]?.syncRevision || 0)) {
-        delete rooms[targetName]
+      if (deletedRevision >= Number(rooms[targetKey]?.syncRevision || 0)) {
+        delete rooms[targetKey]
       }
     }
   }
 
-  for (const name of locallyDeleted) {
-    delete rooms[name]
+  for (const key of locallyDeleted) {
+    delete rooms[key]
   }
 
   return rooms

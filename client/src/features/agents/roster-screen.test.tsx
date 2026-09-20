@@ -157,7 +157,7 @@ describe('agent roster screen', () => {
 
   it('lists a newly-created local group before its first message', async () => {
     $groupChats.set({
-      'Research team': {
+      'id:r-new': {
         epoch: 0,
         log: [],
         members: [{ name: 'default' }, { name: 'work' }],
