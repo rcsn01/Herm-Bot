@@ -1,306 +1,303 @@
-# Plan — Deepen session selection out of the GatewayController
+# Plan — Deepen the known-rooms projection into the Group send engine
 
 Candidate 1 from the 2026-09-20 architecture review (`Strong`). All clarification decisions were
 settled with the recommended answers (user pre-authorized). Design was chosen via design-it-twice
 (three parallel interface designs; hybrid adopted — see Decision record).
 
-**Repo**: Herm-Bot (Hermes mobile PWA) · **Area**: `client/src/state/`, `client/src/gateway/`
+**Repo**: Herm-Bot (Hermes mobile PWA) · **Area**: `client/src/features/groups/`, `client/src/app.tsx`
 
 ---
 
 ## 1. Goal
 
-`GatewayController` is the composition root, but its interface leaks: five methods hand-roll a
-stale-guard pair (a private generation counter — the selection epoch in
-`newSession`/`resumeSession`/`branchSession`, the reconnect generation in `connect`/`reconnect` —
-plus the Gateway Scope), seven sites read
-`$chat` internals to make selection decisions, bookmark plumbing hides in private helpers, and the
-ordering invariants (select-before-paint, adopt-never-loads-history, reconcile-only-when-resumed,
-create-must-refresh-the-roster) live only in comments and call shapes. Its tests observe selection only by spying
-on the controller's own methods.
+The known-rooms projection is published by a render hook, not owned by the engine.
+`useGroupRooms(rosterGroups?)` (`group-engine.ts:118-173` — the `// --- Reads.` section; the hook with its doc comment is 148-173) has two modes: roster-carrying screens
+(roster, group-room, create dialog) compute the merge in render and **publish the merged view**
+into an engine-internal `$knownRooms` atom via a render effect; roster-free callers (the app
+header) read whatever the last mounted publisher left behind. The projection's freshness
+therefore depends on MobileShell keeping `RosterScreen` always mounted (an architectural accident,
+not an invariant), the app header's title resolution carries a documented publish-tick workaround
+(`app.tsx:137-142`, the `openCreatedGroup` comment; the header renders `activeGroup?.name` at `app.tsx:196`), `$knownRooms` cannot be reset by tests — so `app-navigation.test.tsx` must
+fake a roster-carrying publisher and `group-engine.test.ts` mounts Publisher/Reader components to
+observe the contract at all — and a `$groupChats` write with no roster screen mounted goes unseen.
 
-Deepen: one **Session selection** module owns *which session is live* — the selection epoch, the
-Scope-guarded publish, bookmarks, the roster-tap pick, and the connect/reconnect restore path —
-behind a small interface. The controller keeps transport lifecycle, connection phases, and session
-list paging. Tests cross the module's interface instead of spying.
+Deepen: the Group send engine owns the projection. Roster-carrying screens publish the roster
+**input** through one content-signature verb; `$knownRooms` becomes a `computed` over the retained
+roster snapshot and `$groupChats`; the reader gets a zero-argument hook. The merge stays the pure
+`groupRoomsView`. Tests cross the engine's interface — publish/reset/atom read — instead of
+mounting fake publishers.
 
 ## 2. Non-goals (explicitly out of scope)
 
-- **Session mutation workflow** (rename/archive/delete policy split across chat-screen and
-  sessions-menu) — architecture review candidate 4. `deleteSession`/`refreshSessions` keep their
-  policy; they only switch to the module's read predicates.
-- **ChatInteraction fold into Conversation** — candidate 3.
-- `controller.request<T>()` — stays; one consumer (chat-screen slash completion), removing it
-  would push scope-checking onto callers.
-- `teardownGatewayScope` calling `resetWorkspace()` — separate decision, untouched.
-- `loadMoreSessions`/`refreshSessions` paging and query-cache policy — stays on the controller.
+- **Feed atoms** (`$groupActivity`/`$groupPrompts`/`$groupNeedsYou`) keep their three writers —
+  architecture review candidate 2 (the group-feed module). No decorated `KnownRoomView` facets
+  (the design-2 proposal) land here; folding feeds into the read surface now would pre-empt that
+  candidate's seam decisions (YAGNI).
+- **Coordination-state verbs** (watermark key format, epoch bumps, the engine's direct
+  `$groupChats.set` in `handleGatewayTransition`) — architecture review candidate 3, untouched.
+- **GroupChatScreen's roster query** stays: it remains a roster-carrying publisher and keeps its
+  self-sufficient room resolution (deep-link cold start). Migrating it to `useKnownRooms()` is a
+  possible future deletion once retention is trusted, not now.
+- **`groupRoomsFromRoster`** and the `group-model.ts` leaf imports from outside `features/groups/` —
+  `agents-api.ts:4-5` (the engine-header's sanctioned carve-out: `groupRoomsFromRoster` + the
+  `GroupRoom` type) and the type-only `GroupRoom` import at `app.tsx:23` — untouched.
+- **MobileShell** — the always-mounted roster slot stays as-is; it simply stops being
+  load-bearing for the header's freshness.
+- **Merge semantics** — unchanged: union by durable room key, roster rows win a shared key, the
+  empty-tombstone filter, just-created rooms retained. `groupRoomsView`'s body is untouched.
+- **Scope teardown** — the projection is NOT cleared on `stopGroupEngine`/`teardownGatewayScope`
+  (today `$knownRooms` isn't cleared either; retention is the contract).
 
 ## 3. Decision record (grilling rounds, recommended answers adopted)
 
 | # | Decision | Chosen | Rejected alternatives & why |
 |---|----------|--------|------------------------------|
-| Q1 | Module shape | Standalone `state/session-selection.ts`, constructed by the controller, beside `Conversation` | Fold into Conversation (would widen an already-deep module with non-content policy); merge into SessionRuntime (mixes wire machinery with user-intent policy) |
-| Q2 | Interface shape | One `select(request)` union + atomic `restore(open)` + `invalidate()` + two read predicates | Per-verb methods (guard discipline must be re-documented per verb); design-2's `open(intent)` with two-phase `settled` promise (speculative: no second consumer of the deferred phase — YAGNI) |
-| Q3 | Error modes | Preserve today's: stale ⇒ resolves `undefined` silently; transport failures ⇒ classified `GatewayError` propagates | Design-2's never-rejects outcome object (every call site would gain a `status` branch; changes deep-link/cron call semantics for no gain) |
-| Q4 | Guard axes | **Two axes preserved**: the module owns the *selection epoch* (user-initiated selects); the controller keeps `reconnectGeneration` (transport lifecycle). `restore` does **not** bump the selection epoch | Design-3's single shared epoch — an automatic reconnect (foreground return, transport `closed`) landing mid-flight would eat an in-flight user tap; today the user tap resolving later wins, and that behavior is correct |
-| Q5 | Dependencies | Inject `runtime`, `conversation`, and a `refreshSessions` callback; read `$sessions`/`$chat` directly | Design-1's `KeyValue` bookmark-store and `SessionSourceLookup` adapters — one adapter each = hypothetical seams (one-adapter rule); the module sits beside the stores it reads over, like `Conversation` does |
-| Q6 | Roster-tap profile switch | Stays in `openProfile` (controller); the module's `latest` intent takes a `freshen: boolean` carrying the switch context (`!switched`) | Design-2's `switchScope` adapter inside the module — drags transport teardown/`$profileSwitching` back behind the seam, the exact shallowness being removed |
-| Q7 | SessionRuntime pass-throughs | Delete `subscribe`, `subscribeState`, `connect` from `SessionRuntime`; the controller subscribes on its own transport reference | Keeping them (fail the deletion test: one-line delegations, nothing else calls them) |
-| Q8 | Test strategy | Replace, don't layer: new interface tests for the module; spy-based selection tests rewritten to assert gateway traffic + store state | Keeping self-spies (they test past the interface) |
-| Q9 | Domain record | Add **Session selection** to `CONTEXT.md`; amend **Conversation** and **Session bookmark** entries | — (applied already, see §9) |
-| Q10 | Naming | "Session selection" — matches the phrase already in `CONTEXT.md` ("owns session selection") and keeps controller/Conversation entries coherent | `SessionSelector`/`SessionCoordinator` (no existing domain word) |
+| Q1 | Module shape | Keep the projection in `group-engine.ts` beside the existing read surface | Move to `group-store.ts` (nothing inside the folder needs the projection — the store's import-cycle dodge is for the feed atoms, a different candidate); new `known-rooms.ts` file (fragments the engine's single import path) |
+| Q2 | Interface shape | Compile-time caller-class split: `useGroupRooms(rosterRooms)` required-arg + `useKnownRooms()` + `publishRosterRooms` + `resetKnownRooms` + exported read atom `$knownRooms` | Design 1's two-mode optional-arg hook (zero call-site churn, but `undefined`-means-reader stays caller knowledge — the interface keeps carrying mode subtlety); Design 2's decorated `KnownRoomView` rows (speculative; overlaps candidate 2) |
+| Q3 | Publish semantics | The hook publishes the roster **input** (a snapshot atom) through `publishRosterRooms`; the merge runs in a `computed`. Roster-carrying hooks still return the render-time merge (synchronous, no effect round-trip on their own renders). Last publish wins; `[]` clears the roster half (matches a pending query's publish today) | Publishing the merged output (today's shape — the ownership bug itself); returning the computed read from roster-carrying hooks (one-paint lag behind the effect) |
+| Q4 | Publish trigger | Content signature = room keys + names, joined; array identity never triggers a write; the dedupe lives in `publishRosterRooms`, the stable-copy memo in the hook | Keys-only (Design 1: preserves today's staleness where an id-keyed rename reaches readers only when keys change); deep equality (serialize per render per screen for a theoretical case — over-engineering) |
+| Q5 | Deliberate improvement | The projection recomputes on any `$groupChats` write regardless of mounted screens; `openCreatedGroup`'s publish-tick comment dies; the shell's always-mounted roster stops being load-bearing for freshness | None — this IS the ownership fix (constraint 4 of the brief) |
+| Q6 | Reset scope | `resetKnownRooms()` clears only the retained roster half (the engine's projection state); the local half resets through `replaceGroupChats({})` — the store owns rooms | Design 3's `resetGroupRooms()` reaching into `$groupChats` (a second direct atom write in the engine file — the exact seam break review card 3 will fix; don't add more) |
+| Q7 | GroupChatScreen's own roster query | Keep it (self-sufficient deep-link resolution; harmless idempotent publisher) | Migrate to `useKnownRooms()` now (changes the cold-start room-resolution path; a future deletion, not now) |
+| Q8 | Test strategy | Replace, don't layer: verb-based interface tests (`publishRosterRooms` / `resetKnownRooms` / `$knownRooms.get()`), two React tests for the hook contracts; drop the fake Publisher/Reader pair; drop the mocked RosterScreen's `useGroupRooms([])` publish call; keep the `groupRoomsView` describe and the live-title app test unchanged | Keeping Publisher/Reader fakes (they exist only because `$knownRooms` was engine-internal and unresettable) |
+| Q9 | Naming | The domain name carries: reader hook `useKnownRooms()`, verbs `publishRosterRooms` / `resetKnownRooms`, atom `$knownRooms`, pure merge `groupRoomsView` unchanged | `seedKnownRooms` (test-flavored name for the production publish path — the interface is the test surface, so the verb is named for its production role) |
+| Q10 | Non-React read | Export `$knownRooms` as a `ReadableAtom<GroupRoom[]>` (nanostores `computed`'s inferred type — the package has no `ReadonlyAtom`) so engine tests assert without React | Keep it internal (tests would need React to read; the Publisher/Reader fakes exist for exactly that reason today) |
 
 ## 4. Target interface
 
-New file `client/src/state/session-selection.ts` (no React, no wire imports beyond types — safe
-beside `conversation.ts`):
+`client/src/features/groups/group-engine.ts` — replace the `// --- Reads.` section (today
+`group-engine.ts:118-173`) with the block below. Everything after that section — the read-surface
+re-exports (today 175-178), the actions section (179-197), and the type re-exports (199-203) — is
+untouched, per §5. The old section-local `EMPTY_ROOMS` constant (today 121) is deleted with it:
+nothing in the new code uses it (the reader hook no longer defaults a missing argument).
 
 ```ts
-import type { CurrentGatewayScope } from '~/gateway/scope-guard'
-import type { RuntimeSession } from '~/gateway/session-runtime'
-import type { Conversation } from '~/state/conversation'
+import { atom, computed } from 'nanostores'   // computed is new
 
-/** What a selection published. `session: null` ⇒ warm-tap (nothing adopted;
- *  reconcile already ran inside when `freshen` was set). */
-export interface SelectionOutcome {
-  session: RuntimeSession | null
-  resumed: boolean
+// --- Known rooms — the engine's read projection. ----------------------------
+
+/** The known-rooms merge: the gateway roster snapshot ∪ local engine rooms,
+ *  unioned by durable room key (roster rows win a shared key — they are the
+ *  gateway's richer copy); empty runtime tombstones (no transcript, no
+ *  durable identity) never render — the create dialog always sets roomId and
+ *  members, so a just-created room is retained. The one merge, behind one
+ *  pure function. */
+export function groupRoomsView(rosterGroups: GroupRoom[], localRooms: Record<string, GroupChatRoom>): GroupRoom[] {
+  // body unchanged from today
 }
 
-export type SelectionRequest =
-  | { kind: 'create' }                                // newSession
-  | { kind: 'resume'; storedSessionId: string }       // sessions menu, deep links, cron run → session
-  | { kind: 'branch' }                                // branch the open conversation
-  | { kind: 'latest'; freshen: boolean }              // roster tap pick (openProfile)
+/** The retained roster snapshot: the last roster half any roster-carrying
+ *  caller published. Internal — writers are publishRosterRooms only. */
+const $rosterRooms = atom<GroupRoom[]>([])
 
-export interface SessionSelection {
-  /**
-   * One user-initiated selection. Bumps the selection epoch at entry (after the
-   * `branch` precondition check — a no-op branch must not retire in-flight work).
-   * Publish order: source lookup → conversation.adopt → bookmark write → follow-up.
-   * Resolves `undefined` when the epoch or captured Scope went stale, or when the
-   * request is a no-op (branch without an open durable conversation): nothing is
-   * adopted, nothing bookmarked, nothing thrown. Transport failures reject with the
-   * classified GatewayError.
-   * Follow-up policy per kind: create ⇒ best-effort list refresh (failure swallowed);
-   * branch ⇒ awaited list refresh (failure rethrows); resume ⇒ awaited reconcileHistory
-   * on the captured scope (failure rethrows); latest ⇒ see below.
-   */
-  select(request: SelectionRequest): Promise<SelectionOutcome | undefined>
+/** The engine's known-rooms projection: recomputes whenever the retained
+ *  roster snapshot or $groupChats changes — roster-carrying screens mounted
+ *  or not. Retention: always holds the last-known view; the roster snapshot
+ *  outlives every roster screen. Read-only: the writers are
+ *  publishRosterRooms and the group-store room verbs. */
+export const $knownRooms = computed([$rosterRooms, $groupChats], groupRoomsView)
 
-  /**
-   * Connect/reconnect restore. Resolves the restore target
-   * (`$chat.storedSessionId ?? scope bookmark`), runs `open(target)`, then — only if
-   * the captured Scope is current AND `isCurrent()` (the caller's reconnect-epoch
-   * callback) — clears the bookmark when `resumed === false` and adopts the opened
-   * session through the I2 publish (source lookup → adopt → bookmark write, so the
-   * next cold start restores this session). Does NOT touch the selection epoch: an automatic reconnect must never
-   * supersede an in-flight user selection. Resolves `undefined` when stale.
-   * Reconcile/refresh stay caller policy (paint happens between).
-   */
-  restore<TOpen extends { resumed: boolean; session: RuntimeSession }>(
-    open: (storedSessionId: null | string) => Promise<TOpen>,
-    isCurrent?: () => boolean
-  ): Promise<{ opened: TOpen } | undefined>
+let rosterSignature = ''
 
-  /** Retire every in-flight selection (dispose). Logout/switchProfile/configure keep
-   *  scope-based guarding — their teardown changes the Scope itself. */
-  invalidate(): void
-
-  /** The sanctioned `$chat` reads outside the Conversation. */
-  activeStoredSessionId(): null | string              // $chat.storedSessionId
-  hasLiveSession(): boolean                           // Boolean($chat.runtimeSessionId)
+/** Publish a roster snapshot into the engine — the one writer of the
+ *  retained roster half, wrapped by `useGroupRooms(rosterRooms)` and callable
+ *  without React (tests; a future push-sync roster source). The content
+ *  signature is the room-key list plus names: freshly built arrays are
+ *  content-equal no-ops, and array identity never triggers a write. `[]`
+ *  clears the roster half, matching a pending roster query's publish. Last
+ *  publish wins. */
+export function publishRosterRooms(rosterRooms: readonly GroupRoom[]): void {
+  const signature = rosterRooms.map(room => `${room.key}::${room.name}`).join('|')
+  if (signature === rosterSignature) return
+  rosterSignature = signature
+  $rosterRooms.set([...rosterRooms])
 }
 
-export function createSessionSelection(deps: {
-  runtime: SessionRuntime
-  conversation: Conversation
-  refreshSessions: (scope: CurrentGatewayScope) => Promise<void>
-}): SessionSelection
+/** Clear the retained roster half. The one beforeEach verb for the
+ *  projection's own state; the local half resets through
+ *  `replaceGroupChats({})` — the store owns rooms. */
+export function resetKnownRooms(): void {
+  rosterSignature = ''
+  $rosterRooms.set([])
+}
+
+/** The known rooms for roster-free callers (the app header): one
+ *  subscription to the live projection, no roster data required. Recomputes
+ *  whenever $groupChats or the retained roster contribution changes, whether
+ *  or not any roster-carrying screen is mounted. */
+export function useKnownRooms(): GroupRoom[] {
+  return useStore($knownRooms)
+}
+
+/** The known rooms for roster-carrying callers. Pass the freshly built
+ *  `roster.data?.groups ?? []`: the hook publishes it through
+ *  publishRosterRooms — a content-signature publish (room keys + names,
+ *  never array identity; the stable copy below exists so the publish effect
+ *  cannot loop) — and returns that render's merged view synchronously, no
+ *  effect round-trip. Two callers holding the same roster publish identical
+ *  content; the dedupe makes the second a no-op (last publish wins). */
+export function useGroupRooms(rosterGroups: GroupRoom[]): GroupRoom[] {
+  const localRooms = useStore($groupChats)
+  const signature = rosterGroups.map(room => `${room.key}::${room.name}`).join('|')
+  // Content signature, not identity: the memo closure holds the roster array
+  // from the render where the signature last changed — content-equal arrays
+  // produce the identical view and never re-fire the publish effect.
+  const stableRoster = useMemo(() => rosterGroups, [signature])
+  const rooms = useMemo(
+    () => groupRoomsView(stableRoster, localRooms),
+    [stableRoster, localRooms]
+  )
+  useEffect(() => {
+    // publishRosterRooms dedupes content-equal snapshots internally.
+    publishRosterRooms(stableRoster)
+  }, [stableRoster])
+  return rooms
+}
 ```
 
-### Module invariants (implementation, not comments)
+`groupRoomsView`'s body, the tombstone filter, and the roster-wins union are unchanged from
+today (`group-engine.ts:127-146`).
 
-- **I1 — One epoch for user selections.** `select` captures `beginScopedTask()`-style scope +
-  its epoch at entry; a publish requires `epoch === current && isCurrentGatewayScope(scope)`.
-  Replaces the hand-rolled pair in `newSession`/`resumeSession`/`branchSession`.
-- **I2 — Adopt-never-loads-history; publish order fixed in code.** Source lookup from `$sessions`
-  (the same lookup `selectSession` does today) → `conversation.adopt(session, source)` → bookmark
-  write when `session.storedSessionId` → per-kind follow-up. Replaces the private
-  `selectSession` + its call-site comments.
-- **I3 — `latest` pick.** `humanSessions($sessions.get())`, max `started_at`, first-list tiebreak.
-  Warm-tap (`latest.id === $chat.storedSessionId && $chat.runtimeSessionId`): if `freshen`,
-  `await conversation.reconcileHistory()` (errors propagate), return `{ session: null, resumed:
-  false }`; else return immediately. Otherwise resume-with-fallback-to-create: a resume failure
-  (classified) falls back to `create` **re-verifying epoch + Scope before the create**; the create's
-  failure propagates.
-- **I4 — Never writes `$chat`.** All adoption goes through `Conversation` (sole writer preserved).
-- **I5 — Bookmarks.** Key format + localStorage read/write/clear move from the controller's private
-  helpers (`sessionBookmarkKey`, `readSessionBookmark`, `clearSessionBookmark`, `scopeSnapshot`)
-  into the module, byte-identical.
+## 5. Rewiring table
 
-## 5. GatewayController surgery (`client/src/state/gateway-controller.ts`)
+| Site | Today | After |
+|---|---|---|
+| `app.tsx:50` | `const groups = useGroupRooms()` | `const groups = useKnownRooms()` (the `app.tsx:22` import swaps `useGroupRooms` → `useKnownRooms`) |
+| `app.tsx:137-142` (`openCreatedGroup`) | comment: "the published known-rooms view picks the name up on the next publish tick" | comment updated: the projection reads `$groupChats` directly — `createGroupChat`'s write resolves the header name on the same commit; no publish tick |
+| `roster-screen.tsx:62` | `useGroupRooms(roster.data?.groups ?? [])` | unchanged (compile-time: the arg is now required — this call already passes it) |
+| `group-screen.tsx:81` | `useGroupRooms(roster.data?.groups ?? [])` | unchanged (stays a publisher by design, Q7) |
+| `create-group-chat-dialog.tsx:31` | `useGroupRooms(roster.data?.groups ?? [])` | unchanged |
+| `app-navigation.test.tsx:37-44` | mocked `RosterScreen` imports + calls `useGroupRooms([])` to keep the publish contract | call and import dropped — the header reads the live computed, the `act()` `$groupChats` seed flows through the engine itself |
+| `group-engine.test.ts:552-603` | `groupRoomsView` describe (keep) + `useGroupRooms` Publisher/Reader describe (replace) | keep the merge describe verbatim; replace the hook describe with the interface tests in §7 |
+| `group-engine.ts:118-173` | the `// --- Reads.` section: `$knownRooms` atom + two-mode hook (the `groupRoomsView` body at 127-146 is kept verbatim) | §4 read surface |
 
-Constructor: keep the transport reference (`private readonly transport`) — subscriptions move off
-`SessionRuntime` (Q7); construct `this.selection = createSessionSelection({ runtime, conversation:
-this.conversation, refreshSessions: scope => this.refreshSessions(scope) })`.
+Everything else — lifecycle verbs, actions, the bottom read-surface re-exports — untouched.
 
-| Method | After |
-|--------|-------|
-| `connect()` | `const restored = await this.selection.restore(stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored }, () => this.connection.probe()), () => this.isCurrentReconnect(generation))` inside the existing try/catch; `if (!restored) return` (restore resolves `undefined` when the captured Scope or the reconnect generation went stale — no separate post-open guard remains). Then with `const { opened } = restored`: `savePreferences({ authMode })` → `connected` paint (carries `authMode` + `status` from `opened.preparation`) → `installGroupEngine()` → `if (opened.resumed) reconcileHistory(scope)` → `refreshSessions(scope)` (existing try/catch + guard). Today's intermediate `phase: 'connecting'` + `status` paint (between `savePreferences` and the adopt) is dropped: it ran in the same synchronous block as the `connected` paint, nothing subscribes to `$connection` synchronously there (verified — no `$connection.listen` subscribers; UI reads are React-batched), and the `connected` paint carries the same fields. The "paint the destination now" comment becomes structural: adopt+bookmark already happened inside `restore` before resolve. |
-| `reconnect(reconcile)` | Same shape over `runtime.reopen`. `hasCachedSession` uses `this.selection.hasLiveSession()`. |
-| `newSession()` | `const sel = await this.selection.select({ kind: 'create' }); if (!sel) return` — refresh policy lives in the module; the method body drops the guard pair, the comment, and the try/catch. |
-| `resumeSession(id)` | `const sel = await this.selection.select({ kind: 'resume', storedSessionId: id }); return sel` (reconcile policy lives in the module). |
-| `branchSession()` | `await this.selection.select({ kind: 'branch' })`. |
-| `openProfile(profile)` | Switch check (unchanged) → `return this.selection.select({ kind: 'latest', freshen: !switched })`. Newest-pick, warm-tap check, and resume-failure fallback move into the module (I3). The doc comment moves with them. |
-| `deleteSession(id)` | `if (this.selection.activeStoredSessionId() === id) await this.newSession()` replaces the `$chat.get()` read. |
-| `refreshSessions(scope)` | Active-source propagation keeps today's shape, read through the predicate: `const activeId = this.selection.activeStoredSessionId(); if (activeId) { const source = sessions.find(session => session.id === activeId)?.source; this.conversation.setSessionSource(activeId, typeof source === 'string' ? source : null) }`. The clear-when-the-list-omits-the-active-session case (source `null`) is load-bearing — the transcript-provenance tests pin it; a `sessions.find(s => this.selection.isActiveSession(s.id))`-shaped replacement would skip the `setSessionSource` call when the active session is absent from the list and leave stale provenance behind. |
-| `dispose()` | `this.selection.invalidate()` replaces `++this.sessionSelectionGeneration`. |
-| `logout`/`switchProfile`/`configure` | Unchanged (scope-based guarding survives teardown). |
-| Deleted | `selectSession`, `sessionBookmarkKey`, `readSessionBookmark`, `clearSessionBookmark`, `scopeSnapshot`, `sessionSelectionGeneration`. |
-| `subscribeRuntime()` | `this.transport.subscribe(...)` / `this.transport.subscribeState(...)` instead of `this.runtime.*`. |
-| Unchanged | `request`, `refreshSessions` paging internals, `loadMoreSessions`, rename/archive, `applyConnectionError`, `teardownGatewayScope`, `installGroupEngine`, lifecycle flags, `MINIMUM_CONTRACT`. |
+## 6. Behavior-preservation notes (verified against today's code)
 
-## 6. SessionRuntime deletions (`client/src/gateway/session-runtime.ts`)
+- Retention: the roster snapshot outlives every roster-carrying screen — matches today's
+  `$knownRooms` retention (the app-header contract pinned by `group-engine.test.ts:578-603`).
+- Roster-carrying renders: the hook returns the render-time merge (stable copy keyed on the
+  signature), so a screen's own rows never lag one paint behind its own query — same as today.
+- Roster-free readers lag one effect behind a *roster-data* change — identical to today (today's
+  publish is also an effect); the improvement is recompute on `$groupChats` changes without any
+  mounted publisher, which today happens to hold only because MobileShell always mounts
+  RosterScreen.
+- `[]` publish semantics: a pending roster query publishes an empty snapshot, clearing retained
+  gateway rows — matches today's merged-view publish with empty roster data.
+- Tombstone filter and just-created retention are the same pure function, pinned by the unchanged
+  `groupRoomsView` tests.
+- Scope teardown, `stopGroupEngine`, `handleGatewayTransition`, persistence — untouched; the
+  projection is not cleared on teardown today and is not cleared after.
+- **The one sanctioned delta (Q4)**: the publish signature is keys + names, so an id-keyed room's
+  display-name rename reaches roster-free readers one render earlier (today's key-only signature
+  can hold a stale name until a key changes). Within the projection-recompute family; called out
+  so a behavior diff during review traces to a decision, not an accident.
 
-Delete `subscribe`, `subscribeState`, `connect` (verified: the controller is the only caller of the
-first two, and `connect` has zero callers anywhere — tests included). Verify with
-`rg -n 'runtime\.(subscribe|subscribeState|connect)' client/src` before/after.
+## 7. Test strategy (replace, don't layer)
 
-**GatewayPort fallout (verified; resolve in step 3).** `SessionRuntime implements GatewayPort`, and
-`GatewayPort` declares `connect`/`subscribe`/`subscribeState`, so the deletions break the type
-contract at three sites: the `implements` clause, the controller's `this.gateway = this.runtime`
-(`readonly gateway: GatewayPort`), and `createGatewayApi(this.runtime, scope.profile)` (parameter
-`gateway: GatewayPort`). Resolution — `GatewayPort` stays the transport contract; the lifecycle
-members become optional and the full-transport shape gets a name:
+`group-engine.test.ts` — the `useGroupRooms` describe becomes a `known rooms` describe. Add
+`resetKnownRooms()` to the file's `beforeEach` (beside `replaceGroupChats({})`): module-level
+`$rosterRooms` and `rosterSignature` persist across tests in the file, so without the reset the
+retained roster half of an earlier test leaks into later assertions (e.g. test 6's rendered count
+would include a prior test's published rows):
 
-- `gateway-port.ts`: mark `connect?` / `subscribe?` / `subscribeState?` optional and add
-  `export type GatewayTransport = Required<GatewayPort>` (a transport carrying the lifecycle
-  members).
-- `session-runtime.ts`: type the constructor's `transport` field as `GatewayTransport` (it calls
-  `transport.connect` internally). The class keeps `implements GatewayPort` — with the three members
-  gone it still satisfies the interface.
-- `gateway-controller.ts`: the constructor's `gateway?` parameter and the promoted
-  `private readonly transport` field are `GatewayTransport`. `this.gateway = this.runtime`,
-  `createGatewayApi(this.runtime, ...)`, `<GatewayProvider gateway={controller.gateway}>`, and the
-  `ChatMediaConnection` default all still typecheck: the runtime keeps
-  `close`/`request`/`rpc`/`upload`, and every real transport implements all members.
+1. **Retention** (no React): `publishRosterRooms([gatewayRoom])`; `replaceGroupChats({})`;
+   `$knownRooms.get()` still contains the gateway row (roster half retained across local clears).
+2. **Content-signature publish** (no React): publish the baseline roster, then attach a `vi.fn()`
+   via `$knownRooms.listen` — `listen`, not `subscribe`: nanostores `subscribe` calls the listener
+   immediately with the current value (the computed's mount compute goes through `atom.set`), so a
+   subscribe-based spy always shows one initial call and the no-op assertion below cannot pass.
+   Publish a content-equal roster built fresh → no notification; publish with a changed name → one
+   notification. Proves identity never triggers a write.
+3. **Live recompute without publishers** (no React): `replaceGroupChats({...new room...})` →
+   `$knownRooms` reflects it with no roster publish at all (the improvement that kills the
+   publish-tick workaround).
+4. **Reset**: `publishRosterRooms([...])`; `resetKnownRooms()`; `$knownRooms.get()` shows local
+   rooms only; a re-publish of the same content notifies a `$knownRooms.listen` spy again
+   (signature state cleared — with `rosterSignature` reset to `''`, even content-equal input
+   writes).
+5. **`useGroupRooms(roster)` hook contract** (React): renders with roster data →
+   `$knownRooms` updated; unmount → retained; re-render with content-equal data → no extra write.
+   Replaces the Publisher half of today's fake.
+6. **`useKnownRooms()` app-header contract** (React): render, seed `$groupChats` via `act()` →
+   re-render shows the new room (the live projection). Replaces the Reader half.
 
-No behavior change: the optionality only records that the session-scoped runtime is not a transport,
-and no call site needs `?.` (the controller and the runtime hold `GatewayTransport`; verified: no
-other site calls `connect`/`subscribe`/`subscribeState` through a `GatewayPort`-typed value).
+`app-navigation.test.tsx`:
 
-**Tests (verified — no adjustment needed).** `gateway/gateway-foundation.test.ts` calls
-`gateway.subscribe` on a `MemoryGateway` — the GatewayPort transport surface, not `SessionRuntime`.
-`gateway/session-runtime.test.ts` never references `runtime.subscribe`/`subscribeState`/`connect`;
-its `connect` matches are recorded `gateway.calls` entries of transport connect RPCs. Both files
-pass untouched.
+- Drop the mocked RosterScreen's `useGroupRooms([])` call, the `~/features/groups/group-engine`
+  import in that mock, and the comment above them (today `app-navigation.test.tsx:37-39`) that
+  explains the now-obsolete publish contract — the publish contract no longer needs a mounted
+  caller.
+- The `opens a desktop group chat from its URL` test stays as written (seeds `$groupChats` via
+  `act()`, asserts the header title updates) — it now passes through the real seam.
 
-## 7. Tests
+`groupRoomsView` describe: unchanged (merge semantics pinned).
 
-### 7a. New: `client/src/state/session-selection.test.ts` (interface is the test surface)
+## 8. Documentation (applied with this plan)
 
-Fakes for `SessionRuntime` (recording RPC calls), `Conversation` (spy on `adopt`/`reconcileHistory`),
-and an injectable `refreshSessions`; real `$chat`/`$sessions`/localStorage (jsdom, as existing tests do).
+- `CONTEXT.md`: the **Known rooms** entry now names the engine-owned projection (computed over the
+  retained roster snapshot and `$groupChats`), the two caller-class hooks, the publish/reset verbs,
+  and the retention contract; the **Group send engine** entry's read-surface list gains the
+  known-rooms verbs.
+- Module header comment on the read-surface section of `group-engine.ts` in the same voice.
 
-1. `create` publishes: adopt called with source from `$sessions`; bookmark written; best-effort refresh (refresh rejects ⇒ still published).
-2. `resume` publishes: reconcile awaited on the captured scope; no list refresh.
-3. `branch` publishes: awaited refresh rethrows; precondition no-op resolves `undefined` without bumping the epoch (a concurrent select still publishes).
-4. `latest` newest-pick: skips cron rows (`humanSessions`), resumes the newest.
-5. `latest` warm-tap + `freshen: true`: no resume RPC, reconcile awaited.
-6. `latest` warm-tap + `freshen: false`: no resume RPC, no reconcile.
-7. `latest` resume-failure ⇒ create fallback; create failure propagates; a newer select started during the failed resume ⇒ the fallback create publishes nothing (pins the I3 re-check).
-8. Epoch discipline: two concurrent selects — the first to resolve after the second started publishes nothing.
-9. Scope discipline: `$preferences` scope change between RPC and publish ⇒ `undefined`, no adopt, no bookmark.
-10. `restore` target resolution: `$chat.storedSessionId` wins over bookmark; bookmark used when `$chat` empty.
-11. `restore` clear-if-not-resumed; `isCurrent` false ⇒ `undefined`, no adopt.
-12. `restore` does not bump the selection epoch: an in-flight `select` still publishes after a `restore`.
-13. `invalidate()` retires an in-flight select.
-14. `activeStoredSessionId` / `hasLiveSession` read-throughs (null when `$chat` is empty, the stored id otherwise).
+## 9. Implementation order
 
-### 7b. Rewrite: `client/src/state/gateway-controller.test.ts`
+1. **`group-engine.ts` read surface** — §4 (atoms, computed, verbs, hooks, doc comments); import
+   `computed` from `nanostores`.
+2. **`app.tsx`** — `useKnownRooms()` at :50; update the `openCreatedGroup` comment.
+3. **Test rewrite** — `group-engine.test.ts` §7; `app-navigation.test.tsx` mock cleanup.
+4. **Verification** (below), fix fallout.
+5. **CONTEXT.md** — re-read the amended entries for accuracy after implementation; adjust wording
+   if the built interface drifted.
 
-Assert gateway traffic via the existing `MemoryGateway.handle` recording + store state instead of
-controller self-spies (the rewrite removes 21 spy sites — 19 controller self-spies + 2 conversation
-`reconcileHistory` spies — leaving 11: 7 `connect` spies in the profile-switching, switch-flag, and
-authentication-lifecycle tests, `gateway.close`, and the three `gateway.connect` spies in the
-connection-restoration tests).
-
-- **`roster tap flow` (9 of its 11 tests)** — rewrite: script `session.resume`/`session.create`/`session.list`
-  on `MemoryGateway`, drive `controller.openProfile(...)`, assert the recorded `session.resume` calls
-  + `$chat.get().storedSessionId`. Covers: switch+resume, cron-row skip, fresh create,
-  create-then-tap freshness, resume-failure fallback, same-profile tap without a redundant switch,
-  warm-tap no-re-resume, switch-already-landed, connected-before-list (gate `session.list` and
-  assert `phase === 'connected'` while pending — the refreshSessions mock becomes a direct test of
-  I2). The Group-mirror-signal and switch-flag tests in the same describe stay untouched.
-- **`session selection lifecycle`** — the stale-selection test already drives two
-  `controller.resumeSession` calls through the public verbs: keep, adapt assertions.
-- **`conversation delegation`** — assert `$chat` + `session.*` traffic (today's test asserts `$chat` alone — there is no conversation spy to remove; the rewrite adds the traffic assertion).
-- **`transcript provenance`** — unchanged: the active-source propagation keeps today's shape
-  (including clear-when-omitted), only the `$chat` read moves behind `activeStoredSessionId`;
-  `$chat` assertions stay.
-- **Unchanged** — `profile-scoped session mutations`, `incremental session loading`,
-  `profile switching`, `connection restoration` (only the hasCachedSession assertions read through
-  the new path), `backend compatibility`, `authentication lifecycle`, the roster-tap
-  Group-mirror-signal and switch-flag tests, `session selection lifecycle`'s unsubscribe test, and
-  `roster tap into a desktop conversation`.
-
-## 8. Behavior-preservation notes (verified against today's code)
-
-- Stale results resolve silently (`undefined`), never throw — matches today's early `return`s.
-- `connect`'s guard sits *before* bookmark-clear/adopt (inside `restore`), so a stale open cannot
-  publish a dying scope's session.
-- A resume-failure fallback create re-verifies epoch + Scope (today's fallback bumped a fresh
-  generation via `newSession`, which retires even a newer in-flight selection; with one epoch the
-  re-check lets the newer selection win instead — §12's one intentional tightening).
-- `openProfile` after a switch skips the warm-tap reconcile (`freshen: !switched`) — preserves the
-  `if (!switched)` nuance; `connect` inside the switch already reconciled when resumed.
-- Fresh-session bookmark staleness (create does not clear the old bookmark) is preserved as-is;
-  `$chat.storedSessionId` masks it while the session stays open.
-- `branchSession`'s refresh rethrow and `resumeSession`'s reconcile propagation preserved.
-
-## 9. Documentation (already applied)
-
-- `CONTEXT.md`: added the **Session selection** entry; **Conversation** now says the Session
-  selection module owns which session is live; **Session bookmark** names the module as owner.
-- Update the `Conversation` class doc-comment in `state/conversation.ts` (same sentence) during
-  step 2 (matching §10), and write a module header comment on `session-selection.ts` in the same voice.
-
-## 10. Implementation order
-
-1. **`session-selection.ts` + `session-selection.test.ts`** — module and interface tests
-   (fakes for runtime/conversation/refresh; module not yet wired into the controller).
-2. **Controller rewiring** — §5 table, including transport-based subscriptions, doc-comment update.
-3. **SessionRuntime deletions** — §6, fix references.
-4. **Controller test rewrite** — §7b.
-5. **Verification** (below), fix fallout.
-6. **CONTEXT.md** — already applied (§9); re-read for accuracy after implementation and adjust
-   wording if the built interface drifted.
-
-## 11. Verification
+## 10. Verification
 
 ```bash
 cd client
 npm run typecheck                     # tsc --noEmit
 npm test                              # full vitest suite
-rg -n '\$chat\.get\(\)' src/state/gateway-controller.ts          # expect: no matches
-rg -n 'sessionSelectionGeneration|selectSession|SessionBookmark' src/state/gateway-controller.ts  # expect: no matches
-rg -n 'runtime\.(subscribe|subscribeState|connect)' src          # expect: no matches (subscriptions read this.transport)
-rg -n 'this\.selection\.' src/state/gateway-controller.ts        # expect: 10 call sites (+ the constructor assignment), all through the interface
+
+rg -n 'useGroupRooms\(\)' src                      # expect: no matches (reader callers use useKnownRooms)
+rg -n 'useKnownRooms' src --no-heading             # expect: group-engine.ts, app.tsx, tests
+rg -n 'publishRosterRooms|resetKnownRooms' src     # expect: group-engine.ts (hook + verbs), tests only
+rg -n 'roster.data\?\.groups' src/features --no-heading   # expect: the three roster-carrying call sites, unchanged, plus the doc comment inside group-engine.ts that repeats the expression (4 matches)
 ```
 
-- All pre-existing non-selection tests pass unmodified (mutations, paging, auth, compatibility).
-- The new interface tests (7a) pass without touching the controller.
-- `npm run dev` + a manual smoke against a gateway (connect → roster tap → new session → branch)
-  is the final check; Playwright e2e (`npm run test:e2e`) if the environment allows.
+- All pre-existing tests pass unmodified except the two rewritten describe blocks and the mock
+  cleanup — no other test touches the known-rooms surface.
+- The `groupRoomsView` merge describe passes without edits.
+- `npm run dev` + manual smoke: connect → roster shows groups → open a room → header title
+  resolves → create a new group from the dialog → header name resolves without a publish tick;
+  Playwright e2e (`npm run test:e2e`) — verified to run in this environment (see below).
 
-## 12. Risks
+**Verified during plan evaluation** (scratch worktree with §4/§5/§7 applied verbatim, then
+discarded): `npm run typecheck` and `npm test` pass (955 tests / 81 files — the 5-test delta is
+the new `known rooms` describe), `npm run test:e2e` passes (58 passed, 6 environment skips),
+including `e2e/profile-create.spec.ts` "creates a group chat from selected bots", which pins the
+header-name-without-publish-tick flow end to end, and all four `rg` checks above return the
+expected matches. Note the e2e webServer serves the built `<client>/dist` bundle — run
+`npm run build` first when `dist` is stale or absent, or every spec fails at login with
+`Not found`.
 
-- **TS generics on `restore<TOpen>`** — if inference fights the call sites, degrade to returning the
-  full open result (`{ opened } | undefined` with `opened` carrying `resumed`/`session`; no
-  `Omit` gymnastics).
-- **Test-harness assumptions** — some roster-tap tests may currently rely on spy ordering rather
-  than gateway traffic; the rewrite restores behavior assertions but may surface latent coupling.
-- **Subtle staleness semantics** — the fallback-create re-check (I3) is the one intentional
-  tightening; called out here so a behavior diff during review is traceable to a decision, not an
-  accident.
+## 11. Risks
+
+- **nanostores `computed` + `useStore`** — standard subscription path (navigation-store already
+  computes); the only new primitive in the engine.
+- **Effect-ordering nuance** — a roster-data change reaches roster-free readers one effect after
+  the roster screen's render (same as today); roster screens themselves see their own data
+  synchronously via the render-time merge. If a future reader needs same-tick roster freshness,
+  the fix is internal to the module (publish before paint), never a caller change.
+- **Signature scope** — keys + names: member-row enrichment under stable keys does not republish
+  (identical to today's keys-only behavior for member changes; member display rides `$groupChats`
+  enrichment). Deep equality deliberately rejected (Q4). The `|`/`::` join can theoretically
+  collide (a room name containing `|` followed by another room's `key::name` text) — the same
+  theoretical class as today's keys-only join; the worst case is one skipped republish until the
+  next signature change.
+- **Test-harness coupling** — `app-navigation.test.tsx`'s RosterScreen mock loses its engine
+  import; if any hidden assertion depended on the mock's publish side effect rather than the
+  header's read, the live-title test will surface it (it asserts through the real seam).
+- **Multiple publishers** — three screens publish the same unscoped query data; last publish wins,
+  content-equal publishes no-op. No drift is possible because the merge is a pure function of the
+  same inputs.
