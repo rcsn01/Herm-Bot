@@ -1,27 +1,27 @@
 /**
- * The Group send engine's interface — the only import path for callers
- * outside `features/groups/` (one carve-out: features/agents/agents-api.ts
- * consumes groupRoomsFromRoster and the GroupRoom type from the shared
- * group-model.ts leaf). One home for the group send engine: the lifecycle
+ * The Group send engine's interface for callers outside `features/groups/`.
+ * The shared `group-model.ts` leaf has two external carve-outs: `agents-api.ts`
+ * uses `groupRoomsFromRoster` and the `GroupRoom` type, and `app.tsx` imports
+ * the `GroupRoom` type. One home for the group send engine: the lifecycle
  * verbs the GatewayController drives, the five room actions, and the read
  * surface. Which room to open and what to draft stay with the screens
  * (CONTEXT.md: engine plumbing vs call-site policy).
  *
  * Internal seams (group-store, groups-sync, group-rounds, group-turns) are
- * file-exports, never re-exported here except the read surface below —
- * writers stay inside the engine.
+ * file-exports, never re-exported here except the read surface below. Writable
+ * atoms stay in internal Group implementation modules.
  */
 
 import { useEffect, useMemo } from 'react'
 import { useStore } from '@nanostores/react'
-import { atom, computed } from 'nanostores'
+import { atom, computed, readonlyType } from 'nanostores'
 
 import type { EngineMember, GroupEngineRequest, GroupMember, GroupRoom } from './group-model'
 import {
-  $groupActivity,
-  $groupChats,
-  $groupNeedsYou,
-  $groupPrompts,
+  $groupActivity as $groupActivityState,
+  $groupChats as $groupChatsState,
+  $groupNeedsYou as $groupNeedsYouState,
+  $groupPrompts as $groupPromptsState,
   adoptMirrorRoom,
   mintGroupRoomId,
   setGroupSyncScheduler,
@@ -39,6 +39,11 @@ import {
 import { createGroupRoundDriver, type GroupRoundDriver } from './group-rounds'
 import { createGroupMemberGateway, createGroupTurnModule, type GroupTurnModule } from './group-turns'
 
+const $groupChats = readonlyType($groupChatsState)
+const $groupActivity = readonlyType($groupActivityState)
+const $groupPrompts = readonlyType($groupPromptsState)
+const $groupNeedsYou = readonlyType($groupNeedsYouState)
+
 // --- Lifecycle — the GatewayController is the only caller. -------------------
 
 let activeMirror: GroupMirror | null = null
@@ -52,7 +57,7 @@ function handleGatewayTransition(): void {
   for (const name of Object.keys(rooms)) {
     rooms[name] = { ...rooms[name], epoch: (rooms[name].epoch || 0) + 1, running: false }
   }
-  $groupChats.set(rooms)
+  $groupChatsState.set(rooms)
 }
 
 /** Point the engine at this scope's transport and arm fresh per-lifecycle
@@ -212,10 +217,10 @@ export function useGroupRooms(rosterGroups: GroupRoom[]): GroupRoom[] {
   return rooms
 }
 
-// --- Read surface (re-exported; writers stay inside the engine). -------------
+// --- Read surface (typed exports; writable atoms stay in Group modules). ------
 
-export { $groupChats, $groupNeedsYou, GROUP_CHAT_MAX_MEMBERS, getGroupRoom } from './group-store'
-export { $groupActivity, $groupPrompts } from './group-store'
+export { $groupChats, $groupActivity, $groupPrompts, $groupNeedsYou }
+export { GROUP_CHAT_MAX_MEMBERS, getGroupRoom } from './group-store'
 // --- Actions — thin wrappers over the active captured lifecycle. ------------
 
 export function sendToGroupChat(roomKey: string, members: EngineMember[], text: string, thread?: null | string): null | string {

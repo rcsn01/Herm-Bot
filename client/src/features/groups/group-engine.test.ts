@@ -20,8 +20,27 @@ import {
   useGroupRooms,
   useKnownRooms
 } from './group-engine'
-import { replaceGroupChats, updateGroupChat, type GroupChatRoom, type GroupPrompt } from './group-store'
+import {
+  $groupActivity as $groupActivityState,
+  $groupNeedsYou as $groupNeedsYouState,
+  $groupPrompts as $groupPromptsState,
+  replaceGroupChats,
+  updateGroupChat,
+  type GroupChatRoom,
+  type GroupPrompt
+} from './group-store'
 import type { GroupMember, GroupMessage, GroupRoom } from './group-model'
+
+function assertGroupStoreExportsAreReadOnly(): void {
+  // @ts-expect-error Public group state must not expose a setter.
+  $groupChats.set({})
+  // @ts-expect-error Public group state must not expose a setter.
+  $groupActivity.set({})
+  // @ts-expect-error Public group state must not expose a setter.
+  $groupPrompts.set({})
+  // @ts-expect-error Public group state must not expose a setter.
+  $groupNeedsYou.set({})
+}
 
 type Transport = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
@@ -81,9 +100,9 @@ beforeEach(() => {
   localStorage.clear()
   replaceGroupChats({})
   resetKnownRooms()
-  $groupActivity.set({})
-  $groupPrompts.set({})
-  $groupNeedsYou.set({})
+  $groupActivityState.set({})
+  $groupPromptsState.set({})
+  $groupNeedsYouState.set({})
   calls = []
 })
 
@@ -91,6 +110,13 @@ afterEach(() => {
   cleanup()
   stopGroupEngine()
   vi.useRealTimers()
+})
+
+describe('read surface', () => {
+  it('exposes needs-you updates through the public handle', () => {
+    $groupNeedsYouState.set({ 'name:Room': true })
+    expect($groupNeedsYou.get()).toEqual({ 'name:Room': true })
+  })
 })
 
 describe('lifecycle', () => {
@@ -416,7 +442,7 @@ describe('lifecycle', () => {
       at: Date.now(), roomKey: 'name:Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
       question: 'old', requestId: 'q1', sessionId: 'rt'
     }
-    $groupPrompts.set({ 'name:Room::ada': prompt })
+    $groupPromptsState.set({ 'name:Room::ada': prompt })
     const before = $groupChats.get()['name:Room']
     const answer = await answerGroupPrompt(prompt, { name: 'ada' }, 'yes')
     expect(answer).toBeUndefined()
@@ -434,7 +460,7 @@ describe('lifecycle', () => {
       at: Date.now(), roomKey: 'name:Room', member: 'ada', memberKey: 'ada', kind: 'clarify',
       question: 'Proceed?', requestId: 'q1', sessionId: 'runtime'
     }
-    $groupPrompts.set({ 'name:Room::ada': prompt })
+    $groupPromptsState.set({ 'name:Room::ada': prompt })
     await answerGroupPrompt(prompt, { name: 'ada' }, 'yes')
     expect(calls).toContainEqual({
       method: 'clarify.respond',
