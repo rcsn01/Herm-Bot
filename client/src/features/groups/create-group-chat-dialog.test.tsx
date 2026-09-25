@@ -6,8 +6,9 @@ import { GatewayProvider } from '~/gateway/gateway-context'
 import { $connection } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 
+import { $groupChats } from './group-engine'
 import { CreateGroupChatDialog } from './create-group-chat-dialog'
-import { $groupChats } from './group-store'
+import { $groupChats as $groupChatsState } from './group-store'
 
 vi.mock('~/compat/primitives', () => ({
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => <button {...props}>{children}</button>,
@@ -17,8 +18,9 @@ vi.mock('~/compat/primitives', () => ({
 afterEach(cleanup)
 
 beforeEach(() => {
+  localStorage.clear()
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
-  $groupChats.set({})
+  $groupChatsState.set({})
 })
 
 function renderDialog(gateway = new MemoryGateway().handle('profiles.list', () => ({ profiles: [

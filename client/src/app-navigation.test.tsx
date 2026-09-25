@@ -63,14 +63,18 @@ vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: 
 
 import { App } from '~/app'
 import { $chat, emptyChatState } from '~/state/conversation'
-import { $groupChats } from '~/features/groups/group-store'
+import { publishRosterRooms, resetKnownRooms } from '~/features/groups/group-engine'
 import { resetNavigation } from '~/navigation/navigation-store'
 import { resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  resetKnownRooms()
+})
 
 beforeEach(() => {
+  resetKnownRooms()
   vi.clearAllMocks()
   // clearAllMocks drops resolved-value setups; restore the defaults.
   controller.openProfile.mockResolvedValue(undefined)
@@ -83,7 +87,6 @@ beforeEach(() => {
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
   $chat.set({ ...emptyChatState(), info: { model: 'provider/test-model', title: 'Current chat' } as never, runtimeSessionId: 'runtime-1' })
   $sessions.set([])
-  $groupChats.set({})
   $profileSwitching.set(false)
 })
 
@@ -183,22 +186,15 @@ describe('App navigation', () => {
     expect(screen.getByTestId('group-instance')).not.toBeNull()
     expect(container.querySelector('.header-title strong')?.textContent).toBe('Group chat')
 
-    // once the roster mirror lands, the room name replaces the fallback.
-    // The seed must carry the durable identity (roomId -> key `id:r-crew`)
-    // and a member, or the engine's empty-tombstone filter drops it.
-    act(() => {
-      $groupChats.set({
-        'id:r-crew': {
-          epoch: 0,
-          log: [],
-          members: [{ name: 'default' }],
-          name: 'Research crew',
-          roomId: 'r-crew',
-          running: false,
-          watermarks: {}
-        }
-      })
-    })
+    // once the roster snapshot lands, the room name replaces the fallback.
+    // Keep the fixture gateway-shaped: empty-log rooms are filtered upstream.
+    act(() => publishRosterRooms([{
+      key: 'id:r-crew',
+      log: [{ at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Research notes' }],
+      members: [{ name: 'default' }],
+      name: 'Research crew',
+      roomId: 'r-crew'
+    }]))
     expect(container.querySelector('.header-title strong')?.textContent).toBe('Research crew')
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to bots' }))

@@ -4,13 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { relativeDay, RosterScreen } from './roster-screen'
 import { GatewayProvider } from '~/gateway/gateway-context'
-import { $groupChats } from '~/features/groups/group-store'
+import { resetKnownRooms } from '~/features/groups/group-engine'
 import type { GatewayStatus } from '~/lib/types'
 import { $connection, $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 
 beforeEach(() => {
-  $groupChats.set({})
+  resetKnownRooms()
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.example', theme: 'system' })
   $connection.set({
     authMode: 'token',
@@ -20,7 +20,10 @@ beforeEach(() => {
   })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  resetKnownRooms()
+})
 
 function renderRoster(gateway: MemoryGateway, query = '') {
   const onOpenAgent = vi.fn()
@@ -153,29 +156,6 @@ describe('agent roster screen', () => {
     const row = await screen.findByRole('button', { name: /Worky/ })
     expect(row.querySelector('img')).not.toBeNull()
     expect(row.querySelector('.bot-face')).toBeNull()
-  })
-
-  it('lists a newly-created local group before its first message', async () => {
-    $groupChats.set({
-      'id:r-new': {
-        epoch: 0,
-        log: [],
-        members: [{ name: 'default' }, { name: 'work' }],
-        name: 'Research team',
-        roomId: 'r-new',
-        running: false,
-        watermarks: {}
-      }
-    })
-    const { onOpenGroup } = renderRoster(new MemoryGateway().handle('profiles.list', () => ({ profiles: [
-      { is_default: true, name: 'default' },
-      { name: 'work' }
-    ] })))
-
-    const group = await screen.findByRole('button', { name: /Research team/ })
-    expect(group.textContent).toContain('No messages yet')
-    fireEvent.click(group)
-    expect(onOpenGroup).toHaveBeenCalledWith('id:r-new')
   })
 
   it('lists desktop group chats beneath the bots and opens them', async () => {

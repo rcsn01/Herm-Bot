@@ -1,191 +1,190 @@
-# Plan: make the Group send engine's exported state read-only
+# Plan: keep cross-feature Group UI tests behind the Group send engine
 
 **Repository:** Herm-Bot, Hermes mobile PWA
-**Area:** `client/src/features/groups/`
-**Selected candidate:** Candidate 01 from the architecture review, "Make the Group send engine's read surface read-only."
-**Status:** Implemented. Client typecheck, the focused Group tests, the full Vitest suite, and production build pass.
+**Area:** Group send engine test surface
+**Selected candidate:** Keep UI fixtures behind the Group send engine
+**Status:** Implemented and verified. This file records the agreed implementation; source changes are in the listed files.
 
 ## 1. Goal
 
-Narrow the Group send engine's TypeScript interface so consumers can observe its room and feed state but cannot call `.set()` on the four exported Nanostores:
+Stop UI tests outside `client/src/features/groups/` from importing and writing the Group store's raw `$groupChats` atom. Set up each test through the Group send engine's existing room or roster behavior, then assert through the same read surface used by callers.
 
-- `$groupChats`
-- `$groupActivity`
-- `$groupPrompts`
-- `$groupNeedsYou`
+Keep the production interface and runtime unchanged. Do not add a test reset action, a new adapter, a new store, or a dependency. Keep direct writable-store access in tests that own the Group implementation and need precise internal setup.
 
-Keep the existing store objects, values, update behavior, and export names. Use Nanostores' `readonlyType` helper at the existing seam in `group-engine.ts`. Keep writable atom imports in the Group implementation and setup tests by convention; `group-store.ts` will continue to export the raw atoms, so TypeScript does not enforce that import boundary.
+This is a test-seam and locality change, not a production deepening project. The Group send engine, Group member turn, and Group mirror already have separate responsibilities and behavior tests. `group-store.ts` owns the local room state, persistence, migrations, and store-level mutation helpers; this pass leaves that ownership unchanged.
 
-The guarantee is narrow: callers importing these four handles from `group-engine.ts` will not see `.set()` in their TypeScript types. `readonlyType` is an identity function at runtime, and a direct import from `group-store.ts`, JavaScript, or a type cast can still reach `.set()`. The `ReadableAtom` type also retains Nanostores' `notify()` and `off()` methods, and `.get()` still returns mutable values. This is not runtime enforcement, deep immutability, or a security control. No current production consumer writes through the engine exports or imports raw atoms outside the Group implementation. If a stronger boundary becomes a requirement, reopen the design rather than claiming this plan provides it.
+## 2. Evidence and scope
 
-## 2. Why this change is limited
+The app already consumes the Group send engine's interface:
 
-The Group send engine is the documented interface for group-chat behavior. Its file header presents `group-engine.ts` as the import path for callers outside `features/groups/` and lists `agents-api.ts` as the one carve-out. The source also imports the `GroupRoom` type directly from `group-model.ts` in `app.tsx`, so update the header's carve-out list when revising that comment. The header says writers stay inside the engine, but direct atom writes live across `group-store.ts`, `group-turns.ts`, and `group-rounds.ts`; describe that boundary as the internal Group implementation.
+- `client/src/app.tsx` imports `useKnownRooms` from `features/groups/group-engine.ts` and uses it for the header room title.
+- `client/src/features/agents/roster-screen.tsx` imports `useGroupRooms` from the Group send engine to merge gateway rooms with local rooms.
+- `client/src/features/groups/create-group-chat-dialog.tsx` creates local rooms through `createGroupChat` and reads the merged room list through `useGroupRooms`.
 
-The four state stores do not match the documented read surface today:
+Two cross-feature UI test files bypass that interface:
 
-- `group-engine.ts:215-218` labels the exports a read surface, then re-exports the writable atoms directly from `group-store.ts`.
-- `group-screen.tsx:30-38` subscribes to all four stores with `useStore`; it does not write to them.
-- The other production importers use room hooks, engine actions, or lifecycle verbs. A source search found no production `.set()` call through the Group send engine exports and no production raw-store import outside `features/groups/`.
-- `group-store.ts:383-399` owns the `$groupChats` update path. `updateGroupChat` clones and trims a room, writes the atom, persists the rooms, and schedules mirror synchronization. A direct outside `.set()` skips that path.
-- The other atoms also have write rules that a direct setter bypasses: `recordGroupActivity` stamps entries with time and room epoch and caps each activity list at 30; `renameRoomState` migrates activity, prompts, and needs-you state; `appendGroupChatEntry` and `group-turns.ts` set needs-you for member mentions or pending prompts; `group-turns.ts` creates and clears prompts; `group-rounds.ts` clears needs-you on send.
-- `group-engine.test.ts` currently has five fixture `.set()` calls on `$groupActivity`, `$groupPrompts`, and `$groupNeedsYou` (one, three, and one respectively). Move those setup writes to raw imports from `group-store.ts`; its public-handle reads remain unchanged.
+- `client/src/app-navigation.test.tsx` imports writable `$groupChats` from `group-store.ts` to clear state and seed the room used by the header test.
+- `client/src/features/agents/roster-screen.test.tsx` imports writable `$groupChats` to clear state and seed a newly created local room.
 
-The current export type gives external callers a `.set()` method they do not need; no external production caller currently writes through the export. Keep the existing modules and write paths, and narrow only the handle types exported from `group-engine.ts`.
+`client/src/features/groups/create-group-chat-dialog.test.tsx` also imports the writable atom. It is a Group-owned setup test that verifies room creation and local persistence. Keep raw state access there for setup, but assert the room through the read-only `$groupChats` handle exported by `group-engine.ts`.
+
+`client/src/features/groups/group-engine.test.ts` already resets Group-owned state through internal store helpers and tests known-room merge behavior. Add coverage there for `createGroupChat` writing a new empty local room that immediately appears through the known-rooms read surface.
+
+The gateway and local paths treat an empty log differently. `groupRoomsFromRoster()` calls `parseGroupSnapshot()`, which drops every gateway room whose log is empty. `groupRoomsView()` keeps a local empty room when it has a durable `roomId` and at least one member; `createGroupChat()` creates exactly that shape. Do not fabricate an empty room in a `profiles.list` fixture.
+
+`client/vitest.config.ts` does not override Vitest isolation; `package-lock.json` pins Vitest 4.1.10, whose default `isolate` is `true`. Each test file gets a separate environment and module graph. This is why the app and shared roster suites can drop their local atom reset once they stop creating local rooms, while the local-room UI case can contain its persisted fixture in a separate file.
+
+No relevant ADRs exist. `CONTEXT.md` already documents the Group send engine interface, its read-only atom handles, and the convention that raw writable atoms remain available to internal modules and setup tests. Sharpen that wording so it distinguishes Group-owned setup from cross-feature UI tests.
 
 ## 3. Settled decisions
 
-The following decisions define the selected design and should not be reopened during implementation.
+The user asked to use the recommended answer for every clarification. These defaults settle the design tree for this plan.
 
-| Decision | Chosen answer | Reason and rejected alternatives |
+| Decision | Selected answer | Reason |
 |---|---|---|
-| Which state is covered? | All four exported state stores. | They form one documented read surface and production consumers only subscribe. Restricting `$groupChats` alone would leave the same accidental write capability on activity, prompt, and needs-you state. No broader Group state redesign is included. |
-| What does "read-only" guarantee? | Imports from `group-engine.ts` have no `.set()` in their TypeScript type. | The installed Nanostores 1.4.0 declaration returns `ReadableAtom<Value>`. The raw atoms remain directly importable from `group-store.ts`, and runtime writes remain possible; this is a narrow typed seam, not enforced access control. |
-| Which Nanostores primitive? | Use `readonlyType` for each exported handle. | It retains the current atom identity and subscription behavior, adds no derived state, and removes `set` from the exported type. Do not use `computed` for this purpose: this installed version constructs its computed store from an atom, and the returned runtime object still has `.set()`. Do not build a custom read-only store facade for a TypeScript-only caller contract. |
-| Where does the seam live? | Keep the read-only views in `group-engine.ts`. | This is already the documented external interface. A new module would add another import path without concentrating behavior or improving locality. `group-store.ts` remains the internal owner of writable state and mutation rules. |
-| Do values become deeply immutable? | No. | `readonlyType` narrows the store handle, not the object graph returned by `.get()`. Do not freeze state, introduce a recursive readonly type, or change `getGroupRoom` in this pass. No production caller mutates returned values today. |
-| How are tests arranged? | Assert the public type contract through `group-engine.ts`; arrange internal state through raw imports from `group-store.ts`. | The interface is the test surface for caller capability. Tests inside the Group feature may still use internal seams to prepare state. Existing behavior tests continue to exercise observable Group actions and projections. |
-| Is a new domain term needed? | No. | Keep the existing "Group send engine" and "read surface" vocabulary. `CONTEXT.md` records the read-only TypeScript contract and its write ownership; implementation must preserve that contract. |
+| Which tests change? | Remove raw-store access from cross-feature UI tests in `app-navigation.test.tsx` and `roster-screen.test.tsx`. Keep fixture writes in Group-owned implementation tests. | These are the two callers outside the Group feature that currently seed the writable atom directly. |
+| How should the app-header test seed a room? | Publish a non-empty `GroupRoom` with the existing `publishRosterRooms` verb, then reset the retained roster with `resetKnownRooms`. | The header reads the retained roster half through `useKnownRooms`; a message keeps the fixture valid for the actual gateway roster parser, and no local room state is written. |
+| How should the roster UI test cover a newly-created empty room? | Keep the local-room rendering case in a separate `roster-screen-local-room.test.tsx` file and seed it through `createGroupChat`. Keep the regular roster suite focused on gateway-backed rows. | The gateway parser drops empty-log rooms as tombstones. `createGroupChat` is the real local path, and its durable room is visible to `RosterScreen` through `useGroupRooms`. Vitest's configured default isolates test files, containing the persistent fixture without a reset API. |
+| Where should local room creation be verified? | Add an integration test in `group-engine.test.ts` that calls `createGroupChat` and observes the room in `$knownRooms` and the read-only `$groupChats` handle. | The existing Group test setup already resets internal state and can test the local creation-to-projection path without adding a reset interface. |
+| What should the dialog test do? | Keep its internal writable atom for setup/reset, but read the created room from `$groupChats` imported from `group-engine.ts`. | Setup remains inside the Group feature; caller-visible reads cross the existing seam. |
+| Should the production interface change? | No. Use the current actions, roster publication verbs, and read handles. | A new reset or test-only method would make a low-confidence test concern part of the production interface. |
+| Should a new domain term be added? | No. Clarify the existing Group send engine and read-surface wording in `CONTEXT.md`. | The design names no new domain concept. |
 
-No ADR conflicts were found; the repository has no `docs/adr/` entries relevant to this decision. A separate interface-design exercise is unnecessary here: the selected approach uses an existing Nanostores helper at the existing Group engine seam.
+No decision remains open. The existing `publishRosterRooms`, `resetKnownRooms`, `createGroupChat`, and read handles cover every fixture; no production verb or export needs to change.
 
-## 4. Intended module shape
+## 4. Intended test shape
 
-Keep the four writable atoms in `group-store.ts`. Import them under internal names in `group-engine.ts`, then define the same public names with `readonlyType`. The pseudocode below shows the intended ownership split; retain the existing types and imports where possible.
+```text
+Before
+  app / roster UI test ───────────────► Group send engine read surface
+          │
+          └── fixture write / reset ──► writable group-store atom
 
-```ts
-import { readonlyType } from 'nanostores'
-import {
-  $groupChats as $groupChatsState,
-  $groupActivity as $groupActivityState,
-  $groupPrompts as $groupPromptsState,
-  $groupNeedsYou as $groupNeedsYouState
-} from './group-store'
+After
+  app UI test ── publishRosterRooms ─► Group send engine ──► retained roster projection
+  roster UI test ── profiles.list ───► roster screen (gateway rooms have messages)
+  local-room UI test ── createGroupChat ► local store ──────► roster screen
+  Group engine test ── createGroupChat ► local store ──────► known-rooms projection
 
-const $groupChats = readonlyType($groupChatsState)
-const $groupActivity = readonlyType($groupActivityState)
-const $groupPrompts = readonlyType($groupPromptsState)
-const $groupNeedsYou = readonlyType($groupNeedsYouState)
+  Group-owned implementation tests keep their internal setup seam.
 ```
 
-In the existing read-surface section, export the four local typed handles, not the raw atoms from `group-store.ts`:
+The division makes the test surface match the production call paths. UI tests verify caller-visible behavior. Group engine tests verify local room creation and projection. Group store tests continue to verify persistence and migration details.
 
-```ts
-export { $groupChats, $groupActivity, $groupPrompts, $groupNeedsYou }
-export { GROUP_CHAT_MAX_MEMBERS, getGroupRoom } from './group-store'
-```
+## 5. File-by-file changes
 
-This replaces the current direct re-exports of the four atom names. Keep the public names unchanged and keep `GROUP_CHAT_MAX_MEMBERS` and `getGroupRoom` exported from `group-store.ts`. Do not create replacement stores or copy state into a second atom.
+### `client/src/app-navigation.test.tsx`
 
-`group-engine.ts` also writes `$groupChats` during `handleGatewayTransition`. That internal write must keep using the raw import, for example `$groupChatsState.set(...)`. Read-only aliases may be used for `get()` and subscriptions, but a write must use the internal writable name. The `$knownRooms` projection and `useGroupRooms` hook should continue to observe the same underlying room atom. No change to room identity, serialization, mirror policy, transition epochs, or runtime data is intended.
+- Remove the import of `$groupChats` from `features/groups/group-store.ts`.
+- Import `publishRosterRooms` and `resetKnownRooms` from `features/groups/group-engine.ts`.
+- Remove the `$groupChats.set({})` fixture reset. Call `resetKnownRooms()` in `beforeEach`. Replace `afterEach(cleanup)` with `afterEach(() => { cleanup(); resetKnownRooms() })` so cleanup runs before clearing the retained roster half. The app suite does not otherwise mutate local room state, and its isolated jsdom file starts with an empty store, so it needs no local-store reset.
+- In the group URL/header test, publish a valid room with key `id:r-crew`, room id `r-crew`, name `Research crew`, one member, and one user log entry such as `{ at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Research notes' }`. `groupRoomsFromRoster()` drops empty-log gateway rooms, so do not use an empty log for this roster-shaped fixture. Keep the publish inside React `act`, as the header subscribes through `useKnownRooms`.
+- Keep the existing route, fallback-title, and back-navigation assertions. The test should still prove that the header first shows its fallback title, updates when the retained room appears, and returns to the roster on Back.
+- Do not create a local room in this test. The non-empty roster publish exercises the header's retained-roster read path without writing durable local room state.
 
-Verified against the installed declarations: `@nanostores/react` 1.1.0 defines `useStore<SomeStore extends Store>`, and Nanostores 1.4.0 defines `Store` to include `ReadableAtom<Value>`. `group-screen.tsx` can keep its existing `useStore` calls and imports; the implementation's typecheck will also compile those call sites.
+The app test's mocked roster and Group chat screen do not mutate the local Group store. A source check should confirm no other test in this file depends on clearing `$groupChats`.
 
-## 5. Scope
+### `client/src/features/agents/roster-screen.test.tsx`
 
-### Files to change
+- Remove the writable `$groupChats` import and its `$groupChats.set({})` setup.
+- Import `resetKnownRooms` from `features/groups/group-engine.ts`; call it in `beforeEach`. Replace `afterEach(cleanup)` with `afterEach(() => { cleanup(); resetKnownRooms() })` so roster publication from a mounted screen cannot leak between tests. It does not reset local rooms. This isolated file starts with an empty store and, after moving the local-room case out, no longer creates or mutates local rooms.
+- Remove `lists a newly-created local group before its first message` from this shared suite; its local-room UI assertions move to the isolated test file below.
+- Leave the existing gateway group rendering test, profile rendering tests, and query behavior tests otherwise unchanged. The gateway group fixture must retain a non-empty log because `parseGroupSnapshot()` filters empty-log rooms before `RosterScreen` receives them.
 
-1. **`client/src/features/groups/group-engine.ts`**
-   - Import `readonlyType` from `nanostores`.
-   - Import all four raw atoms under internal names for `readonlyType`; keep `$groupChatsState` available for the engine's `handleGatewayTransition` write.
-   - Create read-only typed handles under the existing public names.
-   - Preserve the current external export names. Export the four local read-only handles from the read-surface section and keep `GROUP_CHAT_MAX_MEMBERS` and `getGroupRoom` as direct re-exports from `group-store.ts`.
-   - Update the file header to name the `app.tsx` type-only `GroupRoom` import as well as the `agents-api.ts` `group-model.ts` carve-out, and to say the raw writers belong to the internal Group implementation.
-   - Keep `handleGatewayTransition` writing through the raw room atom.
+### `client/src/features/agents/roster-screen-local-room.test.tsx` (new)
 
-2. **`client/src/features/groups/group-engine.test.ts`**
-   - Move fixture `.set()` calls for activity, prompts, and needs-you state to raw imports from `./group-store`, using names that make their test-only writable role clear.
-   - Keep assertions against the public read-only handles when testing what engine callers observe. Add a public `$groupNeedsYou.get()` assertion after setting `$groupNeedsYouState` from the raw fixture import; the current engine tests do not otherwise read that handle, so this catches an alias accidentally wired to the wrong atom.
-   - Add compile-only assertions showing `.set()` is absent from all four `group-engine.ts` exports. Put those assertions in a function or dead-code block that is typechecked but never executed. Use `@ts-expect-error` so typechecking fails if a writable method becomes publicly visible again.
-   - Do not use runtime assertions that expect `readonlyType` to remove `.set()`. It does not.
+- Import `createGroupChat` and `$groupChats` from `group-engine.ts`. Assert `$groupChats.get()` is empty before setup, then preserve the existing local-room UI scenario by calling `createGroupChat('Research team', [{ name: 'default' }, { name: 'work' }], new Set())`, not by writing an atom.
+- In this file, copy the small render wrapper from the existing `renderRoster` helper; it is file-local, so do not import or extract it just for reuse. Create a `QueryClient` with query retries disabled, wrap `RosterScreen` in `QueryClientProvider` and `GatewayProvider`, and pass `vi.fn()` callbacks for `onOpenAgent` and `onOpenGroup`.
+- Set `$preferences` to `{ authMode: 'token', profile: null, remoteURL: 'https://gateway.example', theme: 'system' }` and `$connection` to `{ authMode: 'token', error: null, phase: 'connected', status: { auth_required: false, profiles: [{ is_default: true, name: 'default' }, { name: 'work' }] } as unknown as GatewayStatus }`, matching `roster-screen.test.tsx`. Use `MemoryGateway`'s `profiles.list` response `{ profiles: [{ is_default: true, name: 'default' }, { name: 'work' }] }`, with no gateway groups. Assert the local room row appears, its preview says `No messages yet`, and clicking it calls `onOpenGroup` with the returned `room.key`.
+- Keep this case in its own test file and explicitly clean up the rendered tree after the test. `createGroupChat()` persists the room and updates module-scoped state; the current Vitest 4.1.10 config leaves `isolate` at its default `true`, so this file gets a separate test environment and module graph. Do not merge this case into the shared roster suite or use `resetKnownRooms()` as a local-room reset.
 
-3. **`CONTEXT.md`**
-   - State precisely that imports of the four handles from `group-engine.ts` have a `ReadableAtom` type with no `.set()`. The raw atoms remain exported from `group-store.ts` for internal modules and setup tests; direct imports are outside this type boundary.
-   - Keep the limit accurate: `readonlyType` does not change runtime behavior, remove `notify()`/`off()`, or make `.get()` values deeply immutable.
-   - Leave the separate Known rooms, Group member turn, and Group mirror definitions unchanged.
+The shared roster suite continues to test gateway-backed rows. The isolated local-room test exercises the real local create-to-screen path; the Group engine suite separately checks that creation updates the local read handles and known-room projection.
 
-### Files not expected to change
+### `client/src/features/groups/group-engine.test.ts`
 
-- `client/src/features/groups/group-store.ts`: the writable atoms and existing update functions remain the internal implementation.
-- `client/src/features/groups/group-turns.ts` and `group-rounds.ts`: these modules import raw atoms for prompt and needs-you writes. Their activity updates go through `recordGroupActivity()` in `group-store.ts`; they do not set `$groupActivity` directly.
-- `client/src/features/groups/groups-sync.ts`: it reads the raw `$groupChats` atom and applies remote merges through `replaceGroupChats`; neither path changes.
-- `client/src/features/groups/group-screen.tsx`: it reads the four exported atoms through `useStore` and does not call `.set()`; the installed React declaration accepts `ReadableAtom`.
-- `client/src/app.tsx`, `client/src/features/agents/roster-screen.tsx`, and `client/src/features/groups/create-group-chat-dialog.tsx`: keep their existing room hooks/actions; `app.tsx` also keeps its type-only `GroupRoom` import from `group-model.ts`.
-- `client/src/features/agents/agents-api.ts`: keep its existing `GroupRoom` type and `groupRoomsFromRoster` imports from `group-model.ts`; this is the other documented model-leaf carve-out.
-- Existing test fixtures outside the Group folder in `app-navigation.test.tsx` and `features/agents/roster-screen.test.tsx`: both import raw `$groupChats` from `group-store.ts` for setup. Keep these test-only imports; they do not use the public engine read surface.
+- Import `createGroupChat` from `group-engine.ts`.
+- In the `known rooms` coverage, add a case that calls `createGroupChat('Research team', [{ name: 'default' }, { name: 'work' }], new Set())` with no active roster snapshot.
+- Assert that the returned room has a durable `id:` key matching its `roomId`, contains the selected members, and has an empty log.
+- Assert through the exported read-only `$groupChats` handle that the room is stored, and through `$knownRooms` that the newly created room is immediately present in the local known-room projection. Describe this as a local-store update, not a roster publish.
+- Use the room's returned key in assertions. Do not depend on the time/random-generated room id or add a deterministic id injection seam.
+- Rely on the suite's existing `beforeEach` reset and do not replace or trim it: it calls `localStorage.clear()`, `replaceGroupChats({})`, `resetKnownRooms()`, clears the activity/prompt/needs-you atoms, and empties `calls`. `replaceGroupChats({})` persists an empty room map after the clear, so the atom and durable room data are empty. Preserve the existing `afterEach` (`cleanup()`, `stopGroupEngine()`, and `vi.useRealTimers()`) as well. This is a Group implementation test, so its internal fixture reset remains appropriate.
 
-If typechecking finds an unlisted production `.set()` caller through `group-engine.ts`, stop and inspect it. Route a legitimate write through an existing Group action or ask whether it requires a missing engine operation. Also flag any new production import of raw atoms from `group-store.ts` outside `features/groups/`; the type wrapper does not block that bypass.
+This case verifies the local create-to-projection path. Existing `groupRoomsView` tests continue to cover roster/local key union, inclusion of an empty local room with durable identity and members, and filtering of identity-less empty tombstones.
 
-## 6. Test plan
+### `client/src/features/groups/create-group-chat-dialog.test.tsx`
 
-### Compile-time contract
+- Import `$groupChats` for reads from `group-engine.ts`.
+- Keep a clearly named writable alias such as `$groupChatsState` from `group-store.ts` only for the existing internal setup reset.
+- Change the assertion after dialog creation from `$groupChats.get()` on the raw store to the read-only engine export. Keep the `localStorage` persistence assertion; it observes the existing durable behavior.
+- Clear `localStorage` and reset the internal atom in setup so the dialog test begins from an empty Group state. Do not create a public reset action for this test.
+- Keep the test's current user flow through the dialog: select members, name the room, create, and verify callbacks.
 
-In `group-engine.test.ts`, add a non-executed type-check block with one `@ts-expect-error` assertion per public store. Each line attempts `.set()` on the import from `group-engine.ts`. `npm run typecheck` must accept the expected errors. If a setter becomes visible later, TypeScript reports an unused `@ts-expect-error`, making the contract regression visible.
+The writable import remains justified as fixture setup inside the Group feature. The test's read assertion should cross the same interface ordinary callers use.
 
-Because `readonlyType` is an identity function at runtime, do not call those lines in a test. Runtime assertions such as `expect($groupChats.set).toBeUndefined()` would encode a false guarantee.
+### `CONTEXT.md`
 
-### Behavioral coverage
+Refine the Group send engine entry to say:
 
-- Keep the existing lifecycle and round tests that observe room, feed, and prompt updates through the Group engine's public read handles. Add one focused assertion that a value written through raw `$groupNeedsYouState` is visible through public `$groupNeedsYou`; the current engine tests do not assert that public read path.
-- Move fixture writes to `group-store.ts`; this is setup at the existing internal seam, not a new production dependency.
-- Keep the existing `group-store` tests for room-log trimming/retention, persistence, key migration, activity/prompt/needs-you key migration, and needs-you marking. No current test covers the 30-entry activity cap; this change leaves that path untouched, so do not claim the suite verifies that limit or expand scope to add an unrelated test.
-- `npm run typecheck` compiles `group-screen.tsx` and verifies that `useStore` accepts the `ReadableAtom` exports. The screen tests cover the mirrored room log and missing-room state; they do not render activity or prompt state. The engine lifecycle/round tests cover observable feed and prompt updates through the public handles.
-- Run the complete Vitest suite. This type-surface change has no intended UX change, so a browser or Playwright flow is not required unless typechecking or the UI tests reveal a runtime issue.
+- Cross-feature UI tests set up local rooms through existing Group engine actions or roster publication, and gateway-backed rows through gateway fixtures; they observe behavior through caller-facing read paths rather than raw writable atoms.
+- Raw writable atoms remain available for Group implementation modules and Group-owned setup tests.
+- Cross-feature raw-store imports bypass this convention; this is not runtime access control.
 
-### Source audit
+Keep the current limitations accurate: `readonlyType` changes the TypeScript view only, leaves runtime behavior unchanged, retains `notify()` and `off()`, and does not make values returned by `.get()` deeply immutable. Do not add a new domain term or imply a stronger guarantee.
 
-Before calling the work complete, search production source for writes to the four public names and the planned `$groupChatsState` alias, then inspect raw-store import paths. Remaining writes should stay in `group-store.ts`, `group-turns.ts`, `group-rounds.ts`, and the engine's private `handleGatewayTransition`. `group-screen.tsx` must remain a subscriber, not a writer, and production modules outside `features/groups/` must not import raw atoms from `group-store.ts`.
+### `client/src/features/groups/group-engine.ts`
 
-## 7. Implementation order
+Do not edit this file. Its existing actions, roster verbs, read handles, and module header already support the plan; there is no runtime or export change.
 
-1. Inspect `git status` before editing. Preserve the existing user changes to `plan.md` and `CONTEXT.md`; confirm the application files named below have no unrelated edits. Do not require the whole worktree to be clean or restore the previous plan.
-2. Add the compile-only `.set()` contract assertions and update `group-engine.test.ts` fixture writes to import the raw atoms from `group-store.ts`.
-3. Run `cd client && npm run typecheck`. Before the interface change, the `@ts-expect-error` directives should fail as unused. This confirms the tests detect the current writable export.
-4. In `group-engine.ts`, alias each writable import and create the four `readonlyType` handles. Export those local aliases from the read-surface section, while continuing to re-export `GROUP_CHAT_MAX_MEMBERS` and `getGroupRoom` from `group-store.ts`. Update `handleGatewayTransition` to use the raw room atom for its internal `.set()` call. Keep all public names stable.
-5. Re-run typechecking. It should pass, including the `useStore` call sites and compile-only contract assertions.
-6. Confirm `CONTEXT.md` states the exact contract: imports from `group-engine.ts` lack `.set()` in TypeScript, raw `group-store.ts` imports remain writable, and runtime methods and returned values are not made immutable.
-7. Run focused Group tests, then the full unit suite and production build. Review the diff and source audit for accidental state or call-site changes.
+## 6. Implementation order
 
-## 8. Verification commands
+1. Record `git status --short` and preserve all pre-existing changes, including this plan. Confirm the existing target files have no unexpected edits before touching them, and confirm `roster-screen-local-room.test.tsx` does not already exist before creating it; unrelated worktree changes are not a reason to stop.
+2. Change `app-navigation.test.tsx` to publish and reset the retained roster through the Group send engine, using a non-empty roster room.
+3. Remove raw-store setup from `roster-screen.test.tsx`, reset only the retained roster there, and move its local empty-room UI case into the new isolated `roster-screen-local-room.test.tsx`, seeded through `createGroupChat`.
+4. Add the local-create-to-known-rooms test to `group-engine.test.ts`, using the existing internal reset path and the public read handles for assertions.
+5. Change the dialog test to use the public read-only handle for its state assertion while retaining a Group-owned raw atom only for setup/reset; clear `localStorage` in its setup.
+6. Update the Group send engine wording in `CONTEXT.md`. Do not edit `group-engine.ts` or change runtime state ownership.
+7. Run the targeted tests first. Fix only failures caused by these fixture and test-surface changes. Do not add a public reset operation or alter runtime state ownership to make the tests pass.
+8. Run the full client test suite and typecheck. Review source imports and the final diff.
+
+## 7. Verification plan
 
 Run from `client/`:
 
 ```bash
+npm test -- src/app-navigation.test.tsx src/features/agents/roster-screen.test.tsx src/features/agents/roster-screen-local-room.test.tsx src/features/groups/create-group-chat-dialog.test.tsx src/features/groups/group-engine.test.ts
 npm run typecheck
-npm test -- src/features/groups/group-engine.test.ts src/features/groups/group-screen.test.tsx src/features/groups/group-store.test.ts
 npm test
-npm run build
 ```
 
-Then from the repository root:
+Run from the repository root:
 
 ```bash
-rg -n '\$(groupChats|groupActivity|groupPrompts|groupNeedsYou)(State)?\.set' client/src --glob '!**/*.test.*'
-rg -n 'from .+group-(engine|store)' client/src --glob '!**/*.test.*'
+rg -n "from ['\"].*group-store" client/src --glob '*.test.*'
+rg -n 'group-store|\$groupChats(State)?\.set|replaceGroupChats' client/src/app-navigation.test.tsx client/src/features/agents/roster-screen.test.tsx client/src/features/agents/roster-screen-local-room.test.tsx
 git diff --check
 git status --short
 ```
 
-Interpret the searches by import ownership. Expect `$groupChatsState.set()` only for the engine's private lifecycle write; other raw writes stay in `group-store.ts`, `group-turns.ts`, and `group-rounds.ts`. Inspect every production `group-store.ts` import to ensure no new consumer outside `features/groups/` bypasses the engine interface. `group-screen.tsx` should only subscribe. The compile-only assertions are intentionally excluded from the production search.
+The targeted source audit must return no `group-store`, `$groupChats`/`$groupChatsState` setter, or `replaceGroupChats` hits in the three listed cross-feature UI test files. The global import search should return only these seven Group-owned test files: `create-group-chat-dialog.test.tsx`, `group-engine.test.ts`, `group-rounds.test.ts`, `group-store.test.ts`, `group-turns.test.ts`, `groups-mirror.test.ts`, and `groups-sync.test.ts`. The dialog test keeps a writable alias only for setup; Group implementation tests may use internal state for behavior they own. `$groupChats.set()` in `group-engine.test.ts` remains only in the four `@ts-expect-error` compile-time contract assertions, not as an executed fixture write.
 
-The build is included because this changes an imported Nanostores helper and a shared TypeScript export. Playwright is not part of the default verification: there is no changed navigation, network, persistence, or visible interaction. Add it only if the actual implementation causes a UI regression that unit tests do not cover.
+The changed production behavior is zero. `tsconfig.json` includes all of `src`, so `npm run typecheck` checks the changed tests as well as production source. Omit `npm run build`: the build script reruns typecheck and bundles production files that this plan does not change. Browser automation is not required for this test-surface-only pass. The targeted jsdom suites must still exercise the header update, the gateway and local room row previews/open actions, and the dialog creation path. If a runtime or visible regression appears, investigate before accepting the plan's no-browser assumption.
 
-## 9. Acceptance criteria
+## 8. Acceptance criteria
 
-- The four public state exports retain their existing names and remain usable with `useStore`.
-- Their TypeScript types do not expose `.set()`.
-- Compile-only assertions fail if any of the four public types becomes writable again.
-- Existing Group behaviors, values, update order, persistence, mirror scheduling, room keys, and UI rendering remain unchanged.
-- `handleGatewayTransition` and internal Group writers still use their writable atoms through internal imports.
-- Production consumers do not write through the Group send engine's read surface.
-- The Group send engine documentation and `CONTEXT.md` agree about who may write.
-- No new package, state store, module, runtime copy, or deep-freeze policy is introduced.
-- The documented boundary remains explicit: only imports from `group-engine.ts` lose `.set()` in TypeScript. Direct imports from `group-store.ts`, runtime `.set()`, `notify()`/`off()`, and mutation of `.get()` values remain possible.
+- `app-navigation.test.tsx` no longer imports or writes `$groupChats` from `group-store.ts`; its header fixture crosses `publishRosterRooms` and `useKnownRooms`.
+- `roster-screen.test.tsx` no longer imports or writes `$groupChats`; its existing non-empty gateway-room case continues to cover the gateway row, preview, and durable-key open behavior. `roster-screen-local-room.test.tsx` uses `createGroupChat` to cover the empty local preview and open behavior.
+- `group-engine.test.ts` proves `createGroupChat` writes a new local room visible through the known-rooms projection and public read handles.
+- `create-group-chat-dialog.test.tsx` reads the created room through the Group send engine; its raw writable-store access is limited to Group-owned setup/reset.
+- `CONTEXT.md` describes the test convention and preserves the exact limits of the TypeScript-only read surface.
+- No production runtime behavior, public export, persistence shape, synchronization policy, room identity, or gateway behavior changes.
+- No dependency, adapter, test-only public operation, or new domain term is introduced.
+- Typecheck, focused tests, full tests, source audit, and `git diff --check` pass.
 
-## 10. Risks and follow-up triggers
+## 9. Risks and stop conditions
 
-- **The type boundary is convention-based.** `readonlyType` returns the original atom, so runtime `.set()` remains available and a TypeScript consumer can bypass the engine by importing from `group-store.ts`. `ReadableAtom` also retains `notify()` and `off()`; the contract only removes `.set()` from imports of these four handles through `group-engine.ts`. If stronger isolation becomes a requirement, design it separately rather than bolting on a partial facade here.
-- **Returned objects are not deeply immutable.** A caller can still mutate an object reached through `.get()` or `getGroupRoom()` without calling `.set()`. No current production caller does so. Deep readonly types, cloning, or freezing would broaden the change and are deferred.
-- **Fixture imports become more explicit.** Group engine tests that prepare internal prompt/feed state will depend on `group-store.ts`. That is acceptable for setup tests in the same feature cluster; public behavior assertions should continue to read through the engine interface.
-- **No production caller currently violates the intended rule.** The benefit is a smaller and more honest interface, with a type-level guard against future accidental writes. Keep the recommendation low priority if the implementation grows beyond the three focused files above.
-- **No domain-model term is added.** If the implementation changes the meaning of "read surface" beyond the typed store capability recorded here, revisit the `CONTEXT.md` wording before expanding scope.
+- **A created local room persists.** `createGroupChat()` writes through `updateGroupChat()`, which updates the module atom and localStorage. Keep the local-room UI test in its own file; the current Vitest configuration uses the default per-file isolation. Do not try to represent this empty local room in `profiles.list`, because the parser drops empty-log gateway rows.
+- **Roster publication is retained.** Always call `resetKnownRooms()` around tests that publish a roster. It clears only the roster half; do not mistake it for a local-room reset.
+- **The Group test suite retains internal access.** This is intentional. Internal setup is not the same as a caller crossing the seam. Keep raw atom imports in Group-owned tests that need exact internal state.
+- **Do not add a reset method to `group-engine.ts`.** The existing test-file isolation contains the one cross-feature UI test that creates a local room. `resetKnownRooms()` clears only roster state and is not a substitute for resetting `$groupChats`.
+- **Do not overstate enforcement.** The raw atoms remain importable from `group-store.ts`; TypeScript's read-only type does not prevent deliberate bypasses. The plan establishes a test convention and makes cross-feature tests use the existing interface, not a security guarantee.
+- **No ADR conflict.** No Group ADR exists to reopen.

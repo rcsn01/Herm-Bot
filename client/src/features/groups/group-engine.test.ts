@@ -9,6 +9,7 @@ import {
   $groupPrompts,
   $knownRooms,
   answerGroupPrompt,
+  createGroupChat,
   groupRoomsView,
   openGroupRoom,
   publishRosterRooms,
@@ -656,6 +657,32 @@ describe('known rooms', () => {
       'id:r-3': room({ name: 'Local only', roomId: 'r-3', members: [{ name: 'ada' }] })
     })
     expect($knownRooms.get().map(room => room.key)).toContain('id:r-3')
+  })
+
+  it('projects a newly-created local room through public read handles', () => {
+    const members = [{ name: 'default' }, { name: 'work' }]
+    const created = createGroupChat('Research team', members, new Set())
+
+    expect(created.roomId).toEqual(expect.any(String))
+    expect(created.key).toMatch(/^id:/)
+    expect(created.key).toBe(`id:${created.roomId}`)
+    expect(created.members).toEqual(members)
+    expect(created.log).toEqual([])
+    expect($groupChats.get()[created.key]).toEqual(expect.objectContaining({
+      log: [],
+      members,
+      name: 'Research team',
+      roomId: created.roomId
+    }))
+    expect($knownRooms.get()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: created.key,
+        log: [],
+        members,
+        name: 'Research team',
+        roomId: created.roomId
+      })
+    ]))
   })
 
   it('resetKnownRooms clears the retained roster half and the signature state', () => {
