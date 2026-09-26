@@ -1,190 +1,209 @@
-# Plan: keep cross-feature Group UI tests behind the Group send engine
+# Implementation plan: centralize Workspace screen navigation dispatch
 
-**Repository:** Herm-Bot, Hermes mobile PWA
-**Area:** Group send engine test surface
-**Selected candidate:** Keep UI fixtures behind the Group send engine
-**Status:** Implemented and verified. This file records the agreed implementation; source changes are in the listed files.
+## Status
 
-## 1. Goal
+Ready to implement. This file is the implementation plan only; no source changes are authorized by this planning step.
 
-Stop UI tests outside `client/src/features/groups/` from importing and writing the Group store's raw `$groupChats` atom. Set up each test through the Group send engine's existing room or roster behavior, then assert through the same read surface used by callers.
+## Goal
 
-Keep the production interface and runtime unchanged. Do not add a test reset action, a new adapter, a new store, or a dependency. Keep direct writable-store access in tests that own the Group implementation and need precise internal setup.
+Make the DOM-free Workspace navigation core own the typed screen API projection: `route`, `back`, and `navigate`, plus Settings `showModelBack`. Today `use-workspace-navigation.ts` owns `screen(tab)` object construction and calls `pushRoute` in three tab-specific branches, even though the core claims route dispatch ownership. Move that projection and its dispatch into `workspace-navigation.ts` while preserving the current React-facing behavior and all screen caller contracts. Operations' static embedded Cron adapter is outside this live Workspace projection and stays unchanged.
 
-This is a test-seam and locality change, not a production deepening project. The Group send engine, Group member turn, and Group mirror already have separate responsibilities and behavior tests. `group-store.ts` owns the local room state, persistence, migrations, and store-level mutation helpers; this pass leaves that ownership unchanged.
-
-## 2. Evidence and scope
-
-The app already consumes the Group send engine's interface:
-
-- `client/src/app.tsx` imports `useKnownRooms` from `features/groups/group-engine.ts` and uses it for the header room title.
-- `client/src/features/agents/roster-screen.tsx` imports `useGroupRooms` from the Group send engine to merge gateway rooms with local rooms.
-- `client/src/features/groups/create-group-chat-dialog.tsx` creates local rooms through `createGroupChat` and reads the merged room list through `useGroupRooms`.
-
-Two cross-feature UI test files bypass that interface:
-
-- `client/src/app-navigation.test.tsx` imports writable `$groupChats` from `group-store.ts` to clear state and seed the room used by the header test.
-- `client/src/features/agents/roster-screen.test.tsx` imports writable `$groupChats` to clear state and seed a newly created local room.
-
-`client/src/features/groups/create-group-chat-dialog.test.tsx` also imports the writable atom. It is a Group-owned setup test that verifies room creation and local persistence. Keep raw state access there for setup, but assert the room through the read-only `$groupChats` handle exported by `group-engine.ts`.
-
-`client/src/features/groups/group-engine.test.ts` already resets Group-owned state through internal store helpers and tests known-room merge behavior. Add coverage there for `createGroupChat` writing a new empty local room that immediately appears through the known-rooms read surface.
-
-The gateway and local paths treat an empty log differently. `groupRoomsFromRoster()` calls `parseGroupSnapshot()`, which drops every gateway room whose log is empty. `groupRoomsView()` keeps a local empty room when it has a durable `roomId` and at least one member; `createGroupChat()` creates exactly that shape. Do not fabricate an empty room in a `profiles.list` fixture.
-
-`client/vitest.config.ts` does not override Vitest isolation; `package-lock.json` pins Vitest 4.1.10, whose default `isolate` is `true`. Each test file gets a separate environment and module graph. This is why the app and shared roster suites can drop their local atom reset once they stop creating local rooms, while the local-room UI case can contain its persisted fixture in a separate file.
-
-No relevant ADRs exist. `CONTEXT.md` already documents the Group send engine interface, its read-only atom handles, and the convention that raw writable atoms remain available to internal modules and setup tests. Sharpen that wording so it distinguishes Group-owned setup from cross-feature UI tests.
-
-## 3. Settled decisions
-
-The user asked to use the recommended answer for every clarification. These defaults settle the design tree for this plan.
-
-| Decision | Selected answer | Reason |
-|---|---|---|
-| Which tests change? | Remove raw-store access from cross-feature UI tests in `app-navigation.test.tsx` and `roster-screen.test.tsx`. Keep fixture writes in Group-owned implementation tests. | These are the two callers outside the Group feature that currently seed the writable atom directly. |
-| How should the app-header test seed a room? | Publish a non-empty `GroupRoom` with the existing `publishRosterRooms` verb, then reset the retained roster with `resetKnownRooms`. | The header reads the retained roster half through `useKnownRooms`; a message keeps the fixture valid for the actual gateway roster parser, and no local room state is written. |
-| How should the roster UI test cover a newly-created empty room? | Keep the local-room rendering case in a separate `roster-screen-local-room.test.tsx` file and seed it through `createGroupChat`. Keep the regular roster suite focused on gateway-backed rows. | The gateway parser drops empty-log rooms as tombstones. `createGroupChat` is the real local path, and its durable room is visible to `RosterScreen` through `useGroupRooms`. Vitest's configured default isolates test files, containing the persistent fixture without a reset API. |
-| Where should local room creation be verified? | Add an integration test in `group-engine.test.ts` that calls `createGroupChat` and observes the room in `$knownRooms` and the read-only `$groupChats` handle. | The existing Group test setup already resets internal state and can test the local creation-to-projection path without adding a reset interface. |
-| What should the dialog test do? | Keep its internal writable atom for setup/reset, but read the created room from `$groupChats` imported from `group-engine.ts`. | Setup remains inside the Group feature; caller-visible reads cross the existing seam. |
-| Should the production interface change? | No. Use the current actions, roster publication verbs, and read handles. | A new reset or test-only method would make a low-confidence test concern part of the production interface. |
-| Should a new domain term be added? | No. Clarify the existing Group send engine and read-surface wording in `CONTEXT.md`. | The design names no new domain concept. |
-
-No decision remains open. The existing `publishRosterRooms`, `resetKnownRooms`, `createGroupChat`, and read handles cover every fixture; no production verb or export needs to change.
-
-## 4. Intended test shape
+The per-screen API call path changed by this plan is:
 
 ```text
-Before
-  app / roster UI test ───────────────► Group send engine read surface
-          │
-          └── fixture write / reset ──► writable group-store atom
-
-After
-  app UI test ── publishRosterRooms ─► Group send engine ──► retained roster projection
-  roster UI test ── profiles.list ───► roster screen (gateway rooms have messages)
-  local-room UI test ── createGroupChat ► local store ──────► roster screen
-  Group engine test ── createGroupChat ► local store ──────► known-rooms projection
-
-  Group-owned implementation tests keep their internal setup seam.
+app.tsx (requests screen(tab), passes the result as screen props)
+              |
+              v
+use-workspace-navigation.ts       React subscriptions and view adapter
+              | workspaceScreen(tab)
+              v
+workspace-navigation.ts           route policy, typed screen projection, dispatch
+              | pushRoute(...)
+              v
+navigation-store.ts               route-stack state engine
 ```
 
-The division makes the test surface match the production call paths. UI tests verify caller-visible behavior. Group engine tests verify local room creation and projection. Group store tests continue to verify persistence and migration details.
+This is not the full core dependency graph. `app.tsx` also reads route state and imports `groupIdFromRoute` and `restoreWorkspacePath` directly. `sessions-menu.tsx`, `bot-workspace-navigation.tsx`, `navigation/deep-links.ts`, `state/gateway-controller.ts`, and `pwa/policy.ts` also import existing core exports. Those call paths stay unchanged.
 
-## 5. File-by-file changes
+## Decisions adopted
 
-### `client/src/app-navigation.test.tsx`
+The following choices are settled for this plan. There are no open design questions.
 
-- Remove the import of `$groupChats` from `features/groups/group-store.ts`.
-- Import `publishRosterRooms` and `resetKnownRooms` from `features/groups/group-engine.ts`.
-- Remove the `$groupChats.set({})` fixture reset. Call `resetKnownRooms()` in `beforeEach`. Replace `afterEach(cleanup)` with `afterEach(() => { cleanup(); resetKnownRooms() })` so cleanup runs before clearing the retained roster half. The app suite does not otherwise mutate local room state, and its isolated jsdom file starts with an empty store, so it needs no local-store reset.
-- In the group URL/header test, publish a valid room with key `id:r-crew`, room id `r-crew`, name `Research crew`, one member, and one user log entry such as `{ at: 1_700_000_000_000, from: { kind: 'user', name: 'You' }, text: 'Research notes' }`. `groupRoomsFromRoster()` drops empty-log gateway rooms, so do not use an empty log for this roster-shaped fixture. Keep the publish inside React `act`, as the header subscribes through `useKnownRooms`.
-- Keep the existing route, fallback-title, and back-navigation assertions. The test should still prove that the header first shows its fallback title, updates when the retained room appears, and returns to the roster on Back.
-- Do not create a local room in this test. The non-empty roster publish exercises the header's retained-roster read path without writing durable local room state.
+| Decision | Adopted answer | Reason |
+| --- | --- | --- |
+| Scope of the seam | Deepen the existing Workspace navigation core. Move the full per-screen projection and route writes, not just a one-line `pushRoute` forwarding wrapper. | The current core owns `back`, `narrowRoute`, and route policy, but the adapter reconstructs the screen navigation model. Consolidating that model creates one coherent dispatch owner. |
+| React adapter | Keep `useWorkspaceNavigation()` as the React binding. It remains responsible for `useStore` subscriptions, header derivation, and React-facing reads, then delegates `screen(tab)` to the core. | React state observation remains at the React boundary; route decisions and writes belong in the core. |
+| Existing callers and types | Preserve `useWorkspaceNavigation().screen(tab)`, the shape and generics of its result, and type imports from `~/navigation/use-workspace-navigation`. Move screen interface ownership into the core and re-export those types from the existing hook module. | Cron, Capabilities, Settings, and Operations consume these types. No screen call-site migration is needed. |
+| Route-stack store | Keep `navigation-store.ts` and `routes.ts` unchanged. The store remains the state engine and retains `pushRoute` validation. | The requested seam is above the store; no route-stack rewrite is needed. |
+| Dependencies and concepts | Add no package, adapter, or new domain vocabulary. Keep the core DOM-free and preserve its allowed import set. | This is an in-process ownership change, not a new platform boundary. |
+| Tests | Add direct tests for the core-owned screen projection and dispatch. Keep React hook, screen, store, and browser tests as integration coverage. | Each test layer protects a distinct boundary; existing behavior remains part of the contract. |
+| Documentation | Update the existing Workspace navigation entry in `CONTEXT.md` to describe the new ownership split. Do not add an ADR; no tracked ADR exists to update. | Keep architecture guidance accurate without introducing a new documentation structure. |
 
-The app test's mocked roster and Group chat screen do not mutate the local Group store. A source check should confirm no other test in this file depends on clearing `$groupChats`.
+## Current evidence and constraints
 
-### `client/src/features/agents/roster-screen.test.tsx`
+- `client/src/navigation/workspace-navigation.ts` documents that it owns route policy and dispatch and must remain DOM-free. `client/src/pwa/policy.ts` imports it, and `client/src/pwa/sw.ts` imports that policy, so the core is in the service-worker dependency graph. Its tested imports are exactly `./navigation-store`, `./routes`, and `nanostores`.
+- `client/src/navigation/use-workspace-navigation.ts` currently has three screen-specific `pushRoute` branches for settings, cron, and capabilities. Each branch builds `route`, `back`, and `navigate`; Settings also reads `$workspacePolicy.returnOrigin` for `showModelBack`.
+- The current projection narrows the global `$activeRoute`, not the requested tab's retained stack. If Cron has a detail route but Settings is active, `screen('cron').route` is the Cron root. Its `navigate` pushes onto the requested tab's stack without selecting that tab. Its `back` always calls `back('screen')`, which operates on the globally active tab; it is not scoped to the `tab` argument. Preserve all three behaviors.
+- `client/src/app.tsx` is the only production caller of `workspace.screen(...)`: it requests capabilities, cron, and settings and passes those values to `CapabilitiesScreen`, `CronScreen`, and `SettingsScreen`. Those screens use `navigate` for capability sections/details, cron roots/details/editors/blueprints, and settings categories/administration pages. Keep these caller sites and contracts unchanged.
+- Other production modules call the core directly: `app.tsx` reads `groupIdFromRoute` and `restoreWorkspacePath`; `sessions-menu.tsx` uses `workspaceMenuIntent`; `bot-workspace-navigation.tsx` uses `WORKSPACE_DESTINATIONS`; `navigation/deep-links.ts` uses `openChatSurface`; `state/gateway-controller.ts` uses `resetWorkspace`; and `pwa/policy.ts` uses `isAppShellScreenPath`. Do not reroute or change these clients.
+- `WorkspaceScreenApi`, `WorkspaceSettingsScreenApi`, and `WorkspaceScreenTab` are currently exported from `use-workspace-navigation.ts`. `capabilities-screen.tsx`, `cron-screen.tsx`, `settings-screen.tsx`, and `operations-screen.tsx` import screen types from that path; the hook tests import `WorkspaceNavigation` from it.
+- `OperationsScreen` embeds `CronScreen` outside the Workspace module with a static Cron root route, `onBack`, and a no-op `navigate`. Preserve this embed behavior and its type import; it does not dispatch into the Workspace route stack.
+- `navigation-store.test.ts` already covers wrong-stack runtime rejection by `pushRoute`. Preserve this validation by continuing to delegate through `pushRoute`, rather than writing stacks directly.
+- `workspace-navigation.test.ts` pins the core's exact imports to `./navigation-store`, `./routes`, and `nanostores`. It also exercises `narrowRoute`, route policy, history isolation, and the DOM-free guard.
+- `use-workspace-navigation.test.tsx` covers header and foreground derivation, Cron detail navigation and header/back updates, root fallback, Settings `showModelBack`, stable verb identities, and StrictMode/history behavior. Preserve all of it.
+- `client/e2e/pwa-foundation.spec.ts` exercises runtime Cron and Capabilities navigation, nested headers, back/return-origin behavior, and the unchanged URL. `client/e2e/cron-editor.spec.ts` exercises the editor-to-detail route after save. Playwright is configured for Chromium and WebKit with a local fixture server.
+- `CONTEXT.md` already has a Workspace navigation entry. No tracked ADR exists to update.
 
-- Remove the writable `$groupChats` import and its `$groupChats.set({})` setup.
-- Import `resetKnownRooms` from `features/groups/group-engine.ts`; call it in `beforeEach`. Replace `afterEach(cleanup)` with `afterEach(() => { cleanup(); resetKnownRooms() })` so roster publication from a mounted screen cannot leak between tests. It does not reset local rooms. This isolated file starts with an empty store and, after moving the local-room case out, no longer creates or mutates local rooms.
-- Remove `lists a newly-created local group before its first message` from this shared suite; its local-room UI assertions move to the isolated test file below.
-- Leave the existing gateway group rendering test, profile rendering tests, and query behavior tests otherwise unchanged. The gateway group fixture must retain a non-empty log because `parseGroupSnapshot()` filters empty-log rooms before `RosterScreen` receives them.
+## Intended design
 
-### `client/src/features/agents/roster-screen-local-room.test.tsx` (new)
+### Core module
 
-- Import `createGroupChat` and `$groupChats` from `group-engine.ts`. Assert `$groupChats.get()` is empty before setup, then preserve the existing local-room UI scenario by calling `createGroupChat('Research team', [{ name: 'default' }, { name: 'work' }], new Set())`, not by writing an atom.
-- In this file, copy the small render wrapper from the existing `renderRoster` helper; it is file-local, so do not import or extract it just for reuse. Create a `QueryClient` with query retries disabled, wrap `RosterScreen` in `QueryClientProvider` and `GatewayProvider`, and pass `vi.fn()` callbacks for `onOpenAgent` and `onOpenGroup`.
-- Set `$preferences` to `{ authMode: 'token', profile: null, remoteURL: 'https://gateway.example', theme: 'system' }` and `$connection` to `{ authMode: 'token', error: null, phase: 'connected', status: { auth_required: false, profiles: [{ is_default: true, name: 'default' }, { name: 'work' }] } as unknown as GatewayStatus }`, matching `roster-screen.test.tsx`. Use `MemoryGateway`'s `profiles.list` response `{ profiles: [{ is_default: true, name: 'default' }, { name: 'work' }] }`, with no gateway groups. Assert the local room row appears, its preview says `No messages yet`, and clicking it calls `onOpenGroup` with the returned `room.key`.
-- Keep this case in its own test file and explicitly clean up the rendered tree after the test. `createGroupChat()` persists the room and updates module-scoped state; the current Vitest 4.1.10 config leaves `isolate` at its default `true`, so this file gets a separate test environment and module graph. Do not merge this case into the shared roster suite or use `resetKnownRooms()` as a local-room reset.
+In `client/src/navigation/workspace-navigation.ts`:
 
-The shared roster suite continues to test gateway-backed rows. The isolated local-room test exercises the real local create-to-screen path; the Group engine suite separately checks that creation updates the local read handles and known-room projection.
+1. Own `WorkspaceScreenTab`, `WorkspaceScreenApi<Tab>`, and `WorkspaceSettingsScreenApi`, preserving the existing tab-specific `RouteForTab<Tab>` route type.
+2. Export one typed core function, named `workspaceScreen(tab)`, that constructs the complete screen navigation value for a Workspace tab. Give it a settings-literal overload returning `WorkspaceSettingsScreenApi`, a generic `Tab extends Exclude<WorkspaceScreenTab, 'settings'>` overload returning `WorkspaceScreenApi<Tab>`, and a `WorkspaceScreenTab` overload returning the settings/capabilities/cron API union. The last overload lets the React adapter delegate its union-typed `tab` without a cast; the implementation returns the same union.
+3. Resolve `route` by applying the existing `narrowRoute` behavior to the global `$activeRoute`. Do not read the requested tab's retained stack when another tab is active; a foreign active route falls back to the requested tab's root.
+4. Provide `back` as `() => back('screen')`. It remains global to the active navigation tab and is not bound to the requested screen tab.
+5. Provide `navigate` as `route => pushRoute(tab, route)`. Keep the tab-specific `RouteForTab<Tab>` contract. This pushes only to the requested stack, does not select that tab, and retains `pushRoute` runtime validation; do not write to `$navigation` directly.
+6. For settings, derive `showModelBack` from `$workspacePolicy.get().returnOrigin === null`, exactly as today; do not derive it from the route or destination.
+7. Read `$activeRoute` and `$workspacePolicy` from the existing stores. The function must not import React or `@nanostores/react`, accept hidden state from the hook, or duplicate/copy the policy.
+8. Keep the existing `narrowRoute` export and its direct tests. Keep all existing core imports within the DOM-free guard's exact allowed set.
 
-### `client/src/features/groups/group-engine.test.ts`
+### React adapter
 
-- Import `createGroupChat` from `group-engine.ts`.
-- In the `known rooms` coverage, add a case that calls `createGroupChat('Research team', [{ name: 'default' }, { name: 'work' }], new Set())` with no active roster snapshot.
-- Assert that the returned room has a durable `id:` key matching its `roomId`, contains the selected members, and has an empty log.
-- Assert through the exported read-only `$groupChats` handle that the room is stored, and through `$knownRooms` that the newly created room is immediately present in the local known-room projection. Describe this as a local-store update, not a roster publish.
-- Use the room's returned key in assertions. Do not depend on the time/random-generated room id or add a deterministic id injection seam.
-- Rely on the suite's existing `beforeEach` reset and do not replace or trim it: it calls `localStorage.clear()`, `replaceGroupChats({})`, `resetKnownRooms()`, clears the activity/prompt/needs-you atoms, and empties `calls`. `replaceGroupChats({})` persists an empty room map after the clear, so the atom and durable room data are empty. Preserve the existing `afterEach` (`cleanup()`, `stopGroupEngine()`, and `vi.useRealTimers()`) as well. This is a Group implementation test, so its internal fixture reset remains appropriate.
+In `client/src/navigation/use-workspace-navigation.ts`:
 
-This case verifies the local create-to-projection path. Existing `groupRoomsView` tests continue to cover roster/local key union, inclusion of an empty local room with durable identity and members, and filtering of identity-less empty tombstones.
+1. Preserve the return type and public shape of `useWorkspaceNavigation()` and its settings-specific and generic `screen(tab)` overloads.
+2. Keep all three current store subscriptions and the header/foreground derivation.
+3. Replace the three local screen-object branches and the direct `pushRoute` import with delegation to `workspaceScreen(tab)`.
+4. Re-export `WorkspaceScreenTab`, `WorkspaceScreenApi`, and `WorkspaceSettingsScreenApi` from the core at this existing module path. Keep `WorkspaceNavigation` owned by the React adapter because it includes React-facing derived state and verbs.
+5. Do not change screen props or imports. In particular, keep the three `app.tsx` screen() calls and `OperationsScreen`'s no-op embedded Cron navigation behavior unchanged.
 
-### `client/src/features/groups/create-group-chat-dialog.test.tsx`
+The core function should return the same values and trigger the same route transitions as the current hook implementation. Do not change URL/history behavior, the tab stacks, route titles, menu/return-origin policy, or screen rendering.
 
-- Import `$groupChats` for reads from `group-engine.ts`.
-- Keep a clearly named writable alias such as `$groupChatsState` from `group-store.ts` only for the existing internal setup reset.
-- Change the assertion after dialog creation from `$groupChats.get()` on the raw store to the read-only engine export. Keep the `localStorage` persistence assertion; it observes the existing durable behavior.
-- Clear `localStorage` and reset the internal atom in setup so the dialog test begins from an empty Group state. Do not create a public reset action for this test.
-- Keep the test's current user flow through the dialog: select members, name the room, create, and verify callbacks.
+## File-by-file work
 
-The writable import remains justified as fixture setup inside the Group feature. The test's read assertion should cross the same interface ordinary callers use.
+### `client/src/navigation/workspace-navigation.ts`
+
+- Add the three screen-related exported types currently declared in the hook module.
+- Add the typed `workspaceScreen(tab)` projection and dispatch function using the active route, `narrowRoute`, `back`, `$workspacePolicy`, and `pushRoute`.
+- Preserve the core import set, DOM-free constraint, existing `narrowRoute` behavior, and runtime route-stack validation.
+
+### `client/src/navigation/use-workspace-navigation.ts`
+
+- Import and delegate to `workspaceScreen`.
+- Remove screen-specific route construction and direct `pushRoute` calls.
+- Re-export the moved screen types from this module to preserve current type-import paths.
+- Leave subscriptions, derived header/foreground properties, other verb identities, and the `WorkspaceNavigation` interface unchanged.
+
+### `client/src/navigation/workspace-navigation.test.ts`
+
+- Add focused tests for all fields of the core-owned screen projection: `route`, `back`, `navigate`, and Settings `showModelBack`.
+- For each of capabilities, cron, and settings, call `navigate` with a representative typed route (a capabilities section, a Cron job detail, and a settings administration page) and assert that only that tab's stack changes and `activeTab` stays unchanged. Also pass a wrong-tab route through a deliberate runtime cast and assert that the projection still throws via `pushRoute` without changing any stack.
+- Test `route` with a matching active route for each screen tab. For the foreign-route fallback case, first give the requested inactive tab a nested route, then activate another tab; assert that the projection returns the requested tab's root rather than reading its retained stack.
+- For each screen tab, test that projected `back` pops a nested route. Also call `workspaceScreen('cron').back()` at an active capabilities root and assert it follows the globally active tab's screen-source fallback to Sessions, not the header's roster fallback. This pins that `back` is not scoped to the `screen(tab)` argument.
+- Test Settings `showModelBack` as true when `returnOrigin` is null and false when it is non-null.
+- Retain the existing `narrowRoute`, policy, history-isolation, and DOM-free guard tests here. Keep the wrong-stack `pushRoute` test in `navigation-store.test.ts`; do not move or weaken it.
+
+### `client/src/navigation/use-workspace-navigation.test.tsx`
+
+- Keep all existing React-binding tests: header/foreground derivation, Cron detail navigation and header/back round trip, root fallback, Settings `showModelBack` lifecycle, stable verb identities, and StrictMode/history behavior.
+- Add a compile-only `@ts-expect-error` assertion that `WorkspaceScreenApi<'cron'>.navigate` rejects a Capabilities route, so moving the types cannot silently widen the tab-specific route contract. Put the call in an unreachable/type-only assertion so it is not executed by Vitest.
 
 ### `CONTEXT.md`
 
-Refine the Group send engine entry to say:
+- Refine the existing Workspace navigation entry to state that the core owns the per-screen route projection (`route`, `back`, `navigate`, and Settings `showModelBack`), while the React entry subscribes and delegates.
+- Keep the existing distinction between the navigation core and the route-stack store. Do not add a new architecture term or separate document.
 
-- Cross-feature UI tests set up local rooms through existing Group engine actions or roster publication, and gateway-backed rows through gateway fixtures; they observe behavior through caller-facing read paths rather than raw writable atoms.
-- Raw writable atoms remain available for Group implementation modules and Group-owned setup tests.
-- Cross-feature raw-store imports bypass this convention; this is not runtime access control.
+### Intentionally unchanged
 
-Keep the current limitations accurate: `readonlyType` changes the TypeScript view only, leaves runtime behavior unchanged, retains `notify()` and `off()`, and does not make values returned by `.get()` deeply immutable. Do not add a new domain term or imply a stronger guarantee.
+- `client/src/navigation/navigation-store.ts` and `client/src/navigation/routes.ts`.
+- `client/src/app.tsx`, screens, and screen callers, including `operations-screen.tsx`.
+- Package manifests, dependencies, route URL parsing, browser history, screen behavior, and unrelated navigation policy.
 
-### `client/src/features/groups/group-engine.ts`
+## Implementation sequence
 
-Do not edit this file. Its existing actions, roster verbs, read handles, and module header already support the plan; there is no runtime or export change.
+1. Before editing source, inspect `git status` and confirm there are no unexpected changes in the target files. Preserve any unrelated user work. The replacement `plan.md` is expected to be present as the planning change.
+2. Move the screen types into `workspace-navigation.ts` and implement the typed core projection using existing store and route operations.
+3. Refactor `use-workspace-navigation.ts` to delegate `screen(tab)` and re-export the moved types. Keep its React subscriptions intact.
+4. Add core screen-projection/dispatch tests and the compile-only tab-route type assertion. Keep the React binding tests intact; test the new core API directly rather than moving or replacing hook coverage.
+5. Update the single Workspace navigation description in `CONTEXT.md`.
+6. Run the focused tests and source audits below. Fix only issues caused by this plan; do not expand into route-store or UI redesign.
+7. Run full verification in the order below, including the browser flow because route dispatch is user-visible.
 
-## 6. Implementation order
+## Verification plan
 
-1. Record `git status --short` and preserve all pre-existing changes, including this plan. Confirm the existing target files have no unexpected edits before touching them, and confirm `roster-screen-local-room.test.tsx` does not already exist before creating it; unrelated worktree changes are not a reason to stop.
-2. Change `app-navigation.test.tsx` to publish and reset the retained roster through the Group send engine, using a non-empty roster room.
-3. Remove raw-store setup from `roster-screen.test.tsx`, reset only the retained roster there, and move its local empty-room UI case into the new isolated `roster-screen-local-room.test.tsx`, seeded through `createGroupChat`.
-4. Add the local-create-to-known-rooms test to `group-engine.test.ts`, using the existing internal reset path and the public read handles for assertions.
-5. Change the dialog test to use the public read-only handle for its state assertion while retaining a Group-owned raw atom only for setup/reset; clear `localStorage` in its setup.
-6. Update the Group send engine wording in `CONTEXT.md`. Do not edit `group-engine.ts` or change runtime state ownership.
-7. Run the targeted tests first. Fix only failures caused by these fixture and test-surface changes. Do not add a public reset operation or alter runtime state ownership to make the tests pass.
-8. Run the full client test suite and typecheck. Review source imports and the final diff.
+Run commands from `client/` unless noted.
 
-## 7. Verification plan
+### Focused unit and integration tests
 
-Run from `client/`:
+```sh
+npm test -- \
+  src/navigation/workspace-navigation.test.ts \
+  src/navigation/use-workspace-navigation.test.tsx \
+  src/navigation/navigation-store.test.ts \
+  src/features/capabilities/capabilities-screen.test.tsx \
+  src/features/cron/cron-screen.test.tsx \
+  src/features/settings/settings-screen.test.tsx \
+  src/app-navigation.test.tsx
+```
 
-```bash
-npm test -- src/app-navigation.test.tsx src/features/agents/roster-screen.test.tsx src/features/agents/roster-screen-local-room.test.tsx src/features/groups/create-group-chat-dialog.test.tsx src/features/groups/group-engine.test.ts
+This validates the core projection, React subscription boundary, route-store rejection behavior, screen callers, and app navigation integration. Operations has no dedicated screen test file; its existing type import and embedded no-op adapter must continue to compile.
+
+### Static and complete test verification
+
+```sh
 npm run typecheck
 npm test
+npm run build
 ```
 
-Run from the repository root:
+The build is required because the core is included in the service-worker bundle. The existing DOM-free guard must still pass with the exact import set `./navigation-store`, `./routes`, and `nanostores`.
 
-```bash
-rg -n "from ['\"].*group-store" client/src --glob '*.test.*'
-rg -n 'group-store|\$groupChats(State)?\.set|replaceGroupChats' client/src/app-navigation.test.tsx client/src/features/agents/roster-screen.test.tsx client/src/features/agents/roster-screen-local-room.test.tsx
-git diff --check
-git status --short
+### Browser verification
+
+```sh
+npm run test:e2e -- e2e/pwa-foundation.spec.ts \
+  --grep 'runtime screen and navigation routes stay out of the browser URL|workspace tabs share a stable header without redundant menu buttons'
 ```
 
-The targeted source audit must return no `group-store`, `$groupChats`/`$groupChatsState` setter, or `replaceGroupChats` hits in the three listed cross-feature UI test files. The global import search should return only these seven Group-owned test files: `create-group-chat-dialog.test.tsx`, `group-engine.test.ts`, `group-rounds.test.ts`, `group-store.test.ts`, `group-turns.test.ts`, `groups-mirror.test.ts`, and `groups-sync.test.ts`. The dialog test keeps a writable alias only for setup; Group implementation tests may use internal state for behavior they own. `$groupChats.set()` in `group-engine.test.ts` remains only in the four `@ts-expect-error` compile-time contract assertions, not as an executed fixture write.
+Run these two existing flows in both configured Chromium and WebKit projects. They cover Cron and Capabilities navigation, nested route headers, back behavior, and the invariant that runtime route transitions do not alter the startup URL. Do not run the full PWA fixture suite for this change; its auth, chat, group, and offline cases are unrelated. Leave out the full Cron editor form/save E2E: the changed boundary is the shared `navigate` operation, which the direct core and React-hook tests exercise with a Cron job-detail route; no Cron editor or save code changes. Do not add an E2E fixture unless an existing test cannot exercise the unchanged flow.
 
-The changed production behavior is zero. `tsconfig.json` includes all of `src`, so `npm run typecheck` checks the changed tests as well as production source. Omit `npm run build`: the build script reruns typecheck and bundles production files that this plan does not change. Browser automation is not required for this test-surface-only pass. The targeted jsdom suites must still exercise the header update, the gateway and local room row previews/open actions, and the dialog creation path. If a runtime or visible regression appears, investigate before accepting the plan's no-browser assumption.
+### Source ownership audit
 
-## 8. Acceptance criteria
+From the repository root, verify:
 
-- `app-navigation.test.tsx` no longer imports or writes `$groupChats` from `group-store.ts`; its header fixture crosses `publishRosterRooms` and `useKnownRooms`.
-- `roster-screen.test.tsx` no longer imports or writes `$groupChats`; its existing non-empty gateway-room case continues to cover the gateway row, preview, and durable-key open behavior. `roster-screen-local-room.test.tsx` uses `createGroupChat` to cover the empty local preview and open behavior.
-- `group-engine.test.ts` proves `createGroupChat` writes a new local room visible through the known-rooms projection and public read handles.
-- `create-group-chat-dialog.test.tsx` reads the created room through the Group send engine; its raw writable-store access is limited to Group-owned setup/reset.
-- `CONTEXT.md` describes the test convention and preserves the exact limits of the TypeScript-only read surface.
-- No production runtime behavior, public export, persistence shape, synchronization policy, room identity, or gateway behavior changes.
-- No dependency, adapter, test-only public operation, or new domain term is introduced.
-- Typecheck, focused tests, full tests, source audit, and `git diff --check` pass.
+```sh
+rg -n "pushRoute" client/src/navigation/use-workspace-navigation.ts
+rg -n "pushRoute" client/src --glob '!**/*.test.*'
+rg -n "WorkspaceScreenApi|WorkspaceSettingsScreenApi|WorkspaceScreenTab" client/src
+```
 
-## 9. Risks and stop conditions
+Expected results:
 
-- **A created local room persists.** `createGroupChat()` writes through `updateGroupChat()`, which updates the module atom and localStorage. Keep the local-room UI test in its own file; the current Vitest configuration uses the default per-file isolation. Do not try to represent this empty local room in `profiles.list`, because the parser drops empty-log gateway rows.
-- **Roster publication is retained.** Always call `resetKnownRooms()` around tests that publish a roster. It clears only the roster half; do not mistake it for a local-room reset.
-- **The Group test suite retains internal access.** This is intentional. Internal setup is not the same as a caller crossing the seam. Keep raw atom imports in Group-owned tests that need exact internal state.
-- **Do not add a reset method to `group-engine.ts`.** The existing test-file isolation contains the one cross-feature UI test that creates a local room. `resetKnownRooms()` clears only roster state and is not a substitute for resetting `$groupChats`.
-- **Do not overstate enforcement.** The raw atoms remain importable from `group-store.ts`; TypeScript's read-only type does not prevent deliberate bypasses. The plan establishes a test convention and makes cross-feature tests use the existing interface, not a security guarantee.
-- **No ADR conflict.** No Group ADR exists to reopen.
+- The first search has no matches.
+- Production `pushRoute` references are confined to `workspace-navigation.ts` calling the store operation and `navigation-store.ts` defining it. Other modules may still read navigation stores.
+- Screen type declarations are in the core and are re-exported from the hook path; existing screen and Operations imports need no changes.
+
+Also inspect the final diff and `git status`. The implementation diff should contain only the two navigation modules, their focused tests, the `CONTEXT.md` clarification, and this plan file. This plan review changes `plan.md` only; implementation and test execution remain separate work.
+
+## Acceptance criteria
+
+- `useWorkspaceNavigation().screen(tab)` has the same call shape and behavior as before.
+- Existing imports of screen types from `~/navigation/use-workspace-navigation` continue to compile.
+- `workspace-navigation.ts` owns construction of the typed per-screen route/back/navigate model and Settings `showModelBack`.
+- The React hook does not import or call `pushRoute` and remains responsible for React subscriptions and derived React-facing state.
+- The `RouteForTab` contract remains tab-specific, and `pushRoute` still rejects a wrong-stack route at runtime.
+- Cron, Capabilities, and Settings stacks, root fallbacks, back behavior, and Settings model-return behavior are unchanged. The projection reads the globally active route, pushes to the requested tab without selecting it, and preserves the unscoped `back('screen')` behavior.
+- `OperationsScreen` can still embed Cron with a static root route and no-op navigation.
+- The core remains DOM-free with the exact tested import set; no new dependency, adapter, route store, or domain term is introduced.
+- Focused tests, full tests, typecheck, build, and the targeted browser tests pass.
+- `CONTEXT.md` accurately describes the finalized ownership split.
+
+## Risks and stop conditions
+
+- **Type widening during extraction:** Stop if the generic tab-to-route relationship cannot be preserved cleanly. Do not replace it with a union-wide `MobileRoute`, `any`, or a broad cast. Keep the compile-only negative assertion.
+- **Core boundary regression:** Stop if the implementation requires React, browser APIs, app imports, or a fourth core import specifier. Do not weaken or rewrite the DOM-free guard to accommodate it.
+- **Runtime validation bypass:** Do not manipulate route stacks directly from the core screen projection. All route pushes must pass through `pushRoute` so wrong-stack runtime rejection remains intact.
+- **Behavior drift:** If tests show changes to active-route narrowing (including a retained inactive-tab detail), stack ownership or active-tab selection on `navigate`, the global `back('screen')` behavior, return-origin behavior, header state, or URL behavior, correct the projection rather than updating expected behavior.
+- **Scope creep:** Do not modify route parsing, service-worker policy, `navigation-store.ts`, screen flows, or unrelated documentation. If any of those changes appear necessary, stop and reassess the seam before expanding scope.
