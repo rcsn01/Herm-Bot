@@ -1,209 +1,203 @@
-# Implementation plan: centralize Workspace screen navigation dispatch
+# Implementation plan: keep Group room snapshots fresh
 
 ## Status
 
-Ready to implement. This file is the implementation plan only; no source changes are authorized by this planning step.
+Implemented. Focused tests passed (7 files, 140 tests), the full suite passed (82 files, 1,027 tests), and the Group browser regression passed in Chromium and WebKit. Typecheck and production build passed; Vite reported chunk-size and inlineDynamicImports warnings.
 
 ## Goal
 
-Make the DOM-free Workspace navigation core own the typed screen API projection: `route`, `back`, and `navigate`, plus Settings `showModelBack`. Today `use-workspace-navigation.ts` owns `screen(tab)` object construction and calls `pushRoute` in three tab-specific branches, even though the core claims route dispatch ownership. Move that projection and its dispatch into `workspace-navigation.ts` while preserving the current React-facing behavior and all screen caller contracts. Operations' static embedded Cron adapter is outside this live Workspace projection and stays unchanged.
+Make the synchronous `useGroupRooms` view and the retained roster half compare the complete ordered `GroupRoom` snapshot, not only room keys and names. A `profiles.list` result can keep those keys and names while changing members, log entries, an image, or another typed field. Before this change, both key/name signatures treated that changed snapshot as equal: the hook retained its old roster array, and `publishRosterRooms` skipped its write. The roster row, the Group screen's roster-backed room name and members, the create dialog's duplicate-name check, and the app header could therefore stay stale.
 
-The per-screen API call path changed by this plan is:
+Keep the existing projection in `client/src/features/groups/group-engine.ts`. Give `useGroupRooms` and `publishRosterRooms` one shared content-signature rule. Preserve the public exports, roster/local merge, roster precedence, ordering, retained snapshot, reset behavior, and caller behavior. This does not replace an existing local `$groupChats` room or refresh the transcript rendered from that local room in `GroupChatScreen`; local transcript freshness remains owned by the mirror and Group store.
+
+## Data flow
 
 ```text
-app.tsx (requests screen(tab), passes the result as screen props)
-              |
-              v
-use-workspace-navigation.ts       React subscriptions and view adapter
-              | workspaceScreen(tab)
-              v
-workspace-navigation.ts           route policy, typed screen projection, dispatch
-              | pushRoute(...)
-              v
-navigation-store.ts               route-stack state engine
+profiles.list
+  -> createAgentsApi.list -> parseAgentRosterPage
+  -> groupRoomsFromRoster -> parseGroupSnapshot
+  -> roster.data.groups
+       -> useGroupRooms
+            -> groupRoomsView(roster groups, $groupChats)
+                 -> roster screen, Group screen, create-group dialog
+            -> effect: publishRosterRooms -> retained $rosterRooms
+       -> $knownRooms = groupRoomsView($rosterRooms, $groupChats)
+            -> useKnownRooms() -> app header
 ```
 
-This is not the full core dependency graph. `app.tsx` also reads route state and imports `groupIdFromRoute` and `restoreWorkspacePath` directly. `sessions-menu.tsx`, `bot-workspace-navigation.tsx`, `navigation/deep-links.ts`, `state/gateway-controller.ts`, and `pwa/policy.ts` also import existing core exports. Those call paths stay unchanged.
+The roster screen, Group screen, and create-group dialog use the same unscoped roster query key and call `useGroupRooms`. The app header reads `useKnownRooms()`. Both paths use `groupRoomsView` to union roster and local rooms by durable room key, with the roster row winning a duplicate key. In `GroupChatScreen`, the selected roster row supplies the room name and members, but the transcript renders from the local engine room once one exists.
 
-## Decisions adopted
+## Resolved design decisions
 
-The following choices are settled for this plan. There are no open design questions.
+These decisions are final for this implementation plan.
 
 | Decision | Adopted answer | Reason |
 | --- | --- | --- |
-| Scope of the seam | Deepen the existing Workspace navigation core. Move the full per-screen projection and route writes, not just a one-line `pushRoute` forwarding wrapper. | The current core owns `back`, `narrowRoute`, and route policy, but the adapter reconstructs the screen navigation model. Consolidating that model creates one coherent dispatch owner. |
-| React adapter | Keep `useWorkspaceNavigation()` as the React binding. It remains responsible for `useStore` subscriptions, header derivation, and React-facing reads, then delegates `screen(tab)` to the core. | React state observation remains at the React boundary; route decisions and writes belong in the core. |
-| Existing callers and types | Preserve `useWorkspaceNavigation().screen(tab)`, the shape and generics of its result, and type imports from `~/navigation/use-workspace-navigation`. Move screen interface ownership into the core and re-export those types from the existing hook module. | Cron, Capabilities, Settings, and Operations consume these types. No screen call-site migration is needed. |
-| Route-stack store | Keep `navigation-store.ts` and `routes.ts` unchanged. The store remains the state engine and retains `pushRoute` validation. | The requested seam is above the store; no route-stack rewrite is needed. |
-| Dependencies and concepts | Add no package, adapter, or new domain vocabulary. Keep the core DOM-free and preserve its allowed import set. | This is an in-process ownership change, not a new platform boundary. |
-| Tests | Add direct tests for the core-owned screen projection and dispatch. Keep React hook, screen, store, and browser tests as integration coverage. | Each test layer protects a distinct boundary; existing behavior remains part of the contract. |
-| Documentation | Update the existing Workspace navigation entry in `CONTEXT.md` to describe the new ownership split. Do not add an ADR; no tracked ADR exists to update. | Keep architecture guidance accurate without introducing a new documentation structure. |
+| Where does the fix live? | Deepen the existing known-rooms projection in `group-engine.ts`. Add no new module. | It already owns the retained roster snapshot, content deduplication, and roster/local merge. Removing it would push those rules into its callers. |
+| What counts as changed content? | Compare the complete ordered `GroupRoom` snapshot, including nested log and member values. Preserve room, member, and log order. | Room order controls roster ranking; member order controls display and recipient order; log order carries transcript meaning. |
+| How is comparison shared? | Add one private canonical content-signature helper and use it in both `useGroupRooms` and `publishRosterRooms`. | The former partial signatures could drift apart. |
+| How is hook memoization kept stable? | Derive the memo dependency from the full content signature, and memoize a fresh shallow array copy when that signature changes. | The hook must recompute its merged view and publish effect for changed content even if a caller reuses the outer array. Equal snapshots still avoid effect churn. |
+| What stays public? | Keep `useGroupRooms`, `publishRosterRooms`, `resetKnownRooms`, `$knownRooms`, and `useKnownRooms` signatures and exports unchanged. Keep the helper private. | Callers already use the right seam; they should not learn a new rule or helper. |
+| What is out of scope? | Leave parsing, query policy, sorting, group mirror, local room state, send/stop behavior, and screen component code/layout unchanged. Existing screens render the refreshed projection through their current code. | None of those owns this equality defect. |
+| What documentation changes? | Update the Known rooms glossary entry and the relevant source comments. Add no new domain term or ADR. | Before this change, the Known rooms entry described the key-and-name-only signature. The Group send engine entry points readers to Known rooms, so repeating the equality rule there would duplicate it. No tracked ADR directory exists. |
 
-## Current evidence and constraints
+## Snapshot equality contract
 
-- `client/src/navigation/workspace-navigation.ts` documents that it owns route policy and dispatch and must remain DOM-free. `client/src/pwa/policy.ts` imports it, and `client/src/pwa/sw.ts` imports that policy, so the core is in the service-worker dependency graph. Its tested imports are exactly `./navigation-store`, `./routes`, and `nanostores`.
-- `client/src/navigation/use-workspace-navigation.ts` currently has three screen-specific `pushRoute` branches for settings, cron, and capabilities. Each branch builds `route`, `back`, and `navigate`; Settings also reads `$workspacePolicy.returnOrigin` for `showModelBack`.
-- The current projection narrows the global `$activeRoute`, not the requested tab's retained stack. If Cron has a detail route but Settings is active, `screen('cron').route` is the Cron root. Its `navigate` pushes onto the requested tab's stack without selecting that tab. Its `back` always calls `back('screen')`, which operates on the globally active tab; it is not scoped to the `tab` argument. Preserve all three behaviors.
-- `client/src/app.tsx` is the only production caller of `workspace.screen(...)`: it requests capabilities, cron, and settings and passes those values to `CapabilitiesScreen`, `CronScreen`, and `SettingsScreen`. Those screens use `navigate` for capability sections/details, cron roots/details/editors/blueprints, and settings categories/administration pages. Keep these caller sites and contracts unchanged.
-- Other production modules call the core directly: `app.tsx` reads `groupIdFromRoute` and `restoreWorkspacePath`; `sessions-menu.tsx` uses `workspaceMenuIntent`; `bot-workspace-navigation.tsx` uses `WORKSPACE_DESTINATIONS`; `navigation/deep-links.ts` uses `openChatSurface`; `state/gateway-controller.ts` uses `resetWorkspace`; and `pwa/policy.ts` uses `isAppShellScreenPath`. Do not reroute or change these clients.
-- `WorkspaceScreenApi`, `WorkspaceSettingsScreenApi`, and `WorkspaceScreenTab` are currently exported from `use-workspace-navigation.ts`. `capabilities-screen.tsx`, `cron-screen.tsx`, `settings-screen.tsx`, and `operations-screen.tsx` import screen types from that path; the hook tests import `WorkspaceNavigation` from it.
-- `OperationsScreen` embeds `CronScreen` outside the Workspace module with a static Cron root route, `onBack`, and a no-op `navigate`. Preserve this embed behavior and its type import; it does not dispatch into the Workspace route stack.
-- `navigation-store.test.ts` already covers wrong-stack runtime rejection by `pushRoute`. Preserve this validation by continuing to delegate through `pushRoute`, rather than writing stacks directly.
-- `workspace-navigation.test.ts` pins the core's exact imports to `./navigation-store`, `./routes`, and `nanostores`. It also exercises `narrowRoute`, route policy, history isolation, and the DOM-free guard.
-- `use-workspace-navigation.test.tsx` covers header and foreground derivation, Cron detail navigation and header/back updates, root fallback, Settings `showModelBack`, stable verb identities, and StrictMode/history behavior. Preserve all of it.
-- `client/e2e/pwa-foundation.spec.ts` exercises runtime Cron and Capabilities navigation, nested headers, back/return-origin behavior, and the unchanged URL. `client/e2e/cron-editor.spec.ts` exercises the editor-to-detail route after save. Playwright is configured for Chromium and WebKit with a local fixture server.
-- `CONTEXT.md` already has a Workspace navigation entry. No tracked ADR exists to update.
+`GroupRoom` currently contains `key`, optional `image`, `log`, `members`, `name`, and optional `roomId`. Each log entry has `at`, `from.kind`, `from.name`, optional `from.source` (`GroupMessageAuthor`), optional `id`, `text`, and optional `thread`. Each member has `name`, optional `handle`, `connectionId`, `connectionKind`, `connectionLabel`, and optional `sourceScoped`.
 
-## Intended design
+The private signature must include every field above. Build ordered nested tuples with fixed field positions, then serialize the tuples with `JSON.stringify`. This avoids property-insertion-order sensitivity and delimiter collisions in the current `key::name`/`|` encoding. Encode every optional field as `value ?? null`; keep `false` distinct from an absent `sourceScoped`. Preserve room, log, and member order.
 
-### Core module
+Do not pass `at` directly to `JSON.stringify`. `coerceGroupMessage` can produce `Infinity` from a numeric overflow or a string such as `"Infinity"`, and it preserves `-0`; `JSON.stringify` maps non-finite numbers to `null` and `-0` to `0`. Encode finite timestamps as `["finite", at]`, `NaN` as `["nan"]`, positive infinity as `["+infinity"]`, negative infinity as `["-infinity"]`, and negative zero as `["-zero"]`. This keeps the signature lossless for the typed `number` field without changing parser coercion.
 
-In `client/src/navigation/workspace-navigation.ts`:
+Use one private helper named `groupRoomsContentSignature(rooms)` in both paths. Its empty-array signature is the reset signature: initialize `rosterSignature` from `groupRoomsContentSignature([])` and restore that same value in `resetKnownRooms()`. Do not use array identity as content equality.
 
-1. Own `WorkspaceScreenTab`, `WorkspaceScreenApi<Tab>`, and `WorkspaceSettingsScreenApi`, preserving the existing tab-specific `RouteForTab<Tab>` route type.
-2. Export one typed core function, named `workspaceScreen(tab)`, that constructs the complete screen navigation value for a Workspace tab. Give it a settings-literal overload returning `WorkspaceSettingsScreenApi`, a generic `Tab extends Exclude<WorkspaceScreenTab, 'settings'>` overload returning `WorkspaceScreenApi<Tab>`, and a `WorkspaceScreenTab` overload returning the settings/capabilities/cron API union. The last overload lets the React adapter delegate its union-typed `tab` without a cast; the implementation returns the same union.
-3. Resolve `route` by applying the existing `narrowRoute` behavior to the global `$activeRoute`. Do not read the requested tab's retained stack when another tab is active; a foreign active route falls back to the requested tab's root.
-4. Provide `back` as `() => back('screen')`. It remains global to the active navigation tab and is not bound to the requested screen tab.
-5. Provide `navigate` as `route => pushRoute(tab, route)`. Keep the tab-specific `RouteForTab<Tab>` contract. This pushes only to the requested stack, does not select that tab, and retains `pushRoute` runtime validation; do not write to `$navigation` directly.
-6. For settings, derive `showModelBack` from `$workspacePolicy.get().returnOrigin === null`, exactly as today; do not derive it from the route or destination.
-7. Read `$activeRoute` and `$workspacePolicy` from the existing stores. The function must not import React or `@nanostores/react`, accept hidden state from the hook, or duplicate/copy the policy.
-8. Keep the existing `narrowRoute` export and its direct tests. Keep all existing core imports within the DOM-free guard's exact allowed set.
+`useGroupRooms` must derive its memo dependency from this signature. When it changes, memoize a new shallow copy of the roster array so `groupRoomsView` sees a new reference and the publish effect runs, even when the caller reuses the outer array. When content is equal, retain the previous copy. `publishRosterRooms` must compute the same signature for direct callers, keep its equal-content no-op, and replace `$rosterRooms` only when the signature changes. Preserve the current shallow-copy behavior; do not deep-clone room values.
 
-### React adapter
+The gateway path produces plain typed rooms through `parseGroupSnapshot`, but its timestamp coercion is not guaranteed finite. The public `publishRosterRooms` path also accepts typed arrays without runtime validation. The mirror writer trims logs, drops images, and removes rooms against a 48,000-unit gateway JSON budget, but tombstone keys are only count-limited and can still exceed the budget. The roster read path does not enforce the budget at all, so it is not a hard bound on signature input size. Signature creation is O(total roster content), which is required to detect full-content changes. Do not add a dependency, a generic deep-equality package, caching, or cycle handling for values outside the well-formed typed roster contract.
 
-In `client/src/navigation/use-workspace-navigation.ts`:
+This preserves the distinction between the synchronous merged view returned by `useGroupRooms` and the retained roster snapshot consumed by `useKnownRooms`. A changed roster reaches the retained store through the existing effect. The retained roster still outlives its publishers. The Group screen's displayed transcript remains the local engine room, as described above.
 
-1. Preserve the return type and public shape of `useWorkspaceNavigation()` and its settings-specific and generic `screen(tab)` overloads.
-2. Keep all three current store subscriptions and the header/foreground derivation.
-3. Replace the three local screen-object branches and the direct `pushRoute` import with delegation to `workspaceScreen(tab)`.
-4. Re-export `WorkspaceScreenTab`, `WorkspaceScreenApi`, and `WorkspaceSettingsScreenApi` from the core at this existing module path. Keep `WorkspaceNavigation` owned by the React adapter because it includes React-facing derived state and verbs.
-5. Do not change screen props or imports. In particular, keep the three `app.tsx` screen() calls and `OperationsScreen`'s no-op embedded Cron navigation behavior unchanged.
+## Existing behavior to preserve
 
-The core function should return the same values and trigger the same route transitions as the current hook implementation. Do not change URL/history behavior, the tab stacks, route titles, menu/return-origin policy, or screen rendering.
+1. `groupRoomsView(rosterGroups, localRooms)` remains the pure merge. Roster rows stay first and win over local rows with a shared key. Duplicate roster keys keep the current `Map` behavior: the last row supplies the value at the key's first insertion position. Eligible local-only rooms follow in local map order. Empty runtime tombstones remain filtered.
+2. `parseGroupSnapshot` keeps its current coercion, room identity rules, and sort by newest room-log timestamp descending. It leaves each room's log order unchanged.
+3. A new array with equal full content remains a no-op. A same-key, same-name room with any changed typed field publishes.
+4. For a roster with unique keys, changed room order publishes and the projection returns rooms in that order. Duplicate keys remain collapsed by the merge as described above.
+5. Publishing `[]` clears a non-empty retained roster. Publishing the same empty snapshot again is a no-op.
+6. `resetKnownRooms()` clears the retained roster and its comparison state. Local room reset remains owned by `group-store.ts`.
+7. Multiple publishers keep last-publish-wins behavior for changed snapshots. Equal snapshots from the roster, Group screen, and create dialog do not cause repeat writes.
+8. Changes to `$groupChats` still recompute `$knownRooms` without a roster publisher.
+9. No caller begins importing raw writable atoms or bypassing `groupRoomsView`.
+10. `GroupChatScreen` continues to render an existing room's transcript from its local `$groupChats` room. This change updates the roster projection, not local transcript adoption or mirror policy.
+
+## Evidence and constraints
+
+- `client/src/features/groups/group-engine.ts:131-149` implements the roster/local merge. `group-engine.ts:163-219` builds and uses the retained full-content signature. `group-engine.ts:229-249` uses the same signature for hook memoization and its shallow snapshot.
+- `client/src/features/agents/roster-screen.tsx:51-62`, `client/src/features/groups/group-screen.tsx:79-81`, and `client/src/features/groups/create-group-chat-dialog.tsx:22-31` use the same unscoped `['agents', 'roster']` query key. `client/src/gateway/scope-guard.ts:107-145` passes that key to TanStack Query.
+- `client/src/app.tsx:47-51` reads `useKnownRooms()` for the Group header. The roster screen, Group screen, and create dialog consume the separate immediate `useGroupRooms()` return value.
+- `client/src/features/groups/group-screen.tsx:81-83,105-138` reads the room name and membership from `room`, but renders messages from `engineRoom.log`. `client/src/features/groups/group-store.ts:496-515` adopts a mirror row only when the local key does not already exist, so this plan does not make an existing local transcript follow a changed roster log.
+- `client/src/features/groups/groups-sync.ts:18,73-89,169-195,250-284` trims outgoing rooms against a 48,000-unit gateway JSON budget; tombstone keys are only count-limited, not length-limited. The `profiles.list` read path does not enforce the budget.
+- `client/src/app-navigation.test.tsx:66,71-89,182-202` directly publishes a roster row and verifies that `useKnownRooms()` updates the app Group header; keep this test unchanged and include it in focused verification.
+- `client/src/features/groups/group-model.ts:14-39` defines `GroupMessageAuthor`, `GroupMessage`, and `GroupMember`; `group-model.ts:111-120` defines `GroupRoom`. `group-model.ts:124-152` parses and sorts rooms. `group-model.ts:159-188` normalizes log and member fields; line 164 can still return `Infinity` from a numeric overflow or a string such as `"Infinity"`.
+- `client/src/features/agents/agents-api.ts:234-243,342-350` turns `profiles.list` into `AgentRosterPage` and carries parsed groups through the same result.
+- `client/src/features/agents/roster-screen.tsx:51-67,102-118` consumes room key, image, member names/count, name, and latest log author, text, and time.
+- `client/src/features/groups/group-screen.tsx:79-83,105-125` finds the room by key, shows its name and members, and passes the room's member list to the send path at `112-117`.
+- `client/src/features/groups/create-group-chat-dialog.tsx:22-32` uses known room names to prevent duplicate names.
+- `client/src/features/groups/group-engine.test.ts:687-933` covers full-content equality, every scalar field, timestamp and delimiter boundaries, and room/member/log order. `group-engine.test.ts:1016-1134` covers empty/reset behavior, multiple publishers, same-array rerenders, and retained reads after unmount.
+- `client/src/features/groups/group-engine.test.ts:585-616,961-1015` covers duplicate-key merge behavior, local-room projection, creation, and reset.
+- `client/src/features/groups/group-model.test.ts:37-90` covers parser coercion, tombstones, and room ordering. Parsing stays unchanged.
+- `CONTEXT.md:35` now documents full ordered snapshot equality. The Group send engine entry at `CONTEXT.md:30` points to Known rooms without duplicating its equality rule.
+- The existing API and screen caller tests still cover their initial-result paths. The new same-key/name refresh cases live in `group-engine.test.ts`.
+- No tracked ADR directory exists.
 
 ## File-by-file work
 
-### `client/src/navigation/workspace-navigation.ts`
+### `client/src/features/groups/group-engine.ts`
 
-- Add the three screen-related exported types currently declared in the hook module.
-- Add the typed `workspaceScreen(tab)` projection and dispatch function using the active route, `narrowRoute`, `back`, `$workspacePolicy`, and `pushRoute`.
-- Preserve the core import set, DOM-free constraint, existing `narrowRoute` behavior, and runtime route-stack validation.
+- Add the private `groupRoomsContentSignature(rooms)` helper next to the retained signature state. Serialize fixed-position nested tuples for every field in the equality contract. Encode timestamps losslessly, optional values consistently, and preserve room, log, and member ordering.
+- Use this helper in `publishRosterRooms` instead of `room.key + room.name`, and in `useGroupRooms` instead of its second key/name signature.
+- When the signature changes, memoize a fresh shallow array copy of the roster input. This makes `groupRoomsView` and the publish effect observe changed content even if the caller reuses its outer array. When the signature is equal, retain the previous copy.
+- Initialize and reset `rosterSignature` to `groupRoomsContentSignature([])`. This makes an empty publish after initialization or reset an equal-content no-op.
+- Keep the `publishRosterRooms` equal-content short circuit and replace `$rosterRooms` only when the signature changes.
+- Update both function comments to say that equality covers the complete ordered room snapshot, not only keys and names.
+- Do not change `groupRoomsView`, exported functions, writable-store visibility, deep-copy behavior, or lifecycle behavior.
 
-### `client/src/navigation/use-workspace-navigation.ts`
+### `client/src/features/groups/group-engine.test.ts`
 
-- Import and delegate to `workspaceScreen`.
-- Remove screen-specific route construction and direct `pushRoute` calls.
-- Re-export the moved screen types from this module to preserve current type-import paths.
-- Leave subscriptions, derived header/foreground properties, other verb identities, and the `WorkspaceNavigation` interface unchanged.
+Extend the existing Group projection and known-rooms tests through the public read and publish paths.
 
-### `client/src/navigation/workspace-navigation.test.ts`
+1. Strengthen the equal-content no-op case to use separately allocated room, log, author, and member objects, with object properties inserted in a different order. Assert that `$knownRooms` receives no notification.
+2. Add table-driven direct-publish cases that change every scalar field in the equality contract independently: room `key`, `name`, `image`, and `roomId`; message `at`, author `kind`, `name`, and `source`, message `id`, `text`, and `thread`; member `name`, `handle`, `connectionId`, `connectionKind`, `connectionLabel`, and `sourceScoped`. For every optional field, cover absent versus present values; for optional fields with multiple valid values, also cover a changed present value. Include an empty string as a present optional-string value and assert it differs from absence. Assert each changed snapshot updates the retained value.
+3. Pin the JSON-signature boundaries: publish pairs with finite timestamps, `NaN` versus `0`, positive versus negative infinity, and negative zero versus `0`; assert distinct typed timestamp values publish separately. Add one pair of rooms whose `key::name` strings collide at the `::` boundary and one two-room-versus-one-room pair whose `|`-joined signatures collide. Assert each second snapshot still publishes.
+4. Reorder members and log entries and assert each ordering change publishes without reordering returned values. Reorder two distinct-key rooms and assert `$knownRooms` returns the new room order. Keep the parser's newest-room-first room sort test unchanged.
+5. Add a focused same-key/name regression case that changes both a recipient-relevant member field and log text plus an optional log field. The field matrix in step 2 covers `image` and every other scalar independently.
+6. Render a publisher using `useGroupRooms`, then rerender with a changed same-key/name room by replacing its element in the same outer array. Make the publisher render the hook result and assert its immediate merged view and `$knownRooms` contain the new fields. Unmount, render a reader using `useKnownRooms`, and assert the updated fields remain available.
+7. Mount two publishers with separately allocated but content-equal snapshots and assert their effects produce only one retained-store update. Publish two changed snapshots directly in sequence and assert the last one is retained.
+8. Pin empty behavior with `$knownRooms.listen` (not `subscribe`): publishing `[]` clears a populated roster with one notification, a second `[]` does not notify, and after `resetKnownRooms()` attach a fresh listener before publishing `[]` and assert no notification.
+9. Retain the existing roster-over-local duplicate-key precedence, local-room updates, reset, creation, and unmount-retention assertions. Add a `groupRoomsView` case for duplicate keys within the roster: the last row supplies the value at the key's first insertion position. Do not assert that a changed roster log replaces an already-existing local Group transcript; that is outside this projection's ownership.
 
-- Add focused tests for all fields of the core-owned screen projection: `route`, `back`, `navigate`, and Settings `showModelBack`.
-- For each of capabilities, cron, and settings, call `navigate` with a representative typed route (a capabilities section, a Cron job detail, and a settings administration page) and assert that only that tab's stack changes and `activeTab` stays unchanged. Also pass a wrong-tab route through a deliberate runtime cast and assert that the projection still throws via `pushRoute` without changing any stack.
-- Test `route` with a matching active route for each screen tab. For the foreign-route fallback case, first give the requested inactive tab a nested route, then activate another tab; assert that the projection returns the requested tab's root rather than reading its retained stack.
-- For each screen tab, test that projected `back` pops a nested route. Also call `workspaceScreen('cron').back()` at an active capabilities root and assert it follows the globally active tab's screen-source fallback to Sessions, not the header's roster fallback. This pins that `back` is not scoped to the `screen(tab)` argument.
-- Test Settings `showModelBack` as true when `returnOrigin` is null and false when it is non-null.
-- Retain the existing `narrowRoute`, policy, history-isolation, and DOM-free guard tests here. Keep the wrong-stack `pushRoute` test in `navigation-store.test.ts`; do not move or weaken it.
-
-### `client/src/navigation/use-workspace-navigation.test.tsx`
-
-- Keep all existing React-binding tests: header/foreground derivation, Cron detail navigation and header/back round trip, root fallback, Settings `showModelBack` lifecycle, stable verb identities, and StrictMode/history behavior.
-- Add a compile-only `@ts-expect-error` assertion that `WorkspaceScreenApi<'cron'>.navigate` rejects a Capabilities route, so moving the types cannot silently widen the tab-specific route contract. Put the call in an unreachable/type-only assertion so it is not executed by Vitest.
+Do not add a test-only production export. Test through `publishRosterRooms`, `useGroupRooms`, `$knownRooms`, and `useKnownRooms`.
 
 ### `CONTEXT.md`
 
-- Refine the existing Workspace navigation entry to state that the core owns the per-screen route projection (`route`, `back`, `navigate`, and Settings `showModelBack`), while the React entry subscribes and delegates.
-- Keep the existing distinction between the navigation core and the route-stack store. Do not add a new architecture term or separate document.
+- Update only the Known rooms entry to say roster publishers deduplicate by the complete ordered room snapshot, including nested member and log values, rather than by room keys and names alone.
+- Keep its current ownership, durable-key merge, roster precedence, local-room behavior, and retention description. The Group send engine entry already points to Known rooms; do not repeat the equality rule there.
 
 ### Intentionally unchanged
 
-- `client/src/navigation/navigation-store.ts` and `client/src/navigation/routes.ts`.
-- `client/src/app.tsx`, screens, and screen callers, including `operations-screen.tsx`.
-- Package manifests, dependencies, route URL parsing, browser history, screen behavior, and unrelated navigation policy.
+- `client/src/features/groups/group-model.ts` and its parser, coercion, sorting, and room identity behavior.
+- `client/src/features/agents/agents-api.ts` and the `profiles.list` query/result shape.
+- `client/src/features/agents/roster-screen.tsx`, `client/src/features/groups/group-screen.tsx`, `client/src/features/groups/create-group-chat-dialog.tsx`, and `client/src/app.tsx`.
+- `groupRoomsView` merge order and precedence.
+- Group send, stop, member-turn, room-key, mirror, and scope lifecycle policy.
+- Public `group-engine.ts` exports, dependencies, package manifests, and wire contracts.
+- No ADR, new domain term, general-purpose equality module, new browser fixture, or UI redesign.
 
 ## Implementation sequence
 
-1. Before editing source, inspect `git status` and confirm there are no unexpected changes in the target files. Preserve any unrelated user work. The replacement `plan.md` is expected to be present as the planning change.
-2. Move the screen types into `workspace-navigation.ts` and implement the typed core projection using existing store and route operations.
-3. Refactor `use-workspace-navigation.ts` to delegate `screen(tab)` and re-export the moved types. Keep its React subscriptions intact.
-4. Add core screen-projection/dispatch tests and the compile-only tab-route type assertion. Keep the React binding tests intact; test the new core API directly rather than moving or replacing hook coverage.
-5. Update the single Workspace navigation description in `CONTEXT.md`.
-6. Run the focused tests and source audits below. Fix only issues caused by this plan; do not expand into route-store or UI redesign.
-7. Run full verification in the order below, including the browser flow because route dispatch is user-visible.
+1. Confirm `git status --short`. The root `plan.md` replacement is expected. Preserve any other uncommitted work.
+2. Add one private canonical signature helper in `group-engine.ts` and route both hook memoization and retained publication through it. Initialize and reset the stored signature to the empty-array signature.
+3. Extend the direct-publish and projection tests for deep equality, each typed field, timestamp and delimiter boundaries, room/member/log order, duplicate-key merge behavior, empty behavior, and last-publish-wins behavior.
+4. Extend the hook tests for same-outer-array rerenders, immediate and retained reads, multiple equal publishers, and retention after unmount.
+5. Update the Known rooms glossary text and both Group engine function comments to describe full ordered content equality.
+6. Run the focused client tests, the existing Group browser regression, the full client suite, and the production build.
+7. Review the diff for unrelated changes and run `git diff --check`.
 
 ## Verification plan
 
-Run commands from `client/` unless noted.
+Run from `client/`.
 
-### Focused unit and integration tests
+### Focused tests
 
 ```sh
 npm test -- \
-  src/navigation/workspace-navigation.test.ts \
-  src/navigation/use-workspace-navigation.test.tsx \
-  src/navigation/navigation-store.test.ts \
-  src/features/capabilities/capabilities-screen.test.tsx \
-  src/features/cron/cron-screen.test.tsx \
-  src/features/settings/settings-screen.test.tsx \
+  src/features/groups/group-engine.test.ts \
+  src/features/groups/group-model.test.ts \
+  src/features/agents/agents-api.test.ts \
+  src/features/agents/roster-screen.test.tsx \
+  src/features/groups/group-screen.test.tsx \
+  src/features/groups/create-group-chat-dialog.test.tsx \
   src/app-navigation.test.tsx
 ```
 
-This validates the core projection, React subscription boundary, route-store rejection behavior, screen callers, and app navigation integration. Operations has no dedicated screen test file; its existing type import and embedded no-op adapter must continue to compile.
+The Group engine tests cover full-content equality and hook rerenders; the model tests cover parser behavior. The API list-adapter and caller tests guard unchanged paths. The controlled hook rerender test covers the same-key/name freshness boundary.
 
-### Static and complete test verification
+### Browser regression
 
 ```sh
-npm run typecheck
+npm run test:e2e -- e2e/pwa-foundation.spec.ts \
+  --grep 'desktop group chats list on the main screen and open with sending'
+```
+
+Run this existing flow in Chromium and WebKit. It checks that the roster row opens the Group screen and that sending still works. The same-key/name update itself is covered by the controlled hook rerender test; do not add a browser fixture or new UI flow for this projection-only change.
+
+### Full client verification
+
+```sh
 npm test
 npm run build
 ```
 
-The build is required because the core is included in the service-worker bundle. The existing DOM-free guard must still pass with the exact import set `./navigation-store`, `./routes`, and `nanostores`.
+The build runs TypeScript before Vite. Run the full suite because the retained Group room projection is consumed by multiple screens and the app header.
 
-### Browser verification
+### Ownership audit
 
-```sh
-npm run test:e2e -- e2e/pwa-foundation.spec.ts \
-  --grep 'runtime screen and navigation routes stay out of the browser URL|workspace tabs share a stable header without redundant menu buttons'
-```
+After implementation, inspect `git status --short`, `git diff --check`, and the final diff. Confirm:
 
-Run these two existing flows in both configured Chromium and WebKit projects. They cover Cron and Capabilities navigation, nested route headers, back behavior, and the invariant that runtime route transitions do not alter the startup URL. Do not run the full PWA fixture suite for this change; its auth, chat, group, and offline cases are unrelated. Leave out the full Cron editor form/save E2E: the changed boundary is the shared `navigate` operation, which the direct core and React-hook tests exercise with a Cron job-detail route; no Cron editor or save code changes. Do not add an E2E fixture unless an existing test cannot exercise the unchanged flow.
-
-### Source ownership audit
-
-From the repository root, verify:
-
-```sh
-rg -n "pushRoute" client/src/navigation/use-workspace-navigation.ts
-rg -n "pushRoute" client/src --glob '!**/*.test.*'
-rg -n "WorkspaceScreenApi|WorkspaceSettingsScreenApi|WorkspaceScreenTab" client/src
-```
-
-Expected results:
-
-- The first search has no matches.
-- Production `pushRoute` references are confined to `workspace-navigation.ts` calling the store operation and `navigation-store.ts` defining it. Other modules may still read navigation stores.
-- Screen type declarations are in the core and are re-exported from the hook path; existing screen and Operations imports need no changes.
-
-Also inspect the final diff and `git status`. The implementation diff should contain only the two navigation modules, their focused tests, the `CONTEXT.md` clarification, and this plan file. This plan review changes `plan.md` only; implementation and test execution remain separate work.
-
-## Acceptance criteria
-
-- `useWorkspaceNavigation().screen(tab)` has the same call shape and behavior as before.
-- Existing imports of screen types from `~/navigation/use-workspace-navigation` continue to compile.
-- `workspace-navigation.ts` owns construction of the typed per-screen route/back/navigate model and Settings `showModelBack`.
-- The React hook does not import or call `pushRoute` and remains responsible for React subscriptions and derived React-facing state.
-- The `RouteForTab` contract remains tab-specific, and `pushRoute` still rejects a wrong-stack route at runtime.
-- Cron, Capabilities, and Settings stacks, root fallbacks, back behavior, and Settings model-return behavior are unchanged. The projection reads the globally active route, pushes to the requested tab without selecting it, and preserves the unscoped `back('screen')` behavior.
-- `OperationsScreen` can still embed Cron with a static root route and no-op navigation.
-- The core remains DOM-free with the exact tested import set; no new dependency, adapter, route store, or domain term is introduced.
-- Focused tests, full tests, typecheck, build, and the targeted browser tests pass.
-- `CONTEXT.md` accurately describes the finalized ownership split.
+- `useGroupRooms` and `publishRosterRooms` use the same full-content comparison, including tagged timestamps and optional values.
+- Changes to every typed scalar field and to room, member, and log order reach the immediate hook view and retained `$knownRooms`.
+- Equal deep content avoids redundant publication, including across two hook publishers. A changed direct publish remains last-publish-wins.
+- Empty roster clearing, empty publication after reset, retention, and local-room recomputation remain unchanged.
+- `groupRoomsView` still preserves roster-over-local precedence and its duplicate-key Map behavior. Roster parsing, sorting, query shape, and UI caller code did not change. Existing local Group transcripts still come from `$groupChats`.
+- The helper remains private. No dependency, new module, new export, ADR, or unrelated edit was added.
+- `CONTEXT.md` matches the new equality rule.
 
 ## Risks and stop conditions
 
-- **Type widening during extraction:** Stop if the generic tab-to-route relationship cannot be preserved cleanly. Do not replace it with a union-wide `MobileRoute`, `any`, or a broad cast. Keep the compile-only negative assertion.
-- **Core boundary regression:** Stop if the implementation requires React, browser APIs, app imports, or a fourth core import specifier. Do not weaken or rewrite the DOM-free guard to accommodate it.
-- **Runtime validation bypass:** Do not manipulate route stacks directly from the core screen projection. All route pushes must pass through `pushRoute` so wrong-stack runtime rejection remains intact.
-- **Behavior drift:** If tests show changes to active-route narrowing (including a retained inactive-tab detail), stack ownership or active-tab selection on `navigate`, the global `back('screen')` behavior, return-origin behavior, header state, or URL behavior, correct the projection rather than updating expected behavior.
-- **Scope creep:** Do not modify route parsing, service-worker policy, `navigation-store.ts`, screen flows, or unrelated documentation. If any of those changes appear necessary, stop and reassess the seam before expanding scope.
+- **Comparison drift:** Do not leave separate key/name signatures in the hook and publisher. Both paths must use the same helper.
+- **Ordering drift:** Do not sort rooms, members, or log entries inside the signature. Their current order is observable and intentional.
+- **Merge drift:** Do not alter roster-wins precedence or local-only room filtering to make freshness tests pass.
+- **Mutable inputs:** Current callers pass parser-created query snapshots and treat them as immutable. Recomputing the signature on render detects changed or reordered elements even when a caller reuses the outer array. The memoized copy is shallow and does not isolate nested objects; React also will not rerender solely because an object was mutated. Do not add deep cloning or rely on mutation as an update mechanism.
+- **Cost:** Signature creation is O(total roster content). The mirror writer's room-trimming budget is not a hard limit on every outgoing value and does not cap incoming `profiles.list` data. Do not add caching or a generic equality module without measured need.
+- **Schema changes:** If `GroupRoom`, `GroupMessage`, `GroupMessageAuthor`, or `GroupMember` gains a field, include it in the canonical signature when it is part of the typed snapshot. Keep the field list and table-driven tests aligned.
+- **Scope:** Do not change the agents query, parser, mirror protocol, local transcript adoption, member-turn policy, or screen components to implement this equality fix. Those owners are unchanged; if a separate requirement needs one of them, revise the scope rather than including it implicitly.

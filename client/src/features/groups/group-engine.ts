@@ -160,17 +160,51 @@ const $rosterRooms = atom<GroupRoom[]>([])
  *  publishRosterRooms and the group-store room verbs. */
 export const $knownRooms = computed([$rosterRooms, $groupChats], groupRoomsView)
 
-let rosterSignature = ''
+function groupRoomsContentSignature(rooms: readonly GroupRoom[]): string {
+  const timestamp = (at: number): (string | number)[] => {
+    if (Number.isNaN(at)) return ['nan']
+    if (at === Number.POSITIVE_INFINITY) return ['+infinity']
+    if (at === Number.NEGATIVE_INFINITY) return ['-infinity']
+    if (Object.is(at, -0)) return ['-zero']
+    return ['finite', at]
+  }
+
+  return JSON.stringify(rooms.map(room => [
+    room.key,
+    room.image ?? null,
+    room.log.map(entry => [
+      timestamp(entry.at),
+      entry.from.kind,
+      entry.from.name,
+      entry.from.source ?? null,
+      entry.id ?? null,
+      entry.text,
+      entry.thread ?? null
+    ]),
+    room.members.map(member => [
+      member.name,
+      member.handle ?? null,
+      member.connectionId ?? null,
+      member.connectionKind ?? null,
+      member.connectionLabel ?? null,
+      member.sourceScoped ?? null
+    ]),
+    room.name,
+    room.roomId ?? null
+  ]))
+}
+
+let rosterSignature = groupRoomsContentSignature([])
 
 /** Publish a roster snapshot into the engine — the one writer of the
  *  retained roster half, wrapped by `useGroupRooms(rosterRooms)` and callable
- *  without React (tests; a future push-sync roster source). The content
- *  signature is the room-key list plus names: freshly built arrays are
- *  content-equal no-ops, and array identity never triggers a write. `[]`
- *  clears the roster half, matching a pending roster query's publish. Last
- *  publish wins. */
+ *  without React (tests; a future push-sync roster source). Its content
+ *  signature covers the complete ordered room snapshot, including messages
+ *  and members. Content-equal arrays are no-ops, and array identity never
+ *  triggers a write. `[]` clears the roster half, matching a pending roster
+ *  query's publish. Last publish wins. */
 export function publishRosterRooms(rosterRooms: readonly GroupRoom[]): void {
-  const signature = rosterRooms.map(room => `${room.key}::${room.name}`).join('|')
+  const signature = groupRoomsContentSignature(rosterRooms)
   if (signature === rosterSignature) return
   rosterSignature = signature
   $rosterRooms.set([...rosterRooms])
@@ -180,7 +214,7 @@ export function publishRosterRooms(rosterRooms: readonly GroupRoom[]): void {
  *  projection's own state; the local half resets through
  *  `replaceGroupChats({})` — the store owns rooms. */
 export function resetKnownRooms(): void {
-  rosterSignature = ''
+  rosterSignature = groupRoomsContentSignature([])
   $rosterRooms.set([])
 }
 
@@ -194,18 +228,16 @@ export function useKnownRooms(): GroupRoom[] {
 
 /** The known rooms for roster-carrying callers. Pass the freshly built
  *  `roster.data?.groups ?? []`: the hook publishes it through
- *  publishRosterRooms — a content-signature publish (room keys + names,
- *  never array identity; the stable copy below exists so the publish effect
- *  cannot loop) — and returns that render's merged view synchronously, no
- *  effect round-trip. Two callers holding the same roster publish identical
- *  content; the dedupe makes the second a no-op (last publish wins). */
+ *  publishRosterRooms using the complete ordered room snapshot, never array
+ *  identity, and returns that render's merged view synchronously without an
+ *  effect round-trip. Two callers holding equal content publish the same
+ *  signature; the second write is a no-op (last publish wins). */
 export function useGroupRooms(rosterGroups: GroupRoom[]): GroupRoom[] {
   const localRooms = useStore($groupChats)
-  const signature = rosterGroups.map(room => `${room.key}::${room.name}`).join('|')
-  // Content signature, not identity: the memo closure holds the roster array
-  // from the render where the signature last changed — content-equal arrays
-  // produce the identical view and never re-fire the publish effect.
-  const stableRoster = useMemo(() => rosterGroups, [signature])
+  const signature = groupRoomsContentSignature(rosterGroups)
+  // Keep one shallow snapshot per content signature. A changed signature
+  // creates a new array even when the caller reused its input array.
+  const stableRoster = useMemo(() => [...rosterGroups], [signature])
   const rooms = useMemo(
     () => groupRoomsView(stableRoster, localRooms),
     [stableRoster, localRooms]
