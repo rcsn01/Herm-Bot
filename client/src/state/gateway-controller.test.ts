@@ -7,12 +7,38 @@ vi.mock('~/native/app-lifecycle', () => ({
 }))
 
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
+import { currentGatewayScope } from '~/gateway/scope-guard'
 import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript } from '~/transcript/transcript'
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, reject, resolve }
+}
+
+function sessionReply(storedSessionId: string, title = 'Original') {
+  return {
+    info: { desktop_contract: MINIMUM_CONTRACT, title },
+    session_id: `runtime-${storedSessionId}`,
+    stored_session_id: storedSessionId
+  }
+}
+
+function observeRefreshScopes(controller: GatewayController) {
+  const scopes: unknown[] = []
+  const refresh = controller.refreshSessions.bind(controller)
+  vi.spyOn(controller, 'refreshSessions').mockImplementation(async scope => {
+    scopes.push(scope)
+    await refresh(scope)
+  })
+  return scopes
+}
 
 class ConnectionAwareGateway extends MemoryGateway {
   activeProfile: null | string = null
@@ -95,6 +121,351 @@ describe('profile-scoped session mutations', () => {
       { include_hidden: true, limit: 30, profile: 'default' },
       { include_hidden: true, limit: 30, profile: 'default' }
     ])
+    controller.dispose()
+  })
+})
+
+describe('live session mutation follow-up', () => {
+  it('retitles only the active session and refreshes the captured Scope', async () => {
+    let created = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'other', created === 1 ? 'Before' : 'Other'))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+
+    await controller.newSession()
+    scopes.length = 0
+    const scope = currentGatewayScope()
+    await controller.renameSession('target', 'Renamed')
+    expect($chat.get().info).toMatchObject({ title: 'Renamed' })
+    expect(scopes).toEqual([scope])
+
+    await controller.newSession()
+    scopes.length = 0
+    const otherInfo = $chat.get().info
+    await controller.renameSession('target', 'Ignored')
+    expect($chat.get().info).toBe(otherInfo)
+    expect(scopes).toEqual([currentGatewayScope()])
+    controller.dispose()
+  })
+
+  it('archives without changing Conversation state and refreshes the captured Scope', async () => {
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/target?profile=default', () => ({}))
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+    const before = $chat.get()
+    const scope = currentGatewayScope()
+
+    await controller.archiveSession('target')
+
+    expect($chat.get()).toBe(before)
+    expect(scopes).toEqual([scope])
+    controller.dispose()
+  })
+
+  it('checks the active id after remove resolves before deciding to create', async () => {
+    const remove = deferred<void>()
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'other'))
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+      .handle('/api/sessions/target?profile=default', () => remove.promise)
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+
+    await controller.newSession()
+    scopes.length = 0
+    const deleting = controller.deleteSession('target')
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'request' && call.method === 'DELETE')).toBe(true))
+    await controller.newSession()
+    scopes.length = 0
+    const scope = currentGatewayScope()
+    remove.resolve()
+    await deleting
+
+    expect($chat.get().storedSessionId).toBe('other')
+    expect(created).toBe(2)
+    expect(lists).toBe(3)
+    expect(scopes).toEqual([scope])
+    controller.dispose()
+  })
+
+  it('creates when an inactive id becomes active before remove resolves', async () => {
+    const remove = deferred<void>()
+    let created = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'replacement'))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('/api/sessions/target?profile=default', () => remove.promise)
+    const controller = new GatewayController({} as never, gateway)
+
+    const deleting = controller.deleteSession('target')
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'request' && call.method === 'DELETE')).toBe(true))
+    await controller.newSession()
+    remove.resolve()
+    await deleting
+
+    expect(created).toBe(2)
+    expect($chat.get().storedSessionId).toBe('replacement')
+    controller.dispose()
+  })
+
+  it('does not create for an id that remains inactive, but still refreshes', async () => {
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/target?profile=default', () => ({}))
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.deleteSession('target')
+
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.create')).toHaveLength(0)
+    expect(lists).toBe(1)
+    controller.dispose()
+  })
+
+  it('waits for the create refresh and the separate final refresh on active delete', async () => {
+    const finalRefresh = deferred<{ sessions: [] }>()
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'replacement'))
+      .handle('session.list', () => {
+        lists += 1
+        return lists === 3 ? finalRefresh.promise : { sessions: [] }
+      })
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+
+    await controller.newSession()
+    scopes.length = 0
+    const scope = currentGatewayScope()
+    let settled = false
+    const deleting = controller.deleteSession('target').then(() => { settled = true })
+    await vi.waitFor(() => expect(lists).toBe(3))
+
+    expect($chat.get().storedSessionId).toBe('replacement')
+    expect(settled).toBe(false)
+    expect(scopes).toEqual([scope, scope])
+    finalRefresh.resolve({ sessions: [] })
+    await deleting
+    expect(settled).toBe(true)
+    controller.dispose()
+  })
+
+  it('still refreshes after a newer selection supersedes active-delete creation', async () => {
+    const staleCreate = deferred<ReturnType<typeof sessionReply>>()
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => {
+        created += 1
+        if (created === 1) return sessionReply('target')
+        if (created === 2) return staleCreate.promise
+        return sessionReply('newer')
+      })
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+
+    await controller.newSession()
+    const deleting = controller.deleteSession('target')
+    await vi.waitFor(() => expect(created).toBe(2))
+    await controller.newSession()
+    staleCreate.resolve(sessionReply('superseded'))
+    await deleting
+
+    expect($chat.get().storedSessionId).toBe('newer')
+    expect(lists).toBe(3)
+    controller.dispose()
+  })
+
+  it.each(['rename', 'archive', 'delete'] as const)('%s route failures reject without follow-up', async action => {
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/target?profile=default', () => { throw new Error('write failed') })
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+    const mutation = action === 'rename'
+      ? controller.renameSession('target', 'Renamed')
+      : action === 'archive'
+        ? controller.archiveSession('target')
+        : controller.deleteSession('target')
+
+    await expect(mutation).rejects.toThrow('write failed')
+    expect(lists).toBe(0)
+    expect(scopes).toEqual([])
+    controller.dispose()
+  })
+
+  it.each(['rename', 'archive', 'delete'] as const)('%s preserves local effects when its final refresh fails', async action => {
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'replacement', 'Before'))
+      .handle('session.list', () => {
+        lists += 1
+        if (action === 'delete' ? lists === 3 : lists === 2) throw new Error('list failed')
+        return { sessions: [] }
+      })
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+    await controller.newSession()
+
+    const mutation = action === 'rename'
+      ? controller.renameSession('target', 'Renamed')
+      : action === 'archive'
+        ? controller.archiveSession('target')
+        : controller.deleteSession('target')
+    await expect(mutation).rejects.toThrow('list failed')
+
+    if (action === 'rename') expect($chat.get().info).toMatchObject({ title: 'Renamed' })
+    if (action === 'delete') expect($chat.get().storedSessionId).toBe('replacement')
+    if (action === 'archive') expect($chat.get().storedSessionId).toBe('target')
+    controller.dispose()
+  })
+
+  it('rejects an active delete when replacement creation fails before the final refresh', async () => {
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => {
+        created += 1
+        if (created === 1) return sessionReply('target')
+        throw new Error('create failed')
+      })
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+    await controller.newSession()
+
+    await expect(controller.deleteSession('target')).rejects.toThrow('create failed')
+
+    expect(lists).toBe(1)
+    expect($chat.get().storedSessionId).toBe('target')
+    controller.dispose()
+  })
+
+  it('swallows the create-path refresh failure and still awaits delete final refresh', async () => {
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'replacement'))
+      .handle('session.list', () => {
+        lists += 1
+        if (lists === 2) throw new Error('best effort list failed')
+        return { sessions: [] }
+      })
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+    await controller.newSession()
+
+    await expect(controller.deleteSession('target')).resolves.toBeUndefined()
+
+    expect(lists).toBe(3)
+    expect($chat.get().storedSessionId).toBe('replacement')
+    controller.dispose()
+  })
+
+  it.each(['rename', 'archive', 'delete'] as const)('%s skips follow-up after a Scope round trip during the write', async action => {
+    const write = deferred<void>()
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => sessionReply(++created === 1 ? 'target' : 'replacement'))
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+      .handle('/api/sessions/target?profile=default', () => write.promise)
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+    await controller.newSession()
+    scopes.length = 0
+    const before = $chat.get()
+    const listsBefore = lists
+    const mutation = action === 'rename'
+      ? controller.renameSession('target', 'Renamed')
+      : action === 'archive'
+        ? controller.archiveSession('target')
+        : controller.deleteSession('target')
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'request')).toBe(true))
+
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    $preferences.set({ ...$preferences.get(), profile: null })
+    write.resolve()
+    await mutation
+
+    expect(scopes).toEqual([])
+    expect(lists).toBe(listsBefore)
+    expect($chat.get()).toBe(before)
+    expect(created).toBe(1)
+    controller.dispose()
+  })
+
+  it('keeps a route rejection observable after its Scope becomes stale', async () => {
+    const write = deferred<void>()
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/target?profile=default', () => write.promise)
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({} as never, gateway)
+    const scopes = observeRefreshScopes(controller)
+    const mutation = controller.archiveSession('target')
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'request')).toBe(true))
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    write.reject(new Error('write failed'))
+
+    await expect(mutation).rejects.toThrow('write failed')
+    expect(scopes).toEqual([])
+    controller.dispose()
+  })
+
+  it('skips active-delete follow-up if Scope changes while replacement creation is pending', async () => {
+    const replacement = deferred<ReturnType<typeof sessionReply>>()
+    let created = 0
+    let lists = 0
+    const gateway = new MemoryGateway()
+      .handle('session.create', () => ++created === 1 ? sessionReply('target') : replacement.promise)
+      .handle('session.list', () => { lists += 1; return { sessions: [] } })
+      .handle('/api/sessions/target?profile=default', () => ({}))
+    const controller = new GatewayController({} as never, gateway)
+    await controller.newSession()
+
+    const deleting = controller.deleteSession('target')
+    await vi.waitFor(() => expect(created).toBe(2))
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    replacement.resolve(sessionReply('replacement'))
+    await deleting
+
+    expect($chat.get().storedSessionId).toBe('target')
+    expect(lists).toBe(1)
+    controller.dispose()
+  })
+
+  it.each(['resolve', 'reject'] as const)('handles a %s list refresh that lands after its Scope changes', async outcome => {
+    const list = deferred<{ sessions: Array<{ id: string }> }>()
+    const gateway = new MemoryGateway()
+      .handle('/api/sessions/target?profile=default', () => ({}))
+      .handle('session.list', () => list.promise)
+    const controller = new GatewayController({} as never, gateway)
+    const previous = [{ id: 'keep-me' }]
+    $sessions.set(previous as never)
+    const renaming = controller.renameSession('target', 'Renamed')
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'rpc' && call.method === 'session.list')).toBe(true))
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+
+    if (outcome === 'resolve') {
+      list.resolve({ sessions: [{ id: 'stale-result' }] })
+      await expect(renaming).resolves.toBeUndefined()
+      expect($sessions.get()).toBe(previous)
+    } else {
+      list.reject(new Error('list failed'))
+      await expect(renaming).rejects.toThrow('list failed')
+    }
     controller.dispose()
   })
 })

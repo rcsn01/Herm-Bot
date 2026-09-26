@@ -23,6 +23,28 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+describe('active session title', () => {
+  it('retitles only a matching active session with conversation info', () => {
+    const { conversation, dispose } = subject(new MemoryGateway())
+    const info = { desktop_contract: MINIMUM_CONTRACT }
+    $chat.set({ ...emptyChatState(), info, storedSessionId: 'stored-1' })
+
+    conversation.retitleActive('stored-1', 'Renamed')
+    expect($chat.get().info).toEqual({ ...info, title: 'Renamed' })
+
+    const otherSession = { ...$chat.get(), storedSessionId: 'stored-2' }
+    $chat.set(otherSession)
+    conversation.retitleActive('stored-1', 'Ignored')
+    expect($chat.get()).toBe(otherSession)
+
+    const missingInfo = { ...emptyChatState(), storedSessionId: 'stored-1' }
+    $chat.set(missingInfo)
+    conversation.retitleActive('stored-1', 'Ignored')
+    expect($chat.get()).toBe(missingInfo)
+    dispose()
+  })
+})
+
 describe('reduceGatewayEvent', () => {
   it('reduces streaming text, reasoning, tools, completion, and context info', () => {
     let state: ChatState = { ...emptyChatState(), runtimeSessionId: 'runtime-1' }

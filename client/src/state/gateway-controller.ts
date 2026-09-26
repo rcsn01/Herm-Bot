@@ -248,7 +248,7 @@ export class GatewayController {
     await this.sessionsApi(scope).rename(storedSessionId, title)
     if (!isCurrentGatewayScope(scope)) return
     this.conversation.retitleActive(storedSessionId, title)
-    await this.refreshSessions()
+    await this.refreshSessions(scope)
   }
 
   async deleteSession(storedSessionId: string) {
@@ -256,13 +256,13 @@ export class GatewayController {
     await this.sessionsApi(scope).remove(storedSessionId)
     if (!isCurrentGatewayScope(scope)) return
     if (this.selection.activeStoredSessionId() === storedSessionId) await this.newSession()
-    if (isCurrentGatewayScope(scope)) await this.refreshSessions()
+    if (isCurrentGatewayScope(scope)) await this.refreshSessions(scope)
   }
 
   async archiveSession(storedSessionId: string) {
     const scope = currentGatewayScope()
     await this.sessionsApi(scope).archive(storedSessionId)
-    if (isCurrentGatewayScope(scope)) await this.refreshSessions()
+    if (isCurrentGatewayScope(scope)) await this.refreshSessions(scope)
   }
 
   async branchSession() {
