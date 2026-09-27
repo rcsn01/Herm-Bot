@@ -29,7 +29,6 @@ import type {
   ProfilesResponse,
   SessionInfo,
   SessionMessage,
-  SessionRuntimeInfo,
   SkillInfo,
   StaleAuxAssignment,
   StatusResponse,
@@ -67,7 +66,6 @@ export type {
   ProfilesResponse,
   SessionInfo,
   SessionMessage,
-  SessionRuntimeInfo,
   SkillInfo,
   StaleAuxAssignment,
   StatusResponse,
@@ -157,9 +155,20 @@ export interface ToolActivity {
   status: 'complete' | 'generating' | 'progress' | 'running'
 }
 
+export interface SessionUsage {
+  used: number
+  limit: number
+}
+
+export interface SessionInfoSnapshot {
+  title: string
+  running: boolean
+  usage: null | SessionUsage
+}
+
 export interface PendingPrompt {
   kind: 'approval' | 'clarify' | 'secret' | 'sudo'
-  payload: Record<string, unknown>
+  question: string
   requestId: string
 }
 
@@ -170,7 +179,7 @@ export interface ChatState {
   historyHasMore: boolean
   historyLoadingOlder: boolean
   historyNextOffset: number
-  info: null | SessionRuntimeInfo
+  info: null | SessionInfoSnapshot
   transcript: TranscriptSnapshot
   pendingPrompt: null | PendingPrompt
   running: boolean

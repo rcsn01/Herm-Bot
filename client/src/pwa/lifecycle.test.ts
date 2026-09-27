@@ -58,7 +58,7 @@ describe('PWA lifecycle', () => {
     $chat.set({ ...emptyChatState(), running: true })
     await activatePwaUpdate()
     expect(update).not.toHaveBeenCalled()
-    $chat.set({ ...emptyChatState(), pendingPrompt: { kind: 'secret' } as never })
+    $chat.set({ ...emptyChatState(), pendingPrompt: { kind: 'secret', question: '', requestId: '' } })
     await activatePwaUpdate()
     expect(update).not.toHaveBeenCalled()
     $chat.set(emptyChatState())

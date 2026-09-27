@@ -5,7 +5,7 @@ import { atom } from 'nanostores'
 import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
-import type { ChatState, PendingPrompt, ToolActivity } from '~/lib/types'
+import type { ChatState, PendingPrompt, SessionInfoSnapshot, ToolActivity } from '~/lib/types'
 import { loadCachedTranscript, saveCachedTranscript } from '~/state/transcript-cache'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
@@ -57,10 +57,26 @@ function upsertTool(tools: ToolActivity[], payload: Record<string, unknown>, sta
   return result
 }
 
+function sessionInfoSnapshot(raw: object): SessionInfoSnapshot {
+  const info = record(raw)
+  let usage: SessionInfoSnapshot['usage'] = null
+  if (typeof info.usage === 'object' && info.usage !== null) {
+    const rawUsage = record(info.usage)
+    const used = Number(rawUsage.total ?? rawUsage.total_tokens ?? 0)
+    const limit = Number(rawUsage.context_limit ?? rawUsage.max_tokens ?? 0)
+    if (used || limit) usage = { used, limit }
+  }
+  return {
+    title: text(info.title),
+    running: Boolean(info.running),
+    usage
+  }
+}
+
 function pendingPrompt(type: string, payload: Record<string, unknown>): PendingPrompt {
   return {
     kind: type.split('.')[0] as PendingPrompt['kind'],
-    payload,
+    question: String(payload.question ?? payload.message ?? payload.command ?? ''),
     requestId: text(payload.request_id)
   }
 }
@@ -83,7 +99,7 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
       return {
         ...state,
         contractVersion,
-        info: payload as unknown as ChatState['info'],
+        info: sessionInfoSnapshot(payload),
         running: Boolean(payload.running),
         storedSessionId,
         transcript: updateTranscript(state.transcript, { kind: 'set-context', context })
@@ -158,7 +174,7 @@ export class Conversation {
     $chat.set({
       ...emptyChatState(),
       contractVersion: session.contractVersion,
-      info: session.info,
+      info: sessionInfoSnapshot(session.info),
       runtimeSessionId: session.runtimeSessionId,
       storedSessionId: session.storedSessionId,
       transcript
@@ -169,7 +185,7 @@ export class Conversation {
   retitleActive(storedSessionId: string, title: string): void {
     const current = $chat.get()
     if (current.storedSessionId === storedSessionId && current.info) {
-      $chat.set({ ...current, info: { ...current.info, title } as typeof current.info })
+      $chat.set({ ...current, info: { ...current.info, title } })
     }
   }
 
@@ -365,7 +381,7 @@ export class Conversation {
       ...current,
       historyHasMore: page.hasMore,
       historyNextOffset: page.nextOffset,
-      running: Boolean(current.info?.running),
+      running: current.info?.running ?? false,
       transcript
     })
     this.persistTranscript()

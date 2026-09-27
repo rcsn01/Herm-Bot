@@ -26,7 +26,7 @@ beforeEach(() => {
 describe('active session title', () => {
   it('retitles only a matching active session with conversation info', () => {
     const { conversation, dispose } = subject(new MemoryGateway())
-    const info = { desktop_contract: MINIMUM_CONTRACT }
+    const info = { running: false, title: '', usage: null }
     $chat.set({ ...emptyChatState(), info, storedSessionId: 'stored-1' })
 
     conversation.retitleActive('stored-1', 'Renamed')
@@ -85,10 +85,47 @@ describe('reduceGatewayEvent', () => {
     expect(changed.transcript.context).toEqual({ source: null, storedSessionId: 'stored-2' })
   })
 
-  it.each(['clarify', 'approval', 'sudo', 'secret'] as const)('maps %s requests without persisting answers', kind => {
-    const state = reduceGatewayEvent(emptyChatState(), { type: `${kind}.request`, payload: { request_id: 'request-1', question: 'value?' } })
-    expect(state.pendingPrompt).toMatchObject({ kind, requestId: 'request-1' })
-    expect(JSON.stringify(state)).not.toContain('answer')
+  it.each(['clarify', 'approval', 'sudo', 'secret'] as const)('resolves the question for %s requests without persisting answers', kind => {
+    const questionCases: Array<{ fields: Record<string, unknown>; question: string }> = [
+      { fields: { question: 'question?', message: 'message?', command: 'command?' }, question: 'question?' },
+      { fields: { question: null, message: 'message?', command: 'command?' }, question: 'message?' },
+      { fields: { question: '', message: 'message?', command: 'command?' }, question: '' },
+      { fields: { message: 'message?', command: 'command?' }, question: 'message?' },
+      { fields: { command: 'command?' }, question: 'command?' },
+      { fields: {}, question: '' },
+      { fields: { question: 42 }, question: '42' },
+      { fields: { question: false }, question: 'false' }
+    ]
+
+    for (const { fields, question } of questionCases) {
+      const state = reduceGatewayEvent(emptyChatState(), {
+        type: `${kind}.request`, payload: { request_id: 'request-1', ...fields }
+      })
+      expect(state.pendingPrompt).toEqual({ kind, question, requestId: 'request-1' })
+      expect(JSON.stringify(state)).not.toContain('answer')
+    }
+  })
+
+  it.each([
+    { name: 'standard usage, title, and truthy running', payload: { title: 'Planning', running: true, usage: { context_limit: 100, total: 25 } }, info: { title: 'Planning', running: true, usage: { used: 25, limit: 100 } }, running: true },
+    { name: 'legacy usage names', payload: { usage: { max_tokens: 100, total_tokens: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'absent usage and title', payload: {}, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'empty usage', payload: { usage: {} }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'non-object usage', payload: { usage: 'legacy' }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'total only', payload: { usage: { total: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
+    { name: 'limit only', payload: { usage: { context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
+    { name: 'all-zero usage', payload: { usage: { total: 0, context_limit: 0 } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'numeric string total', payload: { usage: { total: '25', context_limit: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'non-numeric total alone', payload: { usage: { total: 'bad' } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'non-numeric total beside valid limit', payload: { usage: { total: 'bad', context_limit: 100 } }, info: { title: '', running: false, usage: { used: Number.NaN, limit: 100 } }, running: false },
+    { name: 'non-string title', payload: { title: 42 }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'truthy non-boolean running', payload: { running: 'yes' }, info: { title: '', running: true, usage: null }, running: true }
+  ])('normalizes session.info: $name', ({ payload, info, running }) => {
+    const state = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
+      type: 'session.info', session_id: 'runtime-1', payload
+    })
+    expect(state.info).toEqual(info)
+    expect(state.running).toBe(running)
   })
 
   it('ignores events for another runtime session and unknown future events', () => {
@@ -213,7 +250,7 @@ describe('prompt submission safety', () => {
   })
 
   it('keeps a pending response when delivery fails', async () => {
-    const pendingPrompt = { kind: 'approval' as const, payload: {}, requestId: 'request-1' }
+    const pendingPrompt = { kind: 'approval' as const, question: '', requestId: 'request-1' }
     $chat.set({ ...emptyChatState(), pendingPrompt, runtimeSessionId: 'runtime-1' })
     const gateway = new MemoryGateway().handle('approval.respond', () => {
       throw new Error('Network disconnected')
@@ -252,6 +289,40 @@ describe('prompt submission safety', () => {
     await sending
 
     expect($chat.get()).toBe(stale)
+    dispose()
+  })
+})
+
+describe('session adoption', () => {
+  it('installs raw info from the runtime and starts idle until history reconciliation', async () => {
+    const rawInfo = {
+      desktop_contract: MINIMUM_CONTRACT,
+      title: 'Adopted session',
+      running: true,
+      usage: { context_limit: 100, total: 25 }
+    }
+    const gateway = new MemoryGateway().handle('session.create', () => ({
+      info: rawInfo,
+      session_id: 'runtime-1',
+      stored_session_id: 'stored-1'
+    }))
+    const { conversation, dispose, runtime } = subject(gateway)
+    const session = await runtime.createSession(null)
+
+    conversation.adopt(session)
+
+    expect($chat.get().info).toEqual({ title: 'Adopted session', running: true, usage: { used: 25, limit: 100 } })
+    expect($chat.get().running).toBe(false)
+    dispose()
+  })
+
+  it('accepts an empty raw info object', async () => {
+    const gateway = new MemoryGateway().handle('session.create', () => ({ info: {}, session_id: 'runtime-1' }))
+    const { conversation, dispose, runtime } = subject(gateway)
+
+    conversation.adopt(await runtime.createSession(null))
+
+    expect($chat.get().info).toEqual({ title: '', running: false, usage: null })
     dispose()
   })
 })
@@ -310,7 +381,7 @@ describe('incremental session loading', () => {
       throw Object.assign(new Error('history unavailable'), { status: 503 })
     })
     const { conversation, dispose } = subject(gateway)
-    conversation.adopt({ contractVersion: null, info: null, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+    conversation.adopt({ contractVersion: null, info: {}, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
 
     await expect(conversation.loadOlderMessages()).rejects.toMatchObject({ kind: 'server', message: 'history unavailable' })
@@ -323,7 +394,7 @@ describe('incremental session loading', () => {
     let resolvePage!: (value: unknown) => void
     const gateway = new MemoryGateway().handle(path, () => new Promise(resolve => { resolvePage = resolve }))
     const { conversation, dispose } = subject(gateway)
-    conversation.adopt({ contractVersion: null, info: null, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+    conversation.adopt({ contractVersion: null, info: {}, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
 
     const staleScope = conversation.loadOlderMessages()
@@ -346,7 +417,7 @@ describe('incremental session loading', () => {
     const releases: Array<(value: unknown) => void> = []
     const gateway = new MemoryGateway().handle(path, () => new Promise(resolve => { releases.push(resolve) }))
     const { conversation, dispose } = subject(gateway)
-    const sessionA = { contractVersion: null, info: null, rows: [{ content: 'latest A', role: 'assistant' as const, row_id: 82 }], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' }
+    const sessionA = { contractVersion: null, info: {}, rows: [{ content: 'latest A', role: 'assistant' as const, row_id: 82 }], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' }
     conversation.adopt(sessionA)
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
     const oldSameIds = conversation.loadOlderMessages()
@@ -367,7 +438,7 @@ describe('incremental session loading', () => {
     let rejectOld!: (error: unknown) => void
     const rejectPath = '/api/sessions/stored-2/messages?include_compacted=true&limit=80&offset=80&order=latest&profile=default'
     gateway.handle(rejectPath, () => new Promise((_resolve, reject) => { rejectOld = reject }))
-    const sessionB = { contractVersion: null, info: null, rows: [{ content: 'latest B', role: 'assistant' as const, row_id: 92 }], runtimeSessionId: 'runtime-2', storedSessionId: 'stored-2' }
+    const sessionB = { contractVersion: null, info: {}, rows: [{ content: 'latest B', role: 'assistant' as const, row_id: 92 }], runtimeSessionId: 'runtime-2', storedSessionId: 'stored-2' }
     conversation.adopt(sessionB)
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
     const oldA = conversation.loadOlderMessages()
@@ -475,7 +546,7 @@ describe('local transcript cache', () => {
     const gateway = new MemoryGateway()
     const { conversation, dispose } = subject(gateway)
 
-    conversation.adopt({ contractVersion: null, info: null, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+    conversation.adopt({ contractVersion: null, info: {}, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
 
     expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['Cached line'])
     dispose()
@@ -488,7 +559,7 @@ describe('local transcript cache', () => {
 
     conversation.adopt({
       contractVersion: null,
-      info: null,
+      info: {},
       rows: [{ content: 'live row', role: 'user', row_id: 1 }],
       runtimeSessionId: 'runtime-1',
       storedSessionId: 'stored-1'
@@ -521,7 +592,7 @@ describe('local transcript cache', () => {
     const { conversation, dispose } = subject(gateway)
     conversation.adopt({
       contractVersion: null,
-      info: null,
+      info: {},
       rows: [{ content: 'done answer', role: 'assistant', row_id: 7 }],
       runtimeSessionId: 'runtime-1',
       storedSessionId: 'stored-1'

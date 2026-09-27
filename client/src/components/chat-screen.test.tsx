@@ -195,7 +195,7 @@ describe('transcript rendering and durable edits', () => {
   it('keeps external Markdown links secure and renders context usage below the composer', () => {
     $chat.set({
       ...emptyChatState(),
-      info: { usage: { context_limit: 100, total: 25 } } as never,
+      info: { running: false, title: '', usage: { limit: 100, used: 25 } },
       transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: '<script>unsafe()</script>\n\n[Hermes](https://example.com)', role: 'assistant' }])
     })
 
@@ -375,7 +375,7 @@ describe('session management and prompts', () => {
   it('offers stored-session actions and forwards rename intent', async () => {
     $chat.set({
       ...emptyChatState(),
-      info: { title: 'Planning session' } as never,
+      info: { running: false, title: 'Planning session', usage: null },
       runtimeSessionId: 'runtime-1',
       storedSessionId: 'session-1'
     })
@@ -386,6 +386,7 @@ describe('session management and prompts', () => {
     expect(screen.getByRole('button', { name: 'Archive' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Branch' })).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Edit name' }))
+    expect(screen.getByLabelText<HTMLInputElement>('Session title').value).toBe('Planning session')
     fireEvent.change(screen.getByLabelText('Session title'), { target: { value: 'Renamed session' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -420,11 +421,12 @@ describe('session management and prompts', () => {
   it('keeps approval prompts wired to the conversation', () => {
     $chat.set({
       ...emptyChatState(),
-      pendingPrompt: { kind: 'approval', payload: { command: 'rm file' }, requestId: 'approval-1' }
+      pendingPrompt: { kind: 'approval', question: 'rm file', requestId: 'approval-1' }
     })
     const conversation = conversationStub()
     render(<ChatScreen controller={controllerStub()} conversation={conversation} />)
 
+    expect(screen.getByText('rm file').tagName).toBe('P')
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
     expect(conversation.respond).toHaveBeenCalledWith('allow', 'allow')
   })

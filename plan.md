@@ -1,141 +1,137 @@
-# Plan: give Group session provenance one owner
+# Plan: give the chat read surface one owner — Conversation owns the session-info snapshot
 
 ## Goal
 
-Deepen the Group session-provenance policy behind one internal module so the rules governing a room's Gateway-owned session state are defined once, not reconstructed across `group-store.ts`, `group-turns.ts`, `group-engine.ts`, and `groups-sync.ts`.
+Deepen the Conversation's read surface so `$chat` carries semantic state only. Today the desktop wire type `SessionRuntimeInfo` crosses the seam into `ChatState.info`, and three consumers re-implement gateway field-shape fallbacks — `usage.total ?? usage.total_tokens`, `payload.question ?? message ?? command`, and two independent `info as { title }` casts — that the glossary already promises the view never does.
 
-This is an **ownership/locality refactor**, not a behavior change. The current behavior implemented in commit `8615ee2` remains the contract. The external Group engine interface, the v4 local-storage format, and the v3 Gateway mirror format do not change.
+This is an **ownership/locality refactor**, not a behavior change. The wire protocol, the RPC vocabulary, every rendered pixel for wire-legal payloads, and the PWA update gating stay exactly as they are (decision 7 records the one deviation, reachable only from a contract-violating payload). The external interfaces of the Conversation (verbs), the GatewaySession (chat surface), and ChatInteraction do not change shape beyond the two state fields this plan deepens.
 
 ## Current state and friction
 
-The provenance invariant is distributed:
+The leak has one root and four symptoms:
 
-- `group-store.ts` defines `GroupChatRoom.sessionConnectionKey`, `sessions`, and `stranded`; validates the persisted trio; strips it from v1–v3 migrations; writes v4; and clears foreign room state at engine startup.
-- `group-turns.ts` independently decides whether a stored id is eligible (`scopedStoredSessionId`), tags the room after resume/create, stamps `GroupPrompt.connectionKey`, scopes harvest and interrupt, and rejects a foreign prompt in `answer`.
-- `group-engine.ts` separately filters foreign prompt cards and must call both cleanup paths before creating the modules, installing the mirror scheduler, and starting the initial pull.
-- `groups-sync.ts` explicitly preserves the local `sessions` and `stranded` maps while the tag rides through `...existing`; it must also avoid ever accepting those fields from the remote projection.
+- **Root:** `client/src/lib/types.ts:173` types `ChatState.info` as `null | SessionRuntimeInfo` — the desktop compat wire type (`compat/hermes-types.ts:690`). `conversation.ts:86` cements it: `info: payload as unknown as ChatState['info']`. The compat type does not even declare `title`, so every title reader must cast.
+- **Symptom 1:** `components/chat-screen.tsx:254` and `:287–292` — the call site casts `chat.info.usage as Record<string, unknown>`, and `ContextUsage` interprets `usage.total ?? usage.total_tokens` and `usage.context_limit ?? usage.max_tokens` with `Number()` coercions and an early return. None of `total_tokens`, `context_limit`, or `max_tokens` exist in `UsageStats`; they are legacy gateway field names known only to the view.
+- **Symptom 2:** `components/chat-screen.tsx:314` — `PromptCard` resolves `String(pending.payload.question ?? pending.payload.message ?? pending.command ?? '')`, re-implemented prompt-card wire vocabulary beside the Group member turn's own parsing.
+- **Symptom 3:** `components/chat-screen.tsx:190` and `app.tsx:153` — two independent `(chat.info as { title?: string } | null)?.title` casts with separate display fallbacks.
+- **Symptom 4:** `state/conversation.ts:171–173` — `retitleActive` writes `info: { ...current.info, title } as typeof current.info`, a cast that exists only because the type lacks the field.
 
-The deletion test passes: removing one of these local rules would move the same connection-ownership decisions into the remaining callers. The problem is not that the behavior is wrong; it is that the interface does not provide one place to learn, test, and change the provenance rule.
+The deletion test fails for each fallback chain: remove one and it reappears in the next consumer of `$chat` (the chains already exist in three files). The friction is not wrong behavior — it is that the interface does not provide one place to learn, test, and change what a session's info and a pending prompt *mean*. `gateway/session-runtime.ts:41,304` compounds it by typing `RuntimeSession.info` as `ChatState['info']`: the wire adapter references a state-layer type instead of owning its own wire vocabulary.
+
+Test fixtures confirm the type is wrong, not the data: `chat-screen.test.tsx:198,378` and `app-navigation.test.tsx:88` set `$chat` info with `as never` casts because raw wire shapes do not fit the declared state type.
 
 ## Decisions settled
 
 These are the recommended defaults adopted at the user's request:
 
-1. **Owner:** add an internal pure module, `client/src/features/groups/group-session-provenance.ts`. Keep Nanostores and localStorage writes in `group-store.ts`; keep member-turn sequencing in `group-turns.ts`; keep lifecycle ordering in `group-engine.ts`.
-2. **State covered:** session-id and stranded-marker provenance as one room-level trio, plus the connection tag on pending prompt cards. The room-level key scopes both maps; prompt cards are independently tagged with the producing connection.
-3. **Acquisition:** a successful resume or create tags the room even if the Gateway returns no durable stored id. If acquisition changes the room's owner key, discard the old session and stranded maps before recording the new tag/id. If the key is unchanged, preserve other members' entries.
-4. **Lifecycle sweep:** before a new Group lifecycle is armed, clear mismatched or untagged session provenance and foreign prompt cards. Preserve same-key state, shared room state, and the existing no-op/no-persist behavior for empty maps. The sweep schedules no mirror write.
-5. **Formats:** retain `hermes.group-chats.v4`, its validation and v1/v2/v3 fallback rules, and the v3 Gateway mirror format. Session provenance remains local-only and is never imported from or projected to the Gateway.
-6. **Test surface:** test pure provenance decisions through the new module's interface, persistence through Group store behavior, and wire/lifecycle guarantees through turn and engine flows. Preserve the convention that Group-owned tests may seed writable atoms; cross-feature tests use engine actions and public read handles.
-7. **Scope:** do not also refactor general coordination maps, member/room key formats, GatewayController reconnect policy, ordinary socket reconnect behavior, or per-Gateway session caches.
+1. **Owner:** the Conversation module (`state/conversation.ts`) owns the normalization in place, as private pure helpers beside its existing reduction. No new module: a helpers module would have exactly one consumer and fails the deletion test (deleting it just moves the helpers back into the reducer). The semantic state types live in `lib/types.ts` beside `ChatState` and `PendingPrompt`.
+2. **State shape:** `ChatState.info` becomes `null | SessionInfoSnapshot`, a minimal semantic type — `{ title: string, running: boolean, usage: SessionUsage | null }` with `SessionUsage = { used: number, limit: number }`. Wire fields nothing reads today (`model`, `provider`, `cwd`, `tools`, `skills`, warnings, `version`, `yolo`, …) drop at the seam; `contractVersion` and `storedSessionId` are already extracted into their own `ChatState` fields and stay there. A future screen that needs more extends the projection in one place.
+3. **Pending prompt:** `PendingPrompt` becomes `{ kind, requestId, question: string }`. The `payload` record collapses: `respond()` uses kind + requestId, `PromptCard` renders kind + question, and the PWA gates only test truthiness.
+4. **Wire side stays raw:** `RuntimeSession.info` is typed `SessionRuntimeInfo` (imported from `~/compat/hermes-types` directly), removing `gateway/session-runtime.ts`'s reference to the state-layer `ChatState` type. The GatewaySession remains the wire seam — raw rows out, meaning elsewhere — exactly as `CONTEXT.md` already documents for history rows.
+5. **Usage policy, preserved exactly:** `used = Number(raw.total ?? raw.total_tokens ?? 0)`, `limit = Number(raw.context_limit ?? raw.max_tokens ?? 0)`; the snapshot's `usage` is `null` iff the raw usage value is absent/non-object or both coercions are falsy — absorbing `ContextUsage`'s early return, so the view renders unconditionally. The progress-bar fallback `max={limit || used || 1}` is presentation and stays in the view. Do **not** start reading `UsageStats.context_max` / `context_used` / `context_percent` — the view never read them, and adding reads is a behavior change.
+6. **Prompt question policy, preserved exactly:** `String(payload.question ?? payload.message ?? payload.command ?? '')`. Prompt-card presentation (titles per kind, sensitive masking for secret/sudo, text vs password input, allow/deny buttons for approval) stays in `PromptCard`.
+7. **Title policy:** `text(raw.title)` (string or `''`); each `session.info` event still replaces the snapshot wholesale — no field merging, so a payload without `title` resets it to `''` and the header falls back exactly as the raw replacement does today. Display fallbacks (`'New conversation'` in `app.tsx`, `|| ''` in the rename dialog) stay with their screens. One recorded deviation: a *truthy non-string* `title` (say a number) previously leaked straight through the cast into the header pixels (React rendered `42`); `text()` now coerces it to `''`, so the screen fallbacks apply. The wire sends string-or-absent, so no real payload hits this — Phase 1's non-string title case documents the change instead of preserving the junk render.
+8. **Test surface:** characterization goes through the Conversation's interface (`reduceGatewayEvent`, `adopt`, `retitleActive`, `respond`) — the interface is the test surface. No normalization helper is exported for tests. Of the cross-seam reads, the `'25 / 100'` context-usage pixel and the header subtitle (`'Current chat'`, asserted in `app-navigation.test.tsx:179,211`) are pinned today; the prompt question text and the rename dialog's initial value have **no** assertion anywhere — the approval test checks only allow/deny wiring and the rename test only the changed value. Phase 1 adds those two assertions, and all four become the cross-seam behavior contract and stay green.
+9. **Domain notes:** `CONTEXT.md` gains the term **Session info snapshot** (the Conversation-owned semantic projection) and its `Chat state ($chat)` / `Conversation` / `GatewaySession` entries are amended — at implementation time, alongside the code, as this plan's Phase 6 specifies.
+10. **Scope:** no ChatInteraction changes (its hand-bound commands, StrictMode disposal, and `controller.request` scope guard are a separate candidate), no Group member-turn changes (its prompt cards ride a different wire and own their parsing), no Transcript, transcript-cache, wire-protocol, or GatewayController changes.
 
 ## Intended module ownership
 
-### `group-session-provenance.ts` — policy and pure transforms
+### `lib/types.ts` — semantic state vocabulary
 
-This in-process module owns the session-provenance data type and the rules for manipulating it. It has no Nanostores, localStorage, Gateway RPC, React, or lifecycle dependency. Its small internal interface should cover these behaviors (final names can follow repository conventions during implementation):
+- `SessionUsage { used: number; limit: number }` and `SessionInfoSnapshot { title: string; running: boolean; usage: null | SessionUsage }` are defined here.
+- `PendingPrompt` gains `question: string` and drops `payload`.
+- `ChatState.info` becomes `null | SessionInfoSnapshot`. The `SessionRuntimeInfo` import/re-export drops from this file: a grep over `client/src` confirms this file is the type's only referencer (the import at :32, the re-export at :70, and the `ChatState.info` field at :173); no other module or test imports it.
 
-- Validate/normalize an unknown persisted provenance value as an all-or-nothing trio: a non-empty connection key, valid non-empty stored ids, and valid stranded markers. A cursor of `0` remains valid.
-- Return a stored id only when the room tag exactly matches the caller's captured `connectionKey` and that member's id is valid.
-- Produce the next provenance value after successful acquisition. Same-key acquisition keeps other members' valid entries; changing keys clears the prior session and stranded maps before applying the new tag and optional id. A successful acquisition without an id still records the tag.
-- Remove provenance that is not owned by the requested connection, while treating absent/empty maps as no session-bearing state and preserving the current no-op semantics.
-- Stamp/check prompt-card provenance and filter cards to the active connection. A missing or foreign tag is never eligible for an answer.
-- Preserve only the local provenance value during room merge/re-key operations; remote snapshot fields are never input to these transformations.
+### `state/conversation.ts` — the sole owner of session-info meaning
 
-The module may own a type imported by `GroupChatRoom`, but it must not import `group-store.ts` at runtime. Prefer a structural input type or type-only imports so there is no module cycle. Do not export helpers merely for tests if they are not part of this policy interface.
+- Private `sessionInfoSnapshot(raw: object): SessionInfoSnapshot` — accepts the raw wire value structurally (the non-nullable `RuntimeSession.info` or the reduction's `record()` product; property reads go through the module's existing `record()` narrowing), so the state layer needs no compat import:
+  - `title: text(raw.title)`
+  - `running: Boolean(raw.running)`
+  - `usage: null` when the raw usage value is not an object or both coercions are falsy, else `{ used, limit }` per decision 5.
+- The private `pendingPrompt()` constructor resolves `question` per decision 6 and stops storing the raw record.
+- `reduceGatewayEvent`'s `session.info` case returns `info: sessionInfoSnapshot(payload)` — the `as unknown as` cast disappears. The `desktop_contract` guard math and `stored_session_id` extraction are untouched.
+- `adopt()` normalizes `session.info` (`RuntimeSession.info` arrives raw); the cached-transcript path, initial `running: false`, and every other field are unchanged.
+- `retitleActive` writes `info: { ...current.info, title }` with no cast, still only for a matching stored id, still leaving `info` untouched (same object identity) otherwise.
+- `reconcileHistory` reads `current.info?.running ?? false` — the semantic equivalent of today's `Boolean(current.info?.running)`.
 
-### `group-store.ts` — state and persistence adapter
+### `gateway/session-runtime.ts` — the wire seam stays raw
 
-The store remains the owner of the Nanostores atoms and localStorage. It applies the pure policy transforms to room/prompt state, persists resulting room state, and exposes semantic operations to Group modules rather than requiring each caller to re-implement the trio rules. Persistence, migration, and atom notification behavior remain here.
+- `RuntimeSession.info: SessionRuntimeInfo`, imported from `~/compat/hermes-types`; the module's `ChatState` import drops — `session-runtime.ts` uses it nowhere else (only the `RuntimeSession.info` field at :41 and the `sessionFromResponse` cast at :304, both rewritten here).
+- The `openSession` path keeps building `info` from `response.info ?? {}`; the cast target becomes `SessionRuntimeInfo` (`Record<string, unknown> as SessionRuntimeInfo` type-checks — verified against the repo's tsconfig). `RuntimeSession.info` is deliberately non-nullable: the adapter's `?? {}` always yields an object. Nothing else in the module changes.
 
-### Existing callers
+### Consumers — render only
 
-- **Group member turn** owns RPC order and turn lifecycle, but asks the provenance policy for stored-id eligibility, acquisition updates, prompt ownership, harvest target, and interrupt target.
-- **Group send engine** owns the required lifecycle order. It invokes one store-level preparation/sweep operation synchronously before module construction, scheduler installation, and `mirror.pull()`; it no longer implements prompt filtering itself.
-- **Group mirror** merges only shared room data plus the already-local provenance value supplied by the store/policy. It never accepts a provenance trio from a remote room and never projects one.
+- `components/chat-screen.tsx`:
+  - `ContextUsage({ usage }: { usage: SessionUsage })` — the call site's `as Record<string, unknown>` cast, the `Number(...)` chains, and the early return move behind the Conversation; `max={limit || used || 1}` stays.
+  - Rename dialog: `initialValue={chat.info?.title || ''}` — cast gone.
+  - `PromptCard`: renders `pending.question`; the payload-interpretation line is deleted.
+- `app.tsx`: `const headerSubtitle = chat.info?.title || 'New conversation'` — cast gone.
+- `pwa/lifecycle.ts` and `pwa/PwaStatus.tsx`: unchanged; both gate on `pendingPrompt` truthiness, which a `question: ''` object still satisfies exactly as an empty-payload object does today.
 
-There is no new remote adapter or fake Gateway adapter: the policy is pure in-process logic, and the existing store remains its state adapter.
+There is no new adapter: the production GatewaySession and the memory-gateway fixtures both already feed raw `info` over `RuntimeSession`, and the semantic snapshot is produced by one pure projection. Two producers across the wire seam, one consumer of meaning — the seam is real and already proven.
 
 ## Invariants to preserve
 
-1. **Atomic ownership:** `sessionConnectionKey`, `sessions`, and `stranded` are retained or discarded together. A stored id or stranded marker is usable only when its room's tag equals the current lifecycle's captured connection key.
-2. **Acquisition:** successful resume/create writes the current tag even if the durable id is absent; a stored id is added only when present. Re-tagging to another key cannot leave entries from the former key in either map.
-3. **Acquisition fallback order:** matching stored id → room title (`Group: <roomId-or-name>`) → create, with the existing `4007` classification and failure behavior unchanged.
-4. **Turn semantics:** baseline, poll, harvest, timeout, stranded-marker, watermarks, round-wide holds, prompt payload, and failure taxonomy remain unchanged. Only the owner of the provenance decision moves.
-5. **Prompt cards:** every card is tagged by the connection that produced it; same-key cards survive a same-key restart; foreign/untagged cards are removed before the new mirror pull; `answer` sends no request for a foreign card.
-6. **Lifecycle order:** `stopGroupEngine()` still invalidates the previous lifecycle first. For the next lifecycle, local room/prompt cleanup runs synchronously before modules are created, before the scheduler is installed, and before the initial pull reaches `profiles.list`.
-7. **Shared state:** the cleanup changes no room log, members, image, watermarks, holds, epoch/turn policy beyond existing teardown behavior, activity, needs-you state, or mirror payload. Matching provenance stays unchanged.
-8. **Persistence:** valid tagged provenance round-trips in v4. Malformed v4 provenance drops only the trio, not the room. v1/v2/v3 session state remains unconditionally stripped because it has no recorded owner. A present malformed v4 value never falls back to a legacy key. Loading legacy data remains write-free until a later normal persist.
-9. **Mirror:** `groupChatSyncSnapshot()` contains no `sessionConnectionKey`, `sessions`, or `stranded`; merge preserves only a local trio and ignores those fields if a remote payload carries them.
-10. **Connection identity:** use the captured `connectionKey` (`remoteURL`), not the app-selected Profile. A Profile switch at the same remoteURL retains provenance; switching the Gateway clears it. An ordinary socket reconnect continues to keep the active Group engine lifecycle.
-11. **No cache:** do not save per-Gateway session maps or restore them when switching back. Switching A→B→A clears the active map on each key change and reacquires by title.
-12. **No mirror write from sweep:** the startup sweep persists changed local room data directly, without scheduling `profiles.configure`; an all-matching/no-data sweep does not notify or persist.
+1. **session.info reduction:** `desktop_contract` handling (undefined marker preserves prior contractVersion; non-finite resets to prior; numeric updates) and `stored_session_id` capture (`text(...) || state.storedSessionId`, same-context reset rule) are byte-identical.
+2. **Wholesale replacement:** every `session.info` event replaces the snapshot in full — a payload without `title` resets `title` to `''`; the header falls back to `'New conversation'` exactly as today. No merging of old and new fields.
+3. **Usage pixels:** every case renders identically — `{ context_limit: 100, total: 25 }` → `25 / 100` progress; total-only → `max = used`; limit-only → `0 / <limit>`; absent usage, `{}`, non-object usage, all-zero, or garbage in *both* coercions (`Number` → `NaN`, falsy like `0`) → nothing rendered. Garbage in one field beside a truthy partner still renders with `NaN` embedded (`{ total: 'x', context_limit: 100 }` → `NaN / 100`) — the snapshot stores coerced values as-is. Do not "fix" either NaN edge.
+4. **Prompt card pixels:** question text for `question`/`message`/`command` field variants; empty question renders no `<p>`; kind titles, sensitive clearing (value cleared on submit and in `finally`), disclaimer line, and approval allow/deny buttons unchanged.
+5. **Respond wire:** `${kind}.respond` with `request_id` + kind-specific field (`answer` / `choice` / `password` / `value`) unchanged; card cleared only when the landed scope is current and the requestId still matches.
+6. **retitleActive:** retitles only a matching stored id; a non-matching call leaves `info` referentially identical (asserted today at `gateway-controller.test.ts:148–150`).
+7. **adopt:** initial `running: false` regardless of raw info (reconcile refreshes it); cached-transcript adoption rule unchanged; `session.info` normalized at adoption.
+8. **PWA gating:** `pwa/lifecycle.ts:98` and `PwaStatus.tsx:11` keep blocking reload on `chat.pendingPrompt` truthiness — a pending prompt with an empty question still blocks.
+9. **Wire fixtures stay raw:** memory-gateway `session.create` / `session.resume` handlers keep returning raw `info` payloads; only `$chat` state is semantic.
+10. **No exported test helpers:** normalization functions stay private; tests cross the module's public interface only.
+11. **transcript-cache:** untouched — it persists transcript entries and a stored id, never info or prompts.
+12. **Gateway layer independence:** after the change, no `gateway/` file references chat state types; `gateway/session-runtime.ts` owns its wire vocabulary.
 
 ## Implementation sequence
 
-### Phase 1 — Characterize the policy seam
+### Phase 1 — Characterize the read surface
 
-- Add `group-session-provenance.test.ts` before moving code. Cover the intended pure policy through its eventual module interface:
-  - valid tagged provenance, including empty maps;
-  - malformed/missing/empty tags, malformed maps, empty stored ids, invalid marker shapes, and valid cursor `0`;
-  - matching, foreign, and untagged stored-id lookup;
-  - same-key acquisition preserving other members;
-  - key-change acquisition clearing both old maps before recording a new id;
-  - acquisition without a stored id still tagging ownership;
-  - room and prompt sweeps preserving matching state and discarding foreign/untagged state;
-  - room merge/re-key preserving only local provenance.
-- Keep these tests on the module's supported interface. Do not export internal validators or expose a new adapter seam just to assert implementation details.
+Add characterization tests before moving anything, through the Conversation's interface only:
 
-### Phase 2 — Move provenance policy into the new module
+- In `state/conversation.test.ts`, drive `reduceGatewayEvent` with `session.info` payloads covering: usage `{ context_limit, total }`; legacy names `{ max_tokens, total_tokens }`; usage absent; usage `{}`; usage a non-object; total-only; limit-only; all-zero; a numeric-string `total` (coerces); a non-numeric `total` alone (NaN path); a non-numeric `total` beside a valid `context_limit` (renders `NaN / 100` today — the snapshot must store `NaN`, not clamp); `title` as string / non-string / absent; `running` true/false/truthy-non-boolean. Assert the **current** raw state shape now — these assertions become the semantic expectations in Phase 3.
+- Drive the four `.request` kinds with payloads where the question rides `question`, `message`, `command`, none, empty string, and a non-string; assert kind and requestId as today, **and** assert the resolved question per decision 6 — that chain is the policy Phase 3 moves, so it must be pinned now, not just the fields that survive unchanged.
+- Drive `adopt()` with a raw `RuntimeSession` whose `info` carries a title, `running: true`, and usage, plus a bare `info: {}`; assert today's raw copy (and the initial `running: false` state flag) — these become the semantic snapshot expectations in Phase 3.
+- Keep `chat-screen.test.tsx:195–209` (context-usage pixels `'25 / 100'`) exactly as it is. Add the two missing read assertions before anything moves: in the approval-prompt test (`:420–430`) assert the rendered question text (`rm file`, riding `payload.command` today), and in the rename test (`:375–393`) assert the dialog's initial value (`Planning session`). These plus `'25 / 100'` and the header subtitle are the cross-seam contract.
 
-- Add `client/src/features/groups/group-session-provenance.ts` with the focused type and pure transforms described above.
-- Move the current provenance validation/normalization logic from `group-store.ts` into this module without changing accepted v4 data or the all-or-nothing rule.
-- Move `scopedStoredSessionId` semantics out of `group-turns.ts`; callers must pass the captured connection key explicitly.
-- Put the prompt tag/eligibility/filter rule in the same policy module. Keep prompt question/approval decoding and response payload construction in `group-turns.ts`; those are turn protocol, not provenance.
-- Keep exact string comparison for keys. Do not add URL normalization, Profile derivation, fallback ownership, or a second cache.
+### Phase 2 — Semantic types in `lib/types.ts`
 
-### Phase 3 — Make the store the state adapter
+- Add `SessionUsage` and `SessionInfoSnapshot`; add `question: string` to `PendingPrompt` and drop `payload`; change `ChatState.info` to `null | SessionInfoSnapshot`.
+- Drop the `SessionRuntimeInfo` import/re-export — the grep confirms no other user (tests included). TypeScript errors now mark every site the later phases fix — do not silence them with casts.
 
-- Update `GroupChatRoom` to use the provenance type owned by the new module; keep the field names and v4 JSON shape stable.
-- Update `durableGroupChatRooms`, `rehydrateSessionProvenance`, and v1/v2/v3 legacy migration paths to delegate their provenance decision to the pure module.
-- Keep all current non-provenance durability guards and room-key/member-key migrations unchanged.
-- Add/adjust semantic store operations for:
-  - reading an eligible member stored id for a supplied connection key;
-  - recording a successful acquisition as one state transition;
-  - storing/removing a prompt through connection-aware policy;
-  - preparing store state for a new connection by transforming both the room map and prompt map.
-- A store acquisition update must preserve existing `updateGroupChat` persistence and scheduling behavior; do not optimize mirror scheduling as part of this refactor. The startup sweep must retain its special local-only persistence path and must not call the mirror scheduler.
-- Keep no-op behavior: matching state and empty maps do not cause needless atom notifications or v4 writes.
+### Phase 3 — Conversation owns the normalization
 
-### Phase 4 — Route member-turn behavior through the policy
+- Add the private `sessionInfoSnapshot` helper and the usage policy; rewrite the private `pendingPrompt()` constructor to resolve `question`.
+- Route `reduceGatewayEvent`'s `session.info` case and `adopt()` through the helper; delete the `as unknown as` and `as typeof current.info` casts; switch `reconcileHistory` to `current.info?.running ?? false`.
+- Update Phase 1's characterization assertions from raw to semantic expectations — `info: { running, title, usage }` (NaN stored as-is), the resolved `question` on each request kind, and adopt's snapshot.
 
-- In `group-turns.ts`, remove the private duplicate eligibility helper.
-- In resume/create success paths, use the store/policy acquisition operation. Preserve turn ownership checks (`owns(capture)`) around the awaited request and write; stale operations must not tag state.
-- In harvest and interrupt, resolve the target only through the matching-key lookup. Keep the current title fallback for harvest and the current no-request behavior for an absent eligible interrupt id.
-- In prompt mirroring, ask the policy/store to stamp the card from the captured `GroupMemberGateway.connectionKey`; remove the empty-string default from `syncGroupClarify` so a missing captured key cannot silently produce an unowned card. Preserve request-id comparison and stale-poll protections.
-- In `answer`, use the policy's prompt-ownership check before the first RPC. Keep all clarify/approval wire shapes, member profile routing, and post-response card deletion behavior unchanged.
-- Keep `syncGroupClarify`'s prompt parsing and turn-local request sequencing in the turn module; move only the ownership decision/tag rule.
+### Phase 4 — GatewaySession stays raw
 
-### Phase 5 — Route lifecycle and mirror through the policy
+- In `gateway/session-runtime.ts`: type `RuntimeSession.info` as `SessionRuntimeInfo` (import from `~/compat/hermes-types`), fix the `sessionFromResponse` cast target, and remove the `ChatState` import — its only uses were the two sites just rewritten.
 
-- In `group-engine.ts`, remove `dropForeignGroupPrompts` and replace the separate room/prompt cleanup calls with one store preparation call.
-- Keep the call synchronous and in the same startup position: after stopping any previous lifecycle, but before creating turns/rounds/mirror, installing the sync scheduler, or invoking the initial pull.
-- Keep `connectionKey` captured by `startGroupEngine(transport, connectionKey)`; do not key provenance to Profile.
-- In `groups-sync.ts`, remove direct provenance-specific reconstruction where possible. Delegate local-trio carry/re-key to the store/policy; continue building the wire snapshot field-by-field so provenance is excluded.
-- Do not let a remote room's extra `sessionConnectionKey`, `sessions`, or `stranded` properties flow into a local room, even if the remote object is cast or malformed.
-- Split the session/stranded re-key policy out of `rekeyRoomCoordination`; leave its holds/watermark/member-enrichment behavior unchanged. This plan does not broaden into the general coordination-key refactor.
+### Phase 5 — Consumers render only
 
-### Phase 6 — Update tests and domain notes
+- `chat-screen.tsx`: `ContextUsage` takes `SessionUsage` (delete the call site's `as Record<string, unknown>` cast, the `Number` chains, and the early return; keep the `limit || used || 1` max fallback and the `toLocaleString` formatting); rename dialog reads `chat.info?.title || ''`; `PromptCard` reads `pending.question`.
+- `app.tsx`: header subtitle reads `chat.info?.title || 'New conversation'`.
+- No changes to `pwa/lifecycle.ts` or `pwa/PwaStatus.tsx`, the composer, viewport, or dialog components. (The `pwa/lifecycle.test.ts` fixture edit belongs to Phase 6.)
 
-- **New module tests:** cover pure policy transitions and validation table.
-- **`group-store.test.ts`:** retain tests for v4 durability, v1/v2/v3 migration, malformed v4 behavior, no-op cleanup, and local persistence. Move only assertions that duplicate the new policy-module contract; preserve integration coverage at the store interface.
-- **`group-turns.test.ts`:** keep wire-observable tests for stored-id/title/create order, foreign-id non-use, tag-on-resume/create (with and without durable id), failed acquisition, harvest scoping, stale prompt/answer, and interrupt scoping. Avoid relying on private helper names.
-- **`group-engine.test.ts`:** keep the A→B and A→B→A lifecycle checks, same-key prompt retention, foreign prompt removal, sweep-before-initial-pull observation, immediate open/harvest protection, and no `profiles.configure` from cleanup. Keep lifecycle tests through `startGroupEngine` and engine actions.
-- **`groups-sync.test.ts` / `groups-mirror.test.ts`:** keep the snapshot-excludes-provenance and merge-keeps-local/ignores-remote assertions. Test through snapshot/merge behavior, not the internal pure helper.
-- **`group-screen.test.tsx`:** retain the rendered prompt-card test proving same-key restart retains the card and connection-key change drops it.
-- **`gateway-controller.test.ts`:** retain the Profile-switch-at-same-remoteURL test proving the engine restarts but tagged state survives and member RPC still uses the member Profile.
-- **Cross-feature convention:** do not import writable Group atoms into gateway-controller, screen, or app-navigation tests. Use `createGroupChat`, `sendToGroupChat`, engine start/stop actions, and public read handles. Group-owned setup tests may still use writable atoms for malformed persistence and focused store state.
-- Update `CONTEXT.md` alongside implementation to name the Group session-provenance policy owner and distinguish its pure rules from `group-store` persistence, Group member turn protocol, and Group engine lifecycle ordering. Keep the existing terms `Group chat`, `Group send engine`, `Group member turn`, `Group mirror`, `Member key`, and `Room key` consistent; do not change unrelated glossary entries.
+### Phase 6 — Fixtures, suite inventory, and domain notes
+
+- `conversation.test.ts`: `$chat.set` fixtures (retitle test at :27–43, respond test at :216–225) become semantic; the retitle assertion becomes semantic object equality. `adopt` fixtures stay raw and cast-free, with one mechanical edit: the seven `info: null` literals (:313, :326, :349, :370, :478, :491, :524) become `info: {}` — a real `RuntimeSession` always carries an object (`sessionFromResponse` does `response.info ?? {}`), so the raw type is non-nullable and those nulls were fixture lies (`session-selection.test.ts` already uses `info: {}`).
+- `chat-screen.test.tsx`: :198 → `info: { running: false, title: '', usage: { limit: 100, used: 25 } }`; :378 → `info: { running: false, title: 'Planning session', usage: null }`; :423 → `{ kind: 'approval', question: 'rm file', requestId: 'approval-1' }` — these three fixtures drop their `as never` casts (the file's unrelated `as never`s at :100 and :271 stay), all pixel assertions unchanged.
+- `app-navigation.test.tsx:88` → `info: { running: false, title: 'Current chat', usage: null }`; header assertion unchanged.
+- `gateway-controller.test.ts`: wire fixtures untouched; `:143` / `:330` `toMatchObject({ title: 'Renamed' })` still pass against the semantic snapshot; verify the `:148–150` identity assertion still holds.
+- `gateway/session-runtime.test.ts`, `chat-interaction.test.ts`, `session-selection.test.ts`, and `pwa/policy.test.ts` / `push.test.ts` / `push-payload.test.ts`: expected to pass untouched — verify, don't edit preemptively (`session-runtime.test.ts` drives only raw wire responses and never reads `info`).
+- `pwa/lifecycle.test.ts:61`: the third `as never` fixture, `{ kind: 'secret' } as never`, becomes the semantic `{ kind: 'secret', question: '', requestId: '' }` with the cast deleted — the empty question still blocks the reload, which is exactly the gate this test pins. With it, the three-file `as never` inventory is fully retired.
+- Update `CONTEXT.md`:
+  - Add the term **Session info snapshot** — the Conversation-owned semantic projection of the gateway's `session.info` payload (title, running, context usage); field-name fallbacks (`total ?? total_tokens`, `context_limit ?? max_tokens`) are the Conversation's implementation, not caller knowledge; `PendingPrompt.question` is resolved there too.
+  - Amend **Chat state ($chat)** — `info` is the session-info snapshot and `pendingPrompt` carries the resolved question; the view renders, it never interprets gateway payloads.
+  - Amend **Conversation** — it owns the session-info projection beside event reduction.
+  - Amend **GatewaySession** — note that `RuntimeSession.info` stays raw wire vocabulary, like history rows.
+  - Keep every other entry untouched and consistent with the implementation.
 
 ### Phase 7 — Verify and review
 
@@ -143,47 +139,44 @@ Run focused suites first, then all checks from `client/`:
 
 ```sh
 npx vitest run \
-  src/features/groups/group-session-provenance.test.ts \
-  src/features/groups/group-store.test.ts \
-  src/features/groups/group-turns.test.ts \
-  src/features/groups/group-rounds.test.ts \
-  src/features/groups/group-engine.test.ts \
-  src/features/groups/groups-sync.test.ts \
-  src/features/groups/groups-mirror.test.ts \
-  src/features/groups/group-screen.test.tsx \
-  src/state/gateway-controller.test.ts
+  src/state/conversation.test.ts \
+  src/components/chat-screen.test.tsx \
+  src/app-navigation.test.tsx \
+  src/state/gateway-controller.test.ts \
+  src/features/chat/chat-interaction.test.ts \
+  src/pwa/lifecycle.test.ts
 npx tsc -p tsconfig.json --noEmit
 npm test
 npm run build
 npx playwright test e2e/pwa-foundation.spec.ts \
-  --grep 'desktop group chats list on the main screen and open with sending'
+  --grep 'password cookie authenticates a real WebSocket chat session'
 ```
 
-The Group browser test should run in both configured projects (Chromium and WebKit) when their browsers are installed. If browser execution is unavailable, report that explicitly; typechecking and unit tests are not a substitute for the user-visible flow.
+The browser test exercises the real user-visible chat flow (WebSocket session, rendered conversation) and should run in both configured projects (Chromium and WebKit) when their browsers are installed. If browser execution is unavailable, report that explicitly; typechecking and unit tests are not a substitute for the user-visible flow.
 
 Before considering the plan implemented, also run `git diff --check`, inspect `git status --short`, and review the final diff for unrelated changes. Do not stage or commit unless separately requested.
 
 ## Risks and guardrails
 
-- **Pass-through risk:** do not create a new file that merely renames existing helpers. The new module must own complete pure decisions (validation, exact-key eligibility, owner transition, and prompt ownership) while the store owns only atom/localStorage effects.
-- **Dependency-cycle risk:** keep the policy module independent of store runtime imports. Define its structural data types there or use type-only imports; `group-store.ts` may depend on the policy module, never the reverse at runtime.
-- **Behavior-drift risk:** characterize the v4/legacy matrix and the resume/title/create ordering before moving code. Preserve those tests as behavior contracts, not implementation snapshots.
-- **Split-update risk:** room and prompt atoms are separate stores. The Group engine must call the combined preparation operation synchronously before the mirror lifecycle can read state; verify ordering at the `profiles.list` adapter in the lifecycle test.
-- **Over-scope risk:** leave general coordination-map key formats, write scheduling optimization, and unrelated engine/controller deepening for separate work.
+- **Behavior-drift risk:** the usage and question chains are the contract — Phase 1 pins them through `reduceGatewayEvent` before any code moves. Do not normalize "better" (no `context_max` reads, no NaN clamping, no trimming).
+- **Type-ripple risk:** the `ChatState.info` change intentionally breaks every consumer; let `tsc` enumerate them and fix each at its layer (Phase 4 wire, Phase 5 views). Do not introduce intermediate compat shims or `as never` casts — their removal is the point.
+- **Fixture-churn risk:** `as never` in three test files today (`chat-screen.test.tsx:198,378`, `app-navigation.test.tsx:88`, `pwa/lifecycle.test.ts:61`) means fixtures were already lying about the type; all three become semantic fixtures (Phase 6), while their pixel assertions stay identical. If a pixel assertion needs to change, stop — that is a behavior change.
+- **Over-abstraction risk:** keep the helpers private and specific. If a second module ever needs session-info meaning, that is the moment to extract — one consumer does not justify a new seam.
+- **Scope-creep risk:** ChatInteraction's construction/disposal and `controller.request`'s hand-rolled Scope guard stay untouched (separate candidate); so do the session-roster slice and Group prompt parsing.
 
 ## Acceptance criteria
 
-- One internal policy module is the sole definition of provenance validation, connection-key eligibility, acquisition ownership transition, prompt ownership, and local-only preservation.
-- `group-store.ts` is the sole state/persistence adapter; Group engine/turn/sync code no longer duplicates or reconstructs the provenance rule.
-- The startup sweep remains synchronous, local-only, no-op when unchanged, and ordered before module creation/scheduler/pull.
-- All invariants above pass, including the existing fallback/failure taxonomy, Profile-vs-Gateway distinction, mirror exclusion, and no-cache behavior.
-- Focused tests, full tests, typecheck, build, browser test, and `git diff --check` have real recorded results.
-- `CONTEXT.md` describes the resulting ownership without contradicting the implementation.
+- `$chat.info` and `$chat.pendingPrompt` are semantic types; no component or app-level file imports a compat wire type or casts to read chat state; the five leak sites (the `ContextUsage` call-site cast and its chains at `chat-screen.tsx:254,287–292`, the `PromptCard` chain at `:314`, and the two `title` casts at `:190` and `app.tsx:153`) are gone.
+- `state/conversation.ts` is the only module that knows the gateway's session-info and prompt field names; `gateway/session-runtime.ts` references no state-layer type.
+- All preserved-behavior invariants pass: reduction math, wholesale replacement, usage/question/title chains, respond wire, retitle identity, PWA gating.
+- Phase 1 characterization plus the semantic normalization table are green, the focused suites, full `npm test`, typecheck, build, and the e2e chat flow have real recorded results, and `git diff --check` is clean.
+- `CONTEXT.md` names the Session info snapshot and its owner without contradicting the implementation.
 
 ## Explicit non-goals
 
-- No new storage version or migration rewrite beyond routing existing provenance validation through the new module.
-- No wire or snapshot version change; no session field is added to Gateway mirror payloads.
-- No per-Gateway session cache, Profile-based session key, or session restoration when switching back to a prior Gateway.
-- No change to `4007` stored-id → title → create order, baseline/poll/harvest failure taxonomy, watermarks, holds, room-wide log, prompt payloads, or socket reconnect lifecycle.
-- No broad rewrite of Group feed atoms, member/room key formats, `group-store` persistence generally, GatewayController reconnect flow, or unrelated candidates from the architecture review.
+- No ChatInteraction refactor: command binding, StrictMode disposal choreography, `Conversation.attach` reference normalization, and the `controller.request` scope-guard migration are a separate candidate.
+- No new usage semantics: `context_max`, `context_used`, `context_percent`, and cost fields stay unread; no new UI for usage.
+- No PromptCard presentation changes (titles, masking, disclaimer, buttons) and no change to prompt-response wire shapes.
+- No Group member-turn changes — its prompt cards ride the Group mirror wire and own their parsing, per the glossary.
+- No Transcript, transcript-cache, workspace-navigation, PWA, or GatewayController changes; no session-roster extraction; no new atoms or state fields.
+- No wire-protocol, storage-format, or e2e-harness changes.

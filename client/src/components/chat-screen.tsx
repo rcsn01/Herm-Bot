@@ -17,6 +17,7 @@ import { BotFace } from '~/features/agents/bot-face'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
+import type { SessionUsage } from '~/lib/types'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences } from '~/state/store'
 
@@ -187,7 +188,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
       </div>
 
       {viewport.hasNewMessages && <Button aria-label="New messages. Jump to latest" className="new-messages-button" onClick={viewport.jumpToLatest} size="sm" variant="secondary">New messages <IconArrowDown size={16} /></Button>}
-      {renameSession && chat.storedSessionId && <TextDialog initialValue={(chat.info as { title?: string } | null)?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
+      {renameSession && chat.storedSessionId && <TextDialog initialValue={chat.info?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
       {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard conversation={conversation} />}
       {(sessionActionError || interactionError || chat.error) && <div className="error-banner" role="alert">{sessionActionError || interactionError || chat.error}</div>}
@@ -251,7 +252,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           )}
         </div>
         <div className="composer-meta">
-          {chat.info?.usage && <ContextUsage usage={chat.info.usage as Record<string, unknown>} />}
+          {chat.info?.usage && <ContextUsage usage={chat.info.usage} />}
           <div className={`session-activity ${chat.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
             <span aria-hidden className="status-dot" />
             <span>{chat.running ? 'Hermes is working' : 'Ready'}</span>
@@ -284,10 +285,8 @@ function EmptyChat() {
   )
 }
 
-function ContextUsage({ usage }: { usage: Record<string, unknown> }) {
-  const used = Number(usage.total ?? usage.total_tokens ?? 0)
-  const limit = Number(usage.context_limit ?? usage.max_tokens ?? 0)
-  if (!used && !limit) return null
+function ContextUsage({ usage }: { usage: SessionUsage }) {
+  const { used, limit } = usage
   return <div className="context-usage"><span>Context</span><progress max={limit || used || 1} value={used} /><span>{used.toLocaleString()}{limit ? ` / ${limit.toLocaleString()}` : ''}</span></div>
 }
 
@@ -311,11 +310,10 @@ function PromptCard({ conversation }: { conversation: Conversation }) {
     }
   }
   const title = { approval: 'Approval required', clarify: 'Hermes has a question', secret: 'Secret requested', sudo: 'Administrator password' }[pending.kind]
-  const question = String(pending.payload.question ?? pending.payload.message ?? pending.payload.command ?? '')
   return (
     <form className="prompt-card" onSubmit={event => { event.preventDefault(); void respond(value) }}>
       <strong>{title}</strong>
-      {question && <p>{question}</p>}
+      {pending.question && <p>{pending.question}</p>}
       {pending.kind === 'approval' ? (
         <div className="prompt-actions">
           <Button onClick={() => void conversation.respond('deny', 'deny')} type="button" variant="secondary">Deny</Button>

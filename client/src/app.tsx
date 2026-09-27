@@ -150,7 +150,7 @@ export function App() {
   }
   const botName = displayNameFor({ name: preferences.profile || 'default' })
   /** Chat shows the current session beneath the bot identity. */
-  const headerSubtitle = (chat.info as { title?: string } | null)?.title || 'New conversation'
+  const headerSubtitle = chat.info?.title || 'New conversation'
   const manageAgent = (agent: AgentRosterEntry) => {
     setActionsProfile(agent)
     setProfileNotice(null)

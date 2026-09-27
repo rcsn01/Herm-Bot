@@ -2,8 +2,7 @@ import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
 import { abortError, combineSignals, throwIfAborted } from './abort'
 import { profileKey, profilePath } from './profile-path'
 import type { GatewayPort, GatewayRequestOptions, GatewayTransport, GatewayUploadOptions } from '~/gateway/gateway-port'
-import type { SessionMessage } from '~/compat/hermes-types'
-import type { ChatState } from '~/lib/types'
+import type { SessionMessage, SessionRuntimeInfo } from '~/compat/hermes-types'
 
 interface SessionRPCResponse {
   info?: Record<string, unknown>
@@ -38,7 +37,7 @@ export const TRANSCRIPT_PAGE_SIZE = 80
 
 export interface RuntimeSession {
   contractVersion: number | null
-  info: ChatState['info']
+  info: SessionRuntimeInfo
   rows: SessionMessage[]
   runtimeSessionId: string
   storedSessionId: null | string
@@ -301,7 +300,7 @@ export class SessionRuntime implements GatewayPort {
     const storedSessionId = (response.stored_session_id ?? response.session_key ?? String(info.stored_session_id ?? '')) || null
     return {
       contractVersion: hasVersion ? rawVersion as number : null,
-      info: info as ChatState['info'],
+      info: info as SessionRuntimeInfo,
       rows: response.messages?.slice(-TRANSCRIPT_PAGE_SIZE) ?? [],
       runtimeSessionId: response.session_id,
       storedSessionId

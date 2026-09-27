@@ -85,7 +85,7 @@ beforeEach(() => {
   resetWorkspacePolicy()
   $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
-  $chat.set({ ...emptyChatState(), info: { model: 'provider/test-model', title: 'Current chat' } as never, runtimeSessionId: 'runtime-1' })
+  $chat.set({ ...emptyChatState(), info: { running: false, title: 'Current chat', usage: null }, runtimeSessionId: 'runtime-1' })
   $sessions.set([])
   $profileSwitching.set(false)
 })
