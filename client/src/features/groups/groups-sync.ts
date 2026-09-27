@@ -12,7 +12,14 @@
  */
 
 import { groupMemberKey, groupRoomKey, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
-import { $groupChats, rekeyRoomCoordination, renameRoomState, replaceGroupChats, type GroupChatRoom } from './group-store'
+import {
+  $groupChats,
+  rekeyRoomCoordination,
+  rekeyRoomSessionProvenance,
+  renameRoomState,
+  replaceGroupChats,
+  type GroupChatRoom
+} from './group-store'
 
 const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
@@ -554,13 +561,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       delete rooms[localKey]
     }
 
-    rooms[targetKey] = rekeyRoomCoordination({
+    rooms[targetKey] = rekeyRoomSessionProvenance(rekeyRoomCoordination({
       ...existing,
       name: outputName,
       log: bounded.log,
       watermarks: bounded.watermarks,
-      sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
-      stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
       members: [...members.values()],
       ...(outputRoomId ? { roomId: outputRoomId } : {}),
       image:
@@ -572,7 +577,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
-    })
+    }), [...members.values()])
   }
 
   for (const [key, deletedAt] of Object.entries(remoteNorm.deleted || {})) {

@@ -251,6 +251,7 @@ describe('merge remote into rooms', () => {
       'name:Room': room({
         log: [userEntry('local rich', 10)],
         members: [{ name: 'builder' }],
+        sessionConnectionKey: 'https://gw-a.test',
         sessions: { builder: 'stored-1' },
         watermarks: { 'legacy::builder': 5 },
         epoch: 7,
@@ -466,8 +467,8 @@ describe('merge remote into rooms', () => {
     // A room adopted from the wire starts with no session state of any kind.
     const fresh = merged['name:Fresh']
     expect(fresh.sessionConnectionKey).toBeUndefined()
-    expect(fresh.sessions).toEqual({})
-    expect(fresh.stranded).toEqual({})
+    expect(fresh.sessions).toBeUndefined()
+    expect(fresh.stranded).toBeUndefined()
   })
 
   it('moves coordination state to the qualified key at the merge boundary', () => {
@@ -475,6 +476,7 @@ describe('merge remote into rooms', () => {
       'name:Room': room({
         log: [userEntry('local', 10)],
         members: [{ name: 'research' }],
+        sessionConnectionKey: 'https://gw-a.test',
         sessions: { research: 'stored-1' },
         holds: { research: { at: 1, byMessageId: null, thread: 't1' } },
         stranded: { research: { before: 0, thread: 'legacy' } },
@@ -511,6 +513,7 @@ describe('merge remote into rooms', () => {
       'name:Room': room({
         log: [userEntry('local', 10)],
         members: [{ name: 'research' }],
+        sessionConnectionKey: 'https://gw-a.test',
         sessions: { research: 'stored-1' },
         watermarks: { 't1::research': 3 },
         syncRevision: 1

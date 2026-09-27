@@ -23,8 +23,8 @@ import {
   $groupNeedsYou as $groupNeedsYouState,
   $groupPrompts as $groupPromptsState,
   adoptMirrorRoom,
-  clearGroupSessionProvenanceForConnection,
   mintGroupRoomId,
+  prepareGroupStateForConnection,
   setGroupSyncScheduler,
   uniqueGroupChatName,
   updateGroupChat,
@@ -61,20 +61,6 @@ function handleGatewayTransition(): void {
   $groupChatsState.set(rooms)
 }
 
-/** Drop pending prompt cards whose captured connection is no longer active:
- *  their request ids and runtime session ids belong to that Gateway and can
- *  never be answered here. Same-key cards survive a profile-switch restart. */
-function dropForeignGroupPrompts(connectionKey: string): void {
-  const prompts = $groupPromptsState.get()
-  const next: Record<string, GroupPrompt> = {}
-  let changed = false
-  for (const [key, prompt] of Object.entries(prompts)) {
-    if (prompt.connectionKey === connectionKey) next[key] = prompt
-    else changed = true
-  }
-  if (changed) $groupPromptsState.set(next)
-}
-
 /** Point the engine at this scope's transport and connection key and arm
  *  fresh per-lifecycle member and mirror modules. The scheduler is installed
  *  before the initial pull so local mutations can queue room markers while
@@ -89,8 +75,7 @@ export function startGroupEngine(transport: GroupEngineRequest, connectionKey: s
   // initial pull must not observe the swept state. Same-key state survives a
   // profile-switch restart untouched, and the sweep itself is local — it
   // schedules no mirror write.
-  clearGroupSessionProvenanceForConnection(connectionKey)
-  dropForeignGroupPrompts(connectionKey)
+  prepareGroupStateForConnection(connectionKey)
 
   const turns = createGroupTurnModule(createGroupMemberGateway(transport, connectionKey))
   const driver = createGroupRoundDriver(turns)

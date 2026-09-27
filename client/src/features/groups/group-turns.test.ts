@@ -811,7 +811,10 @@ describe('stale results and lifecycle ownership', () => {
   it('keeps a replacement stranded marker when an older harvest resolves', async () => {
     const oldMarker = { before: 0, thread: 'old' }
     const read = deferred<unknown>()
-    replaceGroupChats({ 'name:Room': room({ stranded: { research: oldMarker }, sessions: { research: 'stored' } }) })
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      stranded: { research: oldMarker }, sessions: { research: 'stored' }
+    }) })
     const { turns } = makeModule(async () => read.promise)
     const harvest = turns.harvest('name:Room', MEMBER)
     await Promise.resolve()
@@ -888,7 +891,10 @@ describe('timeouts and stranded harvest', () => {
   })
 
   it('harvests a legacy zero baseline marker', async () => {
-    replaceGroupChats({ 'name:Room': room({ stranded: { research: 0 }, sessions: { research: 'stored' } }) })
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      stranded: { research: 0 }, sessions: { research: 'stored' }
+    }) })
     const { turns } = makeModule(async () => ({ messages: [{ role: 'assistant', content: 'zero baseline reply' }] }))
     await turns.harvest('name:Room', MEMBER)
     expect($groupChats.get()['name:Room'].stranded?.research).toBeUndefined()
@@ -897,6 +903,7 @@ describe('timeouts and stranded harvest', () => {
 
   it('harvests a late substantive reply into its original thread and watermark', async () => {
     replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
       sessions: { research: 'stored' },
       stranded: { research: { before: 1, thread: 'late-thread' } },
       log: [{ id: 'user', at: 1, from: { kind: 'user', name: 'You' }, text: 'ask', thread: 'late-thread' }]
@@ -921,7 +928,10 @@ describe('timeouts and stranded harvest', () => {
       at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: CONNECTION_KEY,
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
-    replaceGroupChats({ 'name:Room': room({ stranded: { research: marker }, sessions: { research: 'stored' } }) })
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      stranded: { research: marker }, sessions: { research: 'stored' }
+    }) })
     $groupPrompts.set({ 'name:Room::research': oldPrompt })
     const first = makeModule(async () => ({ messages: [], running: false })).turns
     await first.harvest('name:Room', MEMBER)
@@ -930,7 +940,10 @@ describe('timeouts and stranded harvest', () => {
 
     const read = deferred<unknown>()
     const newerMarker = { before: 0, thread: 't2' }
-    replaceGroupChats({ 'name:Room': room({ stranded: { research: newerMarker }, sessions: { research: 'stored' } }) })
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      stranded: { research: newerMarker }, sessions: { research: 'stored' }
+    }) })
     $groupPrompts.set({ 'name:Room::research': oldPrompt })
     const second = makeModule(async () => read.promise).turns
     const harvest = second.harvest('name:Room', MEMBER)
@@ -944,7 +957,10 @@ describe('timeouts and stranded harvest', () => {
   })
 
   it('keeps a stranded marker for unreachable or still-working sessions', async () => {
-    replaceGroupChats({ 'name:Room': room({ stranded: { research: { before: 0, thread: 't1' } } }) })
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      stranded: { research: { before: 0, thread: 't1' } }
+    }) })
     const unreachable = makeModule(async () => { throw new Error('unreachable') }).turns
     await unreachable.harvest('name:Room', MEMBER)
     expect($groupChats.get()['name:Room'].stranded?.research).toBeTruthy()
@@ -972,15 +988,15 @@ describe('timeouts and stranded harvest', () => {
 
     const foreign: string[] = []
     replaceGroupChats({ 'name:Room': room({
-      sessionConnectionKey: 'https://gateway-b.test',
-      sessions: { research: 'foreign-stored' },
+      sessionConnectionKey: CONNECTION_KEY,
+      sessions: {},
       stranded: { research: marker }
     }) })
-    const untagged = makeModule(async (_member, method, params) => {
+    const fallback = makeModule(async (_member, method, params) => {
       if (method === 'session.resume') foreign.push(String(params.session_id))
       return { messages: [{ role: 'assistant', content: 'via title' }] }
     }).turns
-    await untagged.harvest('name:Room', MEMBER)
+    await fallback.harvest('name:Room', MEMBER)
     expect(foreign).toEqual(['Group: Room'])
     expect($groupChats.get()['name:Room'].log.some(entry => entry.text === 'via title')).toBe(true)
   })
@@ -1294,6 +1310,7 @@ describe('drive step and publication', () => {
   it('refuses a stranded member without claiming a token', async () => {
     replaceGroupChats({ 'name:Room': room({
       log: [userEntry('start')],
+      sessionConnectionKey: CONNECTION_KEY,
       stranded: { research: { before: 0, thread: 't1' } },
       sessions: { research: 'stored' }
     }) })
@@ -1365,6 +1382,7 @@ describe('drive step and publication', () => {
     replaceGroupChats({ 'name:Room': room({
       members: [MEMBER, builder],
       log: [userEntry('start')],
+      sessionConnectionKey: CONNECTION_KEY,
       stranded: { research: { before: 0, thread: 't1' } },
       sessions: { research: 'stored' }
     }) })

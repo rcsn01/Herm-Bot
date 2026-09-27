@@ -19,6 +19,20 @@
 import { atom } from 'nanostores'
 
 import { groupMemberKey, groupRoomKey, type GroupMember, type GroupMessage, type GroupMessageAuthor, type GroupRoom } from './group-model'
+import {
+  acquireGroupSessionProvenance,
+  groupPromptBelongsToConnection,
+  groupSessionIdForConnection as policyGroupSessionIdForConnection,
+  groupStrandedMarkerForConnection as policyGroupStrandedMarkerForConnection,
+  normalizeGroupSessionProvenance,
+  rekeyGroupSessionProvenance as policyRekeyGroupSessionProvenance,
+  retainGroupPromptsForConnection,
+  retainGroupSessionProvenanceForConnection,
+  stampGroupPromptConnection,
+  stripGroupSessionProvenance,
+  type GroupPromptConnectionProvenance,
+  type GroupSessionProvenance
+} from './group-session-provenance'
 
 /** Every ceiling a single user send can spend — same values the desktop
  *  ships (group-chat.ts GROUP_CHAT_MAX_*), one block on purpose. */
@@ -44,7 +58,7 @@ export interface GroupHoldStamp {
  *  `sessions` and `stranded` maps together — a stored id is never sent to
  *  another connection, and the tag is dropped with both maps whenever the
  *  connection changes. */
-export interface GroupChatRoom {
+export interface GroupChatRoom extends GroupSessionProvenance {
   epoch: number
   holds?: Record<string, GroupHoldStamp>
   image?: null | string
@@ -53,9 +67,6 @@ export interface GroupChatRoom {
   name: string
   roomId?: null | string
   running: boolean
-  sessionConnectionKey?: null | string
-  sessions?: Record<string, string>
-  stranded?: Record<string, number | { before: number; thread: string }>
   syncRevision?: number
   turn?: null | string
   watermarks: Record<string, number>
@@ -101,13 +112,10 @@ function getRoomEpoch(roomKey: string): number {
 
 /** A pending clarify question / command approval blocking inside a member's
  * session, mirrored into a room card (#90694). */
-export interface GroupPrompt {
+export interface GroupPrompt extends GroupPromptConnectionProvenance {
   at: number
   choices?: string[]
   command?: string
-  /** The Gateway connection whose member session produced this card. A
-   *  connection switch drops the card and `answer` rejects a stale entry. */
-  connectionKey: string
   roomKey: string
   kind: 'approval' | 'clarify'
   member: string
@@ -199,18 +207,15 @@ const STORAGE_KEY_V2 = 'hermes.group-chats.v2'
  *  rollback snapshot — never written, never read once v2 exists. */
 const STORAGE_KEY_V1 = 'hermes.group-chats.v1'
 
-/** Coordination maps are keyed by the current member rows' keys. When a row
- *  gains a connectionId (desktop projection arrives, v1 state loaded), move
- *  its coordination state from the bare key to the qualified key. Never moves
- *  qualified → bare, and never overwrites an existing qualified entry. Also
- *  carries the runtime turn indicator, so a mid-turn enrichment keeps the
- *  stop/interrupt path and the room display on the member's current key. */
+/** Holds and watermarks are keyed by the current member rows' keys. When a
+ *  row gains a connectionId, move them from the bare key to the qualified key;
+ *  never move qualified → bare or overwrite an existing qualified entry.
+ *  Session/stranded maps are re-keyed separately because their owner tag is
+ *  part of that policy. Also carries the runtime turn indicator. */
 export function rekeyRoomCoordination(room: GroupChatRoom): GroupChatRoom {
   const next: GroupChatRoom = {
     ...room,
     holds: { ...(room.holds || {}) },
-    sessions: { ...(room.sessions || {}) },
-    stranded: { ...(room.stranded || {}) },
     watermarks: { ...room.watermarks }
   }
   const hasKey = (map: Record<string, unknown>, key: string): boolean =>
@@ -227,22 +232,6 @@ export function rekeyRoomCoordination(room: GroupChatRoom): GroupChatRoom {
       holds[qualifiedKey] = holds[bareKey]
       delete holds[bareKey]
       next.holds = holds
-      changed = true
-    }
-
-    const sessions = { ...(next.sessions || {}) }
-    if (!hasKey(sessions, qualifiedKey) && hasKey(sessions, bareKey)) {
-      sessions[qualifiedKey] = sessions[bareKey]
-      delete sessions[bareKey]
-      next.sessions = sessions
-      changed = true
-    }
-
-    const stranded = { ...(next.stranded || {}) }
-    if (!hasKey(stranded, qualifiedKey) && hasKey(stranded, bareKey)) {
-      stranded[qualifiedKey] = stranded[bareKey]
-      delete stranded[bareKey]
-      next.stranded = stranded
       changed = true
     }
 
@@ -287,75 +276,13 @@ function rekeyRoomMapKeys(rooms: Record<string, GroupChatRoom>): Record<string, 
   return next
 }
 
-// --- Session provenance — the narrow sanitizer for the connection-scoped
-// session-id and stranded-marker maps. Not a general localStorage schema.
-
-interface SessionProvenance {
-  connectionKey: string
-  sessions: Record<string, string>
-  stranded: Record<string, number | { before: number; thread: string }>
-}
-
-/** A usable connection tag is a non-empty string. */
-function usableSessionConnectionKey(value: unknown): string | undefined {
-  return typeof value === 'string' && value ? value : undefined
-}
-
-/** Validate one room's session provenance: the connection key that owns the
- *  room's session-id and stranded-marker maps, and both nested maps. Absent
- *  maps read as empty; opaque ids are preserved as written. A malformed tag
- *  or map invalidates the whole trio — callers drop all three fields together
- *  and keep the room's other fields. */
-function sessionProvenanceOf(room: GroupChatRoom): SessionProvenance | null {
-  const connectionKey = usableSessionConnectionKey(room.sessionConnectionKey)
-  if (!connectionKey) return null
-
-  const sessions: Record<string, string> = {}
-  if (room.sessions !== undefined) {
-    if (typeof room.sessions !== 'object' || room.sessions === null || Array.isArray(room.sessions)) return null
-    for (const [memberKey, sessionId] of Object.entries(room.sessions)) {
-      if (!memberKey || typeof sessionId !== 'string' || !sessionId) return null
-      sessions[memberKey] = sessionId
-    }
-  }
-
-  const stranded: Record<string, number | { before: number; thread: string }> = {}
-  if (room.stranded !== undefined) {
-    if (typeof room.stranded !== 'object' || room.stranded === null || Array.isArray(room.stranded)) return null
-    for (const [memberKey, marker] of Object.entries(room.stranded)) {
-      if (!memberKey) return null
-      if (typeof marker === 'number') {
-        if (!Number.isFinite(marker) || marker < 0) return null
-        stranded[memberKey] = marker
-        continue
-      }
-      if (typeof marker !== 'object' || marker === null || Array.isArray(marker)) return null
-      const before = (marker as { before?: unknown }).before
-      const thread = (marker as { thread?: unknown }).thread
-      if (typeof before !== 'number' || !Number.isFinite(before) || before < 0) return null
-      if (typeof thread !== 'string' || !thread) return null
-      stranded[memberKey] = { before, thread }
-    }
-  }
-
-  return { connectionKey, sessions, stranded }
-}
-
-/** Drop every session-provenance field from a room, leaving all other fields
- *  (even a legacy record carrying an unexpected tag) untouched. */
-function withoutSessionProvenance(room: GroupChatRoom): GroupChatRoom {
-  const next = { ...room }
-  delete next.sessionConnectionKey
-  delete next.sessions
-  delete next.stranded
-  return next
-}
+// --- Session provenance persistence and migration adapters. ------------------
 
 /** v1-v3 predate the provenance contract: their ids and stranded markers have
  *  no recorded Gateway owner, so the whole trio is discarded while each
  *  room's durable content survives for the existing re-key passes. */
 function stripLegacySessionProvenance(rooms: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
-  return Object.fromEntries(Object.entries(rooms).map(([key, room]) => [key, withoutSessionProvenance(room)]))
+  return Object.fromEntries(Object.entries(rooms).map(([key, room]) => [key, stripGroupSessionProvenance(room)]))
 }
 
 /** Rehydrate v4 rooms with validated provenance: malformed provenance drops
@@ -363,10 +290,10 @@ function stripLegacySessionProvenance(rooms: Record<string, GroupChatRoom>): Rec
 function rehydrateSessionProvenance(rooms: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
   const next: Record<string, GroupChatRoom> = {}
   for (const [key, room] of Object.entries(rooms)) {
-    const provenance = sessionProvenanceOf(room)
+    const provenance = normalizeGroupSessionProvenance(room)
     next[key] = provenance
-      ? { ...room, sessionConnectionKey: provenance.connectionKey, sessions: provenance.sessions, stranded: provenance.stranded }
-      : withoutSessionProvenance(room)
+      ? { ...room, ...provenance }
+      : stripGroupSessionProvenance(room)
   }
   return next
 }
@@ -450,7 +377,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChatRoom>): Recor
     // Keep it locally; the gateway projection still omits empty rooms until
     // the first message gives other clients something to mirror.
     if (!Array.isArray(room.log) || (room.log.length === 0 && (!room.roomId || members.length === 0))) continue
-    const provenance = sessionProvenanceOf(room)
+    const provenance = normalizeGroupSessionProvenance(room)
     durable[key] = {
       epoch: room.epoch || 0,
       holds: room.holds || {},
@@ -460,9 +387,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChatRoom>): Recor
       name: room.name,
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       running: false,
-      ...(provenance
-        ? { sessionConnectionKey: provenance.connectionKey, sessions: provenance.sessions, stranded: provenance.stranded }
-        : {}),
+      ...(provenance || {}),
       syncRevision: Math.max(0, Number(room.syncRevision || 0)),
       turn: null,
       watermarks: room.watermarks || {}
@@ -532,36 +457,94 @@ export function replaceGroupChats(rooms: Record<string, GroupChatRoom>): void {
   persistRooms(rooms)
 }
 
-/** Clear every room's session provenance that does not belong to
- *  `connectionKey` — the connection-switch sweep the Group engine runs
- *  before arming a new lifecycle. A stored plumbing-session id and its
- *  stranded marker are wire-targeted at one Gateway connection, so a room
- *  whose tag is missing or names another connection loses all three fields
- *  together; every other room field — the shared log, watermarks, holds,
- *  epoch, turn — survives untouched. Local-only: replaces and persists the
- *  store once without scheduling a mirror write, and is a no-op (no notify,
- *  no persist) when every room already belongs to the requested connection. */
-export function clearGroupSessionProvenanceForConnection(connectionKey: string): void {
-  const all = $groupChats.get()
-  const next: Record<string, GroupChatRoom> = {}
-  let changed = false
-  for (const [key, room] of Object.entries(all)) {
-    // The member-key re-key materializes empty maps; only a tag or a non-empty
-    // map is session-bound data worth sweeping.
-    const carriesSessionState =
-      Boolean(room.sessionConnectionKey) ||
-      Boolean(room.sessions && Object.keys(room.sessions).length) ||
-      Boolean(room.stranded && Object.keys(room.stranded).length)
-    if (room.sessionConnectionKey === connectionKey || !carriesSessionState) {
-      next[key] = room
-      continue
-    }
-    next[key] = withoutSessionProvenance(room)
-    changed = true
+/** Read an id only when the complete room trio is valid and owned by the
+ *  caller's captured Gateway connection. */
+export function storedGroupSessionId(
+  room: GroupChatRoom,
+  connectionKey: string,
+  memberKey: string
+): string | undefined {
+  return policyGroupSessionIdForConnection(room, connectionKey, memberKey)
+}
+
+/** Read a stranded marker only from the room's owning Gateway. */
+export function groupStrandedMarker(
+  room: GroupChatRoom,
+  connectionKey: string,
+  memberKey: string
+): number | { before: number; thread: string } | undefined {
+  return policyGroupStrandedMarkerForConnection(room, connectionKey, memberKey)
+}
+
+/** Apply a successful resume/create as one room update, preserving the usual
+ *  persistence and mirror-scheduling behavior of updateGroupChat. */
+export function recordGroupSessionAcquisition(
+  roomKey: string,
+  connectionKey: string,
+  memberKey: string,
+  storedId?: unknown
+): GroupChatRoom {
+  return updateGroupChat(roomKey, room => ({
+    ...stripGroupSessionProvenance(room),
+    ...acquireGroupSessionProvenance(room, connectionKey, memberKey, storedId)
+  }))
+}
+
+/** Re-key only the local session-provenance maps; general coordination
+ *  re-keying remains the responsibility of rekeyRoomCoordination. */
+export function rekeyRoomSessionProvenance(
+  room: GroupChatRoom,
+  members: readonly GroupMember[] = room.members
+): GroupChatRoom {
+  return policyRekeyGroupSessionProvenance(room, members)
+}
+
+export function groupPromptOwnedByConnection(prompt: unknown, connectionKey: string): boolean {
+  return groupPromptBelongsToConnection(prompt, connectionKey)
+}
+
+/** Store a prompt after stamping its captured connection owner. */
+export function putGroupPromptForConnection(
+  key: string,
+  prompt: Omit<GroupPrompt, 'connectionKey'>,
+  connectionKey: string
+): GroupPrompt {
+  const stamped = stampGroupPromptConnection(prompt, connectionKey)
+  $groupPrompts.set({ ...$groupPrompts.get(), [key]: stamped })
+  return stamped
+}
+
+/** Delete only the request observed by the caller; a newer prompt survives. */
+export function removeGroupPromptForConnection(key: string, requestId: string | null, connectionKey: string): boolean {
+  const all = $groupPrompts.get()
+  const current = all[key]
+  if (current?.requestId !== requestId || !groupPromptBelongsToConnection(current, connectionKey)) return false
+  const next = { ...all }
+  delete next[key]
+  $groupPrompts.set(next)
+  return true
+}
+
+/** Synchronously prepare both local ownership stores before a new engine
+ *  lifecycle is created. Room persistence is local-only and happens at most
+ *  once; matching/empty state preserves atom identity and does not notify. */
+export function prepareGroupStateForConnection(connectionKey: string): void {
+  const rooms = $groupChats.get()
+  const nextRooms: Record<string, GroupChatRoom> = {}
+  let roomsChanged = false
+  for (const [key, room] of Object.entries(rooms)) {
+    const retained = retainGroupSessionProvenanceForConnection(room, connectionKey)
+    nextRooms[key] = retained
+    if (retained !== room) roomsChanged = true
   }
-  if (!changed) return
-  $groupChats.set(next)
-  persistRooms(next)
+  if (roomsChanged) {
+    $groupChats.set(nextRooms)
+    persistRooms(nextRooms)
+  }
+
+  const prompts = $groupPrompts.get()
+  const retainedPrompts = retainGroupPromptsForConnection(prompts, connectionKey)
+  if (retainedPrompts !== prompts) $groupPrompts.set(retainedPrompts)
 }
 
 /** Byte-identical member echo guard (#93127): a residual double-append lands

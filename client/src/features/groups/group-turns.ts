@@ -27,9 +27,15 @@ import {
   $groupPrompts,
   GROUP_CHAT_HISTORY_LIMIT,
   appendGroupChatEntry,
+  groupPromptOwnedByConnection,
   groupSpeakerLabel,
+  groupStrandedMarker,
   groupThreadOf,
+  putGroupPromptForConnection,
   recordGroupActivity,
+  recordGroupSessionAcquisition,
+  removeGroupPromptForConnection,
+  storedGroupSessionId,
   updateGroupChat,
   type GroupChatRoom,
   type GroupPrompt
@@ -344,8 +350,8 @@ function syncGroupClarify(
   roomKey: string,
   member: GroupMember,
   state: GroupSessionSnapshot | null,
-  expectedRequestId: null | string | undefined = undefined,
-  connectionKey = ''
+  expectedRequestId: null | string | undefined,
+  connectionKey: string
 ): boolean {
   const key = `${roomKey}::${groupMemberKey(member)}`
   const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
@@ -353,28 +359,22 @@ function syncGroupClarify(
 
   const pending = clarify || approval
   const requestId = pending?.request_id || null
-  const all = $groupPrompts.get()
-  const current = all[key]
+  const current = $groupPrompts.get()[key]
 
   if (!requestId) {
     // A poll may be older than a newer request already mirrored for this
     // member. Only clear the request this operation actually observed.
-    if (current && expectedRequestId !== undefined && current.requestId === expectedRequestId) {
-      const next = { ...all }
-      delete next[key]
-      $groupPrompts.set(next)
-    }
+    if (expectedRequestId !== undefined) removeGroupPromptForConnection(key, expectedRequestId, connectionKey)
     return false
   }
 
   // Same request already mirrored — keep the object identity so the card
-  // doesn't lose its draft to a re-render.
-  if (current?.requestId === requestId) return true
+  // doesn't lose its draft to a re-render. A foreign card is replaced below.
+  if (current?.requestId === requestId && groupPromptOwnedByConnection(current, connectionKey)) return true
 
   const base = {
     requestId,
     roomKey,
-    connectionKey,
     member: member.name,
     memberKey: groupMemberKey(member),
     // approval.respond keys on the session, not just the request — carry the
@@ -383,34 +383,32 @@ function syncGroupClarify(
     at: Date.now()
   }
 
-  $groupPrompts.set({
-    ...all,
-    [key]: clarify
-      ? {
-          ...base,
-          kind: 'clarify' as const,
-          question: typeof clarify.question === 'string' ? clarify.question : '',
-          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(clarify.multi_select),
-          // Batch clarifies carry `questions`; the room card answers them
-          // one wire call per question, mirroring the 1:1 batch contract.
-          questions: Array.isArray(clarify.questions) ? clarify.questions : null
-        }
-      : {
-          ...base,
-          kind: 'approval' as const,
-          question: typeof approval.description === 'string' ? approval.description : '',
-          command: typeof approval.command === 'string' ? approval.command : '',
-          // The server precomputes the choice set from allow_permanent
-          // (once/session/always/deny); fall back to the minimal pair.
-          choices:
-            Array.isArray(approval.choices) && approval.choices.length
-              ? approval.choices.filter(c => typeof c === 'string' && c)
-              : ['once', 'deny'],
-          multiSelect: false,
-          questions: null
-        }
-  })
+  const prompt = clarify
+    ? {
+        ...base,
+        kind: 'clarify' as const,
+        question: typeof clarify.question === 'string' ? clarify.question : '',
+        choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
+        multiSelect: Boolean(clarify.multi_select),
+        // Batch clarifies carry `questions`; the room card answers them
+        // one wire call per question, mirroring the 1:1 batch contract.
+        questions: Array.isArray(clarify.questions) ? clarify.questions : null
+      }
+    : {
+        ...base,
+        kind: 'approval' as const,
+        question: typeof approval.description === 'string' ? approval.description : '',
+        command: typeof approval.command === 'string' ? approval.command : '',
+        // The server precomputes the choice set from allow_permanent
+        // (once/session/always/deny); fall back to the minimal pair.
+        choices:
+          Array.isArray(approval.choices) && approval.choices.length
+            ? approval.choices.filter(c => typeof c === 'string' && c)
+            : ['once', 'deny'],
+        multiSelect: false,
+        questions: null
+      }
+  putGroupPromptForConnection(key, prompt, connectionKey)
   // A blocked member is a question for the human — badge the room.
   $groupNeedsYou.set({ ...$groupNeedsYou.get(), [roomKey]: true })
 
@@ -427,16 +425,6 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
   /** The one owner of the per-member watermark key format. */
   const watermarkKey = (thread: string, memberKey: string): string => `${thread}::${memberKey}`
-
-  /** The one owner of stored-id eligibility: a room's session map is usable
-   *  only while it is tagged with this lifecycle's captured connection key.
-   *  A mismatched or untagged map is invisible here — the caller resumes by
-   *  the room title instead. */
-  const scopedStoredSessionId = (room: GroupChatRoom, memberKey: string): string | undefined => {
-    if (room.sessionConnectionKey !== gateway.connectionKey) return undefined
-    const stored = room.sessions?.[memberKey]
-    return typeof stored === 'string' && stored ? stored : undefined
-  }
 
   const claimToken = (roomKey: string, member: GroupMember): number => {
     const token = ++nextToken
@@ -533,7 +521,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     // desktop addresses plumbing sessions as `Group: <name>`); for an
     // id-keyed room the durable id IS the desktop's title, so roomId wins.
     const title = `Group: ${room.roomId || room.name}`
-    const known = scopedStoredSessionId(room, capture.memberKey)
+    const known = storedGroupSessionId(room, gateway.connectionKey, capture.memberKey)
 
     for (const target of [known, title]) {
       if (!target) continue
@@ -550,11 +538,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
             // Tag the room's session provenance with the connection that
             // acquired this runtime session, even when the Gateway returned no
             // stored id — the tag scopes the room's whole session map.
-            updateGroupChat(capture.roomKey, (current: GroupChatRoom) => {
-              current.sessionConnectionKey = gateway.connectionKey
-              if (stored) current.sessions = { ...(current.sessions || {}), [capture.memberKey]: stored }
-              return current
-            })
+            recordGroupSessionAcquisition(capture.roomKey, gateway.connectionKey, capture.memberKey, stored)
           }
           return { runtime: res.session_id, stored }
         }
@@ -584,11 +568,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     if (runtime && owns(capture)) {
       // Same tagging rule as a resumed session: the creating connection now
       // owns the room's session map, stored id or not.
-      updateGroupChat(capture.roomKey, (r: GroupChatRoom) => {
-        r.sessionConnectionKey = gateway.connectionKey
-        if (stored) r.sessions = { ...(r.sessions || {}), [capture.memberKey]: stored }
-        return r
-      })
+      recordGroupSessionAcquisition(capture.roomKey, gateway.connectionKey, capture.memberKey, stored)
     }
 
     return { runtime, stored }
@@ -829,7 +809,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     // before any token claim, so the refusal never invalidates an in-flight
     // harvest. (The driver's per-loop pre-filters moved here: one invariant,
     // one owner. A legacy numeric marker 0 is a valid marker.)
-    if (room.stranded && Object.prototype.hasOwnProperty.call(room.stranded, memberKey)) {
+    if (groupStrandedMarker(room, gateway.connectionKey, memberKey) !== undefined) {
       return { abandoned: false, spoke: false, stop: false }
     }
 
@@ -891,7 +871,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     marker: number | { before: number; thread?: string },
     markerVersion: number
   ): boolean => {
-    const current = roomOf(roomKey).stranded?.[groupMemberKey(member)]
+    const current = groupStrandedMarker(roomOf(roomKey), gateway.connectionKey, groupMemberKey(member))
     if (current !== marker) {
       if (typeof marker !== 'number' || current !== marker) return false
     }
@@ -903,7 +883,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
     const memberKey = groupMemberKey(member)
     const room = roomOf(roomKey)
-    const marker = room.stranded?.[memberKey]
+    const marker = groupStrandedMarker(room, gateway.connectionKey, memberKey)
     const strandedBefore = typeof marker === 'number' ? marker : marker?.before
     const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
     if (typeof strandedBefore !== 'number' || marker === undefined) return
@@ -931,7 +911,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       // Harvest reads a stored id only under a matching connection tag; with
       // none, the room title is the only eligible target.
       state = (await memberRequest(capture, 'session.resume', {
-        session_id: scopedStoredSessionId(room, memberKey) || `Group: ${room.roomId || room.name}`
+        session_id: storedGroupSessionId(room, gateway.connectionKey, memberKey) || `Group: ${room.roomId || room.name}`
       })) as GroupSessionSnapshot
     } catch {
       return // source unreachable — leave the marker for the next boundary
@@ -1002,7 +982,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
   const harvestRoom = async (roomKey: string, members: readonly GroupMember[]): Promise<void> => {
     for (const member of members) {
       const room = roomOf(roomKey)
-      if (room.stranded && Object.prototype.hasOwnProperty.call(room.stranded, groupMemberKey(member))) {
+      if (groupStrandedMarker(room, gateway.connectionKey, groupMemberKey(member)) !== undefined) {
         await harvest(roomKey, member)
       }
     }
@@ -1016,7 +996,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     if (!live()) return
     // A card produced by another connection's lifecycle can never be answered
     // here: its request id and runtime session id belong to that Gateway.
-    if (entry.connectionKey !== gateway.connectionKey) return
+    if (!groupPromptOwnedByConnection(entry, gateway.connectionKey)) return
 
     const send = async (method: string, params: Record<string, unknown>): Promise<boolean> => {
       if (!live()) return false
@@ -1053,12 +1033,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
     if (!live()) return
     const key = `${entry.roomKey}::${entry.memberKey}`
-    const all = $groupPrompts.get()
-    if (all[key]?.requestId === entry.requestId) {
-      const next = { ...all }
-      delete next[key]
-      $groupPrompts.set(next)
-    }
+    removeGroupPromptForConnection(key, entry.requestId, gateway.connectionKey)
   }
 
   /** Best-effort remote interrupt of the current speaker's session. The
@@ -1067,7 +1042,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
    *  the driver's local stop state as the only leg. */
   const interrupt = async (roomKey: string, member: GroupMember): Promise<void> => {
     if (!live()) return
-    const storedSessionId = scopedStoredSessionId(roomOf(roomKey), groupMemberKey(member))
+    const storedSessionId = storedGroupSessionId(roomOf(roomKey), gateway.connectionKey, groupMemberKey(member))
     if (!storedSessionId) return
     await gateway.request(member, 'session.interrupt', { session_id: storedSessionId })
   }
