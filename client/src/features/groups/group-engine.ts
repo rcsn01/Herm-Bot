@@ -23,6 +23,7 @@ import {
   $groupNeedsYou as $groupNeedsYouState,
   $groupPrompts as $groupPromptsState,
   adoptMirrorRoom,
+  clearGroupSessionProvenanceForConnection,
   mintGroupRoomId,
   setGroupSyncScheduler,
   uniqueGroupChatName,
@@ -60,13 +61,38 @@ function handleGatewayTransition(): void {
   $groupChatsState.set(rooms)
 }
 
-/** Point the engine at this scope's transport and arm fresh per-lifecycle
- *  member and mirror modules. The scheduler is installed before the initial
- *  pull so local mutations can queue room markers while hydration is in flight. */
-export function startGroupEngine(transport: GroupEngineRequest): void {
+/** Drop pending prompt cards whose captured connection is no longer active:
+ *  their request ids and runtime session ids belong to that Gateway and can
+ *  never be answered here. Same-key cards survive a profile-switch restart. */
+function dropForeignGroupPrompts(connectionKey: string): void {
+  const prompts = $groupPromptsState.get()
+  const next: Record<string, GroupPrompt> = {}
+  let changed = false
+  for (const [key, prompt] of Object.entries(prompts)) {
+    if (prompt.connectionKey === connectionKey) next[key] = prompt
+    else changed = true
+  }
+  if (changed) $groupPromptsState.set(next)
+}
+
+/** Point the engine at this scope's transport and connection key and arm
+ *  fresh per-lifecycle member and mirror modules. The scheduler is installed
+ *  before the initial pull so local mutations can queue room markers while
+ *  hydration is in flight. */
+export function startGroupEngine(transport: GroupEngineRequest, connectionKey: string): void {
   if (activeMirror || activeTurns || activeDriver) stopGroupEngine()
 
-  const turns = createGroupTurnModule(createGroupMemberGateway(transport))
+  // Session ids, stranded markers, and prompt cards are wire-targeted at the
+  // captured connection. Sweep every mismatched or untagged one before the
+  // new modules exist: an immediately opened room must not be able to send a
+  // previous connection's stored id or harvest its stranded marker, and the
+  // initial pull must not observe the swept state. Same-key state survives a
+  // profile-switch restart untouched, and the sweep itself is local — it
+  // schedules no mirror write.
+  clearGroupSessionProvenanceForConnection(connectionKey)
+  dropForeignGroupPrompts(connectionKey)
+
+  const turns = createGroupTurnModule(createGroupMemberGateway(transport, connectionKey))
   const driver = createGroupRoundDriver(turns)
   const mirror = createGroupMirror(createGroupMirrorGateway(transport))
 

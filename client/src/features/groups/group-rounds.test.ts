@@ -184,7 +184,7 @@ describe('round lifecycle and guards', () => {
     await driver.stopGroupThread('name:Stop', 't1', [connected])
     expect($groupChats.get()['name:Stop']).toMatchObject({ epoch: 3, running: false, turn: null })
     expect($groupChats.get()['name:Stop'].holds?.['gw-2::research']).toBeDefined()
-    expect(interrupt).toHaveBeenCalledWith(connected, 'stored')
+    expect(interrupt).toHaveBeenCalledWith('name:Stop', connected)
   })
 
   it('misses the interrupt on a stale turn key', async () => {
@@ -213,7 +213,7 @@ describe('round lifecycle and guards', () => {
           : { messages: [{ role: 'assistant', content: 'another thought @everyone keep going' }] }
       }
       return {}
-    })
+    }, 'gw-current')
     turns = createGroupTurnModule(gateway)
     driver = createGroupRoundDriver(turns)
     driver.sendToGroupChat('name:Loud', [{ name: 'research' }, { name: 'builder' }], 'go wild', 't1')
@@ -250,7 +250,7 @@ describe('round lifecycle and guards', () => {
     await driver.stopGroupThread('name:Stop', 't1', [{ name: 'research' }])
     expect($groupChats.get()['name:Stop']).toMatchObject({ epoch: 3, running: false, turn: null })
     expect($groupChats.get()['name:Stop'].holds?.research).toBeDefined()
-    expect(interrupt).toHaveBeenCalledWith({ name: 'research' }, 'stored')
+    expect(interrupt).toHaveBeenCalledWith('name:Stop', { name: 'research' })
   })
 
   it('does not start a delayed send after driver deactivation', async () => {
@@ -261,7 +261,7 @@ describe('round lifecycle and guards', () => {
 
   it('keeps local stop state when the captured turn module is already stopped', async () => {
     const transport = vi.fn(async () => ({}))
-    const stoppedTurns = createGroupTurnModule(createGroupMemberGateway(transport))
+    const stoppedTurns = createGroupTurnModule(createGroupMemberGateway(transport, 'gw-current'))
     stoppedTurns.stop()
     driver = createGroupRoundDriver(stoppedTurns)
     replaceGroupChats({ 'name:Stopped': room({ name: 'Stopped', epoch: 2, running: true, turn: 'research', sessions: { research: 'stored' }, members: [{ name: 'research' }] }) })

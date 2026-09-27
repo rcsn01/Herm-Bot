@@ -406,11 +406,12 @@ export function createGroupRoundDriver(turns: GroupTurnModule): GroupRoundDriver
     recordGroupActivity(roomKey, { kind: 'stopped', member: 'You', thread: thread || null })
 
     const onTurn = turnName ? roster.find(member => groupMemberKey(member) === turnName) : null
-    const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
 
-    if (onTurn && sessionId) {
+    if (onTurn) {
       try {
-        await turns.interrupt(onTurn, sessionId)
+        // The turn module resolves the speaker's stored id for the current
+        // connection; an untagged or foreign one sends no wire request.
+        await turns.interrupt(roomKey, onTurn)
       } catch {
         /* best-effort — the epoch/hold legs already stopped the room */
       }

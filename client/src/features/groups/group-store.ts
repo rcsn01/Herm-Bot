@@ -6,7 +6,9 @@
  * watermarks, member plumbing-session ids, stop holds, stranded markers,
  * and the room epoch never ride the wire — they are local coordination
  * state, persisted to localStorage like the desktop persists to plugin
- * storage.
+ * storage. The session-id and stranded-marker maps carry the Gateway
+ * connection that owns them (`sessionConnectionKey`); a connection change
+ * clears that trio rather than reusing another connection's ids.
  *
  * This file also hosts the engine's runtime-only feed atoms (room activity,
  * pending prompts) and the shared raw transport type lives in group-model —
@@ -37,7 +39,11 @@ export interface GroupHoldStamp {
 }
 
 /** The room record as the send engine handles it. `sessions` maps memberKey
- *  → durable plumbing-session id; `watermarks` are per `${thread}::${member}`. */
+ *  → durable plumbing-session id; `watermarks` are per `${thread}::${member}`.
+ *  `sessionConnectionKey` names the one Gateway connection that owns the
+ *  `sessions` and `stranded` maps together — a stored id is never sent to
+ *  another connection, and the tag is dropped with both maps whenever the
+ *  connection changes. */
 export interface GroupChatRoom {
   epoch: number
   holds?: Record<string, GroupHoldStamp>
@@ -47,6 +53,7 @@ export interface GroupChatRoom {
   name: string
   roomId?: null | string
   running: boolean
+  sessionConnectionKey?: null | string
   sessions?: Record<string, string>
   stranded?: Record<string, number | { before: number; thread: string }>
   syncRevision?: number
@@ -98,6 +105,9 @@ export interface GroupPrompt {
   at: number
   choices?: string[]
   command?: string
+  /** The Gateway connection whose member session produced this card. A
+   *  connection switch drops the card and `answer` rejects a stale entry. */
+  connectionKey: string
   roomKey: string
   kind: 'approval' | 'clarify'
   member: string
@@ -173,7 +183,13 @@ function trimGroupChatLog(log: GroupMessage[], watermarks: Record<string, number
   return { log: log.slice(drop), watermarks: trimmed }
 }
 
-const STORAGE_KEY = 'hermes.group-chats.v3'
+const STORAGE_KEY = 'hermes.group-chats.v4'
+
+/** The pre-provenance copy: read only when v4 is absent, its session ids and
+ *  stranded markers have no recorded Gateway owner, so they are discarded at
+ *  load while the rest of each room survives. Left in place as a rollback
+ *  snapshot — never written, never read once v4 exists. */
+const STORAGE_KEY_V3 = 'hermes.group-chats.v3'
 
 /** The pre-re-key copy: read only when v3 is absent, left in place as a
  *  rollback snapshot — never written, never read once v3 exists. */
@@ -271,37 +287,139 @@ function rekeyRoomMapKeys(rooms: Record<string, GroupChatRoom>): Record<string, 
   return next
 }
 
+// --- Session provenance — the narrow sanitizer for the connection-scoped
+// session-id and stranded-marker maps. Not a general localStorage schema.
+
+interface SessionProvenance {
+  connectionKey: string
+  sessions: Record<string, string>
+  stranded: Record<string, number | { before: number; thread: string }>
+}
+
+/** A usable connection tag is a non-empty string. */
+function usableSessionConnectionKey(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+/** Validate one room's session provenance: the connection key that owns the
+ *  room's session-id and stranded-marker maps, and both nested maps. Absent
+ *  maps read as empty; opaque ids are preserved as written. A malformed tag
+ *  or map invalidates the whole trio — callers drop all three fields together
+ *  and keep the room's other fields. */
+function sessionProvenanceOf(room: GroupChatRoom): SessionProvenance | null {
+  const connectionKey = usableSessionConnectionKey(room.sessionConnectionKey)
+  if (!connectionKey) return null
+
+  const sessions: Record<string, string> = {}
+  if (room.sessions !== undefined) {
+    if (typeof room.sessions !== 'object' || room.sessions === null || Array.isArray(room.sessions)) return null
+    for (const [memberKey, sessionId] of Object.entries(room.sessions)) {
+      if (!memberKey || typeof sessionId !== 'string' || !sessionId) return null
+      sessions[memberKey] = sessionId
+    }
+  }
+
+  const stranded: Record<string, number | { before: number; thread: string }> = {}
+  if (room.stranded !== undefined) {
+    if (typeof room.stranded !== 'object' || room.stranded === null || Array.isArray(room.stranded)) return null
+    for (const [memberKey, marker] of Object.entries(room.stranded)) {
+      if (!memberKey) return null
+      if (typeof marker === 'number') {
+        if (!Number.isFinite(marker) || marker < 0) return null
+        stranded[memberKey] = marker
+        continue
+      }
+      if (typeof marker !== 'object' || marker === null || Array.isArray(marker)) return null
+      const before = (marker as { before?: unknown }).before
+      const thread = (marker as { thread?: unknown }).thread
+      if (typeof before !== 'number' || !Number.isFinite(before) || before < 0) return null
+      if (typeof thread !== 'string' || !thread) return null
+      stranded[memberKey] = { before, thread }
+    }
+  }
+
+  return { connectionKey, sessions, stranded }
+}
+
+/** Drop every session-provenance field from a room, leaving all other fields
+ *  (even a legacy record carrying an unexpected tag) untouched. */
+function withoutSessionProvenance(room: GroupChatRoom): GroupChatRoom {
+  const next = { ...room }
+  delete next.sessionConnectionKey
+  delete next.sessions
+  delete next.stranded
+  return next
+}
+
+/** v1-v3 predate the provenance contract: their ids and stranded markers have
+ *  no recorded Gateway owner, so the whole trio is discarded while each
+ *  room's durable content survives for the existing re-key passes. */
+function stripLegacySessionProvenance(rooms: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
+  return Object.fromEntries(Object.entries(rooms).map(([key, room]) => [key, withoutSessionProvenance(room)]))
+}
+
+/** Rehydrate v4 rooms with validated provenance: malformed provenance drops
+ *  its three fields without discarding the rest of the room. */
+function rehydrateSessionProvenance(rooms: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
+  const next: Record<string, GroupChatRoom> = {}
+  for (const [key, room] of Object.entries(rooms)) {
+    const provenance = sessionProvenanceOf(room)
+    next[key] = provenance
+      ? { ...room, sessionConnectionKey: provenance.connectionKey, sessions: provenance.sessions, stranded: provenance.stranded }
+      : withoutSessionProvenance(room)
+  }
+  return next
+}
+
 function loadPersistedRooms(): Record<string, GroupChatRoom> {
   try {
+    // v4 is the only key written from here on. A PRESENT but malformed value
+    // (empty string, unreadable JSON, null, or an array root) loads no rooms
+    // and never falls back — a legacy key must not resurrect stale rooms.
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
+    if (raw !== null) {
       const parsed = JSON.parse(raw) as Record<string, GroupChatRoom>
-      // v3 loading runs no migration — the pass already executed before this
-      // copy was written.
-      return typeof parsed !== 'object' || parsed === null ? {} : parsed
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+      // v4 loading runs no migration — the pass already executed before this
+      // copy was written; only session provenance is revalidated.
+      return rehydrateSessionProvenance(parsed)
+    }
+    // v3 is the pre-provenance copy: strip its session-bound fields, keep the
+    // durable room-key shape, and leave v3 in place — v4 is written on the
+    // next persist.
+    const v3 = localStorage.getItem(STORAGE_KEY_V3)
+    if (v3) {
+      const parsed = JSON.parse(v3) as Record<string, GroupChatRoom>
+      if (typeof parsed !== 'object' || parsed === null) return {}
+      return stripLegacySessionProvenance(parsed)
     }
     // v2 is the pre-re-key copy: its coordination state is guaranteed
     // post-member-re-key (the only build that wrote v2 always ran
-    // rekeyRoomCoordination at load), so only the map re-key runs. v2 stays
-    // in place as the rollback snapshot — v3 is written on the next persist.
+    // rekeyRoomCoordination at load), so only the map re-key runs after the
+    // session fields are stripped. v2 stays in place as the rollback
+    // snapshot — v4 is written on the next persist.
     const v2 = localStorage.getItem(STORAGE_KEY_V2)
     if (v2) {
       const parsed = JSON.parse(v2) as Record<string, GroupChatRoom>
       if (typeof parsed !== 'object' || parsed === null) return {}
-      return rekeyRoomMapKeys(parsed)
+      return rekeyRoomMapKeys(stripLegacySessionProvenance(parsed))
     }
     // v1 is the pre-migration copy: run the durable shape guards, carry the
     // coordination state to the current member keys, re-key the map to
-    // durable room keys, and keep v1 in place — v3 is written on the next
+    // durable room keys, and keep v1 in place — v4 is written on the next
     // persist.
     const v1 = localStorage.getItem(STORAGE_KEY_V1)
     if (!v1) return {}
     const parsed = JSON.parse(v1) as Record<string, GroupChatRoom>
     if (typeof parsed !== 'object' || parsed === null) return {}
-    const guarded = durableGroupChatRooms(parsed)
-    return rekeyRoomMapKeys(
-      Object.fromEntries(
-        Object.entries(guarded).map(([key, room]) => [key, rekeyRoomCoordination(room)])
+    const guarded = durableGroupChatRooms(stripLegacySessionProvenance(parsed))
+    // The member-key re-key materializes empty coordination maps; strip again
+    // so the migrated rooms carry no session-bound fields at all.
+    return stripLegacySessionProvenance(
+      rekeyRoomMapKeys(
+        Object.fromEntries(
+          Object.entries(guarded).map(([key, room]) => [key, rekeyRoomCoordination(room)])
+        )
       )
     )
   } catch {
@@ -319,7 +437,10 @@ function persistRooms(all: Record<string, GroupChatRoom>): void {
 
 /** The durable persistence shape for `all`: runtime-only coordination state
  *  (running, turn) is stripped and empty-log stubs without a durable identity
- *  are dropped, so a rehydrated store only ever contains real rooms. */
+ *  are dropped, so a rehydrated store only ever contains real rooms. Session
+ *  provenance persists only as a validated trio — the tag survives with empty
+ *  maps, and an untagged or malformed trio keeps no session ids or stranded
+ *  markers. */
 export function durableGroupChatRooms(all: Record<string, GroupChatRoom>): Record<string, GroupChatRoom> {
   const durable: Record<string, GroupChatRoom> = {}
   for (const [key, room] of Object.entries(all)) {
@@ -329,6 +450,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChatRoom>): Recor
     // Keep it locally; the gateway projection still omits empty rooms until
     // the first message gives other clients something to mirror.
     if (!Array.isArray(room.log) || (room.log.length === 0 && (!room.roomId || members.length === 0))) continue
+    const provenance = sessionProvenanceOf(room)
     durable[key] = {
       epoch: room.epoch || 0,
       holds: room.holds || {},
@@ -338,8 +460,9 @@ export function durableGroupChatRooms(all: Record<string, GroupChatRoom>): Recor
       name: room.name,
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       running: false,
-      sessions: room.sessions || {},
-      stranded: room.stranded || {},
+      ...(provenance
+        ? { sessionConnectionKey: provenance.connectionKey, sessions: provenance.sessions, stranded: provenance.stranded }
+        : {}),
       syncRevision: Math.max(0, Number(room.syncRevision || 0)),
       turn: null,
       watermarks: room.watermarks || {}
@@ -407,6 +530,38 @@ export function getGroupRoom(roomKey: string): GroupChatRoom {
 export function replaceGroupChats(rooms: Record<string, GroupChatRoom>): void {
   $groupChats.set(rooms)
   persistRooms(rooms)
+}
+
+/** Clear every room's session provenance that does not belong to
+ *  `connectionKey` — the connection-switch sweep the Group engine runs
+ *  before arming a new lifecycle. A stored plumbing-session id and its
+ *  stranded marker are wire-targeted at one Gateway connection, so a room
+ *  whose tag is missing or names another connection loses all three fields
+ *  together; every other room field — the shared log, watermarks, holds,
+ *  epoch, turn — survives untouched. Local-only: replaces and persists the
+ *  store once without scheduling a mirror write, and is a no-op (no notify,
+ *  no persist) when every room already belongs to the requested connection. */
+export function clearGroupSessionProvenanceForConnection(connectionKey: string): void {
+  const all = $groupChats.get()
+  const next: Record<string, GroupChatRoom> = {}
+  let changed = false
+  for (const [key, room] of Object.entries(all)) {
+    // The member-key re-key materializes empty maps; only a tag or a non-empty
+    // map is session-bound data worth sweeping.
+    const carriesSessionState =
+      Boolean(room.sessionConnectionKey) ||
+      Boolean(room.sessions && Object.keys(room.sessions).length) ||
+      Boolean(room.stranded && Object.keys(room.stranded).length)
+    if (room.sessionConnectionKey === connectionKey || !carriesSessionState) {
+      next[key] = room
+      continue
+    }
+    next[key] = withoutSessionProvenance(room)
+    changed = true
+  }
+  if (!changed) return
+  $groupChats.set(next)
+  persistRooms(next)
 }
 
 /** Byte-identical member echo guard (#93127): a residual double-append lands

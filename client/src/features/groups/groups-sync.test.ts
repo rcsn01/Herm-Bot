@@ -98,6 +98,22 @@ describe('sync snapshot', () => {
     expect(projected.image).toBeUndefined() // 30000 > 24000
   })
 
+  it('never projects session provenance — the mirror carries no wire-targeted state', () => {
+    replaceGroupChats({
+      'id:r-1': room({
+        name: 'Room', roomId: 'r-1', log: [userEntry('hi')],
+        sessionConnectionKey: 'https://gw-a.test', sessions: { research: 'stored-1' },
+        stranded: { research: { before: 0, thread: 't1' } }
+      })
+    })
+    const projected = groupChatSyncSnapshot().rooms['id:r-1']
+    expect(projected).toBeTruthy()
+    expect(projected).not.toHaveProperty('sessionConnectionKey')
+    expect(projected).not.toHaveProperty('sessions')
+    expect(projected).not.toHaveProperty('stranded')
+    expect(JSON.stringify(projected)).not.toContain('stored-1')
+  })
+
   it('shrinks logs then drops rooms to fit the byte cap', () => {
     const rooms: Record<string, GroupChatRoom> = {}
     for (let i = 0; i < 60; i++) {
@@ -319,7 +335,7 @@ describe('merge remote into rooms', () => {
     })
     $groupActivity.set({ 'name:Old': [{ at: 1, epoch: 7, kind: 'queued', member: 'research', thread: 'legacy' }] })
     $groupPrompts.set({
-      'name:Old::research': { at: 1, kind: 'clarify', member: 'research', memberKey: 'research', question: '?', requestId: 'p1', roomKey: 'name:Old' }
+      'name:Old::research': { at: 1, connectionKey: 'https://gw-a.test', kind: 'clarify', member: 'research', memberKey: 'research', question: '?', requestId: 'p1', roomKey: 'name:Old' }
     })
     $groupNeedsYou.set({ 'name:Old': true })
 
@@ -404,6 +420,54 @@ describe('merge remote into rooms', () => {
       { name: 'research' },
       { name: 'research', connectionId: 'conn-1', sourceScoped: true }
     ])
+  })
+
+  it('preserves matching local session provenance and never imports session fields from the wire', () => {
+    replaceGroupChats({
+      'name:Room': room({
+        log: [userEntry('local', 10)],
+        syncRevision: 1,
+        sessionConnectionKey: 'https://gw-a.test',
+        sessions: { research: 'local-stored' },
+        stranded: { research: { before: 0, thread: 't1' } }
+      }),
+      'name:Fresh': room({ name: 'Fresh', log: [userEntry('seed', 10)], syncRevision: 1 })
+    })
+    // A hostile or legacy wire snapshot carrying session-bound fields must
+    // not leak them into the local map, whether or not a local twin exists.
+    const remote = {
+      version: 3,
+      rooms: {
+        'name:Room': {
+          name: 'Room', revision: 9, log: [userEntry('local', 10), memberEntry('research', 'from desktop', 30)],
+          members: [],
+          sessionConnectionKey: 'https://wire.test',
+          sessions: { research: 'wire-stored' },
+          stranded: { research: 0 }
+        },
+        'name:Fresh': {
+          name: 'Fresh', revision: 9, log: [userEntry('seed', 10)], members: [],
+          sessionConnectionKey: 'https://wire.test',
+          sessions: { research: 'wire-stored' },
+          stranded: { research: 0 }
+        }
+      }
+    } as unknown as GroupChatSyncSnapshot
+    const merged = mergeRemoteGroupChatSnapshotIntoRooms(remote)
+
+    // The local room keeps its own provenance triple and merges only shared
+    // content from the wire.
+    const kept = merged['name:Room']
+    expect(kept.sessionConnectionKey).toBe('https://gw-a.test')
+    expect(kept.sessions).toEqual({ research: 'local-stored' })
+    expect(kept.stranded).toEqual({ research: { before: 0, thread: 't1' } })
+    expect(kept.log.map(entry => entry.text)).toEqual(['local', 'from desktop'])
+
+    // A room adopted from the wire starts with no session state of any kind.
+    const fresh = merged['name:Fresh']
+    expect(fresh.sessionConnectionKey).toBeUndefined()
+    expect(fresh.sessions).toEqual({})
+    expect(fresh.stranded).toEqual({})
   })
 
   it('moves coordination state to the qualified key at the merge boundary', () => {

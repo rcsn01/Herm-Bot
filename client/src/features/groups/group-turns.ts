@@ -9,11 +9,15 @@
  * (apps/desktop/src/plugins/hermes-bots/group-turns.ts).
  *
  * The Group engine creates one captured member gateway and one terminal turn
- * module per lifecycle. The module owns one member's turn end to end,
- * including publication; the round driver (group-rounds.ts) owns room
- * sequencing — rounds, caps, responder rotation, the drive finalizer.
- * Publication living here is a documented PWA divergence from the desktop's
- * group-rounds.ts, which keeps publication in its round driver.
+ * module per lifecycle. The captured gateway's `connectionKey` scopes every
+ * stored plumbing-session id this module sends: a room's session map is
+ * consulted only while its `sessionConnectionKey` tag matches, so a Gateway
+ * switch can never resume another connection's session. The module owns one
+ * member's turn end to end, including publication; the round driver
+ * (group-rounds.ts) owns room sequencing — rounds, caps, responder rotation,
+ * the drive finalizer. Publication living here is a documented PWA divergence
+ * from the desktop's group-rounds.ts, which keeps publication in its round
+ * driver.
  */
 
 import { botHandle, groupMemberKey, type EngineMember, type GroupEngineRequest, type GroupMember, type GroupMessage } from './group-model'
@@ -31,7 +35,11 @@ import {
   type GroupPrompt
 } from './group-store'
 
+/** The member request adapter for one captured Gateway connection. Besides
+ *  routing each member's RPC with `profile: member.name`, it carries the
+ *  connection key that scoped every stored plumbing-session id it sends. */
 export interface GroupMemberGateway {
+  readonly connectionKey: string
   request(
     member: GroupMember,
     method: string,
@@ -39,8 +47,9 @@ export interface GroupMemberGateway {
   ): Promise<unknown>
 }
 
-export function createGroupMemberGateway(transport: GroupEngineRequest): GroupMemberGateway {
+export function createGroupMemberGateway(transport: GroupEngineRequest, connectionKey: string): GroupMemberGateway {
   return {
+    connectionKey,
     request(member, method, params = {}) {
       return transport(method, { ...params, profile: member.name })
     }
@@ -125,7 +134,7 @@ export interface GroupTurnModule {
     member: GroupMember,
     answers: Record<string, string> | string | undefined
   ): Promise<void>
-  interrupt(member: GroupMember, storedSessionId: string): Promise<void>
+  interrupt(roomKey: string, member: GroupMember): Promise<void>
   stop(): void
   /** Internal test seam: the raw capture/lease machinery. The driver and the
    *  facade never call it; only this module's tests do. */
@@ -328,12 +337,15 @@ function hasPendingPrompt(state: GroupSessionSnapshot | null): boolean {
   )
 }
 
-/** Mirror a member's pending clarify/approval prompt into the runtime atoms. */
+/** Mirror a member's pending clarify/approval prompt into the runtime atoms.
+ *  The card records the connection whose member session produced it, so a
+ *  connection switch can drop it instead of answering on the wrong Gateway. */
 function syncGroupClarify(
   roomKey: string,
   member: GroupMember,
   state: GroupSessionSnapshot | null,
-  expectedRequestId: null | string | undefined = undefined
+  expectedRequestId: null | string | undefined = undefined,
+  connectionKey = ''
 ): boolean {
   const key = `${roomKey}::${groupMemberKey(member)}`
   const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
@@ -362,6 +374,7 @@ function syncGroupClarify(
   const base = {
     requestId,
     roomKey,
+    connectionKey,
     member: member.name,
     memberKey: groupMemberKey(member),
     // approval.respond keys on the session, not just the request — carry the
@@ -414,6 +427,16 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
   /** The one owner of the per-member watermark key format. */
   const watermarkKey = (thread: string, memberKey: string): string => `${thread}::${memberKey}`
+
+  /** The one owner of stored-id eligibility: a room's session map is usable
+   *  only while it is tagged with this lifecycle's captured connection key.
+   *  A mismatched or untagged map is invisible here — the caller resumes by
+   *  the room title instead. */
+  const scopedStoredSessionId = (room: GroupChatRoom, memberKey: string): string | undefined => {
+    if (room.sessionConnectionKey !== gateway.connectionKey) return undefined
+    const stored = room.sessions?.[memberKey]
+    return typeof stored === 'string' && stored ? stored : undefined
+  }
 
   const claimToken = (roomKey: string, member: GroupMember): number => {
     const token = ++nextToken
@@ -510,7 +533,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     // desktop addresses plumbing sessions as `Group: <name>`); for an
     // id-keyed room the durable id IS the desktop's title, so roomId wins.
     const title = `Group: ${room.roomId || room.name}`
-    const known = room.sessions?.[capture.memberKey]
+    const known = scopedStoredSessionId(room, capture.memberKey)
 
     for (const target of [known, title]) {
       if (!target) continue
@@ -523,9 +546,13 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
         if (res?.session_id) {
           const stored = res.session_key || known || null
-          if (stored && owns(capture)) {
+          if (owns(capture)) {
+            // Tag the room's session provenance with the connection that
+            // acquired this runtime session, even when the Gateway returned no
+            // stored id — the tag scopes the room's whole session map.
             updateGroupChat(capture.roomKey, (current: GroupChatRoom) => {
-              current.sessions = { ...(current.sessions || {}), [capture.memberKey]: stored }
+              current.sessionConnectionKey = gateway.connectionKey
+              if (stored) current.sessions = { ...(current.sessions || {}), [capture.memberKey]: stored }
               return current
             })
           }
@@ -552,15 +579,19 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       follow_profile_config: true
     })) as { session_id?: string; stored_session_id?: string }
 
+    const runtime = created?.session_id || null
     const stored = created?.stored_session_id || null
-    if (stored && owns(capture)) {
+    if (runtime && owns(capture)) {
+      // Same tagging rule as a resumed session: the creating connection now
+      // owns the room's session map, stored id or not.
       updateGroupChat(capture.roomKey, (r: GroupChatRoom) => {
-        r.sessions = { ...(r.sessions || {}), [capture.memberKey]: stored }
+        r.sessionConnectionKey = gateway.connectionKey
+        if (stored) r.sessions = { ...(r.sessions || {}), [capture.memberKey]: stored }
         return r
       })
     }
 
-    return { runtime: created?.session_id || null, stored }
+    return { runtime, stored }
   }
 
   const submitGroupTurnPrompt = async (
@@ -671,7 +702,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
       const awaitingUser = hasPendingPrompt(state)
       if (owns(capture)) {
         const expectedPromptId = capture.promptRequestId
-        syncGroupClarify(input.roomKey, input.member, state, expectedPromptId)
+        syncGroupClarify(input.roomKey, input.member, state, expectedPromptId, gateway.connectionKey)
         const currentPrompt = $groupPrompts.get()[`${input.roomKey}::${capture.memberKey}`]
         if (awaitingUser || !currentPrompt || currentPrompt.requestId === expectedPromptId) {
           capture.promptRequestId = currentPrompt?.requestId || null
@@ -698,7 +729,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     const staleAtTimeout = staleReason(capture)
     if (staleAtTimeout) return cancelled(capture, staleAtTimeout)
 
-    syncGroupClarify(input.roomKey, input.member, null, capture.promptRequestId)
+    syncGroupClarify(input.roomKey, input.member, null, capture.promptRequestId, gateway.connectionKey)
     updateGroupChat(input.roomKey, (r: GroupChatRoom) => {
       r.stranded = {
         ...(r.stranded || {}),
@@ -897,8 +928,10 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
 
     let state: GroupSessionSnapshot | null = null
     try {
+      // Harvest reads a stored id only under a matching connection tag; with
+      // none, the room title is the only eligible target.
       state = (await memberRequest(capture, 'session.resume', {
-        session_id: room.sessions?.[memberKey] || `Group: ${room.roomId || room.name}`
+        session_id: scopedStoredSessionId(room, memberKey) || `Group: ${room.roomId || room.name}`
       })) as GroupSessionSnapshot
     } catch {
       return // source unreachable — leave the marker for the next boundary
@@ -910,7 +943,7 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     // A stranded member blocked on a clarify is not "grinding" — surface the
     // question card (#90694) and keep the marker until it resolves.
     if (ownsMarker()) {
-      const pending = syncGroupClarify(roomKey, member, state, capture.promptRequestId)
+      const pending = syncGroupClarify(roomKey, member, state, capture.promptRequestId, gateway.connectionKey)
       const currentPrompt = $groupPrompts.get()[promptKey]
       if (pending) {
         capture.promptRequestId = currentPrompt?.requestId || null
@@ -981,6 +1014,9 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     answers: Record<string, string> | string | undefined
   ): Promise<void> => {
     if (!live()) return
+    // A card produced by another connection's lifecycle can never be answered
+    // here: its request id and runtime session id belong to that Gateway.
+    if (entry.connectionKey !== gateway.connectionKey) return
 
     const send = async (method: string, params: Record<string, unknown>): Promise<boolean> => {
       if (!live()) return false
@@ -1025,8 +1061,14 @@ export function createGroupTurnModule(gateway: GroupMemberGateway): GroupTurnMod
     }
   }
 
-  const interrupt = async (member: GroupMember, storedSessionId: string): Promise<void> => {
+  /** Best-effort remote interrupt of the current speaker's session. The
+   *  module resolves the stored id itself and only for the captured
+   *  connection: a mismatched or absent tag sends no wire request, leaving
+   *  the driver's local stop state as the only leg. */
+  const interrupt = async (roomKey: string, member: GroupMember): Promise<void> => {
     if (!live()) return
+    const storedSessionId = scopedStoredSessionId(roomOf(roomKey), groupMemberKey(member))
+    if (!storedSessionId) return
     await gateway.request(member, 'session.interrupt', { session_id: storedSessionId })
   }
 

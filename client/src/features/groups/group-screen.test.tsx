@@ -1,10 +1,12 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { GroupChatScreen } from './group-screen'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { MemoryGateway } from '~/test/memory-gateway'
+import { startGroupEngine, stopGroupEngine } from './group-engine'
+import { $groupPrompts as $groupPromptsState } from './group-store'
 
 vi.mock('~/compat/primitives', () => ({
   Badge: ({ children }: React.ComponentProps<'span'>) => <span>{children}</span>,
@@ -63,5 +65,39 @@ describe('group chat screen', () => {
     renderGroup(new MemoryGateway().handle('profiles.list', () => ({ profiles: [{ name: 'default', is_default: true, ui_meta: { 'hermes-bots-groups': snapshot } }] })), 'id:r-gone')
 
     expect(await screen.findByText('This group chat is not available on this gateway yet.')).not.toBeNull()
+  })
+
+  it('renders a prompt card that survives a same-key restart and drops on a key switch', async () => {
+    const gateway = new MemoryGateway().handle('profiles.list', () => ({ profiles: [{ name: 'default', is_default: true, ui_meta: { 'hermes-bots-groups': snapshot } }] }))
+    const KEY_A = 'https://gw-a.test'
+    const KEY_B = 'https://gw-b.test'
+    const start = (key: string) => startGroupEngine((method, params) => gateway.rpc(method, params), key)
+    $groupPromptsState.set({
+      'id:r-crew::codex': {
+        at: 1, connectionKey: KEY_A, roomKey: 'id:r-crew', kind: 'clarify',
+        member: 'Codex', memberKey: 'codex', question: 'Which spec?', requestId: 'p1'
+      }
+    })
+
+    try {
+      start(KEY_A)
+      renderGroup(gateway)
+      expect(await screen.findByText('Codex needs you')).not.toBeNull()
+
+      // A restart on the same connection keeps the card — it still addresses
+      // this Gateway's session.
+      stopGroupEngine()
+      start(KEY_A)
+      expect(screen.getByText('Codex needs you')).not.toBeNull()
+
+      // A connection switch sweeps the foreign card before the new lifecycle
+      // arms, so the screen drops it.
+      stopGroupEngine()
+      start(KEY_B)
+      await waitFor(() => expect(screen.queryByText('Codex needs you')).toBeNull())
+    } finally {
+      stopGroupEngine()
+      $groupPromptsState.set({})
+    }
   })
 })

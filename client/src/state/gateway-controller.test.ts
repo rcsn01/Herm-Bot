@@ -11,6 +11,7 @@ import { currentGatewayScope } from '~/gateway/scope-guard'
 import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
+import { $groupChats, createGroupChat, sendToGroupChat } from '~/features/groups/group-engine'
 import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript } from '~/transcript/transcript'
@@ -526,6 +527,59 @@ describe('profile switching', () => {
 
     expect($workspacePolicy.get()).toEqual({ menuOpen: false, menuOrigin: null, menuOriginStack: null, returnOrigin: null, returnStack: null })
     expect(connect).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('restarts the group engine on the same connection key across a profile switch', async () => {
+    $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    let created = 0
+    let resumes = 0
+    const connection = { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) }
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: `runtime-${++created}` }))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('profiles.list', () => ({ profiles: [] }))
+      .handle('prompt.submit', () => ({}))
+      .handle('session.resume', params => {
+        const { omit_messages: omit, session_id: sessionId } = params as { omit_messages?: boolean; session_id: string }
+        if (omit) return { session_id: `runtime-of-${sessionId}`, session_key: 'stored-group-1' }
+        resumes += 1
+        return resumes === 1
+          ? { messages: [] }
+          : { messages: [{ role: 'assistant', content: 'on it' }] }
+      })
+    const controller = new GatewayController(connection as never, gateway)
+
+    await controller.connect()
+
+    // A room driven through the engine tags its session provenance with the
+    // connection key (the configured remoteURL), and the member RPC addresses
+    // the member's own profile.
+    const room = createGroupChat('Crew', [{ name: 'ada' }], new Set())
+    sendToGroupChat(room.key, [{ name: 'ada' }], 'hello', 't1')
+    await vi.waitFor(() => {
+      const stored = $groupChats.get()[room.key]
+      expect(stored.sessionConnectionKey).toBe('https://gateway.test')
+      expect(stored.sessions?.ada).toBe('stored-group-1')
+    })
+    const memberResume = gateway.calls.find(call => call.kind === 'rpc' && call.method === 'session.resume')
+    expect((memberResume?.value as { profile?: string }).profile).toBe('ada')
+    // The turn's poll runs on a 2s interval under real timers — wait past it
+    // so the reply settles before the profile switch tears the lifecycle down.
+    await vi.waitFor(() => expect($groupChats.get()[room.key].log.some(entry => entry.text === 'on it')).toBe(true), { timeout: 6000 })
+
+    await controller.switchProfile('work')
+
+    // Same remoteURL → same connection key: the engine restarted (a fresh
+    // mirror pull proves the new lifecycle armed) and its startup sweep kept
+    // the tagged session state for the next turn on this Gateway.
+    await vi.waitFor(() =>
+      expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.list').length).toBeGreaterThanOrEqual(2)
+    )
+    const after = $groupChats.get()[room.key]
+    expect(after.sessionConnectionKey).toBe('https://gateway.test')
+    expect(after.sessions?.ada).toBe('stored-group-1')
+    expect(after.log.some(entry => entry.text === 'hello')).toBe(true)
     controller.dispose()
   })
 })

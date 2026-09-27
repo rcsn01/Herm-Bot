@@ -21,6 +21,7 @@ type Call = { member: GroupMember; method: string; params: Record<string, unknow
 type Handler = (member: GroupMember, method: string, params: Record<string, unknown>) => unknown | Promise<unknown>
 
 const MEMBER: GroupMember = { name: 'research' }
+const CONNECTION_KEY = 'gw-current'
 let calls: Call[] = []
 
 function room(overrides: Partial<GroupChatRoom> = {}): GroupChatRoom {
@@ -35,8 +36,12 @@ function room(overrides: Partial<GroupChatRoom> = {}): GroupChatRoom {
   }
 }
 
-function makeModule(handler: Handler = async () => ({})): { gateway: GroupMemberGateway; turns: GroupTurnModule } {
+function makeModule(
+  handler: Handler = async () => ({}),
+  connectionKey: string = CONNECTION_KEY
+): { gateway: GroupMemberGateway; turns: GroupTurnModule } {
   const gateway: GroupMemberGateway = {
+    connectionKey,
     async request(member, method, params = {}) {
       calls.push({ member, method, params })
       return handler(member, method, params)
@@ -129,13 +134,14 @@ describe('pure helpers', () => {
 })
 
 describe('captured member gateway', () => {
-  it('injects the member profile and overwrites an accidental profile parameter', async () => {
+  it('injects the member profile and captures the connection key', async () => {
     const transportCalls: Array<{ method: string; params?: Record<string, unknown> }> = []
     const gateway = createGroupMemberGateway(async (method, params) => {
       transportCalls.push({ method, params })
       return 'ok'
-    })
+    }, 'gw-a')
 
+    expect(gateway.connectionKey).toBe('gw-a')
     await gateway.request(MEMBER, 'session.resume', { profile: 'wrong', session_id: 's1' })
     expect(transportCalls).toEqual([{
       method: 'session.resume',
@@ -213,7 +219,7 @@ describe('session resolution and member results', () => {
   })
 
   it('resumes a stored member session and persists its returned key', async () => {
-    replaceGroupChats({ 'name:Room': room({ sessions: { research: 'stored-old' } }) })
+    replaceGroupChats({ 'name:Room': room({ sessionConnectionKey: CONNECTION_KEY, sessions: { research: 'stored-old' } }) })
     let baseline = true
     const { turns } = makeModule(async (_member, method, params) => {
       if (method === 'session.resume' && params.omit_messages) {
@@ -235,7 +241,108 @@ describe('session resolution and member results', () => {
     const result = await promise
     expect(result.kind).toBe('pass')
     expect($groupChats.get()['name:Room'].sessions?.research).toBe('stored-new')
+    expect($groupChats.get()['name:Room'].sessionConnectionKey).toBe(CONNECTION_KEY)
     expect(calls.filter(call => call.method === 'session.create')).toHaveLength(0)
+  })
+
+  it('never sends a stored id tagged for another connection and resumes by title first', async () => {
+    replaceGroupChats({ 'name:Room': room({ sessionConnectionKey: 'https://gateway-b.test', sessions: { research: 'foreign-stored' } }) })
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
+        expect(params.session_id).toBe('Group: Room')
+        return { session_id: 'runtime-live', session_key: 'stored-b' }
+      }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [{ role: 'assistant', content: '(pass)' }] }
+      }
+      return {}
+    })
+    vi.useFakeTimers()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    const result = await promise
+    expect(result.kind).toBe('pass')
+    expect(calls.every(call => call.params.session_id !== 'foreign-stored')).toBe(true)
+    // The title acquisition on this connection stores its own returned key
+    // under the current tag — A's id was never sent and is replaced.
+    expect($groupChats.get()['name:Room'].sessions?.research).toBe('stored-b')
+    expect($groupChats.get()['name:Room'].sessionConnectionKey).toBe(CONNECTION_KEY)
+  })
+
+  it('does not consult an untagged session map', async () => {
+    replaceGroupChats({ 'name:Room': room({ sessions: { research: 'untagged' } }) })
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
+        expect(params.session_id).toBe('Group: Room')
+        return { session_id: 'rt', session_key: 'stored' }
+      }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [{ role: 'assistant', content: '(pass)' }] }
+      }
+      return {}
+    })
+    vi.useFakeTimers()
+    const promise = turns.run(runInput())
+    await vi.advanceTimersByTimeAsync(2000)
+    await promise
+    expect(calls.every(call => call.params.session_id !== 'untagged')).toBe(true)
+  })
+
+  it('tags the room on a title acquisition with no stored id and does not tag a failed one', async () => {
+    // Title acquisition returns a runtime session and NO session_key: the tag
+    // is written anyway; nothing about the session map changes.
+    replaceGroupChats({ 'id:r-1': room({ name: 'Room', roomId: 'r-1' }) })
+    let baseline = true
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) {
+        if (params.session_id === 'Group: r-1') return { session_id: 'rt-only' }
+        throw Object.assign(new Error('gone'), { code: 4007 })
+      }
+      if (method === 'session.resume') {
+        if (baseline) {
+          baseline = false
+          return { messages: [] }
+        }
+        return { messages: [{ role: 'assistant', content: '(pass)' }] }
+      }
+      return {}
+    })
+    vi.useFakeTimers()
+    const promise = turns.run({ ...runInput(), roomKey: 'id:r-1' })
+    await vi.advanceTimersByTimeAsync(2000)
+    await promise
+    const tagged = $groupChats.get()['id:r-1']
+    expect(tagged.sessionConnectionKey).toBe(CONNECTION_KEY)
+    expect(tagged.sessions).toBeUndefined()
+
+    // A failed acquisition leaves the room untagged.
+    replaceGroupChats({ 'id:r-2': room({ name: 'Room', roomId: 'r-2' }) })
+    const failing = makeModule(async (_member, method) => {
+      if (method === 'session.resume') throw Object.assign(new Error('warming'), { code: 5001 })
+      return {}
+    }).turns
+    await failing.run({ ...runInput(), roomKey: 'id:r-2' })
+    expect($groupChats.get()['id:r-2'].sessionConnectionKey).toBeUndefined()
+
+    // An acquisition that returns no runtime session does not tag either.
+    replaceGroupChats({ 'id:r-3': room({ name: 'Room', roomId: 'r-3' }) })
+    const noRuntime = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume' && params.omit_messages) return {}
+      return {}
+    }).turns
+    const emptyResult = await noRuntime.run({ ...runInput(), roomKey: 'id:r-3' })
+    expect(emptyResult.kind).toBe('pass')
+    expect($groupChats.get()['id:r-3'].sessionConnectionKey).toBeUndefined()
   })
 
   it('does not fork a session after a transient resume failure', async () => {
@@ -283,7 +390,7 @@ describe('session resolution and member results', () => {
       }
       return {}
     })
-    replaceGroupChats({ 'id:r-2': room({ name: 'Room', roomId: 'r-2', sessions: { research: 'stored-old' } }) })
+    replaceGroupChats({ 'id:r-2': room({ name: 'Room', roomId: 'r-2', sessionConnectionKey: CONNECTION_KEY, sessions: { research: 'stored-old' } }) })
     vi.useFakeTimers()
 
     const promise = turns.run({ ...runInput(), roomKey: 'id:r-2' })
@@ -342,6 +449,7 @@ describe('session resolution and member results', () => {
       member: 'research',
       memberKey: 'research',
       kind: 'clarify',
+      connectionKey: CONNECTION_KEY,
       question: 'Proceed?',
       requestId: 'q1',
       sessionId: 'rt'
@@ -389,7 +497,7 @@ describe('prompt ownership and answers', () => {
   it('routes clarify batches and approvals through the captured gateway', async () => {
     const { turns } = makeModule(async () => ({}))
     const clarify: GroupPrompt = {
-      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: CONNECTION_KEY,
       question: '', requestId: 'batch', sessionId: 'rt', questions: [{ qid: 'a' }, { id: 'b' }]
     }
     $groupPrompts.set({ 'name:Room::research': clarify })
@@ -401,7 +509,7 @@ describe('prompt ownership and answers', () => {
     expect($groupPrompts.get()['name:Room::research']).toBeUndefined()
 
     const approval: GroupPrompt = {
-      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'approval',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'approval', connectionKey: CONNECTION_KEY,
       question: '', requestId: 'approval', sessionId: 'rt', choices: ['once', 'deny']
     }
     $groupPrompts.set({ 'name:Room::research': approval })
@@ -414,7 +522,7 @@ describe('prompt ownership and answers', () => {
   it('does not clear a newer prompt when an answer settles after stop', async () => {
     const response = deferred<unknown>()
     const entry: GroupPrompt = {
-      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: CONNECTION_KEY,
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
     const newer = { ...entry, requestId: 'new', question: 'New?' }
@@ -431,7 +539,7 @@ describe('prompt ownership and answers', () => {
   it('does not clear a prompt replaced while an answer is in flight', async () => {
     const response = deferred<unknown>()
     const entry: GroupPrompt = {
-      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: CONNECTION_KEY,
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
     const { turns } = makeModule(async () => response.promise)
@@ -442,6 +550,67 @@ describe('prompt ownership and answers', () => {
     response.resolve({})
     await answer
     expect($groupPrompts.get()['name:Room::research']?.requestId).toBe('new')
+  })
+
+  it('answers a current-key prompt and rejects a stale card without any request', async () => {
+    const currentKey = 'gw-a'
+    const { turns } = makeModule(async () => ({}), currentKey)
+    const current: GroupPrompt = {
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: currentKey,
+      question: 'Proceed?', requestId: 'q-current', sessionId: 'rt'
+    }
+    $groupPrompts.set({ 'name:Room::research': current })
+    await turns.answer(current, MEMBER, 'yes')
+    expect(calls.some(call => call.method === 'clarify.respond')).toBe(true)
+    expect($groupPrompts.get()['name:Room::research']).toBeUndefined()
+
+    calls.length = 0
+    const stale: GroupPrompt = {
+      ...current, connectionKey: 'https://gateway-b.test', requestId: 'q-stale'
+    }
+    await turns.answer(stale, MEMBER, 'yes')
+    expect(calls.filter(call => call.method === 'clarify.respond' || call.method === 'approval.respond')).toHaveLength(0)
+  })
+
+  it('sends a stale approval card nowhere: answer rejects it before any request', async () => {
+    const currentKey = 'gw-a'
+    const { turns } = makeModule(async () => ({}), currentKey)
+    const staleApproval: GroupPrompt = {
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'approval', connectionKey: 'gw-b',
+      question: 'Approve?', requestId: 'q-foreign', sessionId: 'rt', choices: ['once', 'deny']
+    }
+    await turns.answer(staleApproval, MEMBER, 'once')
+    expect(calls.some(call => call.method === 'approval.respond')).toBe(false)
+  })
+})
+
+describe('connection-scoped interrupt', () => {
+  const connected: GroupMember = { name: 'research', connectionId: 'gw-2', sourceScoped: true }
+
+  it('interrupts the current speaker by resolving a matching stored id', async () => {
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      sessions: { 'gw-2::research': 'stored-a' },
+      members: [connected]
+    }) })
+    const { turns } = makeModule(async () => ({}))
+    await turns.interrupt('name:Room', connected)
+    expect(calls.find(call => call.method === 'session.interrupt')?.params).toEqual({ session_id: 'stored-a' })
+  })
+
+  it('sends no interrupt for a mismatched or missing tag', async () => {
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: 'https://gateway-b.test',
+      sessions: { 'gw-2::research': 'foreign-stored' },
+      members: [connected]
+    }) })
+    const foreign = makeModule(async () => ({})).turns
+    await foreign.interrupt('name:Room', connected)
+
+    replaceGroupChats({ 'name:Room': room({ sessions: { 'gw-2::research': 'untagged' }, members: [connected] }) })
+    const untagged = makeModule(async () => ({})).turns
+    await untagged.interrupt('name:Room', connected)
+    expect(calls.some(call => call.method === 'session.interrupt')).toBe(false)
   })
 })
 
@@ -679,7 +848,7 @@ describe('stale results and lifecycle ownership', () => {
     const harvest = turns.harvest('name:Room', MEMBER)
     await Promise.resolve()
     const newer: GroupPrompt = {
-      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: CONNECTION_KEY,
       question: 'New?', requestId: 'new', sessionId: 'rt'
     }
     $groupPrompts.set({ 'name:Room::research': newer })
@@ -749,7 +918,7 @@ describe('timeouts and stranded harvest', () => {
   it('clears the prompt observed by a harvest but retains a newer prompt', async () => {
     const marker = { before: 0, thread: 't1' }
     const oldPrompt: GroupPrompt = {
-      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify',
+      at: Date.now(), roomKey: 'name:Room', member: 'research', memberKey: 'research', kind: 'clarify', connectionKey: CONNECTION_KEY,
       question: 'Old?', requestId: 'old', sessionId: 'rt'
     }
     replaceGroupChats({ 'name:Room': room({ stranded: { research: marker }, sessions: { research: 'stored' } }) })
@@ -783,6 +952,59 @@ describe('timeouts and stranded harvest', () => {
     const working = makeModule(async () => ({ running: true, messages: [] })).turns
     await working.harvest('name:Room', MEMBER)
     expect($groupChats.get()['name:Room'].stranded?.research).toBeTruthy()
+  })
+
+  it('harvests through a stored id only under a matching tag, else by title', async () => {
+    const marker = { before: 0, thread: 't1' }
+    const seen: string[] = []
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      sessions: { research: 'stored-a' },
+      stranded: { research: marker }
+    }) })
+    const tagged = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume') seen.push(String(params.session_id))
+      return { messages: [{ role: 'assistant', content: 'via stored id' }] }
+    }).turns
+    await tagged.harvest('name:Room', MEMBER)
+    expect(seen).toEqual(['stored-a'])
+    expect($groupChats.get()['name:Room'].log.some(entry => entry.text === 'via stored id')).toBe(true)
+
+    const foreign: string[] = []
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: 'https://gateway-b.test',
+      sessions: { research: 'foreign-stored' },
+      stranded: { research: marker }
+    }) })
+    const untagged = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume') foreign.push(String(params.session_id))
+      return { messages: [{ role: 'assistant', content: 'via title' }] }
+    }).turns
+    await untagged.harvest('name:Room', MEMBER)
+    expect(foreign).toEqual(['Group: Room'])
+    expect($groupChats.get()['name:Room'].log.some(entry => entry.text === 'via title')).toBe(true)
+  })
+
+  it('keeps the marker when a present tagged id fails to resume, including 4007', async () => {
+    const marker = { before: 0, thread: 't1' }
+    const resumeTargets: string[] = []
+    replaceGroupChats({ 'name:Room': room({
+      sessionConnectionKey: CONNECTION_KEY,
+      sessions: { research: 'stored-a' },
+      stranded: { research: marker }
+    }) })
+    const { turns } = makeModule(async (_member, method, params) => {
+      if (method === 'session.resume') {
+        resumeTargets.push(String(params.session_id))
+        throw Object.assign(new Error('gone'), { code: 4007 })
+      }
+      return {}
+    })
+    await turns.harvest('name:Room', MEMBER)
+    // One attempt on the stored id, NO title retry: the marker stays for a
+    // later boundary.
+    expect(resumeTargets).toEqual(['stored-a'])
+    expect($groupChats.get()['name:Room'].stranded?.research).toEqual(marker)
   })
 })
 

@@ -136,7 +136,7 @@ export class GatewayController {
     // session list continue loading underneath (both use the captured scope,
     // so a profile change mid-open cannot publish another profile's data).
     $connection.set({ authMode, error: null, phase: 'connected', status })
-    this.installGroupEngine()
+    this.installGroupEngine(scope)
     try {
       if (opened.resumed) await this.conversation.reconcileHistory(scope)
       await this.refreshSessions(scope)
@@ -330,11 +330,16 @@ export class GatewayController {
     return createSessionsApi(createGatewayApi(this.runtime, scope.profile))
   }
 
-  /** Point the group send engine at this scope's transport and arm the
-   *  mirror writer (the initial pull happens BEFORE any local publish — the
-   *  receive half of the sync contract). */
-  private installGroupEngine() {
-    startGroupEngine((method, params, options) => this.runtime.rpc(method, params, options))
+  /** Point the group send engine at this scope's transport and connection
+   *  key and arm the mirror writer (the initial pull happens BEFORE any local
+   *  publish — the receive half of the sync contract). The engine scopes its
+   *  stored session ids to the captured `connectionKey`, not the Profile: a
+   *  profile switch restarts the engine with the same key and keeps them. */
+  private installGroupEngine(scope: CurrentGatewayScope) {
+    startGroupEngine(
+      (method, params, options) => this.runtime.rpc(method, params, options),
+      scope.connectionKey
+    )
   }
 
   private subscribeRuntime() {

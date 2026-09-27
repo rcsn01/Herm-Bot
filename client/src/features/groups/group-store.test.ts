@@ -8,16 +8,18 @@ import {
   GROUP_LOG_RETAIN,
   adoptMirrorRoom,
   appendGroupChatEntry,
+  clearGroupSessionProvenanceForConnection,
   durableGroupChatRooms,
   getGroupRoom,
   rekeyRoomCoordination,
   renameRoomState,
-  replaceGroupChats,
+  setGroupSyncScheduler,  replaceGroupChats,
   updateGroupChat,
   type GroupChatRoom
 } from './group-store'
 import type { GroupMember, GroupMessage } from './group-model'
 
+const STORAGE_KEY_V4 = 'hermes.group-chats.v4'
 const STORAGE_KEY_V3 = 'hermes.group-chats.v3'
 const STORAGE_KEY_V2 = 'hermes.group-chats.v2'
 const STORAGE_KEY_V1 = 'hermes.group-chats.v1'
@@ -112,17 +114,86 @@ describe('persistence', () => {
       'id:r-1': room({ name: 'Just created', log: [], roomId: 'r-1', members: [{ name: 'a' }, { name: 'b' }] })
     })
     updateGroupChat('name:Room', r => r) // any write persists the whole store
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY_V3)!) as Record<string, GroupChatRoom>
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY_V4)!) as Record<string, GroupChatRoom>
     expect(Object.keys(stored).sort()).toEqual(['id:r-1', 'name:Room'])
     expect(stored['name:Room'].running).toBe(false)
     expect(stored['name:Room'].turn).toBeNull()
     expect(stored['name:Room'].epoch).toBe(2)
+    expect(stored['name:Room'].sessions).toBeUndefined()
+    expect(stored['name:Room'].stranded).toBeUndefined()
     expect(stored['id:r-1'].roomId).toBe('r-1')
+  })
+
+  it('persists a tagged session map and stranded markers, and a tag with empty maps', () => {
+    $groupChats.set({
+      'id:tagged': room({
+        name: 'Tagged', log: [memberEntry('ada', 'x')], roomId: 'tagged',
+        sessionConnectionKey: 'https://gw-a.test', sessions: { ada: 'stored-1' },
+        stranded: { ada: { before: 0, thread: 't1' } }
+      }),
+      'id:empty-maps': room({
+        name: 'Empty maps', log: [memberEntry('ada', 'x')], roomId: 'empty-maps',
+        sessionConnectionKey: 'https://gw-a.test'
+      }),
+      'id:untagged': room({
+        name: 'Untagged', log: [memberEntry('ada', 'x')], roomId: 'untagged',
+        sessions: { ada: 'nowhere' }, stranded: { ada: 0 }
+      })
+    })
+    const durable = durableGroupChatRooms($groupChats.get())
+    expect(durable['id:tagged']).toMatchObject({
+      sessionConnectionKey: 'https://gw-a.test', sessions: { ada: 'stored-1' }, stranded: { ada: { before: 0, thread: 't1' } }
+    })
+    expect(durable['id:empty-maps']).toMatchObject({ sessionConnectionKey: 'https://gw-a.test', sessions: {}, stranded: {} })
+    // An untagged record keeps no session ids or stranded markers.
+    expect(durable['id:untagged'].sessionConnectionKey).toBeUndefined()
+    expect(durable['id:untagged'].sessions).toBeUndefined()
+    expect(durable['id:untagged'].stranded).toBeUndefined()
+  })
+
+  it('drops the whole provenance trio on any malformed piece while keeping the room', () => {
+    const tagged = (overrides: Partial<GroupChatRoom>): GroupChatRoom =>
+      room({ log: [memberEntry('ada', 'x')], sessionConnectionKey: 'https://gw-a.test', ...overrides })
+    const table: Array<{ label: string; room: GroupChatRoom }> = [
+      { label: 'missing tag', room: tagged({ sessionConnectionKey: undefined, sessions: { ada: 'stored' } }) },
+      { label: 'null tag', room: tagged({ sessionConnectionKey: null }) },
+      { label: 'empty tag', room: tagged({ sessionConnectionKey: '' }) },
+      { label: 'non-string tag', room: tagged({ sessionConnectionKey: 42 as unknown as string }) },
+      { label: 'array session map', room: tagged({ sessions: ['stored'] as unknown as Record<string, string> }) },
+      { label: 'null session map', room: tagged({ sessions: null as unknown as Record<string, string> }) },
+      { label: 'empty session id', room: tagged({ sessions: { ada: '' } }) },
+      { label: 'non-string session id', room: tagged({ sessions: { ada: 7 as unknown as string } }) },
+      { label: 'empty member key', room: tagged({ sessions: { '': 'stored' } }) },
+      { label: 'array stranded map', room: tagged({ stranded: [1] as unknown as Record<string, number> }) },
+      { label: 'negative stranded cursor', room: tagged({ stranded: { ada: -1 } }) },
+      { label: 'non-finite stranded cursor', room: tagged({ stranded: { ada: Number.POSITIVE_INFINITY } }) },
+      {
+        label: 'malformed stranded record',
+        room: tagged({ stranded: { ada: { before: -1, thread: 't1' } } })
+      },
+      {
+        label: 'missing stranded thread',
+        room: tagged({ stranded: { ada: { before: 1, thread: '' } } })
+      }
+    ]
+    for (const { label, room: seeded } of table) {
+      const durable = durableGroupChatRooms({ 'id:provenance': seeded })
+      expect(durable['id:provenance'].log, label).toHaveLength(1)
+      expect(durable['id:provenance'].sessionConnectionKey, label).toBeUndefined()
+      expect(durable['id:provenance'].sessions, label).toBeUndefined()
+      expect(durable['id:provenance'].stranded, label).toBeUndefined()
+    }
+    // A numeric cursor 0 and a complete record stay valid, tag intact.
+    const valid = durableGroupChatRooms({
+      'id:provenance': tagged({ stranded: { ada: 0, scout: { before: 1, thread: 't1' } } })
+    })
+    expect(valid['id:provenance'].stranded).toEqual({ ada: 0, scout: { before: 1, thread: 't1' } })
+    expect(valid['id:provenance'].sessionConnectionKey).toBe('https://gw-a.test')
   })
 
   it('rehydrates the durable shape at import time', async () => {
     updateGroupChat('name:Room', r => ({ ...r, log: [memberEntry('ada', 'x')], running: true, turn: 'ada' }))
-    expect(localStorage.getItem(STORAGE_KEY_V3)).not.toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_V4)).not.toBeNull()
     vi.resetModules()
     const fresh = await import('./group-store')
     const rehydrated = fresh.$groupChats.get()['name:Room']
@@ -163,9 +234,10 @@ describe('durableGroupChatRooms', () => {
 })
 
 describe('rekeyRoomCoordination', () => {
-  it('moves coordination state when a row gains a connectionId', () => {
+  it('moves coordination state when a row gains a connectionId without touching the room tag', () => {
     const next = rekeyRoomCoordination(room({
       members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
+      sessionConnectionKey: 'https://gw-a.test',
       holds: { research: { at: 1, thread: 't1' } },
       sessions: { research: 'stored-1' },
       stranded: { research: { before: 0, thread: 'legacy' } },
@@ -175,6 +247,7 @@ describe('rekeyRoomCoordination', () => {
     expect(next.sessions).toEqual({ 'gw-2::research': 'stored-1' })
     expect(next.stranded).toEqual({ 'gw-2::research': { before: 0, thread: 'legacy' } })
     expect(next.watermarks).toEqual({ 't1::gw-2::research': 5, 't2::ada': 1 })
+    expect(next.sessionConnectionKey).toBe('https://gw-a.test')
   })
 
   it('is a no-op for rows already keyed qualified', () => {
@@ -205,7 +278,7 @@ describe('renameRoomState', () => {
       'name:Old': [{ at: 1, epoch: 0, kind: 'queued', member: 'ada', thread: 'legacy' }]
     })
     $groupPrompts.set({
-      'name:Old::ada': { at: 1, kind: 'clarify', member: 'ada', memberKey: 'ada', question: '?', requestId: 'p1', roomKey: 'name:Old' }
+      'name:Old::ada': { at: 1, kind: 'clarify', connectionKey: 'gw-a', member: 'ada', memberKey: 'ada', question: '?', requestId: 'p1', roomKey: 'name:Old' }
     })
     $groupNeedsYou.set({ 'name:Old': true })
 
@@ -224,8 +297,8 @@ describe('renameRoomState', () => {
       'name:New': [{ at: 2, epoch: 0, kind: 'stopped', member: null, thread: null }]
     })
     $groupPrompts.set({
-      'name:Old::ada': { at: 1, kind: 'clarify', member: 'ada', memberKey: 'ada', question: '?', requestId: 'p1', roomKey: 'name:Old' },
-      'name:New::ada': { at: 2, kind: 'approval', member: 'ada', memberKey: 'ada', question: 'ok?', requestId: 'p2', roomKey: 'name:New' }
+      'name:Old::ada': { at: 1, kind: 'clarify', connectionKey: 'gw-a', member: 'ada', memberKey: 'ada', question: '?', requestId: 'p1', roomKey: 'name:Old' },
+      'name:New::ada': { at: 2, kind: 'approval', connectionKey: 'gw-a', member: 'ada', memberKey: 'ada', question: 'ok?', requestId: 'p2', roomKey: 'name:New' }
     })
     $groupNeedsYou.set({ 'name:Old': false, 'name:New': true })
 
@@ -255,8 +328,8 @@ describe('unknown-key stubs', () => {
   })
 })
 
-describe('storage v1 → v2 → v3', () => {
-  it('migrates v1 coordination state to the qualified member keys and re-keys the map on load', async () => {
+describe('storage v1/v2/v3 → v4', () => {
+  it('migrates v1 coordination state to the qualified member keys and drops session-bound fields', async () => {
     localStorage.setItem(STORAGE_KEY_V1, JSON.stringify({
       Room: {
         name: 'Room',
@@ -264,6 +337,9 @@ describe('storage v1 → v2 → v3', () => {
         members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
         watermarks: { 't1::research': 3, 't1::ada': 1 },
         holds: { research: { at: 1, thread: 't1' } },
+        // Legacy session-bound fields have no recorded Gateway owner — even a
+        // legacy record carrying an unexpected tag loses the whole trio.
+        sessionConnectionKey: 'https://legacy.test',
         sessions: { research: 'stored-1' },
         stranded: { research: { before: 0, thread: 'legacy' } },
         epoch: 2,
@@ -275,8 +351,9 @@ describe('storage v1 → v2 → v3', () => {
     const fresh = await import('./group-store')
     const migrated = fresh.$groupChats.get()['name:Room']
     expect(migrated.holds).toEqual({ 'gw-2::research': { at: 1, thread: 't1' } })
-    expect(migrated.sessions).toEqual({ 'gw-2::research': 'stored-1' })
-    expect(migrated.stranded).toEqual({ 'gw-2::research': { before: 0, thread: 'legacy' } })
+    expect(migrated.sessionConnectionKey).toBeUndefined()
+    expect(migrated.sessions).toBeUndefined()
+    expect(migrated.stranded).toBeUndefined()
     expect(migrated.watermarks).toEqual({ 't1::gw-2::research': 3, 't1::ada': 1 })
     // Runtime state is stripped by the durable guards.
     expect(migrated.running).toBe(false)
@@ -284,10 +361,10 @@ describe('storage v1 → v2 → v3', () => {
     // v1 stays untouched as the rollback copy; nothing is written at load.
     expect(localStorage.getItem(STORAGE_KEY_V1)).not.toBeNull()
     expect(localStorage.getItem(STORAGE_KEY_V2)).toBeNull()
-    expect(localStorage.getItem(STORAGE_KEY_V3)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_V4)).toBeNull()
   })
 
-  it('re-keys the v2 map to durable keys without re-keying coordination', async () => {
+  it('re-keys the v2 map to durable keys without re-keying coordination or keeping session fields', async () => {
     localStorage.setItem(STORAGE_KEY_V2, JSON.stringify({
       Room: {
         name: 'Room',
@@ -296,7 +373,9 @@ describe('storage v1 → v2 → v3', () => {
         members: [{ name: 'research', connectionId: 'gw-2', sourceScoped: true }],
         watermarks: { 't1::gw-2::research': 3 },
         holds: { 'gw-2::research': { at: 1 } },
+        sessionConnectionKey: 'https://legacy.test',
         sessions: { 'gw-2::research': 'stored-1' },
+        stranded: { 'gw-2::research': { before: 0, thread: 'legacy' } },
         epoch: 1,
         running: false,
         turn: null
@@ -308,10 +387,12 @@ describe('storage v1 → v2 → v3', () => {
     expect(loaded.name).toBe('Room')
     expect(loaded.watermarks).toEqual({ 't1::gw-2::research': 3 })
     expect(loaded.holds).toEqual({ 'gw-2::research': { at: 1 } })
-    expect(loaded.sessions).toEqual({ 'gw-2::research': 'stored-1' })
+    expect(loaded.sessionConnectionKey).toBeUndefined()
+    expect(loaded.sessions).toBeUndefined()
+    expect(loaded.stranded).toBeUndefined()
     // v2 stays untouched as the rollback copy; nothing is written at load.
     expect(localStorage.getItem(STORAGE_KEY_V2)).not.toBeNull()
-    expect(localStorage.getItem(STORAGE_KEY_V3)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_V4)).toBeNull()
   })
 
   it('keeps roomId-less v2 rooms name-keyed', async () => {
@@ -346,6 +427,175 @@ describe('storage v1 → v2 → v3', () => {
     vi.resetModules()
     const fresh = await import('./group-store')
     expect(fresh.$groupChats.get()['name:Room'].watermarks).toEqual({ 't1::gw-2::research': 3, 't1::ada': 1 })
+  })
+
+  it('migrates a v3 room without its session-bound fields and writes v4 only on the next persist', async () => {
+    const legacy = JSON.stringify({
+      'id:r-1': {
+        name: 'Room',
+        roomId: 'r-1',
+        log: [memberEntry('ada', 'kept')],
+        members: [{ name: 'ada' }],
+        watermarks: { 't1::ada': 2 },
+        holds: { ada: { at: 1, thread: 't1' } },
+        image: 'img',
+        syncRevision: 4,
+        sessionConnectionKey: 'https://legacy.test',
+        sessions: { ada: 'stored-legacy' },
+        stranded: { ada: { before: 0, thread: 't1' } },
+        epoch: 1,
+        running: true,
+        turn: 'ada'
+      }
+    })
+    localStorage.setItem(STORAGE_KEY_V3, legacy)
+    vi.resetModules()
+    const fresh = await import('./group-store')
+    const migrated = fresh.$groupChats.get()['id:r-1']
+    // The whole room survives except the session-bound trio.
+    expect(migrated).toMatchObject({
+      name: 'Room', roomId: 'r-1', image: 'img', syncRevision: 4, epoch: 1,
+      log: [memberEntry('ada', 'kept')], members: [{ name: 'ada' }],
+      watermarks: { 't1::ada': 2 }, holds: { ada: { at: 1, thread: 't1' } }
+    })
+    expect(migrated.sessionConnectionKey).toBeUndefined()
+    expect(migrated.sessions).toBeUndefined()
+    expect(migrated.stranded).toBeUndefined()
+    // Load writes nothing: v4 is absent and v3 is byte-for-byte unchanged.
+    expect(localStorage.getItem(STORAGE_KEY_V4)).toBeNull()
+    expect(localStorage.getItem(STORAGE_KEY_V3)).toBe(legacy)
+
+    // A later normal persistence event writes v4.
+    fresh.updateGroupChat('id:r-1', r => r)
+    expect(localStorage.getItem(STORAGE_KEY_V4)).not.toBeNull()
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY_V4)!)['id:r-1'].log).toHaveLength(1)
+    expect(localStorage.getItem(STORAGE_KEY_V3)).toBe(legacy)
+  })
+
+  it('loads no rooms from a present but malformed v4 value and never falls back to v3', async () => {
+    localStorage.setItem(STORAGE_KEY_V3, JSON.stringify({
+      'name:Room': room({ log: [memberEntry('ada', 'x')] })
+    }))
+    for (const malformed of ['', 'not json', 'null', '[1, 2]', '"a string"']) {
+      localStorage.setItem(STORAGE_KEY_V4, malformed)
+      vi.resetModules()
+      const fresh = await import('./group-store')
+      expect(Object.keys(fresh.$groupChats.get()), `v4=${JSON.stringify(malformed)}`).toEqual([])
+    }
+  })
+
+  it('revalidates v4 session provenance per room without discarding room content', async () => {
+    localStorage.setItem(STORAGE_KEY_V4, JSON.stringify({
+      'id:tagged': {
+        name: 'Tagged', roomId: 'tagged', log: [memberEntry('ada', 'x')], members: [{ name: 'ada' }],
+        watermarks: {}, epoch: 0,
+        sessionConnectionKey: 'https://gw-a.test', sessions: { ada: 'stored-1' },
+        stranded: { ada: { before: 0, thread: 't1' } }
+      },
+      'id:malformed': {
+        name: 'Malformed', roomId: 'malformed', log: [memberEntry('ada', 'y')], members: [{ name: 'ada' }],
+        watermarks: {}, epoch: 0,
+        sessionConnectionKey: 'https://gw-a.test', sessions: { ada: '' }, stranded: { ada: -1 }
+      }
+    }))
+    vi.resetModules()
+    const fresh = await import('./group-store')
+    const tagged = fresh.$groupChats.get()['id:tagged']
+    expect(tagged.sessionConnectionKey).toBe('https://gw-a.test')
+    expect(tagged.sessions).toEqual({ ada: 'stored-1' })
+    expect(tagged.stranded).toEqual({ ada: { before: 0, thread: 't1' } })
+    const malformed = fresh.$groupChats.get()['id:malformed']
+    expect(malformed.log).toHaveLength(1)
+    expect(malformed.sessionConnectionKey).toBeUndefined()
+    expect(malformed.sessions).toBeUndefined()
+    expect(malformed.stranded).toBeUndefined()
+  })
+})
+
+describe('connection cleanup', () => {
+  it('clears mismatched and untagged session state without touching shared room state or scheduling a write', () => {
+    const scheduled: string[] = []
+    setGroupSyncScheduler(roomKey => scheduled.push(roomKey))
+    const log = [memberEntry('ada', 'hello')]
+    replaceGroupChats({
+      'id:matching': room({
+        name: 'Matching', roomId: 'matching', log,
+        sessionConnectionKey: 'https://gw-a.test', sessions: { ada: 'stored-a' },
+        stranded: { ada: { before: 0, thread: 't1' } },
+        holds: { ada: { at: 1 } }, watermarks: { 't1::ada': 1 }, epoch: 3
+      }),
+      'id:foreign': room({
+        name: 'Foreign', roomId: 'foreign', log: [...log],
+        sessionConnectionKey: 'https://gateway-b.test', sessions: { ada: 'stored-b' },
+        stranded: { ada: 0 },
+        holds: { ada: { at: 1 } }, watermarks: { 't1::ada': 1 }, epoch: 3, turn: 'ada', running: true
+      }),
+      'id:untagged': room({
+        name: 'Untagged', roomId: 'untagged', log: [...log],
+        sessions: { ada: 'orphan' }, stranded: { ada: 0 },
+        holds: { ada: { at: 1 } }, watermarks: { 't1::ada': 1 }, epoch: 3
+      })
+    })
+    $groupActivity.set({ 'id:foreign': [{ at: 1, epoch: 0, kind: 'working', member: 'ada', thread: 't1' }] })
+    $groupNeedsYou.set({ 'id:foreign': true })
+
+    clearGroupSessionProvenanceForConnection('https://gw-a.test')
+
+    const matching = $groupChats.get()['id:matching']
+    expect(matching.sessionConnectionKey).toBe('https://gw-a.test')
+    expect(matching.sessions).toEqual({ ada: 'stored-a' })
+    expect(matching.stranded).toEqual({ ada: { before: 0, thread: 't1' } })
+
+    const foreign = $groupChats.get()['id:foreign']
+    expect(foreign.sessionConnectionKey).toBeUndefined()
+    expect(foreign.sessions).toBeUndefined()
+    expect(foreign.stranded).toBeUndefined()
+    // Every shared field survives.
+    expect(foreign.log).toEqual(log)
+    expect(foreign.members).toEqual([{ name: 'ada' }])
+    expect(foreign.watermarks).toEqual({ 't1::ada': 1 })
+    expect(foreign.holds).toEqual({ ada: { at: 1 } })
+    expect(foreign.epoch).toBe(3)
+    expect(foreign.turn).toBe('ada')
+    expect(foreign.running).toBe(true)
+
+    const untagged = $groupChats.get()['id:untagged']
+    expect(untagged.sessionConnectionKey).toBeUndefined()
+    expect(untagged.sessions).toBeUndefined()
+    expect(untagged.stranded).toBeUndefined()
+    expect(untagged.log).toEqual(log)
+
+    // Runtime feeds are untouched and no mirror write was scheduled.
+    expect($groupActivity.get()['id:foreign']).toHaveLength(1)
+    expect($groupNeedsYou.get()['id:foreign']).toBe(true)
+    expect(scheduled).toEqual([])
+
+    // The sweep is durable: v4 storage carries no cleared provenance.
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY_V4)!) as Record<string, GroupChatRoom>
+    expect(stored['id:matching'].sessionConnectionKey).toBe('https://gw-a.test')
+    expect(stored['id:foreign'].sessions).toBeUndefined()
+    expect(stored['id:untagged'].stranded).toBeUndefined()
+    setGroupSyncScheduler(null)
+  })
+
+  it('is a no-op without a notification or a persist when every room already belongs to the connection', () => {
+    replaceGroupChats({
+      'id:matching': room({
+        name: 'Matching', roomId: 'matching', log: [memberEntry('ada', 'x')],
+        sessionConnectionKey: 'https://gw-a.test', sessions: { ada: 'stored-a' }
+      })
+    })
+    const persisted = localStorage.getItem(STORAGE_KEY_V4)!
+    const listener = vi.fn()
+    const unsubscribe = $groupChats.listen(listener)
+    try {
+      clearGroupSessionProvenanceForConnection('https://gw-a.test')
+      expect(listener).not.toHaveBeenCalled()
+      expect(localStorage.getItem(STORAGE_KEY_V4)).toBe(persisted)
+      expect($groupChats.get()['id:matching'].sessions).toEqual({ ada: 'stored-a' })
+    } finally {
+      unsubscribe()
+    }
   })
 })
 
