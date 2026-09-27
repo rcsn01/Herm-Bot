@@ -62,7 +62,7 @@ vi.mock('~/features/capabilities/capabilities-screen', () => ({ CapabilitiesScre
 vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: { onOpenSession?(sessionId: string): Promise<void> }) => <div>Cron screen{onOpenSession && <button onClick={() => void onOpenSession('cron-session-1')}>Open run session</button>}</div> }))
 
 import { App } from '~/app'
-import { $chat, emptyChatState } from '~/state/conversation'
+import { $chat, emptyChatState, reduceGatewayEvent } from '~/state/conversation'
 import { publishRosterRooms, resetKnownRooms } from '~/features/groups/group-engine'
 import { resetNavigation } from '~/navigation/navigation-store'
 import { resetWorkspacePolicy } from '~/navigation/workspace-navigation'
@@ -177,6 +177,21 @@ describe('App navigation', () => {
     const header = container.querySelector('.header-bot-button')!
     expect(header.querySelector('strong')?.textContent).toBe('Work')
     expect(header.querySelector('small')?.textContent).toBe('Current chat')
+  })
+
+  it.each([
+    { name: 'empty', title: '' },
+    { name: 'non-string', title: 42 }
+  ])('uses the New conversation header fallback for a $name title', async ({ title }) => {
+    const info = reduceGatewayEvent($chat.get(), {
+      type: 'session.info', session_id: 'runtime-1', payload: { title }
+    })
+    $chat.set(info)
+    const { container } = render(<App />)
+
+    await enterAgent()
+
+    expect(container.querySelector('.header-bot-button small')?.textContent).toBe('New conversation')
   })
 
   it('opens a desktop group chat from its URL with the top bar owning back and title', () => {

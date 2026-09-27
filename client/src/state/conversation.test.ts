@@ -89,12 +89,24 @@ describe('reduceGatewayEvent', () => {
     const questionCases: Array<{ fields: Record<string, unknown>; question: string }> = [
       { fields: { question: 'question?', message: 'message?', command: 'command?' }, question: 'question?' },
       { fields: { question: null, message: 'message?', command: 'command?' }, question: 'message?' },
+      { fields: { question: null, message: null, command: 'command?' }, question: 'command?' },
       { fields: { question: '', message: 'message?', command: 'command?' }, question: '' },
-      { fields: { message: 'message?', command: 'command?' }, question: 'message?' },
-      { fields: { command: 'command?' }, question: 'command?' },
-      { fields: {}, question: '' },
+      { fields: { question: false, message: 'message?', command: 'command?' }, question: 'false' },
+      { fields: { question: 0, message: 'message?', command: 'command?' }, question: '0' },
+      { fields: { question: null, message: '', command: 'command?' }, question: '' },
+      { fields: { question: null, message: false, command: 'command?' }, question: 'false' },
+      { fields: { question: null, message: 0, command: 'command?' }, question: '0' },
+      { fields: { question: null, message: null, command: '' }, question: '' },
+      { fields: { question: null, message: null, command: false }, question: 'false' },
+      { fields: { question: null, message: null, command: 0 }, question: '0' },
+      { fields: { question: null, message: null, command: null }, question: '' },
+      { fields: { question: null, message: '  unchanged whitespace  ' }, question: '  unchanged whitespace  ' },
       { fields: { question: 42 }, question: '42' },
-      { fields: { question: false }, question: 'false' }
+      { fields: { question: false }, question: 'false' },
+      { fields: { question: null, message: 42 }, question: '42' },
+      { fields: { question: null, message: false }, question: 'false' },
+      { fields: { question: null, message: null, command: 42 }, question: '42' },
+      { fields: {}, question: '' }
     ]
 
     for (const { fields, question } of questionCases) {
@@ -108,24 +120,52 @@ describe('reduceGatewayEvent', () => {
 
   it.each([
     { name: 'standard usage, title, and truthy running', payload: { title: 'Planning', running: true, usage: { context_limit: 100, total: 25 } }, info: { title: 'Planning', running: true, usage: { used: 25, limit: 100 } }, running: true },
+    { name: 'title preserves surrounding whitespace', payload: { title: '  Planning  ' }, info: { title: '  Planning  ', running: false, usage: null }, running: false },
     { name: 'legacy usage names', payload: { usage: { max_tokens: 100, total_tokens: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'current usage names win over legacy names', payload: { usage: { total: 25, total_tokens: 99, context_limit: 100, max_tokens: 999 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'null current usage names fall back to legacy names', payload: { usage: { total: null, total_tokens: '25', context_limit: null, max_tokens: '100' } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'empty current total suppresses the legacy value', payload: { usage: { total: '', total_tokens: 25, context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
+    { name: 'false current total suppresses the legacy value', payload: { usage: { total: false, total_tokens: 25, context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
+    { name: 'zero current total suppresses the legacy value', payload: { usage: { total: 0, total_tokens: 25, context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
+    { name: 'empty current limit suppresses the legacy value', payload: { usage: { total: 25, context_limit: '', max_tokens: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
+    { name: 'false current limit suppresses the legacy value', payload: { usage: { total: 25, context_limit: false, max_tokens: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
+    { name: 'zero current limit suppresses the legacy value', payload: { usage: { total: 25, context_limit: 0, max_tokens: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
     { name: 'absent usage and title', payload: {}, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'empty usage', payload: { usage: {} }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'non-object usage', payload: { usage: 'legacy' }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'null usage', payload: { usage: null }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'primitive usage', payload: { usage: 'legacy' }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'array usage', payload: { usage: [] }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'empty usage object', payload: { usage: {} }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'total only', payload: { usage: { total: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
     { name: 'limit only', payload: { usage: { context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
     { name: 'all-zero usage', payload: { usage: { total: 0, context_limit: 0 } }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'numeric string total', payload: { usage: { total: '25', context_limit: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
-    { name: 'non-numeric total alone', payload: { usage: { total: 'bad' } }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'non-numeric total beside valid limit', payload: { usage: { total: 'bad', context_limit: 100 } }, info: { title: '', running: false, usage: { used: Number.NaN, limit: 100 } }, running: false },
+    { name: 'numeric strings are coerced', payload: { usage: { total: '25', context_limit: '100' } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'garbage in both fields yields no usage', payload: { usage: { total: 'bad', context_limit: 'bad' } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'non-numeric total beside valid limit is retained as NaN', payload: { usage: { total: 'bad', context_limit: 100 } }, info: { title: '', running: false, usage: { used: Number.NaN, limit: 100 } }, running: false },
+    { name: 'non-numeric limit beside valid total is retained as NaN', payload: { usage: { total: 25, context_limit: 'bad' } }, info: { title: '', running: false, usage: { used: 25, limit: Number.NaN } }, running: false },
     { name: 'non-string title', payload: { title: 42 }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'truthy non-boolean running', payload: { running: 'yes' }, info: { title: '', running: true, usage: null }, running: true }
+    { name: 'truthy non-boolean running', payload: { running: 'yes' }, info: { title: '', running: true, usage: null }, running: true },
+    { name: 'false running', payload: { running: false }, info: { title: '', running: false, usage: null }, running: false }
   ])('normalizes session.info: $name', ({ payload, info, running }) => {
     const state = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
       type: 'session.info', session_id: 'runtime-1', payload
     })
     expect(state.info).toEqual(info)
     expect(state.running).toBe(running)
+  })
+
+  it('replaces the complete info snapshot when a later session.info omits fields', () => {
+    const populated = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
+      type: 'session.info', session_id: 'runtime-1', payload: {
+        title: 'Planning', running: true, usage: { total: 25, context_limit: 100 }
+      }
+    })
+
+    const replaced = reduceGatewayEvent(populated, {
+      type: 'session.info', session_id: 'runtime-1', payload: { running: false }
+    })
+
+    expect(replaced.info).toEqual({ title: '', running: false, usage: null })
+    expect(replaced.running).toBe(false)
   })
 
   it('ignores events for another runtime session and unknown future events', () => {
@@ -260,6 +300,75 @@ describe('prompt submission safety', () => {
     await expect(conversation.respond('yes')).rejects.toMatchObject({ kind: 'network' })
 
     expect($chat.get().pendingPrompt).toEqual(pendingPrompt)
+    dispose()
+  })
+
+  it('sends every prompt response with only its kind-specific wire field', async () => {
+    const cases = [
+      { kind: 'clarify', method: 'clarify.respond', field: 'answer', value: 'text answer' },
+      { kind: 'approval', method: 'approval.respond', field: 'choice', value: 'allow' },
+      { kind: 'sudo', method: 'sudo.respond', field: 'password', value: 'secret password' },
+      { kind: 'secret', method: 'secret.respond', field: 'value', value: 'secret value' }
+    ] as const
+
+    for (const { kind, method, field, value } of cases) {
+      const gateway = new MemoryGateway().handle(method, () => ({}))
+      const { conversation, dispose } = subject(gateway)
+      $chat.set({
+        ...emptyChatState(),
+        pendingPrompt: { kind, question: 'question', requestId: `request-${kind}` },
+        runtimeSessionId: 'runtime-1'
+      })
+
+      await conversation.respond(kind === 'approval' ? 'unused' : value, kind === 'approval' ? value : undefined)
+
+      expect(gateway.calls).toEqual([{
+        kind: 'rpc',
+        method,
+        value: {
+          request_id: `request-${kind}`,
+          session_id: 'runtime-1',
+          [field]: value
+        }
+      }])
+      expect($chat.get().pendingPrompt).toBeNull()
+      dispose()
+    }
+  })
+
+  it('does not clear a replacement prompt when an earlier response resolves', async () => {
+    $chat.set({
+      ...emptyChatState(),
+      pendingPrompt: { kind: 'clarify', question: 'First question', requestId: 'request-1' },
+      runtimeSessionId: 'runtime-1'
+    })
+    let release!: () => void
+    const gateway = new MemoryGateway().handle('clarify.respond', () => new Promise<void>(resolve => { release = resolve }))
+    const { conversation, dispose } = subject(gateway)
+
+    const responding = conversation.respond('answer')
+    const replacement = { kind: 'secret' as const, question: 'Second question', requestId: 'request-2' }
+    $chat.set({ ...$chat.get(), pendingPrompt: replacement })
+    release()
+    await responding
+
+    expect($chat.get().pendingPrompt).toBe(replacement)
+    dispose()
+  })
+
+  it('does not clear a pending prompt when its response resolves in a different Scope', async () => {
+    const pendingPrompt = { kind: 'clarify' as const, question: 'Question', requestId: 'request-1' }
+    $chat.set({ ...emptyChatState(), pendingPrompt, runtimeSessionId: 'runtime-1' })
+    let release!: () => void
+    const gateway = new MemoryGateway().handle('clarify.respond', () => new Promise<void>(resolve => { release = resolve }))
+    const { conversation, dispose } = subject(gateway)
+
+    const responding = conversation.respond('answer')
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    release()
+    await responding
+
+    expect($chat.get().pendingPrompt).toBe(pendingPrompt)
     dispose()
   })
 

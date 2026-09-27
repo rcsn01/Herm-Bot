@@ -15,7 +15,7 @@ vi.mock('~/compat/primitives', () => ({
 
 import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
-import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
+import { $chat, emptyChatState, reduceGatewayEvent, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences } from '~/state/store'
 import { createTranscript } from '~/transcript/transcript'
@@ -211,6 +211,29 @@ describe('transcript rendering and durable edits', () => {
     expect(contextUsage?.closest('.composer-meta')?.previousElementSibling?.classList.contains('composer')).toBe(true)
   })
 
+  it.each([
+    { name: 'total only', payload: { usage: { total: 25 } }, label: '25', max: 25 },
+    { name: 'limit only', payload: { usage: { context_limit: 100 } }, label: '0 / 100', max: 100 },
+    { name: 'absent usage', payload: {}, label: null, max: null },
+    { name: 'empty usage', payload: { usage: {} }, label: null, max: null },
+    { name: 'all-zero usage', payload: { usage: { total: 0, context_limit: 0 } }, label: null, max: null },
+    { name: 'NaN with a valid limit', payload: { usage: { total: 'bad', context_limit: 100 } }, label: 'NaN / 100', max: 100 }
+  ])('renders the projected context usage: $name', ({ payload, label, max }) => {
+    const state = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
+      type: 'session.info', session_id: 'runtime-1', payload
+    })
+    $chat.set(state)
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    const contextUsage = container.querySelector('.context-usage')
+    if (label === null) {
+      expect(contextUsage).toBeNull()
+    } else {
+      expect(contextUsage?.textContent).toContain(label)
+      expect(contextUsage?.querySelector('progress')?.max).toBe(max)
+    }
+  })
+
   it('shows whether the current session is working', () => {
     const controller = controllerStub()
     const conversation = conversationStub()
@@ -393,6 +416,23 @@ describe('session management and prompts', () => {
     await waitFor(() => expect(controller.renameSession).toHaveBeenCalledWith('session-1', 'Renamed session'))
   })
 
+  it.each([
+    { name: 'empty', title: '' },
+    { name: 'non-string', title: 42 }
+  ])('starts the rename dialog with an empty value for a $name title', ({ title }) => {
+    const state = reduceGatewayEvent({
+      ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'session-1'
+    }, {
+      type: 'session.info', session_id: 'runtime-1', payload: { title }
+    })
+    $chat.set(state)
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Session options' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit name' }))
+    expect(screen.getByLabelText<HTMLInputElement>('Session title').value).toBe('')
+  })
+
   it('clears session dialogs and their errors when either session identity changes', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1', storedSessionId: 'session-1' })
     const controller = controllerStub()
@@ -429,5 +469,15 @@ describe('session management and prompts', () => {
     expect(screen.getByText('rm file').tagName).toBe('P')
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
     expect(conversation.respond).toHaveBeenCalledWith('allow', 'allow')
+  })
+
+  it('does not render a question paragraph for an empty resolved question', () => {
+    const state = reduceGatewayEvent(emptyChatState(), {
+      type: 'clarify.request', payload: { request_id: 'clarify-1', question: null, message: '' }
+    })
+    $chat.set(state)
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+
+    expect(container.querySelector('.prompt-card p')).toBeNull()
   })
 })
