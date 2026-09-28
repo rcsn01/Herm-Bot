@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -10,7 +10,8 @@ import { useChatViewport } from '~/components/chat-viewport'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask, useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
-import { ChatInteraction, type ChatInteractionCommands, type ChatMediaConnection } from '~/features/chat/chat-interaction'
+import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
+import { useChatInteraction } from '~/features/chat/use-chat-interaction'
 import { createAgentsApi } from '~/features/agents/agents-api'
 import { displayNameFor } from '~/features/agents/agent-labels'
 import { BotFace } from '~/features/agents/bot-face'
@@ -32,16 +33,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const chat = useStore($chat)
   const connection = useStore($connection)
   const entries = chat.transcript.entries
-  // A fresh literal, not the live instances: every method must be bound so
-  // `this` resolves to its owner (Conversation / GatewayController).
-  const commands = useMemo<ChatInteractionCommands>(() => ({
-    attach: conversation.attach.bind(conversation),
-    request: controller.request.bind(controller),
-    retryFrom: conversation.retryFrom.bind(conversation),
-    send: conversation.send.bind(conversation)
-  }), [conversation, controller])
-  const interaction = useMemo(() => new ChatInteraction(commands, mediaConnection), [commands, mediaConnection])
-  const interactionState = useStore(interaction.$state)
+  const { interaction, state: interactionState } = useChatInteraction({ conversation, mediaConnection })
   const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
   const [sessionActionError, setSessionActionError] = useState<string | null>(null)
   const [showSessionActions, setShowSessionActions] = useState(false)
@@ -67,29 +59,13 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
     }
   })
   const action = useScopedTask()
-  const pendingDisposals = useRef(new Map<ChatInteraction, symbol>())
 
   useEffect(() => {
-    // StrictMode rehearses effect cleanup without replacing the memoized instance.
-    pendingDisposals.current.delete(interaction)
-    return () => {
-      const disposal = Symbol('chat-interaction-disposal')
-      pendingDisposals.current.set(interaction, disposal)
-      queueMicrotask(() => {
-        if (pendingDisposals.current.get(interaction) !== disposal) return
-        pendingDisposals.current.delete(interaction)
-        interaction.dispose()
-      })
-    }
-  }, [interaction])
-
-  useEffect(() => {
-    interaction.setSession(chat.runtimeSessionId)
     setSessionActionError(null)
     setShowSessionActions(false)
     setRenameSession(false)
     setArchiveSession(false)
-  }, [chat.runtimeSessionId, chat.storedSessionId, interaction])
+  }, [chat.runtimeSessionId, chat.storedSessionId])
 
   const reportSessionAction = (perform: () => Promise<unknown>) => {
     void action.run(perform, { onError: error => setSessionActionError(error.message) })

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatInteraction } from '~/features/chat/chat-interaction'
 import type { GatewayTransport } from '~/gateway/gateway-port'
@@ -256,7 +256,7 @@ describe('prompt submission safety', () => {
     const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))
     const { conversation, dispose } = subject(gateway)
     const interaction = new ChatInteraction({
-      attach: vi.fn(), request: vi.fn(), retryFrom: conversation.retryFrom.bind(conversation), send: vi.fn()
+      attach: vi.fn(), completeSlash: vi.fn(), retryFrom: conversation.retryFrom.bind(conversation), send: vi.fn()
     }, { request: vi.fn(), upload: vi.fn() })
     interaction.beginEdit({ content: 'recent', rowId: 41 })
     interaction.updateDraft('edited recent')
@@ -398,6 +398,136 @@ describe('prompt submission safety', () => {
     await sending
 
     expect($chat.get()).toBe(stale)
+    dispose()
+  })
+})
+
+describe('attachments', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const stubCompletedRead = () => {
+    vi.stubGlobal('FileReader', class {
+      error = null
+      onerror: (() => void) | null = null
+      onload: (() => void) | null = null
+      result: string | null = null
+
+      readAsDataURL() {
+        this.result = 'data:text/plain;base64,eHg='
+        queueMicrotask(() => this.onload?.())
+      }
+    })
+  }
+
+  it('routes images to image.attach_bytes and other files to file.attach with the active session', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    stubCompletedRead()
+    const gateway = new MemoryGateway()
+      .handle('image.attach_bytes', () => ({ ref_text: '@file:pic.png' }))
+      .handle('file.attach', () => ({ ref_text: '@file:doc.txt' }))
+    const { conversation, dispose } = subject(gateway)
+
+    expect(await conversation.attach(new File(['x'], 'pic.png', { type: 'image/png' }))).toBe('@file:pic.png')
+    expect(await conversation.attach(new File(['x'], 'doc.txt'))).toBe('@file:doc.txt')
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'image.attach_bytes', value: { data_url: 'data:text/plain;base64,eHg=', name: 'pic.png', session_id: 'runtime-1' } })
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'file.attach', value: { data_url: 'data:text/plain;base64,eHg=', name: 'doc.txt', path: 'doc.txt', session_id: 'runtime-1' } })
+    dispose()
+  })
+
+  it('resolves the attachment reference from the response fields, verbatim', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    stubCompletedRead()
+    const gateway = new MemoryGateway()
+      .handle('file.attach', () => ({}))
+      .handle('image.attach_bytes', () => ({ ref_text: '' }))
+    const { conversation, dispose } = subject(gateway)
+
+    expect(await conversation.attach(new File(['x'], 'doc.txt'))).toBe('@file:doc.txt')
+    expect(await conversation.attach(new File(['x'], 'pic.png', { type: 'image/png' }))).toBe('')
+    dispose()
+  })
+
+  it('resolves undefined for a falsy response', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    stubCompletedRead()
+    const gateway = new MemoryGateway().handle('file.attach', () => null)
+    const { conversation, dispose } = subject(gateway)
+
+    await expect(conversation.attach(new File(['x'], 'doc.txt'))).resolves.toBeUndefined()
+    dispose()
+  })
+
+  it('rejects image and file uploads over their size caps before any RPC', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    const gateway = new MemoryGateway()
+    const { conversation, dispose } = subject(gateway)
+    const image = new File(['x'], 'pic.png', { type: 'image/png' })
+    Object.defineProperty(image, 'size', { value: 20 * 1_024 * 1_024 + 1 })
+    const doc = new File(['x'], 'doc.txt')
+    Object.defineProperty(doc, 'size', { value: 50 * 1_024 * 1_024 + 1 })
+
+    await expect(conversation.attach(image)).rejects.toThrow('This attachment exceeds the 20 MB mobile upload limit.')
+    await expect(conversation.attach(doc)).rejects.toThrow('This attachment exceeds the 50 MB mobile upload limit.')
+    expect(gateway.calls).toEqual([])
+    dispose()
+  })
+
+  it('returns undefined without an RPC when the gateway scope goes stale mid-read', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    let releaseReader!: () => void
+    vi.stubGlobal('FileReader', class {
+      error = null
+      onerror: (() => void) | null = null
+      onload: (() => void) | null = null
+      result: string | null = null
+
+      readAsDataURL() {
+        this.result = 'data:text/plain;base64,eHg='
+        releaseReader = () => this.onload?.()
+      }
+    })
+    const gateway = new MemoryGateway().handle('file.attach', () => ({ ref_text: '@file:doc.txt' }))
+    const { conversation, dispose } = subject(gateway)
+
+    const attaching = conversation.attach(new File(['x'], 'doc.txt'))
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    releaseReader()
+    await expect(attaching).resolves.toBeUndefined()
+    expect(gateway.calls).toEqual([])
+    dispose()
+  })
+})
+
+describe('slash completion', () => {
+  it('resolves the suggestion payload and sends the draft as text', async () => {
+    const gateway = new MemoryGateway().handle('complete.slash', () => ({ items: [{ text: '/research' }], replace_from: 2 }))
+    const { conversation, dispose } = subject(gateway)
+
+    await expect(conversation.completeSlash('/re')).resolves.toEqual({ items: [{ text: '/research' }], replaceFrom: 2 })
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'complete.slash', value: { text: '/re' } })
+    dispose()
+  })
+
+  it('defaults a missing suggestion list and a non-numeric replace_from', async () => {
+    const gateway = new MemoryGateway().handle('complete.slash', () => ({ items: null, replace_from: 'x' }))
+    const { conversation, dispose } = subject(gateway)
+
+    await expect(conversation.completeSlash('/re')).resolves.toEqual({ items: [], replaceFrom: undefined })
+    dispose()
+  })
+
+  it('rejects with an abort error when the gateway scope changed mid-RPC', async () => {
+    let release!: () => void
+    const submitted = new Promise<void>(resolve => { release = resolve })
+    const gateway = new MemoryGateway().handle('complete.slash', () => submitted.then(() => ({})))
+    const { conversation, dispose } = subject(gateway)
+
+    const pending = conversation.completeSlash('/re')
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    release()
+    await expect(pending).rejects.toMatchObject({ message: 'Gateway scope changed.', name: 'AbortError' })
     dispose()
   })
 })

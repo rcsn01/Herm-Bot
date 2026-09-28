@@ -2,6 +2,7 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics'
 import type { GatewayEvent } from '~/compat/hermes-shared'
 import { atom } from 'nanostores'
 
+import type { ChatSuggestion, SlashCompletionPayload } from '~/features/chat/chat-interaction'
 import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
@@ -14,9 +15,10 @@ import { createTranscript, updateTranscript } from '~/transcript/transcript'
  * chat surface (see the repository's CONTEXT.md). It owns the active session's chat
  * state end to end — the `$chat` atom (this module is its sole writer),
  * gateway-event reduction, prompt submission (send / queue / interrupt /
- * steer / redirect / retry-from), interactive-prompt responses, attachments,
- * and transcript history (reconcile + paging, including the
- * reconcile-on-`message.complete` policy). The GatewayController constructs
+ * steer / redirect / retry-from), interactive-prompt responses, attachments
+ * (upload RPCs and reference resolution), slash completion, and transcript
+ * history (reconcile + paging, including the reconcile-on-`message.complete`
+ * policy). The GatewayController constructs
  * it and forwards runtime events into it. The Session selection module owns
  * *which* session is live; the Conversation owns session *content*.
  */
@@ -148,6 +150,11 @@ function fileToDataURL(file: File): Promise<string> {
     reader.onload = () => resolve(String(reader.result))
     reader.readAsDataURL(file)
   })
+}
+
+interface SlashCompletionResponse {
+  items?: Array<Omit<ChatSuggestion, 'insertText'>>
+  replace_from?: number
 }
 
 function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): SessionHistoryPage {
@@ -314,7 +321,18 @@ export class Conversation {
     }
   }
 
-  async attach(file: File): Promise<unknown> {
+  /** Resolve slash-command suggestions for the composer's current draft. */
+  async completeSlash(draft: string): Promise<SlashCompletionPayload> {
+    const scope = currentGatewayScope()
+    const response = await this.runtime.rpc<SlashCompletionResponse>('complete.slash', { text: draft })
+    if (!isCurrentGatewayScope(scope)) throw new DOMException('Gateway scope changed.', 'AbortError')
+    return {
+      items: response.items ?? [],
+      replaceFrom: typeof response.replace_from === 'number' ? response.replace_from : undefined
+    }
+  }
+
+  async attach(file: File): Promise<string | undefined> {
     const scope = currentGatewayScope()
     const limit = file.type.startsWith('image/') ? 20 * 1_024 * 1_024 : 50 * 1_024 * 1_024
     if (file.size > limit) throw new Error(`This attachment exceeds the ${limit / 1_024 / 1_024} MB mobile upload limit.`)
@@ -322,10 +340,12 @@ export class Conversation {
     if (!sessionId) throw new Error('No active session.')
     const dataUrl = await fileToDataURL(file)
     if (!isCurrentGatewayScope(scope)) return undefined
-    if (file.type.startsWith('image/')) {
-      return this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
-    }
-    return this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
+    const result = file.type.startsWith('image/')
+      ? await this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
+      : await this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
+    const response = result as { ref_text?: string; text?: string } | undefined
+    if (!response) return undefined
+    return response.ref_text ?? response.text ?? `@file:${file.name}`
   }
 
   async respond(value: string, choice?: string): Promise<void> {

@@ -269,13 +269,6 @@ export class GatewayController {
     await this.selection.select({ kind: 'branch' })
   }
 
-  async request<T>(method: string, params: Record<string, unknown> = {}) {
-    const scope = currentGatewayScope()
-    const result = await this.runtime.rpc<T>(method, params)
-    if (!isCurrentGatewayScope(scope)) throw new DOMException('Gateway scope changed.', 'AbortError')
-    return result
-  }
-
   dispose() {
     this.disposed = true
     ++this.lifecycleGeneration

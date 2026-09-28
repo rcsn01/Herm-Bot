@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ChatInteraction,
   type ChatInteractionCommands,
-  type ChatMediaConnection
+  type ChatMediaConnection,
+  type SlashCompletionPayload
 } from '~/features/chat/chat-interaction'
 
 interface Deferred<T> {
@@ -25,7 +26,7 @@ function deferred<T>(): Deferred<T> {
 function commandAdapter() {
   return {
     attach: vi.fn(),
-    request: vi.fn(),
+    completeSlash: vi.fn(),
     retryFrom: vi.fn(),
     send: vi.fn()
   } as unknown as ChatInteractionCommands
@@ -65,7 +66,7 @@ beforeEach(() => {
 describe('session state', () => {
   it('preserves typed text and clears session-bound state on a session switch', async () => {
     const { commands, interaction: subject } = interaction()
-    vi.mocked(commands.attach).mockResolvedValue({ ref_text: '@file:one' })
+    vi.mocked(commands.attach).mockResolvedValue('@file:one')
     await subject.attach([new File(['one'], 'one.txt')])
     subject.beginEdit({ content: 'original', rowId: 4 })
     subject.updateDraft('plain draft')
@@ -93,9 +94,9 @@ describe('session state', () => {
 describe('slash completion', () => {
   it('inserts slash and argument completions using replace_from', async () => {
     const { commands, interaction: subject } = interaction()
-    vi.mocked(commands.request)
-      .mockResolvedValueOnce({ items: [{ text: '/research' }], replace_from: 1 })
-      .mockResolvedValueOnce({ items: [{ text: 'alice' }], replace_from: 13 })
+    vi.mocked(commands.completeSlash)
+      .mockResolvedValueOnce({ items: [{ text: '/research' }], replaceFrom: 1 })
+      .mockResolvedValueOnce({ items: [{ text: 'alice' }], replaceFrom: 13 })
 
     subject.updateDraft('/')
     await vi.waitFor(() => expect(subject.$state.get().slashItems).toHaveLength(1))
@@ -110,22 +111,22 @@ describe('slash completion', () => {
 
   it('keeps newer suggestions when an older request succeeds or fails', async () => {
     const { commands, interaction: subject } = interaction()
-    const old = deferred<unknown>()
-    vi.mocked(commands.request)
+    const old = deferred<SlashCompletionPayload>()
+    vi.mocked(commands.completeSlash)
       .mockReturnValueOnce(old.promise)
-      .mockResolvedValueOnce({ items: [{ text: '/new' }], replace_from: 1 })
+      .mockResolvedValueOnce({ items: [{ text: '/new' }], replaceFrom: 1 })
 
     subject.updateDraft('/')
     subject.updateDraft('/n')
     await vi.waitFor(() => expect(subject.$state.get().slashItems[0]?.text).toBe('/new'))
-    old.resolve({ items: [{ text: '/old' }], replace_from: 1 })
+    old.resolve({ items: [{ text: '/old' }], replaceFrom: 1 })
     await old.promise
     expect(subject.$state.get().slashItems[0]?.text).toBe('/new')
 
-    const staleFailure = deferred<unknown>()
-    vi.mocked(commands.request)
+    const staleFailure = deferred<SlashCompletionPayload>()
+    vi.mocked(commands.completeSlash)
       .mockReturnValueOnce(staleFailure.promise)
-      .mockResolvedValueOnce({ items: [{ text: '/latest' }], replace_from: 1 })
+      .mockResolvedValueOnce({ items: [{ text: '/latest' }], replaceFrom: 1 })
     subject.updateDraft('/o')
     subject.updateDraft('/l')
     await vi.waitFor(() => expect(subject.$state.get().slashItems[0]?.text).toBe('/latest'))
@@ -136,15 +137,47 @@ describe('slash completion', () => {
 
   it('rejects old responses after switching away and back to the same ID', async () => {
     const { commands, interaction: subject } = interaction()
-    const pending = deferred<unknown>()
-    vi.mocked(commands.request).mockReturnValue(pending.promise)
+    const pending = deferred<SlashCompletionPayload>()
+    vi.mocked(commands.completeSlash).mockReturnValue(pending.promise)
     subject.updateDraft('/')
     subject.setSession('session-2')
     subject.setSession('session-1')
 
-    pending.resolve({ items: [{ text: '/stale' }], replace_from: 1 })
+    pending.resolve({ items: [{ text: '/stale' }], replaceFrom: 1 })
     await pending.promise
     expect(subject.$state.get().slashItems).toEqual([])
+  })
+
+  it('clears a populated suggestion list when the current request rejects', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.completeSlash)
+      .mockResolvedValueOnce({ items: [{ text: '/help' }], replaceFrom: 1 })
+      .mockRejectedValueOnce(new Error('completion unavailable'))
+
+    subject.updateDraft('/he')
+    await vi.waitFor(() => expect(subject.$state.get().slashItems).toHaveLength(1))
+    subject.updateDraft('/hel')
+    await vi.waitFor(() => expect(subject.$state.get().slashItems).toEqual([]))
+  })
+
+  it('discards an in-flight slash completion when transcription starts', async () => {
+    const { commands, interaction: subject, media } = interaction()
+    const completion = deferred<SlashCompletionPayload>()
+    const upload = deferred<ReturnType<typeof response<{ transcript: string }>>>()
+    vi.mocked(commands.completeSlash).mockReturnValueOnce(completion.promise)
+    vi.mocked(media.upload).mockReturnValueOnce(upload.promise)
+
+    subject.updateDraft('/he')
+    const transcribing = subject.transcribe(new File(['voice'], 'note.m4a', { type: 'audio/mp4' }))
+    await vi.waitFor(() => expect(media.upload).toHaveBeenCalledOnce())
+
+    completion.resolve({ items: [{ text: '/help' }], replaceFrom: 1 })
+    await completion.promise
+    expect(subject.$state.get().slashItems).toEqual([])
+
+    upload.resolve(response({ transcript: 'spoken words' }))
+    await transcribing
+    expect(subject.$state.get().draft).toBe('spoken words')
   })
 })
 
@@ -169,7 +202,7 @@ describe('submission', () => {
 
   it('restores the exact draft, references, and edit target after failure', async () => {
     const { commands, interaction: subject } = interaction()
-    vi.mocked(commands.attach).mockResolvedValue({ ref_text: '@file:one' })
+    vi.mocked(commands.attach).mockResolvedValue('@file:one')
     vi.mocked(commands.retryFrom).mockRejectedValue(new Error('rewind refused'))
     await subject.attach([new File(['one'], 'one.txt')])
     const target = { content: 'original', rowId: 41 }
@@ -215,16 +248,16 @@ describe('submission', () => {
 describe('attachments', () => {
   it('uploads sequentially, preserves successful order, and continues after failures', async () => {
     const { commands, interaction: subject } = interaction()
-    const first = deferred<unknown>()
+    const first = deferred<string>()
     vi.mocked(commands.attach)
       .mockReturnValueOnce(first.promise)
       .mockRejectedValueOnce(new Error('second failed'))
-      .mockResolvedValueOnce({ text: '@file:third' })
+      .mockResolvedValueOnce('@file:third')
     const files = [new File(['1'], 'one.txt'), new File(['2'], 'two.txt'), new File(['3'], 'three.txt')]
 
     const attaching = subject.attach(files)
     expect(commands.attach).toHaveBeenCalledTimes(1)
-    first.resolve({ ref_text: '@file:first' })
+    first.resolve('@file:first')
     await attaching
 
     expect(commands.attach).toHaveBeenCalledTimes(3)
@@ -236,18 +269,36 @@ describe('attachments', () => {
 
   it.each(['resolve', 'reject'] as const)('discards a stale first upload %s and never starts the next file', async outcome => {
     const { commands, interaction: subject } = interaction()
-    const first = deferred<unknown>()
+    const first = deferred<string>()
     vi.mocked(commands.attach).mockReturnValue(first.promise)
     const attaching = subject.attach([new File(['1'], 'one.txt'), new File(['2'], 'two.txt')])
     subject.setSession('session-2')
     subject.setSession('session-1')
 
-    if (outcome === 'resolve') first.resolve({ ref_text: '@file:stale' })
+    if (outcome === 'resolve') first.resolve('@file:stale')
     else first.reject(new Error('stale failure'))
     await attaching
 
     expect(commands.attach).toHaveBeenCalledTimes(1)
     expect(subject.$state.get()).toMatchObject({ attachmentRefs: [], error: null })
+  })
+
+  it('treats an undefined reference as a silent full stop', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.attach).mockResolvedValue(undefined)
+    await subject.attach([new File(['1'], 'one.txt'), new File(['2'], 'two.txt')])
+    expect(commands.attach).toHaveBeenCalledTimes(1)
+    expect(subject.$state.get()).toMatchObject({ attachmentRefs: [], error: null })
+  })
+
+  it('appends an empty-string reference and continues to the next file', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.attach)
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('@file:two')
+    await subject.attach([new File(['1'], 'one.txt'), new File(['2'], 'two.txt')])
+    expect(subject.$state.get().attachmentRefs).toEqual(['', '@file:two'])
+    expect(commands.attach).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -364,11 +415,11 @@ describe('speech', () => {
 describe('disposal', () => {
   it('makes pending callbacks inert', async () => {
     const { commands, interaction: subject } = interaction()
-    const pending = deferred<unknown>()
-    vi.mocked(commands.request).mockReturnValue(pending.promise)
+    const pending = deferred<SlashCompletionPayload>()
+    vi.mocked(commands.completeSlash).mockReturnValue(pending.promise)
     subject.updateDraft('/')
     subject.dispose()
-    pending.resolve({ items: [{ text: '/stale' }], replace_from: 1 })
+    pending.resolve({ items: [{ text: '/stale' }], replaceFrom: 1 })
     await pending.promise
 
     expect(subject.$state.get().slashItems).toEqual([])

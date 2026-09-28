@@ -29,12 +29,12 @@ const mediaConnectionStub = () => ({
 const controllerStub = () => ({
   archiveSession: vi.fn().mockResolvedValue(undefined),
   branchSession: vi.fn().mockResolvedValue(undefined),
-  renameSession: vi.fn().mockResolvedValue(undefined),
-  request: vi.fn()
+  renameSession: vi.fn().mockResolvedValue(undefined)
 }) as unknown as GatewayController
 
 const conversationStub = () => ({
   attach: vi.fn(),
+  completeSlash: vi.fn(),
   interrupt: vi.fn(),
   loadOlderMessages: vi.fn().mockResolvedValue(true),
   reconcileHistory: vi.fn().mockResolvedValue(undefined),

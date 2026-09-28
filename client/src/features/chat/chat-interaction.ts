@@ -25,19 +25,19 @@ export interface ChatInteractionState {
   submitting: boolean
 }
 
+export interface SlashCompletionPayload {
+  items: Array<Omit<ChatSuggestion, 'insertText'>>
+  replaceFrom?: number
+}
+
 export interface ChatInteractionCommands {
-  attach(file: File): Promise<unknown>
-  request<T>(method: string, params?: Record<string, unknown>): Promise<T>
+  attach(file: File): Promise<string | undefined>
+  completeSlash(draft: string): Promise<SlashCompletionPayload>
   retryFrom(rowId: number, text: string): Promise<void>
   send(text: string): Promise<void>
 }
 /** Chat audio rides the GatewayPort directly (installation-wide /api/audio routes, no profile param). */
 export type ChatMediaConnection = Pick<GatewayPort, 'request' | 'upload'>
-
-interface SlashCompletionResponse {
-  items?: Array<Omit<ChatSuggestion, 'insertText'>>
-  replace_from?: number
-}
 
 const initialState = (): ChatInteractionState => ({
   attachmentRefs: [],
@@ -52,10 +52,9 @@ export class ChatInteraction {
   readonly $state = atom<ChatInteractionState>(initialState())
 
   private disposed = false
-  private mediaGeneration = 0
+  private draftRevision = 0
   private sessionEpoch = 0
   private sessionId: null | string = null
-  private slashCompletionGeneration = 0
 
   constructor(
     private readonly commands: ChatInteractionCommands,
@@ -66,8 +65,7 @@ export class ChatInteraction {
     if (this.disposed || sessionId === this.sessionId) return
     this.sessionId = sessionId
     this.sessionEpoch += 1
-    this.mediaGeneration += 1
-    this.slashCompletionGeneration += 1
+    this.draftRevision += 1
     const { draft } = this.$state.get()
     this.$state.set({ ...initialState(), draft })
   }
@@ -75,24 +73,23 @@ export class ChatInteraction {
   updateDraft(value: string) {
     if (this.disposed) return
     const epoch = this.sessionEpoch
-    const generation = ++this.slashCompletionGeneration
-    this.mediaGeneration += 1
+    const revision = ++this.draftRevision
     this.patch({ draft: value })
     if (!value.startsWith('/')) {
       this.patch({ slashItems: [] })
       return
     }
 
-    void this.commands.request<SlashCompletionResponse>('complete.slash', { text: value }).then(result => {
-      if (!this.isCurrent(epoch) || generation !== this.slashCompletionGeneration) return
+    void this.commands.completeSlash(value).then(payload => {
+      if (!this.isRevisionCurrent(epoch, revision)) return
       this.patch({
-        slashItems: (result.items ?? []).map(item => ({
+        slashItems: payload.items.map(item => ({
           ...item,
-          insertText: completionInsertion(value, item.text, result.replace_from)
+          insertText: completionInsertion(value, item.text, payload.replaceFrom)
         }))
       })
     }).catch(() => {
-      if (this.isCurrent(epoch) && generation === this.slashCompletionGeneration) {
+      if (this.isRevisionCurrent(epoch, revision)) {
         this.patch({ slashItems: [] })
       }
     })
@@ -102,15 +99,13 @@ export class ChatInteraction {
     if (this.disposed) return
     const item = this.$state.get().slashItems[index]
     if (!item) return
-    this.slashCompletionGeneration += 1
-    this.mediaGeneration += 1
+    this.draftRevision += 1
     this.patch({ draft: `${item.insertText} `, slashItems: [] })
   }
 
   beginEdit(target: EditTarget) {
     if (this.disposed) return
-    this.slashCompletionGeneration += 1
-    this.mediaGeneration += 1
+    this.draftRevision += 1
     this.patch({
       attachmentRefs: [],
       draft: target.content,
@@ -122,8 +117,7 @@ export class ChatInteraction {
 
   cancelEdit() {
     if (this.disposed) return
-    this.slashCompletionGeneration += 1
-    this.mediaGeneration += 1
+    this.draftRevision += 1
     this.patch({ draft: '', editTarget: null, error: null, slashItems: [] })
   }
 
@@ -139,8 +133,7 @@ export class ChatInteraction {
     if (!combined) return
 
     const epoch = this.sessionEpoch
-    this.slashCompletionGeneration += 1
-    this.mediaGeneration += 1
+    this.draftRevision += 1
     this.$state.set({
       ...snapshot,
       attachmentRefs: [],
@@ -178,9 +171,8 @@ export class ChatInteraction {
     for (const file of Array.from(files)) {
       if (!this.isCurrent(epoch)) return
       try {
-        const result = await this.commands.attach(file) as { ref_text?: string; text?: string } | undefined
-        if (!this.isCurrent(epoch) || !result) return
-        const reference = result.ref_text ?? result.text ?? `@file:${file.name}`
+        const reference = await this.commands.attach(file)
+        if (!this.isCurrent(epoch) || reference === undefined) return
         this.patch({ attachmentRefs: [...this.$state.get().attachmentRefs, reference] })
       } catch (caught) {
         if (!this.isCurrent(epoch)) return
@@ -192,14 +184,14 @@ export class ChatInteraction {
   async transcribe(file: File | undefined) {
     if (this.disposed || !file) return
     const epoch = this.sessionEpoch
-    const generation = ++this.mediaGeneration
+    const revision = ++this.draftRevision
     this.patch({ error: null })
     try {
       if (file.size > 25 * 1_024 * 1_024) {
         throw new Error('Audio attachments are limited to 25 MB on mobile.')
       }
       const dataBase64 = await fileToBase64(file)
-      if (!this.isMediaCurrent(epoch, generation)) return
+      if (!this.isRevisionCurrent(epoch, revision)) return
       const response = await this.media.upload<{ transcript?: string }>({
         contentType: file.type,
         dataBase64,
@@ -207,19 +199,19 @@ export class ChatInteraction {
         filename: file.name,
         path: '/api/audio/transcribe'
       })
-      if (!this.isMediaCurrent(epoch, generation)) return
+      if (!this.isRevisionCurrent(epoch, revision)) return
       const transcript = response.body.transcript
       if (!transcript) throw new Error('The transcription response did not include a transcript.')
       this.patch({ draft: transcript })
     } catch (caught) {
-      if (this.isMediaCurrent(epoch, generation)) this.patch({ error: errorMessage(caught) })
+      if (this.isRevisionCurrent(epoch, revision)) this.patch({ error: errorMessage(caught) })
     }
   }
 
   async speak(text: string) {
     if (this.disposed) return
     const epoch = this.sessionEpoch
-    const generation = ++this.mediaGeneration
+    const revision = ++this.draftRevision
     this.patch({ error: null })
     try {
       const response = await this.media.request<{ data_url?: string }>({
@@ -227,12 +219,12 @@ export class ChatInteraction {
         method: 'POST',
         path: '/api/audio/speak'
       })
-      if (!this.isMediaCurrent(epoch, generation)) return
+      if (!this.isRevisionCurrent(epoch, revision)) return
       const audioURL = response.body.data_url
       if (!audioURL) throw new Error('The speech response did not include audio.')
       await new Audio(audioURL).play()
     } catch (caught) {
-      if (this.isMediaCurrent(epoch, generation)) this.patch({ error: errorMessage(caught) })
+      if (this.isRevisionCurrent(epoch, revision)) this.patch({ error: errorMessage(caught) })
     }
   }
 
@@ -240,16 +232,15 @@ export class ChatInteraction {
     if (this.disposed) return
     this.disposed = true
     this.sessionEpoch += 1
-    this.mediaGeneration += 1
-    this.slashCompletionGeneration += 1
+    this.draftRevision += 1
   }
 
   private isCurrent(epoch: number) {
     return !this.disposed && epoch === this.sessionEpoch
   }
 
-  private isMediaCurrent(epoch: number, generation: number) {
-    return this.isCurrent(epoch) && generation === this.mediaGeneration
+  private isRevisionCurrent(epoch: number, revision: number) {
+    return this.isCurrent(epoch) && revision === this.draftRevision
   }
 
   private patch(patch: Partial<ChatInteractionState>) {
