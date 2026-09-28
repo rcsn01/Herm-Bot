@@ -1,19 +1,17 @@
-import { humanSessions } from '~/features/sessions/api'
-import { beginScopedTask, type CurrentGatewayScope, type ScopedTask } from '~/gateway/scope-guard'
+import { humanSessions, type SessionsApi } from '~/features/sessions/api'
+import { gatewayScopeKey } from '~/gateway/gateway-scope'
+import { beginScopedTask, currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope, type ScopedTask } from '~/gateway/scope-guard'
+import { queryClient } from '~/gateway/query-client'
 import type { RuntimeSession, SessionRuntime } from '~/gateway/session-runtime'
 import { $chat, type Conversation } from '~/state/conversation'
-import { $preferences, $sessions } from '~/state/store'
+import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 /**
- * The Session selection is the deep module that owns *which session is live*
- * (see the repository's CONTEXT.md). It owns the selection epoch — the
- * request-epoch idiom over user-initiated selections (create / resume /
- * branch / latest) — the Scope-guarded publish of a selected session (source
- * lookup from `$sessions`, adoption through the Conversation, which stays
- * `$chat`'s sole writer, the session-bookmark write, and the per-verb
- * follow-up policy), the roster-tap `latest` pick, and the connect/reconnect
- * `restore` path. The GatewayController keeps transport lifecycle, connection
- * phases, and session-list paging; the Conversation owns session *content*.
+ * SessionSelection owns which session is live, including the selection epoch
+ * and Scope-guarded publication. It also owns latest-session selection, the
+ * live session list and paging, and the reconnect restore path. The
+ * GatewayController owns transport lifecycle and connection phases.
+ * Conversation owns session content and remains the only writer to `$chat`.
  */
 
 /** What a selection published. `session: null` ⇒ warm-tap (nothing adopted;
@@ -44,6 +42,24 @@ export interface SessionSelection {
    */
   select(request: SelectionRequest): Promise<SelectionOutcome | undefined>
 
+  /** Refresh the full current-profile list using the captured Scope. */
+  refreshSessions(scope?: CurrentGatewayScope): Promise<void>
+
+  /** Expand the cumulative page limit and re-fetch the full list. */
+  loadMoreSessions(): Promise<void>
+
+  /** Reset list state and its private page limit during Scope teardown. */
+  resetSessionList(): void
+
+  /** Rename a live session and refresh its roster after the route succeeds. */
+  renameSession(storedSessionId: string, title: string): Promise<void>
+
+  /** Archive a live session and refresh its roster after the route succeeds. */
+  archiveSession(storedSessionId: string): Promise<void>
+
+  /** Delete a live session, replacing it first when it is active. */
+  deleteSession(storedSessionId: string): Promise<void>
+
   /**
    * Connect/reconnect restore. Resolves the restore target
    * (`$chat.storedSessionId ?? scope bookmark`), runs `open(target)`, then — only if
@@ -51,8 +67,8 @@ export interface SessionSelection {
    * callback) — clears the bookmark when `resumed === false` and adopts the opened
    * session through the publish below (source lookup → adopt → bookmark write, so
    * the next cold start restores this session). Does NOT touch the selection
-   * epoch: an automatic reconnect must never supersede an in-flight user
-   * selection. Resolves `undefined` when stale.
+   * epoch: a restore that finishes after a user selection can publish over it.
+   * Resolves `undefined` when stale.
    * Reconcile/refresh stay caller policy (paint happens between).
    */
   restore<TOpen extends { resumed: boolean; session: RuntimeSession }>(
@@ -86,13 +102,16 @@ function clearSessionBookmark(scope: { connectionKey: string; profile: null | st
   localStorage.removeItem(sessionBookmarkKey(scope))
 }
 
+const SESSION_LIST_PAGE_SIZE = 30
+
 export function createSessionSelection(deps: {
   runtime: SessionRuntime
   conversation: Conversation
-  refreshSessions: (scope: CurrentGatewayScope) => Promise<void>
+  sessionsApi: (scope: CurrentGatewayScope) => SessionsApi
 }): SessionSelection {
-  const { runtime, conversation, refreshSessions } = deps
+  const { runtime, conversation, sessionsApi } = deps
   let selectionEpoch = 0
+  let sessionListLimit = SESSION_LIST_PAGE_SIZE
 
   /** Install the session as the open conversation and remember it for reconnects. */
   function publish(session: RuntimeSession): void {
@@ -107,6 +126,69 @@ export function createSessionSelection(deps: {
    *  selection AND the captured Scope to still be foreground. */
   function stillCurrent(epoch: number, task: ScopedTask): boolean {
     return epoch === selectionEpoch && task.isCurrent()
+  }
+
+  async function refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()): Promise<void> {
+    const limit = sessionListLimit
+    const response = await queryClient.fetchQuery({
+      queryFn: ({ signal }) => sessionsApi(scope).list(limit, signal),
+      queryKey: gatewayScopeKey(scope, 'sessions', 'list', limit),
+      staleTime: 0
+    })
+    if (!isCurrentGatewayScope(scope)) return
+    const sessions = response.sessions ?? []
+    $sessions.set(sessions)
+    $sessionsHasMore.set(sessions.length >= limit)
+    const activeId = $chat.get().storedSessionId
+    if (activeId) {
+      const source = sessions.find(session => session.id === activeId)?.source
+      conversation.setSessionSource(activeId, typeof source === 'string' ? source : null)
+    }
+  }
+
+  async function loadMoreSessions(): Promise<void> {
+    if ($sessionsLoadingMore.get() || !$sessionsHasMore.get()) return
+    const scope = currentGatewayScope()
+    const previousLimit = sessionListLimit
+    sessionListLimit += SESSION_LIST_PAGE_SIZE
+    $sessionsLoadingMore.set(true)
+    try {
+      await refreshSessions(scope)
+    } catch (error) {
+      if (isCurrentGatewayScope(scope)) sessionListLimit = previousLimit
+      throw error
+    } finally {
+      if (isCurrentGatewayScope(scope)) $sessionsLoadingMore.set(false)
+    }
+  }
+
+  function resetSessionList(): void {
+    sessionListLimit = SESSION_LIST_PAGE_SIZE
+    $sessions.set([])
+    $sessionsHasMore.set(false)
+    $sessionsLoadingMore.set(false)
+  }
+
+  async function renameSession(storedSessionId: string, title: string): Promise<void> {
+    const scope = currentGatewayScope()
+    await sessionsApi(scope).rename(storedSessionId, title)
+    if (!isCurrentGatewayScope(scope)) return
+    conversation.retitleActive(storedSessionId, title)
+    await refreshSessions(scope)
+  }
+
+  async function archiveSession(storedSessionId: string): Promise<void> {
+    const scope = currentGatewayScope()
+    await sessionsApi(scope).archive(storedSessionId)
+    if (isCurrentGatewayScope(scope)) await refreshSessions(scope)
+  }
+
+  async function deleteSession(storedSessionId: string): Promise<void> {
+    const scope = currentGatewayScope()
+    await sessionsApi(scope).remove(storedSessionId)
+    if (!isCurrentGatewayScope(scope)) return
+    if ($chat.get().storedSessionId === storedSessionId) await select({ kind: 'create' })
+    if (isCurrentGatewayScope(scope)) await refreshSessions(scope)
   }
 
   async function select(request: SelectionRequest): Promise<SelectionOutcome | undefined> {
@@ -209,6 +291,12 @@ export function createSessionSelection(deps: {
 
   return {
     select,
+    refreshSessions,
+    loadMoreSessions,
+    resetSessionList,
+    renameSession,
+    archiveSession,
+    deleteSession,
     restore,
     invalidate: () => {
       selectionEpoch += 1

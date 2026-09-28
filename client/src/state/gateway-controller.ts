@@ -2,9 +2,8 @@ import { observeAppLifecycle, type AppLifecycleHandle } from '~/native/app-lifec
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import type { GatewayPort, GatewayTransport } from '~/gateway/gateway-port'
-import { cancelGatewayQueries, clearGatewayQueries, queryClient } from '~/gateway/query-client'
+import { cancelGatewayQueries, clearGatewayQueries } from '~/gateway/query-client'
 import { RemoteGateway } from '~/gateway/remote-gateway'
-import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { createGatewayApi } from '~/gateway/gateway-api'
 import { SessionRuntime } from '~/gateway/session-runtime'
@@ -12,13 +11,12 @@ import { createSessionsApi, type SessionsApi } from '~/features/sessions/api'
 import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetWorkspace } from '~/navigation/workspace-navigation'
 import { Conversation } from '~/state/conversation'
-import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore, savePreferences } from '~/state/store'
+import { $connection, $preferences, $profileSwitching, savePreferences } from '~/state/store'
 import { createSessionSelection, type SessionSelection } from '~/state/session-selection'
 import { startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'
 
 export const MINIMUM_CONTRACT = 6
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
-const SESSION_LIST_PAGE_SIZE = 30
 
 export class GatewayController {
   readonly conversation: Conversation
@@ -30,7 +28,6 @@ export class GatewayController {
   private reconnectGeneration = 0
   private appBackgrounded = false
   private logoutInProgress = false
-  private sessionListLimit = SESSION_LIST_PAGE_SIZE
   private disposed = false
   private activeListener?: AppLifecycleHandle
   private unsubscribeEvents?: () => void
@@ -51,7 +48,7 @@ export class GatewayController {
     this.selection = createSessionSelection({
       runtime: this.runtime,
       conversation: this.conversation,
-      refreshSessions: scope => this.refreshSessions(scope)
+      sessionsApi: scope => this.sessionsApi(scope)
     })
     this.subscribeRuntime()
   }
@@ -210,59 +207,23 @@ export class GatewayController {
   }
 
   async refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()) {
-    const limit = this.sessionListLimit
-    const response = await queryClient.fetchQuery({
-      queryFn: ({ signal }) => this.sessionsApi(scope).list(limit, signal),
-      queryKey: gatewayScopeKey(scope, 'sessions', 'list', limit),
-      staleTime: 0
-    })
-    if (!isCurrentGatewayScope(scope)) return
-    const sessions = response.sessions ?? []
-    $sessions.set(sessions)
-    $sessionsHasMore.set(sessions.length >= limit)
-    const activeId = this.selection.activeStoredSessionId()
-    if (activeId) {
-      const source = sessions.find(session => session.id === activeId)?.source
-      this.conversation.setSessionSource(activeId, typeof source === 'string' ? source : null)
-    }
+    await this.selection.refreshSessions(scope)
   }
 
   async loadMoreSessions() {
-    if ($sessionsLoadingMore.get() || !$sessionsHasMore.get()) return
-    const scope = currentGatewayScope()
-    const previousLimit = this.sessionListLimit
-    this.sessionListLimit += SESSION_LIST_PAGE_SIZE
-    $sessionsLoadingMore.set(true)
-    try {
-      await this.refreshSessions(scope)
-    } catch (error) {
-      if (isCurrentGatewayScope(scope)) this.sessionListLimit = previousLimit
-      throw error
-    } finally {
-      if (isCurrentGatewayScope(scope)) $sessionsLoadingMore.set(false)
-    }
+    await this.selection.loadMoreSessions()
   }
 
   async renameSession(storedSessionId: string, title: string) {
-    const scope = currentGatewayScope()
-    await this.sessionsApi(scope).rename(storedSessionId, title)
-    if (!isCurrentGatewayScope(scope)) return
-    this.conversation.retitleActive(storedSessionId, title)
-    await this.refreshSessions(scope)
+    await this.selection.renameSession(storedSessionId, title)
   }
 
   async deleteSession(storedSessionId: string) {
-    const scope = currentGatewayScope()
-    await this.sessionsApi(scope).remove(storedSessionId)
-    if (!isCurrentGatewayScope(scope)) return
-    if (this.selection.activeStoredSessionId() === storedSessionId) await this.newSession()
-    if (isCurrentGatewayScope(scope)) await this.refreshSessions(scope)
+    await this.selection.deleteSession(storedSessionId)
   }
 
   async archiveSession(storedSessionId: string) {
-    const scope = currentGatewayScope()
-    await this.sessionsApi(scope).archive(storedSessionId)
-    if (isCurrentGatewayScope(scope)) await this.refreshSessions(scope)
+    await this.selection.archiveSession(storedSessionId)
   }
 
   async branchSession() {
@@ -384,11 +345,8 @@ export class GatewayController {
   }
 
   private clearForegroundScope() {
-    this.sessionListLimit = SESSION_LIST_PAGE_SIZE
     this.conversation.reset()
-    $sessions.set([])
-    $sessionsHasMore.set(false)
-    $sessionsLoadingMore.set(false)
+    this.selection.resetSessionList()
   }
 
   private invalidateReconnect() {

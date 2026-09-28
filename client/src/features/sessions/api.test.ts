@@ -13,10 +13,30 @@ describe('humanSessions', () => {
       { id: 'cron-2', message_count: 2, preview: '', source: ' Cron ', started_at: 310, title: 'Cushioned cron' },
       { id: 'human-1', message_count: 4, preview: '', source: 'ios', started_at: 300, title: 'Planning session' },
       { id: 'human-2', message_count: 2, preview: '', source: 'web', started_at: 200, title: 'Release notes' },
-      { id: 'human-3', message_count: 1, preview: '', source: '', started_at: 100, title: 'Legacy session' }
+      { id: 'human-3', message_count: 1, preview: '', source: '', started_at: 100, title: 'Legacy session' },
+      { id: 'human-4', message_count: 1, preview: '', source: null as unknown as string, started_at: 90, title: 'Older without source' },
+      { id: 'human-5', message_count: 1, preview: '', source: undefined as unknown as string, started_at: 80, title: 'Older with missing source' }
     ]
 
-    expect(humanSessions(sessions).map(session => session.id)).toEqual(['human-1', 'human-2', 'human-3'])
+    expect(humanSessions(sessions).map(session => session.id)).toEqual(['human-1', 'human-2', 'human-3', 'human-4', 'human-5'])
+  })
+
+  it('matches Bot Mode plumbing titles only at the intended exact and prefix boundaries', () => {
+    const sessions = [
+      { id: 'trimmed-bot', message_count: 1, preview: '', source: 'ios', started_at: 600, title: ' Bot Chat ' },
+      { id: 'trimmed-inbox', message_count: 1, preview: '', source: 'ios', started_at: 590, title: ' Agent Inbox ' },
+      { id: 'group-prefix', message_count: 1, preview: '', source: 'ios', started_at: 580, title: 'Group: room-1' },
+      { id: 'bot-lookalike', message_count: 1, preview: '', source: 'ios', started_at: 570, title: 'Bot Chat follow-up' },
+      { id: 'inbox-lookalike', message_count: 1, preview: '', source: 'ios', started_at: 560, title: 'Agent Inbox notes' },
+      { id: 'lower-bot', message_count: 1, preview: '', source: 'ios', started_at: 555, title: 'bot chat' },
+      { id: 'lower-inbox', message_count: 1, preview: '', source: 'ios', started_at: 553, title: 'agent inbox' },
+      { id: 'group-no-space', message_count: 1, preview: '', source: 'ios', started_at: 550, title: 'Group:room notes' },
+      { id: 'group-case', message_count: 1, preview: '', source: 'ios', started_at: 540, title: 'group: room-1' }
+    ]
+
+    expect(humanSessions(sessions).map(session => session.id)).toEqual([
+      'bot-lookalike', 'inbox-lookalike', 'lower-bot', 'lower-inbox', 'group-no-space', 'group-case'
+    ])
   })
 
   it('drops Bot Mode plumbing sessions by title, like the desktop sweep', () => {
