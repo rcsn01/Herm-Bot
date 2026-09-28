@@ -128,14 +128,13 @@ export class GatewayController {
     const { opened } = restored
     const { authMode, status } = opened.preparation
     savePreferences({ authMode })
-    // The session is already selected — restore() adopted it and wrote the
-    // bookmark before resolving. Paint the destination now; history and the
-    // session list continue loading underneath (both use the captured scope,
-    // so a profile change mid-open cannot publish another profile's data).
+    // The transport opened successfully. The session may instead belong to a
+    // user selection made while restore was pending; in either case the current
+    // connection is ready, but only a published restore needs its own reconcile.
     $connection.set({ authMode, error: null, phase: 'connected', status })
     this.installGroupEngine(scope)
     try {
-      if (opened.resumed) await this.conversation.reconcileHistory(scope)
+      if (restored.kind === 'published' && opened.resumed) await this.conversation.reconcileHistory(scope)
       await this.refreshSessions(scope)
     } catch (error) {
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
@@ -323,7 +322,7 @@ export class GatewayController {
         () => this.isCurrentReconnect(generation)
       )
       if (!restored) return
-      if (reconcile) await this.conversation.reconcileHistory(scope)
+      if (restored.kind === 'published' && reconcile) await this.conversation.reconcileHistory(scope)
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
       $connection.set({ ...$connection.get(), error: null, phase: 'connected' })
     } catch (error) {

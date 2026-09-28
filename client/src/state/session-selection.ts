@@ -21,6 +21,10 @@ export interface SelectionOutcome {
   resumed: boolean
 }
 
+export type RestoreOutcome<TOpen> =
+  | { kind: 'published'; opened: TOpen }
+  | { kind: 'superseded'; opened: TOpen }
+
 export type SelectionRequest =
   | { kind: 'create' }                                // newSession
   | { kind: 'resume'; storedSessionId: string }       // sessions menu, deep links, cron run → session
@@ -62,19 +66,18 @@ export interface SessionSelection {
 
   /**
    * Connect/reconnect restore. Resolves the restore target
-   * (`$chat.storedSessionId ?? scope bookmark`), runs `open(target)`, then — only if
-   * the captured Scope is current AND `isCurrent()` (the caller's reconnect-epoch
-   * callback) — clears the bookmark when `resumed === false` and adopts the opened
-   * session through the publish below (source lookup → adopt → bookmark write, so
-   * the next cold start restores this session). Does NOT touch the selection
-   * epoch: a restore that finishes after a user selection can publish over it.
-   * Resolves `undefined` when stale.
-   * Reconcile/refresh stay caller policy (paint happens between).
+   * (`$chat.storedSessionId ?? scope bookmark`) and runs `open(target)`. After the
+   * Scope and reconnect-generation guards pass, a user selection published since
+   * restore began takes precedence: return `superseded` without bookmark or
+   * Conversation side effects. Otherwise clear a truthy target bookmark when the
+   * open is fresh, publish the opened session, and return `published`.
+   * Resolves `undefined` when stale; open errors reject. Reconcile/refresh stay
+   * caller policy (paint happens between).
    */
   restore<TOpen extends { resumed: boolean; session: RuntimeSession }>(
     open: (storedSessionId: null | string) => Promise<TOpen>,
     isCurrent?: () => boolean
-  ): Promise<{ opened: TOpen } | undefined>
+  ): Promise<RestoreOutcome<TOpen> | undefined>
 
   /** Retire every in-flight selection (dispose). Logout/switchProfile/configure keep
    *  scope-based guarding — their teardown changes the Scope itself. */
@@ -111,14 +114,16 @@ export function createSessionSelection(deps: {
 }): SessionSelection {
   const { runtime, conversation, sessionsApi } = deps
   let selectionEpoch = 0
+  let lastPublishedSelectionEpoch = 0
   let sessionListLimit = SESSION_LIST_PAGE_SIZE
 
   /** Install the session as the open conversation and remember it for reconnects. */
-  function publish(session: RuntimeSession): void {
+  function publish(session: RuntimeSession, selectionPublicationEpoch?: number): void {
     const source = session.storedSessionId
       ? $sessions.get().find(candidate => candidate.id === session.storedSessionId)?.source
       : null
     conversation.adopt(session, typeof source === 'string' ? source : null)
+    if (selectionPublicationEpoch !== undefined) lastPublishedSelectionEpoch = selectionPublicationEpoch
     if (session.storedSessionId) localStorage.setItem(sessionBookmarkKey(), session.storedSessionId)
   }
 
@@ -203,7 +208,7 @@ export function createSessionSelection(deps: {
       const epoch = ++selectionEpoch
       const session = await runtime.branchSession(current.runtimeSessionId)
       if (!stillCurrent(epoch, task)) return undefined
-      publish(session)
+      publish(session, epoch)
       await refreshSessions(scope)
       return { session, resumed: false }
     }
@@ -213,7 +218,7 @@ export function createSessionSelection(deps: {
     if (request.kind === 'create') {
       const session = await runtime.createSession(scope.profile)
       if (!stillCurrent(epoch, task)) return undefined
-      publish(session)
+      publish(session, epoch)
       // Every other session mutation (branch/rename/archive/delete) refreshes
       // the list; a create must too — the roster tap picks the newest session
       // from this store, so a stale list sends the next tap into an older
@@ -230,7 +235,7 @@ export function createSessionSelection(deps: {
     if (request.kind === 'resume') {
       const session = await runtime.resumeSession(scope.profile, request.storedSessionId)
       if (!stillCurrent(epoch, task)) return undefined
-      publish(session)
+      publish(session, epoch)
       await conversation.reconcileHistory(scope)
       return { session, resumed: true }
     }
@@ -254,7 +259,7 @@ export function createSessionSelection(deps: {
       try {
         const session = await runtime.resumeSession(scope.profile, latest.id)
         if (!stillCurrent(epoch, task)) return undefined
-        publish(session)
+        publish(session, epoch)
         await conversation.reconcileHistory(scope)
         return { session, resumed: true }
       } catch {
@@ -266,7 +271,7 @@ export function createSessionSelection(deps: {
     }
     const session = await runtime.createSession(scope.profile)
     if (!stillCurrent(epoch, task)) return undefined
-    publish(session)
+    publish(session, epoch)
     try {
       await refreshSessions(scope)
     } catch {
@@ -278,15 +283,17 @@ export function createSessionSelection(deps: {
   async function restore<TOpen extends { resumed: boolean; session: RuntimeSession }>(
     open: (storedSessionId: null | string) => Promise<TOpen>,
     isCurrent?: () => boolean
-  ): Promise<{ opened: TOpen } | undefined> {
+  ): Promise<RestoreOutcome<TOpen> | undefined> {
     const task = beginScopedTask()
     const scope = task.scope
+    const publishedEpochAtStart = lastPublishedSelectionEpoch
     const storedSessionId = $chat.get().storedSessionId ?? readSessionBookmark(scope)
     const opened = await open(storedSessionId)
     if (!task.isCurrent() || isCurrent?.() === false) return undefined
+    if (lastPublishedSelectionEpoch !== publishedEpochAtStart) return { kind: 'superseded', opened }
     if (storedSessionId && !opened.resumed) clearSessionBookmark(scope)
     publish(opened.session)
-    return { opened }
+    return { kind: 'published', opened }
   }
 
   return {

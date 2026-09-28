@@ -342,6 +342,178 @@ describe('roster tap flow', () => {
 })
 
 describe('connection restoration', () => {
+  it('completes initial connect when a user selection supersedes the pending restore', async () => {
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const resumeStarted = deferred<void>()
+    const oldResume = deferred<unknown>()
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.resume', () => {
+        expect(gateway.connected).toBe(true)
+        resumeStarted.resolve()
+        return oldResume.promise
+      })
+      .handle('session.create', () => sessionReply('new-session', 'New'))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('profiles.list', () => ({ profiles: [] }))
+      .handle('/api/sessions/new-session/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({ messages: [] }))
+      .handle('/api/sessions/old-session/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ role: 'user', content: 'stale restore row' }]
+      }))
+    const controller = new GatewayController(connection as never, gateway)
+    localStorage.setItem('hermes.mobile.session::default', 'old-session')
+
+    const connecting = controller.connect()
+    await resumeStarted.promise
+    expect(gateway.connected).toBe(true)
+    expect($connection.get().phase).toBe('connecting')
+
+    await controller.newSession()
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
+    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list')).toHaveLength(1)
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.list')).toHaveLength(0)
+
+    oldResume.resolve({
+      info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'old-session' },
+      messages: [{ role: 'user', content: 'stale restore row' }],
+      session_id: 'runtime-old-session',
+      stored_session_id: 'old-session'
+    })
+    await connecting
+
+    expect($connection.get()).toMatchObject({ authMode: 'token', error: null, phase: 'connected', status: { version: 'current' } })
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
+    expect($chat.get().transcript.entries.some(entry => entry.content === 'stale restore row')).toBe(false)
+    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list')).toHaveLength(2)
+    await vi.waitFor(() => expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.list')).toHaveLength(1))
+    expect(gateway.calls.some(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/old-session/messages'))).toBe(false)
+    expect(gateway.calls.some(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/new-session/messages'))).toBe(false)
+    controller.dispose()
+  })
+
+  it('completes reconnect when a user selection supersedes the pending restore', async () => {
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const resumeStarted = deferred<void>()
+    const oldResume = deferred<unknown>()
+    let resumeCount = 0
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.resume', () => {
+        resumeCount += 1
+        expect(gateway.connected).toBe(true)
+        if (resumeCount === 1) {
+          return {
+            info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'old-session' },
+            session_id: 'runtime-old-session',
+            stored_session_id: 'old-session'
+          }
+        }
+        resumeStarted.resolve()
+        return oldResume.promise
+      })
+      .handle('session.create', () => sessionReply('new-session', 'New'))
+      .handle('session.list', () => ({ sessions: [] }))
+      .handle('profiles.list', () => ({ profiles: [] }))
+      .handle('/api/sessions/old-session/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ role: 'assistant', content: 'initial history' }]
+      }))
+      .handle('/api/sessions/new-session/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({ messages: [] }))
+    const controller = new GatewayController(connection as never, gateway)
+    localStorage.setItem('hermes.mobile.session::default', 'old-session')
+
+    await controller.connect()
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-old-session', storedSessionId: 'old-session' })
+    const historyCallsBeforeReconnect = gateway.calls.filter(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/')).length
+
+    gateway.close()
+    expect($connection.get().phase).toBe('reconnecting')
+    await resumeStarted.promise
+    expect($connection.get().phase).toBe('reconnecting')
+
+    await controller.newSession()
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
+    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    const listCallsAfterCreate = gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list').length
+
+    oldResume.resolve({
+      info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'old-session' },
+      messages: [{ role: 'user', content: 'stale reconnect row' }],
+      session_id: 'runtime-old-session-reopened',
+      stored_session_id: 'old-session'
+    })
+    await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
+
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
+    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(gateway.calls.filter(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/')).length).toBe(historyCallsBeforeReconnect)
+    expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list')).toHaveLength(listCallsAfterCreate)
+    controller.dispose()
+  })
+
+  it('a warm latest tap during reconnect does not supersede restore or retain stale history', async () => {
+    const connection = {
+      probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
+    }
+    const resumeStarted = deferred<void>()
+    const reopenedSession = deferred<unknown>()
+    const warmHistory = deferred<{ messages: { role: string; content: string }[] }>()
+    let resumeCount = 0
+    let historyCount = 0
+    const gateway = new ConnectionAwareGateway()
+      .handle('session.resume', () => {
+        resumeCount += 1
+        if (resumeCount === 1) {
+          return {
+            info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'same-session' },
+            session_id: 'runtime-before-reconnect',
+            stored_session_id: 'same-session'
+          }
+        }
+        resumeStarted.resolve()
+        return reopenedSession.promise
+      })
+      .handle('session.list', () => ({
+        sessions: [{ id: 'same-session', message_count: 1, preview: '', source: 'ios', started_at: 10, title: 'Same' }]
+      }))
+      .handle('profiles.list', () => ({ profiles: [] }))
+      .handle('/api/sessions/same-session/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => {
+        historyCount += 1
+        if (historyCount === 2) return warmHistory.promise
+        return { messages: [{ role: 'assistant', content: `history-${historyCount}` }] }
+      })
+    const controller = new GatewayController(connection as never, gateway)
+    localStorage.setItem('hermes.mobile.session::default', 'same-session')
+
+    await controller.connect()
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-before-reconnect', storedSessionId: 'same-session' })
+
+    gateway.close()
+    await resumeStarted.promise
+    const warmTap = controller.openProfile(null)
+    await vi.waitFor(() => expect(historyCount).toBe(2))
+    expect($chat.get().runtimeSessionId).toBe('runtime-before-reconnect')
+    expect(resumeCount).toBe(2)
+
+    reopenedSession.resolve({
+      info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'same-session' },
+      session_id: 'runtime-after-reconnect',
+      stored_session_id: 'same-session'
+    })
+    await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
+    expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-after-reconnect', storedSessionId: 'same-session' })
+    expect(historyCount).toBe(3)
+
+    warmHistory.resolve({ messages: [{ role: 'assistant', content: 'stale warm history' }] })
+    await warmTap
+    expect($chat.get().transcript.entries.some(entry => entry.content === 'history-3')).toBe(true)
+    expect($chat.get().transcript.entries.some(entry => entry.content === 'stale warm history')).toBe(false)
+    controller.dispose()
+  })
+
   it('waits on the sign-in screen instead of opening a WebSocket for a fresh interactive browser', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: window.location.origin })
     const connection = {

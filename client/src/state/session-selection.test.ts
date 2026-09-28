@@ -909,13 +909,300 @@ describe('session selection', () => {
     const { selection } = createSelection()
 
     $chat.set({ ...emptyChatState(), storedSessionId: 'chat-id' })
-    await selection.restore(open)
+    await expect(selection.restore(open)).resolves.toMatchObject({ kind: 'published' })
     expect(open).toHaveBeenCalledWith('chat-id')
 
     $chat.set(emptyChatState())
     localStorage.setItem(BOOKMARK_KEY, 'bookmark-id')
-    await selection.restore(open)
+    await expect(selection.restore(open)).resolves.toMatchObject({ kind: 'published' })
     expect(open).toHaveBeenLastCalledWith('bookmark-id')
+  })
+
+  it('preserves null and empty-string restore targets and bookmark cleanup behavior', async () => {
+    const open = vi.fn(async (storedSessionId: null | string) => ({
+      resumed: Boolean(storedSessionId),
+      session: makeSession(storedSessionId || null)
+    }))
+    const { selection } = createSelection()
+
+    await expect(selection.restore(open)).resolves.toMatchObject({ kind: 'published' })
+    expect(open).toHaveBeenLastCalledWith(null)
+
+    localStorage.setItem(BOOKMARK_KEY, '')
+    await expect(selection.restore(open)).resolves.toMatchObject({ kind: 'published' })
+    expect(open).toHaveBeenLastCalledWith('')
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('')
+  })
+
+  it('replaces an old bookmark after a fresh restore opens a new durable session', async () => {
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+    const { selection } = createSelection()
+    const opened = { resumed: false, session: makeSession('new-session') }
+
+    await expect(selection.restore(async () => opened)).resolves.toEqual({ kind: 'published', opened })
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('new-session')
+  })
+
+  it('does not publish a fresh restore after a user selection has published', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection()
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    const restoring = selection.restore(() => openGate)
+    const selected = await selection.select({ kind: 'create' })
+    expect(selected).toEqual({ session: expect.objectContaining({ storedSessionId: 'created-1' }), resumed: false })
+
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(conversation.adopt).toHaveBeenCalledWith(expect.objectContaining({ storedSessionId: 'created-1' }), null)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('created-1')
+  })
+
+  it.each([
+    ['branch', 'branched-1'],
+    ['create', 'created-1'],
+    ['resume', 'direct-session'],
+    ['latest-resume', 'latest-session'],
+    ['latest-create fallback', 'created-1']
+  ] as const)('a %s publication supersedes a pending restore', async (kind, userSessionId) => {
+    if (kind === 'branch') {
+      $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-active', storedSessionId: 'active-session' })
+    }
+    if (kind === 'latest-resume' || kind === 'latest-create fallback') {
+      $sessions.set([makeStoredSession('latest-session', { started_at: 20 })])
+    }
+
+    const runtimeOverrides: Record<string, unknown> = {}
+    if (kind === 'latest-create fallback') {
+      runtimeOverrides.resumeSession = vi.fn(async () => { throw new Error('session no longer exists') })
+    }
+    const { selection, runtime, conversation } = createSelection({
+      runtime: runtimeOverrides,
+      conversation: { setSessionSource: vi.fn() }
+    })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const expectedTarget = kind === 'branch' ? 'active-session' : 'old-session'
+    const restoring = selection.restore(storedSessionId => {
+      expect(storedSessionId).toBe(expectedTarget)
+      return openGate
+    })
+
+    let selected
+    switch (kind) {
+      case 'branch':
+        selected = await selection.select({ kind: 'branch' })
+        break
+      case 'create':
+        selected = await selection.select({ kind: 'create' })
+        break
+      case 'resume':
+        selected = await selection.select({ kind: 'resume', storedSessionId: userSessionId })
+        break
+      case 'latest-resume':
+        selected = await selection.select({ kind: 'latest', freshen: false })
+        break
+      case 'latest-create fallback':
+        selected = await selection.select({ kind: 'latest', freshen: false })
+        expect(runtime.resumeSession).toHaveBeenCalledWith(null, 'latest-session')
+        break
+    }
+
+    expect(selected).toMatchObject({ session: expect.objectContaining({ storedSessionId: userSessionId }) })
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(conversation.adopt.mock.calls[0]?.[0]).toMatchObject({ storedSessionId: userSessionId })
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe(userSessionId)
+  })
+
+  it('a selection without a durable id still supersedes restore before bookmark cleanup', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection({ runtime: { createSession: vi.fn(async () => makeSession(null)) } })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    const restoring = selection.restore(() => openGate)
+    await expect(selection.select({ kind: 'create' })).resolves.toMatchObject({
+      session: expect.objectContaining({ storedSessionId: null })
+    })
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('old-session')
+
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('old-session')
+  })
+
+  it('does not overwrite a new bookmark when the superseded restore resumed an older id', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection()
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    const restoring = selection.restore(() => openGate)
+    await selection.select({ kind: 'create' })
+    const opened = { resumed: true, session: makeSession('old-session') }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('created-1')
+  })
+
+  it('a selection rejected before adoption leaves restore eligible to publish', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection({
+      runtime: { createSession: vi.fn(async () => { throw new Error('create failed') }) }
+    })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+    const restoring = selection.restore(() => openGate)
+
+    await expect(selection.select({ kind: 'create' })).rejects.toThrow('create failed')
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'published', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(conversation.adopt).toHaveBeenCalledWith(opened.session, null)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBeNull()
+  })
+
+  it('a selection remains published when its history follow-up rejects', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    let rejectFollowUp!: (error: Error) => void
+    const followUpGate = new Promise<void>((_resolve, reject) => { rejectFollowUp = reject })
+    const { selection, conversation } = createSelection({ conversation: { reconcileHistory: vi.fn(() => followUpGate) } })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    const restoring = selection.restore(() => openGate)
+    const selecting = selection.select({ kind: 'resume', storedSessionId: 'user-session' })
+    await vi.waitFor(() => expect(conversation.adopt).toHaveBeenCalledOnce())
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('user-session')
+
+    rejectFollowUp(new Error('history failed'))
+    await expect(selecting).rejects.toThrow('history failed')
+
+    const opened = { resumed: true, session: makeSession('old-session') }
+    releaseOpen(opened)
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('user-session')
+  })
+
+  it('records publication before a bookmark write that throws', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection()
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('storage unavailable') })
+
+    const restoring = selection.restore(() => openGate)
+    await expect(selection.select({ kind: 'create' })).rejects.toThrow('storage unavailable')
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('old-session')
+
+    const opened = { resumed: false, session: makeSession('restore-session') }
+    releaseOpen(opened)
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('old-session')
+  })
+
+  it.each([
+    ['runtime id', { runtimeSessionId: null, storedSessionId: 'old-session' }],
+    ['stored id', { runtimeSessionId: 'runtime-active', storedSessionId: null }]
+  ] as const)('a no-op branch with no %s does not supersede restore', async (_missing, chat) => {
+    $chat.set({ ...emptyChatState(), ...chat })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection()
+    const restoring = selection.restore(() => openGate)
+
+    await expect(selection.select({ kind: 'branch' })).resolves.toBeUndefined()
+    const opened = { resumed: true, session: makeSession('old-session') }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'published', opened })
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+  })
+
+  it('a warm latest tap does not supersede restore', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-active', storedSessionId: 'same-session' })
+    $sessions.set([makeStoredSession('same-session', { started_at: 10 })])
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection()
+    const restoring = selection.restore(() => openGate)
+
+    await expect(selection.select({ kind: 'latest', freshen: false })).resolves.toMatchObject({ session: null })
+    expect(conversation.adopt).not.toHaveBeenCalled()
+
+    const opened = { resumed: true, session: makeSession('same-session') }
+    releaseOpen(opened)
+    await expect(restoring).resolves.toEqual({ kind: 'published', opened })
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+  })
+
+  it('a Scope-stale restore has no effects after a user selection publishes', async () => {
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const { selection, conversation } = createSelection()
+    const restoring = selection.restore(() => openGate)
+
+    await selection.select({ kind: 'create' })
+    $preferences.set({ ...$preferences.get(), profile: 'work' })
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toBeUndefined()
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('created-1')
+  })
+
+  it('an open rejection remains an error after a user selection publishes', async () => {
+    let rejectOpen!: (error: Error) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>((_resolve, reject) => { rejectOpen = reject })
+    const { selection, conversation } = createSelection()
+    const restoring = selection.restore(() => openGate)
+
+    await selection.select({ kind: 'create' })
+    rejectOpen(new Error('restore failed'))
+
+    await expect(restoring).rejects.toThrow('restore failed')
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('created-1')
+  })
+
+  it('an adoption that throws does not mark the selection as published', async () => {
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    const adopt = vi.fn().mockImplementationOnce(() => { throw new Error('adopt failed') })
+    const { selection, conversation } = createSelection({ conversation: { adopt } })
+    const restoring = selection.restore(() => openGate)
+
+    await expect(selection.select({ kind: 'create' })).rejects.toThrow('adopt failed')
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'published', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(2)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBeNull()
   })
 
   it('restore clears the bookmark when the open lands fresh; a non-current guard publishes nothing', async () => {
@@ -923,14 +1210,59 @@ describe('session selection', () => {
     const { selection, conversation } = createSelection()
     localStorage.setItem(BOOKMARK_KEY, 'bookmark-id')
 
-    await selection.restore(open)
+    await expect(selection.restore(open)).resolves.toMatchObject({ kind: 'published' })
 
     expect(conversation.adopt).toHaveBeenCalledTimes(1)
     expect(localStorage.getItem(BOOKMARK_KEY)).toBeNull()
 
+    localStorage.setItem(BOOKMARK_KEY, 'guarded-target')
     const blocked = await selection.restore(open, () => false)
     expect(blocked).toBeUndefined()
     expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('guarded-target')
+  })
+
+  it('a pending selection does not suppress restore when restore resolves first', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    let releaseCreate!: (session: RuntimeSession) => void
+    const createGate = new Promise<RuntimeSession>(resolve => { releaseCreate = resolve })
+    const { selection, conversation } = createSelection({ runtime: { createSession: vi.fn(() => createGate) } })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    const restoring = selection.restore(() => openGate)
+    const selecting = selection.select({ kind: 'create' })
+    const opened = { resumed: false, session: makeSession('restored-session') }
+    releaseOpen(opened)
+
+    await expect(restoring).resolves.toEqual({ kind: 'published', opened })
+    expect(conversation.adopt).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('restored-session')
+
+    releaseCreate(makeSession('user-session'))
+    await expect(selecting).resolves.toMatchObject({ session: expect.objectContaining({ storedSessionId: 'user-session' }) })
+    expect(conversation.adopt).toHaveBeenCalledTimes(2)
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('user-session')
+  })
+
+  it('a selection that started before restore can still supersede it by publishing first', async () => {
+    let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
+    const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
+    let releaseCreate!: (session: RuntimeSession) => void
+    const createGate = new Promise<RuntimeSession>(resolve => { releaseCreate = resolve })
+    const { selection, conversation } = createSelection({ runtime: { createSession: vi.fn(() => createGate) } })
+    localStorage.setItem(BOOKMARK_KEY, 'old-session')
+
+    const selecting = selection.select({ kind: 'create' })
+    const restoring = selection.restore(() => openGate)
+    releaseCreate(makeSession('user-session'))
+    await expect(selecting).resolves.toMatchObject({ session: expect.objectContaining({ storedSessionId: 'user-session' }) })
+
+    const opened = { resumed: false, session: makeSession(null) }
+    releaseOpen(opened)
+    await expect(restoring).resolves.toEqual({ kind: 'superseded', opened })
+    expect(conversation.adopt).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(BOOKMARK_KEY)).toBe('user-session')
   })
 
   it('restore does not bump the selection epoch: an in-flight select still publishes', async () => {
@@ -940,7 +1272,7 @@ describe('session selection', () => {
     const pending = selection.select({ kind: 'create' })
 
     const restored = await selection.restore(async () => ({ resumed: true, session: makeSession('restored') }))
-    expect(restored).toBeDefined()
+    expect(restored).toMatchObject({ kind: 'published' })
     expect(conversation.adopt).toHaveBeenCalledTimes(1)
 
     release(makeSession('late'))
