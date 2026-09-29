@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { relativeDay, RosterScreen } from './roster-screen'
 import { GatewayProvider } from '~/gateway/gateway-context'
-import { resetKnownRooms } from '~/features/groups/group-engine'
+import { resetKnownRooms } from '~/features/groups/known-rooms'
 import type { GatewayStatus } from '~/lib/types'
 import { $connection, $preferences } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'

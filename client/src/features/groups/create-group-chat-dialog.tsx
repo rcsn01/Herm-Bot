@@ -7,7 +7,8 @@ import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 
 import type { GroupRoom } from './group-model'
-import { createGroupChat, GROUP_CHAT_MAX_MEMBERS, useGroupRooms } from './group-engine'
+import { createGroupChat, GROUP_CHAT_MAX_MEMBERS } from './group-engine'
+import { useGroupRooms } from './known-rooms'
 
 const GROUP_NAME_MAX_LENGTH = 64
 

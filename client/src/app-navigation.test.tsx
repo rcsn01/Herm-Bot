@@ -63,7 +63,7 @@ vi.mock('~/features/cron/cron-screen', () => ({ CronScreen: ({ onOpenSession }: 
 
 import { App } from '~/app'
 import { $chat, emptyChatState, reduceGatewayEvent } from '~/state/conversation'
-import { publishRosterRooms, resetKnownRooms } from '~/features/groups/group-engine'
+import { publishRosterRooms, resetKnownRooms } from '~/features/groups/known-rooms'
 import { resetNavigation } from '~/navigation/navigation-store'
 import { resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $connection, $preferences, $profileSwitching, $sessions } from '~/state/store'

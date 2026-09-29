@@ -3,7 +3,7 @@ import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 import { $connection } from '~/state/store'
 
-import { useGroupRooms } from '~/features/groups/group-engine'
+import { useGroupRooms } from '~/features/groups/known-rooms'
 
 import { createAgentsApi, mergeAgentRoster, type AgentRosterEntry } from './agents-api'
 import { displayNameFor } from './agent-labels'
@@ -57,8 +57,8 @@ export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = 
       })
     : connection.status?.profiles
   const agents = mergeAgentRoster(statusProfiles, roster.data?.entries)
-  // The engine owns the known-rooms merge (roster ∪ local rooms, durable
-  // room keys, empty tombstones filtered).
+  // `known-rooms.ts` merges the roster and local rooms by key. It filters
+  // local empty-log rows without a room id or members.
   const groups = useGroupRooms(roster.data?.groups ?? [])
   const needle = query.trim().toLowerCase()
   const matches = (text: string) => !needle || text.toLowerCase().includes(needle)

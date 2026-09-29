@@ -19,11 +19,11 @@ import {
   openGroupRoom,
   sendToGroupChat,
   stopGroupThread,
-  useGroupRooms,
   type GroupActivityEntry,
   type GroupChatRoom,
   type GroupPrompt
 } from './group-engine'
+import { useGroupRooms } from './known-rooms'
 
 /** One room's engine state: the local coordination store, activity feed,
  *  and pending prompts, narrowed to this room's durable key. */
@@ -74,7 +74,7 @@ function describeActivity(entry: GroupActivityEntry): null | string {
 export function GroupChatScreen({ roomId }: { roomId: string }) {
   // The desktop-mirrored group chats come from the same unscoped profiles.list
   // RPC the roster uses — react-query dedupes the fetch, so opening a room
-  // costs nothing on top of the main screen. The engine owns the merge.
+  // costs nothing on top of the main screen. `known-rooms.ts` owns the merge.
   const api = useApi(createAgentsApi)
   const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
   const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
