@@ -1,6 +1,6 @@
-# Hermes Mobile
+# Herm-Bot
 
-Hermes Mobile is a phone-first PWA for one remote, unmodified official Hermes
+Herm-Bot is a phone-first PWA for one remote, unmodified official Hermes
 gateway. Docker hosts the React app, the fixed-origin gateway proxy, and the Web
 Push relay. Set the upstream once with `HERMES_GATEWAY`; the browser stays on
 the PWA origin for REST, WebSockets, OAuth, and push registration. Your
@@ -13,28 +13,6 @@ work, configuration, and remote files.
 See [PARITY.md](PARITY.md) for the route-by-route contract-6 scope and the
 remaining gaps. “Parity” means a usable gateway-owned mobile workflow, not
 pixel parity with Desktop or local access to Desktop-only capabilities.
-
-## Current surface
-
-- **Chat and sessions:** streaming prompts, durable session resume/listing,
-  attachments, tool activity, approvals and other interactive prompts, history
-  reconciliation, retry/branch actions, and session rename/archive/delete.
-- **Capabilities:** profile-default skills, toolsets, MCP servers and catalog
-  workflows, including supported install, configuration, enable/disable, test,
-  OAuth, and confirmation flows.
-- **Cron Jobs:** list/filter, inspect run history, create/edit, blueprint-based
-  creation, pause/resume, run now, delivery targets, and confirmed deletion.
-- **Models and settings:** model/provider selection, expensive-model
-  confirmation, auxiliary assignments, fallbacks, context limits, MoA
-  presets, typed configuration sections, memory-provider setup, OAuth,
-  redacted credentials, custom endpoints, plugins, billing, archived chats,
-  and gateway diagnostics.
-- **Projects:** remote file browsing, reading, upload, folder creation,
-  download/share, confirmed deletion, and gateway Git review actions.
-
-Some gateway administration links remain intentionally read-only diagnostic
-views until the gateway exposes a complete mobile-safe workflow. Unsupported
-optional endpoints are shown as unavailable rather than simulated locally.
 
 ## Run with Docker and Cloudflare Tunnel
 
@@ -77,12 +55,11 @@ proxy trust, caching, and gateway configuration.
 
 ## Release Docker images
 
-The client and relay versions (including their lockfiles) must match. They are
-currently both `0.1.0`, which is ready for the first release. For later
-releases, bump both together and commit the changes to `main`:
+The client and relay versions (including their lockfiles) must match. For
+each release, bump both together and commit the changes to `main`:
 
 ```sh
-VERSION=0.2.0
+VERSION=0.3.0
 (cd client && npm version --no-git-tag-version "$VERSION")
 (cd web-push-relay && npm version --no-git-tag-version "$VERSION")
 ```
@@ -113,36 +90,6 @@ pre-releases such as `1.0.0-rc.1` do not. GHCR packages are private by default;
 change their visibility in GitHub Packages settings only if public pulls are
 intended. This publishes images but does not deploy them or change the
 source-build Compose setup above.
-
-## PWA behavior and limits
-
-- The manifest, icons, and service worker support Home Screen installation.
-- The service worker caches only the app shell and build assets. It never caches
-  API responses, authentication, conversation history, credentials, or files.
-- Offline, the shell opens and shows a reconnect notice. There is no offline
-  agent, persisted transcript cache, or background queue for prompts or mutations.
-- Updates wait for an explicit click. The update action is blocked during an
-  active turn, an unanswered prompt, or an offline connection.
-- Session links use `/session/<encoded-session-id>?profile=<name>`. Open links
-  after signing in; switching profiles still clears the previous profile's UI.
-- Downloads use the browser share sheet when available and still permitted by
-  user activation. Otherwise, they save a file through the browser.
-- Web Push uses the bundled relay and its external completion bridge. The
-  bridge watches live sessions through Hermes' authenticated Gateway API and
-  sends a notification after each `message.complete` event. By default, the
-  notification previews up to 500 characters of response text available to
-  the bridge, and tapping it opens the conversation. The operating system may
-  show less text, and the preview can appear on the lock screen. If the bridge
-  attaches after the response has streamed or otherwise receives no response
-  text, it sends the generic completion message instead. It installs nothing
-  in Hermes and does not change Hermes configuration, sessions, or profiles.
-  Only devices that opted in under **Settings → Notifications** receive
-  pushes. Installing the PWA alone does not grant notification permission. See
-  [deploy/README.md](deploy/README.md#web-push-notifications).
-
-Existing gateway data needs no migration. Native Keychain credentials, native
-cookies, and native session bookmarks cannot transfer to a browser. Sign in
-again and select an existing conversation.
 
 ## Requirements
 
@@ -229,53 +176,3 @@ release application, validates its executable and `Info.plist`, and writes:
 The archive contains `Payload/Hermes Mobile.app`. It intentionally has no
 provisioning profile or distribution signature; iLoader or SideStore re-signs
 it with the user’s development certificate.
-
-## Profiles and lifecycle
-
-The selected profile is included explicitly in profile-scoped HTTP requests
-and session create/resume calls. Switching profiles closes the old runtime,
-clears foreground and query state, resets nested navigation, and opens a
-fresh profile-scoped session. Configuration and capability changes are labeled
-as new-session defaults; they never rebuild the active conversation’s prompt
-or tool schema.
-
-On foreground resume or restored connectivity, Mobile uses bounded reconnect
-backoff and reconciles durable session history. A browser cannot guarantee
-background execution. Active work after disconnection depends on the gateway's
-disconnect-grace policy; this client does not change that policy.
-
-## Security
-
-- PWA sign-in uses same-origin HttpOnly gateway cookies and fresh WebSocket
-  tickets through this site's Docker proxy. Optional static tokens use
-  `sessionStorage`, never persistent `localStorage`. They are cleared on sign
-  out and when the browser session ends. Keep untrusted scripts off this
-  origin; sessionStorage is not a Keychain. Browser traffic never contacts a
-  request-selected Hermes host; the Docker upstream comes only from `.env`.
-- Browser OAuth navigates through the gateway's `/auth/login` and returns to
-  the app. The proxy preserves cookies and redirects. Browser API requests
-  refuse redirects rather than forwarding a static token to a different host.
-- Native static gateway tokens are stored in Keychain. Interactive sessions
-  use a dedicated `URLSession` cookie store with Hermes HttpOnly cookies.
-- OAuth opens the gateway’s existing login route in an app-owned persistent
-  `WKWebView`. Only Hermes gateway cookies are copied into the native session;
-  external identity-provider cookies are retained for future sign-in.
-- WebSocket connections use a fresh gateway ticket for interactive auth and
-  pass the selected profile explicitly. Token mode sends the token only to
-  the configured gateway.
-- Secret fields are component-local, are never placed in app stores or logs,
-  and are cleared after save, validation, cancellation, failure, or a scope
-  change.
-- Remote destructive actions require confirmation. Long-running OAuth and
-  gateway actions use bounded polling and stop when their gateway/profile
-  scope changes.
-
-Some identity providers prohibit the native app's embedded browser. The PWA
-uses ordinary browser navigation instead. Password authentication and static
-gateway tokens remain available where the gateway supports them.
-
-Hermes Mobile uses official gateway routes and requires no server patch, native
-OAuth callback endpoint, custom URL scheme, or mobile-specific OAuth client
-registration. Local runtime installation, Electron updates, multi-window
-behavior, pet overlays, marketplace themes, local PTYs, OS reveal/open actions,
-APNs, and Desktop plugin-rendered React routes are intentionally absent.
