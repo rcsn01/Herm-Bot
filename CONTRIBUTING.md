@@ -26,15 +26,6 @@ npx playwright install chromium webkit
 npm run test:e2e
 ```
 
-The optional native push plugin tests need a Hermes Agent checkout. Set
-`HERMES_AGENT_ROOT` and add that checkout to `PYTHONPATH` before running them:
-
-```bash
-HERMES_AGENT_ROOT=/path/to/hermes-agent \
-PYTHONPATH=/path/to/hermes-agent \
-python3 -m unittest discover -s push-notification -p 'test_*.py'
-```
-
 Do not commit `.env`, generated builds, Xcode output, Web Push keys, gateway
 tokens, or production deployment files containing secrets. Preserve the
 Capacitor bundle ID, `hermes://` links, PWA origin, and Web Push volume unless a

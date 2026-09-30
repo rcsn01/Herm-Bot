@@ -4,11 +4,24 @@ This package builds only the existing React/Vite client and serves its static
 `dist/` with unprivileged nginx. It does not contain Hermes, Python, Xcode,
 backend state, Cloudflare credentials, or TLS termination.
 
-Run commands from the repository root:
+By default, `docker-compose.yml` pulls the published GHCR images; no source checkout
+or local build is needed. Configure `WEBPUSH_PWA_URL`, `HERMES_GATEWAY`, and a
+bridge credential in `.env` (or disable the completion bridge), then start the
+stack from the directory containing `docker-compose.yml`:
 
 ```sh
-docker compose build
 docker compose up -d
+```
+
+The GHCR packages currently require authentication; run `docker login ghcr.io`
+once before starting unless their visibility is made public. Set
+`HERMES_MOBILE_VERSION` in `.env` to choose a release; it defaults to `0.1.0`.
+
+To build from a source checkout, use the separate manifest:
+
+```sh
+docker compose -f compose.build.yaml build
+docker compose -f compose.build.yaml up -d
 ```
 
 Compose publishes HTTP on port `8080` on all host interfaces (LAN included).
@@ -143,7 +156,7 @@ Deploy, open the installed PWA, sign in, then choose
 **Settings → Notifications → Enable notifications**:
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 ```
 
 Registration mutations require the PWA's Hermes cookie or session token
@@ -158,7 +171,7 @@ host migration. Container rebuilds preserve the volume.
 
 ## Build context and inputs
 
-The build context is the repository root, as set in `compose.yaml`.
+The build context is the repository root, as set in `compose.build.yaml`.
 `Dockerfile.dockerignore` is a deny-by-default allowlist. It admits only the
 client build inputs and nginx deployment files. The gateway contracts and UI
 primitives used by the client live under `client/src/compat/`, so a Hermes

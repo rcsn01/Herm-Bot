@@ -13,8 +13,6 @@ export { Skeleton } from '@moirasia/ui-react/components/skeleton'
 export { Switch } from '@moirasia/ui-react/components/switch'
 export { Tabs, TabsContent, TabsList, TabsTrigger } from '@moirasia/ui-react/components/tabs'
 export { Textarea } from '@moirasia/ui-react/components/textarea'
-export { Codicon } from './ui/codicon'
-export { EmptyState } from './ui/empty-state'
 
 type MobileButtonVariant = 'default' | 'destructive' | 'ghost' | 'link' | 'outline' | 'secondary' | 'text'
 type MobileButtonSize = 'default' | 'icon' | 'icon-sm' | 'icon-xs' | 'lg' | 'micro' | 'sm'

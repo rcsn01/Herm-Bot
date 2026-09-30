@@ -51,10 +51,10 @@ From the repository root:
    Hermes credential with either `HERMES_BRIDGE_TOKEN` or
    `HERMES_BRIDGE_USERNAME` and `HERMES_BRIDGE_PASSWORD`. The bridge uses the
    normal Gateway API and does not change Hermes.
-4. Build and start the app:
+4. Start the app from the released images:
 
    ```sh
-   docker compose up -d --build
+   docker compose up -d
    ```
 
 5. Point your Cloudflare Tunnel hostname at `http://localhost:8080` on this
@@ -67,8 +67,13 @@ The browser PWA stays on this site's origin; nginx contacts Hermes from
 proxy never takes a request-supplied upstream, so one `.env` selects the
 browser's gateway while authentication, WebSockets, OAuth, and Web Push all
 stay on this one origin.
-See [deploy/README.md](deploy/README.md) for networking, proxy trust, caching,
-and gateway configuration details.
+
+The default `docker-compose.yml` pulls pinned GHCR images and does not need a
+source build. The current packages require GHCR authentication (`docker login
+ghcr.io`) unless their visibility is changed to public. To build from a source
+checkout instead, run `docker compose -f compose.build.yaml up -d --build`.
+See [deploy/README.md](deploy/README.md) for required settings, networking,
+proxy trust, caching, and gateway configuration.
 
 ## Release Docker images
 
@@ -133,8 +138,7 @@ source-build Compose setup above.
   in Hermes and does not change Hermes configuration, sessions, or profiles.
   Only devices that opted in under **Settings → Notifications** receive
   pushes. Installing the PWA alone does not grant notification permission. See
-  [deploy/README.md](deploy/README.md#web-push-notifications). The existing
-  optional Bark plugin remains available for the native app.
+  [deploy/README.md](deploy/README.md#web-push-notifications).
 
 Existing gateway data needs no migration. Native Keychain credentials, native
 cookies, and native session bookmarks cannot transfer to a browser. Sign in

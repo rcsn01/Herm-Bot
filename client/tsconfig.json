@@ -17,10 +17,8 @@
     "types": ["node", "vitest/globals"],
     "paths": {
       "~/*": ["./src/*"],
-      "@/lib/utils": ["./src/compat/desktop-utils.ts"],
       "@tabler/icons-react": ["./node_modules/@tabler/icons-react"],
       "class-variance-authority": ["./node_modules/class-variance-authority"],
-      "radix-ui": ["./node_modules/radix-ui"],
       "react": ["./node_modules/@types/react/index.d.ts"],
       "react/*": ["./node_modules/@types/react/*"]
     }
