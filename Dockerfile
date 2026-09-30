@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22.22.0-alpine3.23 AS build
+# The PWA build emits platform-independent assets. Use the builder's native
+# platform instead of running npm under QEMU for each target architecture.
+FROM --platform=$BUILDPLATFORM node:22.22.0-alpine3.23 AS build
 
 WORKDIR /workspace/client
 
