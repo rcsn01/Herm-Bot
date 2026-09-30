@@ -1,0 +1,9 @@
+{
+  "name": "hermes-mobile-release",
+  "private": true,
+  "scripts": {
+    "release": "node scripts/release-images.mjs",
+    "release:dry-run": "node scripts/release-images.mjs --dry-run",
+    "test:release": "node --test scripts/release-version.test.mjs"
+  }
+}

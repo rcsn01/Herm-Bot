@@ -70,6 +70,45 @@ stay on this one origin.
 See [deploy/README.md](deploy/README.md) for networking, proxy trust, caching,
 and gateway configuration details.
 
+## Release Docker images
+
+The client and relay versions (including their lockfiles) must match. They are
+currently both `0.1.0`, which is ready for the first release. For later
+releases, bump both together and commit the changes to `main`:
+
+```sh
+VERSION=0.2.0
+(cd client && npm version --no-git-tag-version "$VERSION")
+(cd web-push-relay && npm version --no-git-tag-version "$VERSION")
+```
+
+From a clean, up-to-date `main` checkout, preview and run the release:
+
+```sh
+npm run release:dry-run
+npm run release
+```
+
+The release command requires Docker and an authenticated GitHub CLI (`gh auth
+login`). It checks that the worktree is clean, local `main` matches
+`origin/main`, the version is newer than the latest release, and both Docker
+images build locally. It then creates and pushes an annotated `v<version>` tag.
+GitHub Actions publishes the images to GHCR and creates the GitHub Release only
+after both image builds and pushes succeed.
+
+Images are built for `linux/amd64` and `linux/arm64`:
+
+```text
+ghcr.io/rcsn01/herm-bot-pwa:<version>
+ghcr.io/rcsn01/herm-bot-web-push-relay:<version>
+```
+
+Each release also gets a full-commit-SHA tag. Stable releases update `latest`;
+pre-releases such as `1.0.0-rc.1` do not. GHCR packages are private by default;
+change their visibility in GitHub Packages settings only if public pulls are
+intended. This publishes images but does not deploy them or change the
+source-build Compose setup above.
+
 ## PWA behavior and limits
 
 - The manifest, icons, and service worker support Home Screen installation.
