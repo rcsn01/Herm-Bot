@@ -73,8 +73,10 @@ npm run release
 
 The release command requires Docker and an authenticated GitHub CLI (`gh auth
 login`). It checks that the worktree is clean, local `main` matches
-`origin/main`, the version is newer than the latest release, and both Docker
-images build locally. It then creates and pushes an annotated `v<version>` tag.
+`origin/main`, the version is newer than every existing version tag, and both
+Docker images build locally. It then creates and pushes an annotated
+`v<version>` tag. The old, cancelled `v0.2.0` tag means the script cannot be
+used for a `0.1.x` release; push its tag manually instead.
 GitHub Actions publishes the images to GHCR and creates the GitHub Release only
 after both image builds and pushes succeed.
 

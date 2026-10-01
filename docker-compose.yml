@@ -2,7 +2,7 @@
 # Configure the required gateway and public PWA origin in .env first.
 services:
   mobile:
-    image: ghcr.io/rcsn01/herm-bot-pwa:${HERMES_MOBILE_VERSION:-0.1.0}
+    image: ghcr.io/rcsn01/herm-bot-pwa:${HERMES_MOBILE_VERSION:-0.1.1}
     pull_policy: always
     ports:
       - "${HERMES_MOBILE_PORT:-8080}:8080"
@@ -31,7 +31,7 @@ services:
       start_period: 10s
 
   web-push-relay:
-    image: ghcr.io/rcsn01/herm-bot-web-push-relay:${HERMES_MOBILE_VERSION:-0.1.0}
+    image: ghcr.io/rcsn01/herm-bot-web-push-relay:${HERMES_MOBILE_VERSION:-0.1.1}
     pull_policy: always
     environment:
       HERMES_WEB_PUSH_APP_URL: ${WEBPUSH_PWA_URL:?set WEBPUSH_PWA_URL in .env}
