@@ -210,6 +210,10 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </label>
           <Textarea
             aria-label="Message Hermes"
+            autoCapitalize="sentences"
+            autoComplete="off"
+            autoCorrect="on"
+            spellCheck
             onChange={event => interaction.updateDraft(event.target.value)}
             onKeyDown={event => {
               if (event.key === 'Enter' && !event.shiftKey) {

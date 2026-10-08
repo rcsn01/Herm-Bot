@@ -51,6 +51,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .moirasia-warning-badge { border-color: color-mix(in oklab, #d97706, transparent 55%); color: #b45309; background: color-mix(in oklab, #d97706, transparent 90%); }
 :root[data-theme="dark"] .moirasia-warning-badge { color: #fbbf24; }
 [data-slot="input"], [data-slot="textarea"], select { font-size: var(--font-control); }
+/* Browser-only fixed-scale policy. Small focused controls trigger iOS zoom;
+   keep them readable without changing the native app's typography. */
+html[data-page-zoom="locked"] { touch-action: pan-x pan-y; }
+html[data-page-zoom="locked"] :is(input, textarea, select, [contenteditable]) { font-size: max(16px, 1em); }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: calc(var(--spacing) * 2); font-size: var(--font-display); letter-spacing: -.045em; }
 h2 { margin-bottom: calc(var(--spacing) * 2); font-size: var(--font-title); letter-spacing: -.035em; }

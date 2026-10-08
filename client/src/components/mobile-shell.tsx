@@ -1,6 +1,7 @@
 import { useRef, type ReactNode, type SyntheticEvent, type TouchEvent } from 'react'
 
 import { useSwipeMotion } from '~/gestures/use-swipe-motion'
+import { useKeyboardViewport } from '~/pwa/use-keyboard-viewport'
 
 interface MobileShellProps {
   navigationPage: ReactNode
@@ -44,6 +45,7 @@ export function MobileShell({
   roster,
   rosterHeader
 }: MobileShellProps) {
+  const shellRef = useKeyboardViewport()
   const refreshStart = useRef<RefreshGestureStart | null>(null)
   const foregroundMotion = useSwipeMotion({
     canStart: target => !gestureOwnedByControl(target),
@@ -90,6 +92,7 @@ export function MobileShell({
         onClickCapture={blockInteraction}
         onKeyDownCapture={blockInteraction}
         onSubmitCapture={blockInteraction}
+        ref={shellRef}
       >
         <div className="screen-stack" inert={navigationPageOpen ? true : undefined}>
           <section aria-hidden={foregroundVisible} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible ? true : undefined}>

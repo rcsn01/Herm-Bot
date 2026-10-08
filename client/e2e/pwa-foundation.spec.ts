@@ -125,6 +125,76 @@ test('keeps the latest message at the same distance from a keyboard-shifted comp
   expect(await gap()).toBeCloseTo(closedGap, 0)
 })
 
+test('keeps the composer inside a keyboard-reduced and panned visual viewport', async ({ page }) => {
+  await login(page)
+  const composer = page.getByLabel('Message Hermes')
+  await expect(composer).toHaveAttribute('spellcheck', 'true')
+  await expect(composer).toHaveAttribute('autocorrect', 'on')
+  await expect(composer).toHaveAttribute('autocomplete', 'off')
+  // Match the standalone full-height fallback without requiring installation.
+  await page.addStyleTag({ content: '.mobile-shell { height: 100vh; }' })
+  await composer.focus()
+
+  // Desktop engines have no iOS keyboard. Keep the layout viewport full-size
+  // while changing the visible region, as a Home Screen keyboard does.
+  const setViewport = async (height: number, offsetTop: number, event: 'resize' | 'scroll') => {
+    await page.evaluate(({ height, offsetTop, event }) => {
+      Object.defineProperties(window.visualViewport!, {
+        height: { configurable: true, value: height },
+        offsetTop: { configurable: true, value: offsetTop }
+      })
+      window.visualViewport!.dispatchEvent(new Event(event))
+    }, { height, offsetTop, event })
+  }
+  const bounds = () => page.locator('.composer-wrap').evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    return { bottom: rect.bottom, top: rect.top }
+  })
+
+  await setViewport(430, 0, 'resize')
+  await expect.poll(async () => (await bounds()).bottom).toBeLessThanOrEqual(431)
+  await expect.poll(async () => (await bounds()).top).toBeGreaterThanOrEqual(0)
+  await composer.fill('Typing above the keyboard')
+
+  await setViewport(430, 45, 'scroll')
+  await expect.poll(async () => (await bounds()).bottom).toBeCloseTo(475, 0)
+  await expect.poll(async () => (await bounds()).top).toBeGreaterThanOrEqual(45)
+
+  await setViewport(360, 0, 'resize')
+  await expect.poll(async () => (await bounds()).bottom).toBeLessThanOrEqual(361)
+
+  await setViewport(844, 0, 'resize')
+  await composer.blur()
+  await expect.poll(async () => (await bounds()).bottom).toBeCloseTo(844, 0)
+  await expect(composer).toHaveValue('Typing above the keyboard')
+})
+
+test('locks PWA page scale without blocking typing or single-touch scrolling', async ({ page }) => {
+  await login(page)
+  await expect(page.locator('meta[name="viewport"]')).toHaveAttribute('content', /user-scalable=no/)
+  await expect(page.locator('html')).toHaveAttribute('data-page-zoom', 'locked')
+  const composer = page.getByLabel('Message Hermes')
+  await expect.poll(() => composer.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16)
+  await composer.fill('Typing without page zoom')
+  await expect(composer).toHaveValue('Typing without page zoom')
+  const gestures = await page.evaluate(() => {
+    const dispatch = (type: string, touches?: number) => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      if (touches !== undefined) Object.defineProperty(event, 'touches', { value: Array(touches).fill({}) })
+      document.querySelector('textarea')!.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    return {
+      pinch: dispatch('gesturestart'),
+      doubleTap: dispatch('dblclick'),
+      multiTouch: dispatch('touchmove', 2),
+      singleTouch: dispatch('touchmove', 1),
+      touchAction: getComputedStyle(document.documentElement).touchAction
+    }
+  })
+  expect(gestures).toEqual({ pinch: true, doubleTap: true, multiTouch: true, singleTouch: false, touchAction: 'pan-x pan-y' })
+})
+
 test('password cookie authenticates a real WebSocket chat session', async ({ page, context }) => {
   await login(page)
   const cookies = await context.cookies()
