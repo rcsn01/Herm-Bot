@@ -68,9 +68,13 @@ function sessionInfoSnapshot(raw: object): SessionInfoSnapshot {
     const limit = Number(rawUsage.context_limit ?? rawUsage.max_tokens ?? 0)
     if (used || limit) usage = { used, limit }
   }
+  const model = text(info.model).trim()
+  const reasoningEffort = text(info.reasoning_effort).trim()
   return {
     title: text(info.title),
     running: Boolean(info.running),
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     usage
   }
 }

@@ -61,7 +61,18 @@ const body = req => new Promise((resolve, reject) => {
   req.on('end', () => { try { resolve(value ? JSON.parse(value) : {}) } catch (error) { reject(error) } })
   req.on('error', reject)
 })
-const initialMessages = id => [
+const initialMessages = id => id === 'activity-fixture' ? [
+  { row_id: 1, role: 'user', content: 'Inspect the project' },
+  ...Array.from({ length: 12 }, (_, index) => [
+    { row_id: 2 + index * 2, role: 'assistant', content: '', reasoning: `Reasoning step ${index + 1}` },
+    { row_id: 3 + index * 2, role: 'tool', content: `Output step ${index + 1}\n${'Detailed fixture output. '.repeat(150)}` }
+  ]).flat(),
+  { row_id: 26, role: 'assistant', content: 'Activity fixture final answer', reasoning: 'Final validation' },
+  { row_id: 27, role: 'user', content: 'Run another check' },
+  { row_id: 28, role: 'assistant', content: '', reasoning: 'Follow-up reasoning' },
+  { row_id: 29, role: 'tool', content: 'Another output' },
+  { row_id: 30, role: 'assistant', content: 'Follow-up answer' }
+] : [
   { row_id: 1, role: 'user', content: `Question saved in ${id}` },
   { row_id: 2, role: 'assistant', content: `Durable reply from ${id}` }
 ]
@@ -236,7 +247,7 @@ sockets.on('connection', (ws, _req, id, profile) => {
     let rpcError
     if (request.method === 'session.create' || request.method === 'session.resume') {
       currentStored = stored
-      result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: 'fixture/test-model', title: stored } }
+      result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: stored === 'footer-fixture' ? 'fixture/a-very-long-model-name-that-must-not-hide-the-status' : 'fixture/test-model', reasoning_effort: 'high', title: stored, ...(stored === 'footer-fixture' ? { usage: { total: 25000, context_limit: 100000 } } : {}) } }
     } else if (request.method === 'session.history') {
       result = { messages: state.messages.get(stored) ?? initialMessages(stored) }
     } else if (request.method === 'session.list') {
@@ -332,7 +343,9 @@ sockets.on('connection', (ws, _req, id, profile) => {
     ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
     if (request.method === 'prompt.submit') {
       ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: params.session_id, payload: { delta: `Fixture answer: ${params.text}` } } }))
-      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.complete', session_id: params.session_id, payload: {} } }))
+      if (!(currentStored === 'footer-fixture' && params.text === 'hold footer activity')) {
+        ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.complete', session_id: params.session_id, payload: {} } }))
+      }
     }
   })
 })

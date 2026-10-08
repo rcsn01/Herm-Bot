@@ -23,6 +23,17 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+describe('session model metadata', () => {
+  it('retains model and effort on adoption and replaces them on live updates', () => {
+    const { conversation, dispose } = subject(new MemoryGateway())
+    conversation.adopt({ contractVersion: null, info: { model: ' provider/first ', reasoning_effort: ' high ' }, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
+    expect($chat.get().info).toMatchObject({ model: 'provider/first', reasoningEffort: 'high' })
+    $chat.set(reduceGatewayEvent($chat.get(), { type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/second', reasoning_effort: 'low' } }))
+    expect($chat.get().info).toMatchObject({ model: 'provider/second', reasoningEffort: 'low' })
+    dispose()
+  })
+})
+
 describe('active session title', () => {
   it('retitles only a matching active session with conversation info', () => {
     const { conversation, dispose } = subject(new MemoryGateway())
@@ -120,6 +131,9 @@ describe('reduceGatewayEvent', () => {
 
   it.each([
     { name: 'standard usage, title, and truthy running', payload: { title: 'Planning', running: true, usage: { context_limit: 100, total: 25 } }, info: { title: 'Planning', running: true, usage: { used: 25, limit: 100 } }, running: true },
+    { name: 'trimmed session model and effort', payload: { model: '  provider/model  ', reasoning_effort: ' high ' }, info: { title: '', running: false, model: 'provider/model', reasoningEffort: 'high', usage: null }, running: false },
+    { name: 'empty model and effort', payload: { model: '  ', reasoning_effort: '' }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'malformed model and effort', payload: { model: { name: 'model' }, reasoning_effort: false }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'title preserves surrounding whitespace', payload: { title: '  Planning  ' }, info: { title: '  Planning  ', running: false, usage: null }, running: false },
     { name: 'legacy usage names', payload: { usage: { max_tokens: 100, total_tokens: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
     { name: 'current usage names win over legacy names', payload: { usage: { total: 25, total_tokens: 99, context_limit: 100, max_tokens: 999 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
@@ -156,7 +170,7 @@ describe('reduceGatewayEvent', () => {
   it('replaces the complete info snapshot when a later session.info omits fields', () => {
     const populated = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
       type: 'session.info', session_id: 'runtime-1', payload: {
-        title: 'Planning', running: true, usage: { total: 25, context_limit: 100 }
+        title: 'Planning', running: true, model: 'provider/model', reasoning_effort: 'high', usage: { total: 25, context_limit: 100 }
       }
     })
 

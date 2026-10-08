@@ -67,6 +67,72 @@ test('ships an installable manifest, icons, and a controlling service worker', a
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
 })
 
+test('animates a real roster pull with one haptic tick without opening the dragged row', async ({ page, browserName }, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Real touch injection uses CDP; WebKit gets the shared feedback test below.')
+  await login(page)
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  const indicator = page.locator('.pull-refresh')
+  await page.evaluate(() => {
+    ;(window as any).refreshTicks = []
+    Object.defineProperty(navigator, 'vibrate', { configurable: true, value: (pattern: number[]) => { (window as any).refreshTicks.push(pattern); return true } })
+  })
+  const before = (await fixtureCalls(page)).calls.filter(call => call.method === 'session.list').length
+  const row = page.getByRole('button', { name: 'Hermes', exact: true })
+  const box = (await row.boundingBox())!
+  const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  let move = 0
+  await touchDrag(page, start, { x: start.x, y: start.y + 140 }, 4, async () => {
+    move += 1
+    await expect(indicator).toHaveAttribute('data-phase', move < 3 ? 'pulling' : 'armed')
+    await expect(indicator).toBeVisible()
+    const track = (await indicator.locator('.pull-refresh-track').boundingBox())!
+    const ring = (await indicator.locator('.pull-refresh-ring').boundingBox())!
+    expect(ring.x + ring.width / 2).toBeCloseTo(track.x + track.width / 2, 0)
+    expect(ring.y + ring.height / 2).toBeCloseTo(track.y + track.height / 2, 0)
+    if (move === 3) await page.screenshot({ path: testInfo.outputPath('refresh-armed.png') })
+  })
+  await expect(indicator).toHaveAttribute('data-phase', 'refreshing')
+  await expect(indicator).toContainText('Refreshing')
+  await page.screenshot({ path: testInfo.outputPath('refresh-spinning.png') })
+  await expect.poll(async () => (await fixtureCalls(page)).calls.filter(call => call.method === 'session.list').length).toBeGreaterThan(before)
+  await expect(indicator).toHaveAttribute('data-phase', 'idle')
+  await expect(row).toBeVisible()
+  expect(await page.evaluate(() => (window as any).refreshTicks)).toEqual([[20]])
+})
+
+test('shows shared pull feedback on a workspace screen and respects reduced motion', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'Models', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Main model' })).toBeVisible()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const indicator = page.locator('.pull-refresh')
+  const dispatchTouch = async (type: string, y: number) => {
+    await page.locator('.foreground-layer.active .view-container').evaluate((scroller, { type, y }) => {
+      scroller.scrollTop = 0
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      const touch = { identifier: 1, clientX: 180, clientY: y }
+      Object.defineProperties(event, { touches: { value: type === 'touchend' || type === 'touchcancel' ? [] : [touch] }, changedTouches: { value: [touch] } })
+      scroller.dispatchEvent(event)
+    }, { type, y })
+  }
+  await dispatchTouch('touchstart', 100)
+  await dispatchTouch('touchmove', 145)
+  await expect(indicator).toHaveAttribute('data-phase', 'pulling')
+  await expect(indicator).toContainText('Pull to refresh')
+  await dispatchTouch('touchcancel', 145)
+  await expect(indicator).toHaveAttribute('data-phase', 'idle')
+  await dispatchTouch('touchstart', 100)
+  await dispatchTouch('touchmove', 210)
+  await expect(indicator).toHaveAttribute('data-phase', 'armed')
+  await expect(indicator).toContainText('Release to refresh')
+  await dispatchTouch('touchend', 210)
+  await expect(indicator).toHaveAttribute('data-phase', 'refreshing')
+  expect(await indicator.locator('.pull-refresh-ring').evaluate(element => getComputedStyle(element).animationName)).toBe('none')
+  await expect(indicator).toHaveAttribute('data-phase', 'idle')
+  await expect(page.getByRole('heading', { name: 'Main model' })).toBeVisible()
+})
+
 test('uses the active profile character in a new chat without gateway version text', async ({ page }) => {
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
@@ -79,7 +145,42 @@ test('uses the active profile character in a new chat without gateway version te
   await expect(emptyChat).not.toContainText('0.20.5')
 })
 
-test('keeps the bottom status row clear of screen corners until the keyboard opens', async ({ page }) => {
+test('keeps session model and effort left of status on narrow screens with context usage', async ({ page }, testInfo) => {
+  await login(page, '/session/footer-fixture')
+  const model = page.getByRole('group', { name: 'Session model and effort' })
+  const status = page.locator('.session-activity')
+  await expect(model).toContainText('fixture/a-very-long-model-name-that-must-not-hide-the-status')
+  await expect(page.locator('.composer-model-effort')).toHaveText('high')
+  await expect(status).toHaveText('Ready')
+  await expect(page.locator('.context-usage')).toContainText('25,000 / 100,000')
+
+  const checkLayout = async () => {
+    const modelBox = (await model.boundingBox())!
+    const statusBox = (await status.boundingBox())!
+    expect(modelBox.width).toBeGreaterThan(0)
+    expect(modelBox.x + modelBox.width).toBeLessThanOrEqual(statusBox.x)
+    expect(Math.abs(modelBox.y - statusBox.y)).toBeLessThan(2)
+    expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(page.viewportSize()!.width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await expect(page.locator('.composer-model-effort')).toBeVisible()
+  }
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 })
+    await page.getByLabel('Message Hermes').blur()
+    await checkLayout()
+    await page.getByLabel('Message Hermes').focus()
+    await checkLayout()
+  }
+  await page.screenshot({ path: testInfo.outputPath('footer-ready.png') })
+  await page.getByLabel('Message Hermes').fill('hold footer activity')
+  await page.getByRole('button', { name: 'Send' }).click()
+  await expect(status).toHaveText('Hermes is working')
+  await checkLayout()
+  await expect(page.locator('.composer-model-effort')).toHaveText('high')
+  await page.screenshot({ path: testInfo.outputPath('footer-working.png') })
+})
+
+test('keeps model and status clear of rounded screen corners with and without composer focus', async ({ page }) => {
   await login(page)
   const metadata = page.locator('.composer-meta')
   await page.getByLabel('Message Hermes').blur()
@@ -90,6 +191,12 @@ test('keeps the bottom status row clear of screen corners until the keyboard ope
   await page.getByLabel('Message Hermes').focus()
   await expect.poll(() => metadata.evaluate(element => getComputedStyle(element).paddingLeft)).toBe('5px')
   await expect.poll(() => metadata.evaluate(element => getComputedStyle(element).paddingRight)).toBe('5px')
+  for (const focused of [false, true]) {
+    if (focused) await page.getByLabel('Message Hermes').focus()
+    else await page.getByLabel('Message Hermes').blur()
+    await expect.poll(() => page.locator('.composer-model').evaluate(element => getComputedStyle(element).paddingLeft)).toBe('8px')
+    await expect.poll(() => page.locator('.session-activity').evaluate(element => getComputedStyle(element).paddingRight)).toBe('8px')
+  }
 })
 
 test('keeps the latest message at the same distance from a keyboard-shifted composer while following', async ({ page }) => {
@@ -193,6 +300,42 @@ test('locks PWA page scale without blocking typing or single-touch scrolling', a
     }
   })
   expect(gestures).toEqual({ pinch: true, doubleTap: true, multiTouch: true, singleTouch: false, touchAction: 'pan-x pan-y' })
+})
+
+test('compacts long agent activity into keyboard-accessible cards with independent output expansion', async ({ page, browserName }) => {
+  await login(page, '/session/activity-fixture?profile=default')
+  await expect(page.getByText('Follow-up answer', { exact: true })).toBeVisible()
+  const cards = page.locator('.foreground-layer.active .agent-activity-card')
+  await expect(cards).toHaveCount(2)
+  const first = cards.first()
+  await expect(first.locator(':scope > summary')).toContainText('13 reasoning blocks · 12 tool outputs')
+  await expect(first).not.toHaveAttribute('open', '')
+  await expect(first.getByText('Reasoning step 1', { exact: true })).not.toBeVisible()
+  await expect(page.getByText('Activity fixture final answer', { exact: true })).toBeAttached()
+  await expect(page.locator('.foreground-layer.active article.message')).toHaveCount(4)
+
+  await first.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: `/tmp/herm-bot-activity-collapsed-${browserName}.png` })
+  await first.locator(':scope > summary').focus()
+  await page.keyboard.press('Enter')
+  await expect(first).toHaveAttribute('open', '')
+  const rows = first.locator('.agent-activity-step')
+  await expect(rows).toHaveCount(25)
+  await rows.nth(0).locator('summary').click()
+  await expect(first.getByText('Reasoning step 1', { exact: true })).toBeVisible()
+  await expect(rows.nth(2)).not.toHaveAttribute('open', '')
+  await rows.nth(1).locator('summary').click()
+  await expect(rows.nth(1).locator('pre')).toBeVisible()
+  expect(await rows.nth(1).locator('pre').evaluate(element => element.clientHeight)).toBeLessThanOrEqual(240)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+  await rows.nth(0).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: `/tmp/herm-bot-activity-expanded-${browserName}.png` })
+
+  await first.locator(':scope > summary').click()
+  await expect(first).not.toHaveAttribute('open', '')
+  await page.getByLabel('Message Hermes').fill('A new normal message')
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.getByText('Fixture answer: A new normal message', { exact: true })).toBeVisible()
 })
 
 test('password cookie authenticates a real WebSocket chat session', async ({ page, context }) => {

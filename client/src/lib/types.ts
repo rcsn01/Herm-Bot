@@ -163,6 +163,8 @@ export interface SessionUsage {
 export interface SessionInfoSnapshot {
   title: string
   running: boolean
+  model?: string
+  reasoningEffort?: string
   usage: null | SessionUsage
 }
 

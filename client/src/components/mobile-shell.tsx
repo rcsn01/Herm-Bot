@@ -1,5 +1,6 @@
-import { useRef, type ReactNode, type SyntheticEvent, type TouchEvent } from 'react'
+import type { CSSProperties, ReactNode, SyntheticEvent } from 'react'
 
+import { usePullToRefresh } from '~/gestures/use-pull-to-refresh'
 import { useSwipeMotion } from '~/gestures/use-swipe-motion'
 import { useKeyboardViewport } from '~/pwa/use-keyboard-viewport'
 
@@ -19,15 +20,9 @@ interface MobileShellProps {
   rosterHeader: ReactNode
 }
 
-interface RefreshGestureStart {
-  atTop: boolean
-  x: number
-  y: number
-}
-
 function gestureOwnedByControl(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
-  return Boolean(target.closest('button, input, textarea, select, [contenteditable="true"], .session-row'))
+  return Boolean(target.closest('button, input, textarea, select, summary, [contenteditable="true"], .session-row'))
 }
 
 export function MobileShell({
@@ -46,7 +41,8 @@ export function MobileShell({
   rosterHeader
 }: MobileShellProps) {
   const shellRef = useKeyboardViewport()
-  const refreshStart = useRef<RefreshGestureStart | null>(null)
+  const refresh = usePullToRefresh(shellRef, { enabled: !navigationPageOpen && !reconnecting, refreshing, onRefresh, surface: foregroundVisible ? 'foreground' : 'roster' })
+  const refreshHeld = refresh.phase === 'refreshing' || refresh.phase === 'error'
   const foregroundMotion = useSwipeMotion({
     canStart: target => !gestureOwnedByControl(target),
     direction: 'right',
@@ -56,26 +52,6 @@ export function MobileShell({
     onCommit: endpoint => { if (endpoint === 1) onDismissForeground?.() },
     restingEndpoint: 0
   })
-
-  const startRefreshGesture = (event: TouchEvent<HTMLElement>) => {
-    refreshStart.current = null
-    if (navigationPageOpen || reconnecting || event.touches.length !== 1) return
-    refreshStart.current = {
-      atTop: event.currentTarget.scrollTop <= 0,
-      x: event.touches[0]?.clientX ?? 0,
-      y: event.touches[0]?.clientY ?? 0
-    }
-  }
-
-  const finishRefreshGesture = (event: TouchEvent<HTMLElement>) => {
-    const start = refreshStart.current
-    refreshStart.current = null
-    if (!start || navigationPageOpen || reconnecting || event.changedTouches.length !== 1) return
-    const touch = event.changedTouches[0]
-    if (!touch) return
-    const dy = touch.clientY - start.y
-    if (start.atTop && dy >= 90 && Math.abs(dy) > 1.2 * Math.abs(touch.clientX - start.x)) void onRefresh()
-  }
 
   const blockInteraction = (event: SyntheticEvent) => {
     if (!reconnecting) return
@@ -97,11 +73,7 @@ export function MobileShell({
         <div className="screen-stack" inert={navigationPageOpen ? true : undefined}>
           <section aria-hidden={foregroundVisible} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible ? true : undefined}>
             {rosterHeader}
-            <main
-              className="view-container"
-              onTouchEnd={finishRefreshGesture}
-              onTouchStart={startRefreshGesture}
-            >
+            <main className="view-container">
               {roster}
             </main>
           </section>
@@ -113,18 +85,32 @@ export function MobileShell({
             {...foregroundMotion.bind}
           >
             {foregroundHeader}
-            <main
-              className="view-container"
-              onTouchEnd={finishRefreshGesture}
-              onTouchStart={startRefreshGesture}
-            >
+            <main className="view-container">
               {foreground}
             </main>
             {foregroundNavigation}
           </section>
         </div>
         {navigationPage}
-        {refreshing && <div className="refresh-indicator">Refreshing from gateway…</div>}
+        <div
+          aria-hidden={refresh.phase === 'idle'}
+          aria-live="polite"
+          className="pull-refresh"
+          data-phase={refresh.phase}
+          role="status"
+          style={{
+            '--refresh-travel': `${64 * (1 - Math.exp(-(refreshHeld ? 90 : refresh.distance) / 100)) - 24}px`,
+            '--refresh-scale': refresh.phase === 'idle' ? .85 : .85 + .15 * (refreshHeld ? 1 : refresh.progress),
+            opacity: refresh.phase === 'idle' ? 0 : refreshHeld ? 1 : Math.min(refresh.distance / 36, 1)
+          } as CSSProperties}
+        >
+          <svg aria-hidden="true" className="pull-refresh-glyph" viewBox="0 0 24 24">
+            <circle className="pull-refresh-track" cx="12" cy="12" r="10" />
+            <circle className="pull-refresh-ring" cx="12" cy="12" r="10" style={{ strokeDasharray: '62.83', strokeDashoffset: refresh.phase === 'refreshing' ? 44 : 62.83 * (1 - refresh.progress) }} />
+            <path className="pull-refresh-arrow" d="M12 7v10m-4-4 4 4 4-4" />
+          </svg>
+          <span>{refresh.phase === 'refreshing' ? 'Refreshing…' : refresh.phase === 'error' ? 'Could not refresh' : refresh.phase === 'armed' ? 'Release to refresh' : 'Pull to refresh'}</span>
+        </div>
       </div>
       {reconnecting && <div aria-live="polite" className="connection-status" role="status">Reconnecting to Hermes…</div>}
     </>

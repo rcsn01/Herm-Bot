@@ -1,11 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
+import { AgentActivity } from '~/components/agent-activity'
+import { groupAgentActivity } from '~/transcript/agent-activity'
 import { useChatViewport } from '~/components/chat-viewport'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
@@ -33,6 +35,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const chat = useStore($chat)
   const connection = useStore($connection)
   const entries = chat.transcript.entries
+  const displayItems = useMemo(() => groupAgentActivity(entries), [entries])
   const { interaction, state: interactionState } = useChatInteraction({ conversation, mediaConnection })
   const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
   const [sessionActionError, setSessionActionError] = useState<string | null>(null)
@@ -102,63 +105,52 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             )}
           </div>
         )}
-        {entries.map(entry => entry.kind === 'cron-instructions' ? (
-          <article className="message collapsed-message cron-instructions-message" key={entry.id}>
-            <details>
-              <summary>Cron job instructions</summary>
-              <pre>{entry.content}</pre>
-            </details>
-          </article>
-        ) : entry.kind === 'tool-output' ? (
-          <article className="message tool collapsed-message" key={entry.id}>
-            <details>
-              <summary>Tool output</summary>
-              <pre>{entry.content || 'No output'}</pre>
-            </details>
-          </article>
-        ) : (
-          <article className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
-            {/* Bubbles identify their speaker by side, so no author caption —
-              the meta row only carries non-positional markers (Activity is an
-              event kind, Streaming is a delivery state). */}
-            {(entry.kind === 'activity' || entry.streaming) && (
-              <div className="message-meta">
-                <span>{entry.kind === 'activity' ? 'Activity' : null}</span>
-                {entry.streaming && <Badge variant="muted">Streaming</Badge>}
-              </div>
-            )}
-            {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
-            <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{entry.content || (entry.streaming ? '…' : '')}</ReactMarkdown></div>
-            {entry.author === 'user' && (
-              <Button
-                disabled={chat.running || !entry.editTarget}
-                onClick={() => {
-                  if (!entry.editTarget || chat.running) return
-                  interaction.beginEdit({ content: entry.content, rowId: entry.editTarget.rowId })
-                }}
-                size="micro"
-                variant="text"
-              >
-                Edit & retry
-              </Button>
-            )}
-            {entry.author === 'assistant' && entry.content && (
-              <Button onClick={() => void interaction.speak(entry.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
-                <IconVolume size={16} />
-              </Button>
-            )}
-          </article>
-        ))}
-        {chat.tools.length > 0 && (
-          <section className="tool-timeline">
-            <p className="eyebrow">Tool activity</p>
-            {chat.tools.map(tool => (
-              <details key={tool.id} open={tool.status !== 'complete'}>
-                <summary><span className={`status-dot ${tool.status}`} />{tool.name}<span>{tool.status}</span></summary>
-                {tool.detail && <pre>{tool.detail}</pre>}
+        {displayItems.map(item => {
+          if (item.kind === 'agent-activity') return <AgentActivity key={item.id} steps={item.steps} />
+          const entry = item.entry
+          return entry.kind === 'cron-instructions' ? (
+            <article className="message collapsed-message cron-instructions-message" key={entry.id}>
+              <details>
+                <summary>Cron job instructions</summary>
+                <pre>{entry.content}</pre>
               </details>
-            ))}
-          </section>
+            </article>
+          ) : (
+            <article className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
+              {/* Bubbles identify their speaker by side, so no author caption —
+                the meta row only carries non-positional markers (Activity is an
+                event kind, Streaming is a delivery state). */}
+              {(entry.kind === 'activity' || entry.streaming) && (
+                <div className="message-meta">
+                  <span>{entry.kind === 'activity' ? 'Activity' : null}</span>
+                  {entry.streaming && <Badge variant="muted">Streaming</Badge>}
+                </div>
+              )}
+              {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
+              <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{entry.content || (entry.streaming ? '…' : '')}</ReactMarkdown></div>
+              {entry.author === 'user' && (
+                <Button
+                  disabled={chat.running || !entry.editTarget}
+                  onClick={() => {
+                    if (!entry.editTarget || chat.running) return
+                    interaction.beginEdit({ content: entry.content, rowId: entry.editTarget.rowId })
+                  }}
+                  size="micro"
+                  variant="text"
+                >
+                  Edit & retry
+                </Button>
+              )}
+              {entry.author === 'assistant' && entry.content && (
+                <Button onClick={() => void interaction.speak(entry.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
+                  <IconVolume size={16} />
+                </Button>
+              )}
+            </article>
+          )
+        })}
+        {chat.tools.length > 0 && (
+          <AgentActivity hasSessionError={Boolean(chat.error)} key={`tools:${chat.runtimeSessionId ?? chat.storedSessionId ?? 'current'}`} running={chat.running} tools={chat.tools} />
         )}
         <div ref={viewport.bottomRef} />
       </div>
@@ -233,6 +225,13 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         </div>
         <div className="composer-meta">
           {chat.info?.usage && <ContextUsage usage={chat.info.usage} />}
+          {chat.info && (
+            <div className="composer-model" role="group" aria-label="Session model and effort">
+              <span className="composer-model-name" title={`Model: ${chat.info.model ?? 'unavailable'}`}>{chat.info.model ?? 'Model unavailable'}</span>
+              <span aria-hidden="true">·</span>
+              <span className="composer-model-effort" title={`Reasoning effort: ${chat.info.reasoningEffort ?? 'unavailable'}`}>{chat.info.reasoningEffort ?? 'Effort unavailable'}</span>
+            </div>
+          )}
           <div className={`session-activity ${chat.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
             <span aria-hidden className="status-dot" />
             <span>{chat.running ? 'Hermes is working' : 'Ready'}</span>

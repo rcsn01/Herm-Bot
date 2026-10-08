@@ -191,6 +191,39 @@ describe('chat interaction wiring', () => {
   })
 })
 
+describe('session footer metadata', () => {
+  it('shows session model and effort before status, updates live, and preserves context usage', () => {
+    $chat.set(reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
+      type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/first', reasoning_effort: 'high', usage: { total: 25, context_limit: 100 } }
+    }))
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    const model = screen.getByRole('group', { name: 'Session model and effort' })
+    expect(model.textContent).toBe('provider/first·high')
+    expect(model.nextElementSibling).toBe(screen.getByRole('status'))
+    expect(screen.getByRole('status').textContent).toBe('Ready')
+    expect(screen.getByText('25 / 100')).not.toBeNull()
+    act(() => {
+      $chat.set(reduceGatewayEvent($chat.get(), {
+        type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/second', reasoning_effort: 'low', running: true, usage: { total: 50, context_limit: 100 } }
+      }))
+    })
+    expect(model.textContent).toBe('provider/second·low')
+    expect(screen.getByRole('status').textContent).toBe('Hermes is working')
+    expect(screen.getByText('50 / 100')).not.toBeNull()
+  })
+
+  it('marks missing session metadata unavailable instead of guessing', () => {
+    $chat.set({ ...emptyChatState(), info: { title: '', running: false, usage: null } })
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    expect(screen.getByRole('group', { name: 'Session model and effort' }).textContent).toBe('Model unavailable·Effort unavailable')
+  })
+
+  it('does not display session metadata before a session is loaded', () => {
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    expect(screen.queryByRole('group', { name: 'Session model and effort' })).toBeNull()
+  })
+})
+
 describe('transcript rendering and durable edits', () => {
   it('keeps external Markdown links secure and renders context usage below the composer', () => {
     $chat.set({
@@ -256,13 +289,67 @@ describe('transcript rendering and durable edits', () => {
 
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
+    const card = screen.getByText('Agent activity').closest('details')!
+    expect(card.open).toBe(false)
+    fireEvent.click(screen.getByText('Agent activity'))
     const summary = screen.getByText('Tool output')
     const details = summary.closest('details')!
     expect(details.open).toBe(false)
-    expect(details.closest('article')?.classList.contains('collapsed-message')).toBe(true)
+    expect(card.contains(details)).toBe(true)
 
     fireEvent.click(summary)
     expect(details.open).toBe(true)
+  })
+
+  it('compacts consecutive technical entries while preserving normal messages and activity events', () => {
+    $chat.set({
+      ...emptyChatState(),
+      transcript: {
+        context: { source: null, storedSessionId: null },
+        entries: [
+          { id: 'u', kind: 'message', author: 'user', content: 'Check the files', streaming: false },
+          { id: 'r1', kind: 'message', author: 'assistant', content: '', reasoning: 'Plan the check', streaming: false },
+          { id: 't1', kind: 'tool-output', content: 'File contents' },
+          { id: 'r2', kind: 'message', author: 'assistant', content: 'The checks passed', reasoning: 'Review the result', streaming: false },
+          { id: 'e', kind: 'activity', activityKind: 'error', author: 'system', content: 'Visible activity event', streaming: false }
+        ]
+      }
+    })
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    expect(container.querySelectorAll('.agent-activity-card')).toHaveLength(1)
+    expect(screen.getByText('2 reasoning blocks · 1 tool output')).not.toBeNull()
+    expect(container.querySelectorAll('article.message')).toHaveLength(3)
+    expect(screen.getByText('The checks passed').closest('article')!.querySelector('details')).toBeNull()
+    expect(screen.getByText('Visible activity event').closest('.agent-activity-card')).toBeNull()
+    expect(screen.getByText('Check the files')).not.toBeNull()
+  })
+
+  it('keeps an expanded group mounted when streamed reasoning becomes an answer', () => {
+    const entry = { id: 'stream', kind: 'message' as const, author: 'assistant' as const, content: '', reasoning: 'Thinking now', streaming: true }
+    $chat.set({ ...emptyChatState(), transcript: { context: { source: null, storedSessionId: null }, entries: [entry] } })
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    const card = screen.getByText('Agent activity').closest('details')!
+    fireEvent.click(screen.getByText('Agent activity'))
+    act(() => {
+      $chat.set({ ...$chat.get(), transcript: { ...$chat.get().transcript, entries: [{ ...entry, content: 'Final answer', streaming: false }] } })
+    })
+    expect(screen.getByText('Agent activity').closest('details')).toBe(card)
+    expect(card.open).toBe(true)
+    expect(screen.getByText('Final answer')).not.toBeNull()
+  })
+
+  it('keeps session errors and approval prompts outside compact tool activity', () => {
+    $chat.set({
+      ...emptyChatState(),
+      error: 'Tool connection failed',
+      pendingPrompt: { kind: 'clarify', question: 'Choose the next step', requestId: 'approval' },
+      tools: [{ id: 'terminal', name: 'Terminal', status: 'running' }]
+    })
+    const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    expect(screen.getByText('Session error')).not.toBeNull()
+    expect(screen.getByRole('alert').textContent).toBe('Tool connection failed')
+    expect(screen.getByText('Choose the next step').closest('.agent-activity-card')).toBeNull()
+    expect(container.querySelector('.tool-timeline')).toBeNull()
   })
 
   it('collapses the generated instruction block only for cron sessions', () => {
