@@ -70,27 +70,29 @@ export function MobileShell({
         onSubmitCapture={blockInteraction}
         ref={shellRef}
       >
-        <div className="screen-stack" inert={navigationPageOpen ? true : undefined}>
-          <section aria-hidden={foregroundVisible} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible ? true : undefined}>
+        <section aria-hidden={foregroundVisible || navigationPageOpen} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible || navigationPageOpen ? true : undefined}>
+          <main className="sessions-menu-content">
             {rosterHeader}
-            <main className="view-container">
+            <div className="view-container">
               {roster}
-            </main>
-          </section>
-          <section
-            aria-hidden={!foregroundVisible}
-            className={`foreground-layer${foregroundVisible ? ' active' : ''}${foregroundDismissible ? ' dismissible' : ''}${foregroundNavigation ? ' with-workspace-navigation' : ''}`}
-            inert={!foregroundVisible ? true : undefined}
-            ref={foregroundMotion.ref}
-            {...foregroundMotion.bind}
-          >
+            </div>
+          </main>
+        </section>
+        <section
+          aria-hidden={!foregroundVisible || navigationPageOpen}
+          className={`foreground-layer${foregroundVisible ? ' active' : ''}${foregroundDismissible ? ' dismissible' : ''}${foregroundNavigation ? ' with-workspace-navigation' : ''}`}
+          inert={!foregroundVisible || navigationPageOpen ? true : undefined}
+          ref={foregroundMotion.ref}
+          {...foregroundMotion.bind}
+        >
+          <main className="sessions-menu-content">
             {foregroundHeader}
-            <main className="view-container">
+            <div className="view-container">
               {foreground}
-            </main>
+            </div>
             {foregroundNavigation}
-          </section>
-        </div>
+          </main>
+        </section>
         {navigationPage}
         <div
           aria-hidden={refresh.phase === 'idle'}

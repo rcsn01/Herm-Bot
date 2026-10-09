@@ -14,6 +14,8 @@ export function useKeyboardViewport() {
     const restore = () => {
       shell.style.removeProperty('height')
       shell.style.removeProperty('top')
+      shell.style.removeProperty('--page-height')
+      shell.style.removeProperty('--page-top')
     }
     const update = () => {
       const focused = document.activeElement
@@ -27,6 +29,9 @@ export function useKeyboardViewport() {
       }
       shell.style.height = `${viewport.height}px`
       shell.style.top = `${viewport.offsetTop}px`
+      // Fixed page layers need the same geometry as the outer shell.
+      shell.style.setProperty('--page-height', `${viewport.height}px`)
+      shell.style.setProperty('--page-top', `${viewport.offsetTop}px`)
     }
     const scheduleUpdate = () => {
       if (frame !== null) cancelAnimationFrame(frame)

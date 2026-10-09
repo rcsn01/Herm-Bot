@@ -16,7 +16,7 @@ async function login(page: Page, path = '/') {
     // The newest session on the fixture is Bot Mode plumbing ('Group: r-crew');
     // opening Hermes must land on the human conversation instead. The fixture
     // echoes the requested session id as the resumed title.
-    await expect(page.locator('.foreground-layer.active > .app-header .header-bot-button small')).toHaveText('saved-default')
+    await expect(page.locator('.foreground-layer.active > .sessions-menu-content > .app-header .header-bot-button small')).toHaveText('saved-default')
   }
 }
 
@@ -517,7 +517,7 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
     if (destination.button !== 'Automations') {
       await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: destination.button }).click()
     }
-    const header = page.locator('.foreground-layer.active > .bot-workspace-header')
+    const header = page.locator('.foreground-layer.active > .sessions-menu-content > .bot-workspace-header')
     await expect(header.locator('.header-bot-button small')).toHaveText(destination.subtitle)
     if (destination.button === 'Automations') {
       const newAutomation = page.locator('.foreground-layer.active .cron-new-automation')
@@ -536,7 +536,7 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
   await page.getByRole('navigation', { name: 'Bot workspace' }).getByRole('button', { name: 'Automations' }).click()
   await page.getByRole('button', { name: 'New automations' }).click()
   await page.getByRole('dialog', { name: 'New automation' }).getByRole('button', { name: 'Create from scratch' }).click()
-  const workspaceHeader = page.locator('.foreground-layer.active > .bot-workspace-header')
+  const workspaceHeader = page.locator('.foreground-layer.active > .sessions-menu-content > .bot-workspace-header')
   await expect(workspaceHeader.locator('.header-bot-button small')).toHaveText('New job')
   await expect(page.getByRole('heading', { name: 'New job' })).toHaveCount(0)
   await expect(page.getByRole('button', { exact: true, name: 'Back' })).toHaveCount(1)

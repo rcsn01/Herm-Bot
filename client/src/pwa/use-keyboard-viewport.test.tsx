@@ -53,16 +53,21 @@ describe('browser keyboard viewport', () => {
     flushFrames()
     expect(shell.style.height).toBe('430px')
     expect(shell.style.top).toBe('0px')
+    expect(shell.style.getPropertyValue('--page-height')).toBe('430px')
+    expect(shell.style.getPropertyValue('--page-top')).toBe('0px')
 
     viewport.offsetTop = 45
     viewport.dispatchEvent(new Event('scroll'))
     flushFrames()
     expect(shell.style.top).toBe('45px')
+    expect(shell.style.getPropertyValue('--page-top')).toBe('45px')
 
     input.blur()
     flushFrames()
     expect(shell.style.height).toBe('')
     expect(shell.style.top).toBe('')
+    expect(shell.style.getPropertyValue('--page-height')).toBe('')
+    expect(shell.style.getPropertyValue('--page-top')).toBe('')
   })
 
   it('handles keyboard dismissal while the input stays focused and subsequent reopening', () => {

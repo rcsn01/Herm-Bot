@@ -18,7 +18,7 @@ test('cron blueprints render and edit cleanly on a mobile viewport', async ({ pa
   await page.getByRole('button', { name: 'New automations' }).click()
   await page.getByRole('dialog', { name: 'New automation' }).getByRole('button', { name: 'Use a blueprint' }).click()
 
-  const workspaceHeader = page.locator('.foreground-layer.active > .bot-workspace-header')
+  const workspaceHeader = page.locator('.foreground-layer.active > .sessions-menu-content > .bot-workspace-header')
   await expect(workspaceHeader.locator('.header-bot-button small')).toHaveText('Blueprints')
   await expect(page.getByRole('heading', { exact: true, name: 'Blueprints' })).toHaveCount(0)
   await expect(page.getByRole('button', { exact: true, name: 'Back' })).toHaveCount(1)

@@ -57,6 +57,17 @@ describe('MobileShell', () => {
     expect(roster.hasAttribute('inert')).toBe(true)
   })
 
+  it('uses sibling page frames and makes both content pages inert while sessions is open', () => {
+    const { foreground, roster } = renderShell({ navigationPageOpen: true })
+    expect(foreground.parentElement).toBe(roster.parentElement)
+    expect(foreground.parentElement!.classList.contains('mobile-shell')).toBe(true)
+    for (const page of [roster, foreground]) {
+      expect(page.firstElementChild!.classList.contains('sessions-menu-content')).toBe(true)
+      expect(page.hasAttribute('inert')).toBe(true)
+      expect(page.getAttribute('aria-hidden')).toBe('true')
+    }
+  })
+
   it('tracks a rightward foreground drag and commits only after settling', () => {
     const { foreground, onDismissForeground } = renderShell()
 
