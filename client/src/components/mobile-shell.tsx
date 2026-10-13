@@ -43,6 +43,10 @@ export function MobileShell({
   const shellRef = useKeyboardViewport()
   const refresh = usePullToRefresh(shellRef, { enabled: !navigationPageOpen && !reconnecting, refreshing, onRefresh, surface: foregroundVisible ? 'foreground' : 'roster' })
   const refreshHeld = refresh.phase === 'refreshing' || refresh.phase === 'error'
+  const refreshDragging = refresh.phase === 'pulling' || refresh.phase === 'armed'
+  const refreshContentStyle = {
+    '--refresh-offset': `${refreshDragging ? 128 * (1 - Math.exp(-refresh.distance / 180)) : 0}px`
+  } as CSSProperties
   const foregroundMotion = useSwipeMotion({
     canStart: target => !gestureOwnedByControl(target),
     direction: 'right',
@@ -73,7 +77,7 @@ export function MobileShell({
         <section aria-hidden={foregroundVisible || navigationPageOpen} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible || navigationPageOpen ? true : undefined}>
           <main className="sessions-menu-content">
             {rosterHeader}
-            <div className="view-container">
+            <div className="view-container" data-refresh-phase={!foregroundVisible ? refresh.phase : 'idle'} style={!foregroundVisible ? refreshContentStyle : undefined}>
               {roster}
             </div>
           </main>
@@ -87,7 +91,7 @@ export function MobileShell({
         >
           <main className="sessions-menu-content">
             {foregroundHeader}
-            <div className="view-container">
+            <div className="view-container" data-refresh-phase={foregroundVisible ? refresh.phase : 'idle'} style={foregroundVisible ? refreshContentStyle : undefined}>
               {foreground}
             </div>
             {foregroundNavigation}

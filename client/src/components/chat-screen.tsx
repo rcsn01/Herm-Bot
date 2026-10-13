@@ -1,8 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { MessageMarkdown } from '~/components/message-markdown'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
@@ -127,7 +126,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
                 </div>
               )}
               {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
-              <div className="message-content"><ReactMarkdown components={{ a: ({ children, ...props }) => <a {...props} rel="noreferrer noopener" target="_blank">{children}</a> }} remarkPlugins={[remarkGfm]} skipHtml>{entry.content || (entry.streaming ? '…' : '')}</ReactMarkdown></div>
+              <div className="message-content"><MessageMarkdown content={entry.content || (entry.streaming ? '…' : '')} /></div>
               {entry.author === 'user' && (
                 <Button
                   disabled={chat.running || !entry.editTarget}

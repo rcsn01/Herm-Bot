@@ -39,7 +39,7 @@ export default defineConfig(({ mode }) => {
       filename: 'sw.ts',
       injectRegister: false,
       registerType: 'prompt',
-      injectManifest: { globPatterns: ['**/*.{js,css,html,png}'] },
+      injectManifest: { globPatterns: ['**/*.{js,css,html,png,woff2}'] },
       manifest: {
         id: '/',
         name: 'Hermes Mobile',

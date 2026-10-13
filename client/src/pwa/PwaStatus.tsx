@@ -1,14 +1,16 @@
 import { useStore } from '@nanostores/react'
+import { computed } from 'nanostores'
 
 import { $chat } from '~/state/conversation'
 
 import { activatePwaUpdate, $pwa, dismissPwaMessage, installPwa } from './lifecycle'
 import './pwa.css'
 
+const $reloadBlocked = computed($chat, chat => chat.running || Boolean(chat.pendingPrompt))
+
 export function PwaStatus() {
   const pwa = useStore($pwa)
-  const chat = useStore($chat)
-  const reloadBlocked = chat.running || Boolean(chat.pendingPrompt)
+  const reloadBlocked = useStore($reloadBlocked)
 
   if (!pwa.offline && !pwa.updateAvailable && !pwa.installPrompt && !pwa.error) return null
 

@@ -123,6 +123,7 @@ describe('MobileShell', () => {
     fireEvent.touchStart(scroller, { touches: [{ identifier: 1, clientX: 40, clientY: 100 }] })
     expect(fireEvent.touchMove(scroller, { cancelable: true, touches: [{ identifier: 1, clientX: 40, clientY: 145 }] })).toBe(false)
     expect(indicator.dataset.phase).toBe('pulling')
+    expect(parseFloat(scroller.style.getPropertyValue('--refresh-offset'))).toBeCloseTo(128 * (1 - Math.exp(-45 / 180)))
     expect(indicator.textContent).toContain('Pull to refresh')
     expect(Number(indicator.querySelector<SVGElement>('.pull-refresh-ring')!.style.strokeDashoffset)).toBeCloseTo(31.415)
     expect(Haptics.impact).not.toHaveBeenCalled()
@@ -135,6 +136,7 @@ describe('MobileShell', () => {
     expect(indicator.dataset.phase).toBe('pulling')
     fireEvent.touchEnd(scroller, { changedTouches: [{ identifier: 1, clientX: 40, clientY: 145 }] })
     expect(indicator.dataset.phase).toBe('idle')
+    expect(scroller.style.getPropertyValue('--refresh-offset')).toBe('0px')
     expect(onRefresh).not.toHaveBeenCalled()
   })
 
@@ -151,6 +153,8 @@ describe('MobileShell', () => {
     }
     gesture()
     expect(indicator.dataset.phase).toBe('refreshing')
+    expect(scroller.dataset.refreshPhase).toBe('refreshing')
+    expect(scroller.style.getPropertyValue('--refresh-offset')).toBe('0px')
     expect(screen.getByRole('status').textContent).toContain('Refreshing')
     gesture()
     expect(refreshHandler).toHaveBeenCalledOnce()
@@ -174,6 +178,7 @@ describe('MobileShell', () => {
     fireEvent.touchEnd(target, { changedTouches: [next] })
     expect(onRefresh).not.toHaveBeenCalled()
     expect(foreground.closest('.mobile-shell')!.querySelector<HTMLElement>('.pull-refresh')!.dataset.phase).toBe('idle')
+    expect(scroller.style.getPropertyValue('--refresh-offset')).toBe('0px')
   })
 
   it.each([{ navigationPageOpen: true }, { reconnecting: true }, { refreshing: true }])('blocks pulls while unavailable: %j', options => {

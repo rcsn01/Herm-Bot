@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { IconChevronLeft, IconMenu2, IconPlus, IconSearch, IconSettings } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { computed } from 'nanostores'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 
 import { Button, Input } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
@@ -18,15 +19,11 @@ import { DeleteProfileDialog } from '~/features/agents/delete-profile-dialog'
 import { EditProfileDialog } from '~/features/agents/edit-profile-dialog'
 import { ProfileActionsDialog } from '~/features/agents/profile-actions-dialog'
 import { CreateGroupChatDialog } from '~/features/groups/create-group-chat-dialog'
-import { GroupChatScreen } from '~/features/groups/group-screen'
 import { useKnownRooms } from '~/features/groups/known-rooms'
 import type { GroupRoom } from '~/features/groups/group-model'
-import { applyTheme } from '~/features/settings/settings-screen'
+import { applyTheme } from '~/features/settings/theme'
 import { CreateProfileDialog } from '~/features/agents/create-profile-dialog'
 import { RosterScreen } from '~/features/agents/roster-screen'
-import { CapabilitiesScreen } from '~/features/capabilities/capabilities-screen'
-import { CronScreen } from '~/features/cron/cron-screen'
-import { SettingsScreen as MobileSettingsScreen } from '~/features/settings/settings-screen'
 import { GatewayProvider } from '~/gateway/gateway-context'
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
 import { $activeRoute, $navigation } from '~/navigation/navigation-store'
@@ -37,8 +34,17 @@ import { $chat } from '~/state/conversation'
 import { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences, $profileSwitching } from '~/state/store'
 
+// Keep screens that are not needed by the roster/chat out of the startup bundle.
+const GroupChatScreen = lazy(() => import('~/features/groups/group-screen').then(module => ({ default: module.GroupChatScreen })))
+const CapabilitiesScreen = lazy(() => import('~/features/capabilities/capabilities-screen').then(module => ({ default: module.CapabilitiesScreen })))
+const CronScreen = lazy(() => import('~/features/cron/cron-screen').then(module => ({ default: module.CronScreen })))
+const MobileSettingsScreen = lazy(() => import('~/features/settings/settings-screen').then(module => ({ default: module.SettingsScreen })))
+
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
+// Streamed content belongs to ChatScreen, not the surrounding workspace shell.
+const $runtimeSessionId = computed($chat, chat => chat.runtimeSessionId)
+const $headerSubtitle = computed($chat, chat => chat.info?.title || 'New conversation')
 
 export function App() {
   const connection = useStore($connection)
@@ -49,7 +55,8 @@ export function App() {
   const activeGroupId = groupIdFromRoute(activeRoute)
   const groups = useKnownRooms()
   const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
-  const chat = useStore($chat)
+  const runtimeSessionId = useStore($runtimeSessionId)
+  const headerSubtitle = useStore($headerSubtitle)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
   const [createOptionsOpen, setCreateOptionsOpen] = useState(false)
@@ -90,7 +97,7 @@ export function App() {
     return () => deepLinks.setReady(false)
   }, [connection.phase])
 
-  const reconnecting = connection.phase === 'reconnecting' && Boolean(chat.runtimeSessionId)
+  const reconnecting = connection.phase === 'reconnecting' && Boolean(runtimeSessionId)
   // The sessions menu belongs to profile surfaces only; the main screen is
   // the roster, so it has no menu button or sessions menu.
   const inProfile = navigation.activeTab !== 'roster'
@@ -149,8 +156,6 @@ export function App() {
     workspace.openSettings()
   }
   const botName = displayNameFor({ name: preferences.profile || 'default' })
-  /** Chat shows the current session beneath the bot identity. */
-  const headerSubtitle = chat.info?.title || 'New conversation'
   const manageAgent = (agent: AgentRosterEntry) => {
     setActionsProfile(agent)
     setProfileNotice(null)
@@ -215,10 +220,12 @@ export function App() {
       <div aria-hidden={navigation.activeTab !== 'sessions'} className={navigation.activeTab === 'sessions' ? '' : 'mounted-view-hidden'}>
         <ChatScreen active={navigation.activeTab === 'sessions'} controller={controller} conversation={controller.conversation} />
       </div>
-      {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-      {navigation.activeTab === 'capabilities' && <CapabilitiesScreen workspace={workspace.screen('capabilities')} />}
-      {navigation.activeTab === 'cron' && <CronScreen onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.openChatSurface() }} workspace={workspace.screen('cron')} />}
-      {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} workspace={workspace.screen('settings')} />}
+      <Suspense fallback={<p className="muted" role="status">Loading screen…</p>}>
+        {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
+        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen workspace={workspace.screen('capabilities')} />}
+        {navigation.activeTab === 'cron' && <CronScreen onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.openChatSurface() }} workspace={workspace.screen('cron')} />}
+        {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} workspace={workspace.screen('settings')} />}
+      </Suspense>
     </>
   )
 

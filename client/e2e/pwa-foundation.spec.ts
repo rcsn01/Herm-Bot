@@ -80,11 +80,15 @@ test('animates a real roster pull with one haptic tick without opening the dragg
   const row = page.getByRole('button', { name: 'Hermes', exact: true })
   const box = (await row.boundingBox())!
   const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  const header = page.locator('.roster-layer > .sessions-menu-content > .app-header')
+  const headerBox = (await header.boundingBox())!
   let move = 0
   await touchDrag(page, start, { x: start.x, y: start.y + 140 }, 4, async () => {
     move += 1
     await expect(indicator).toHaveAttribute('data-phase', move < 3 ? 'pulling' : 'armed')
     await expect(indicator).toBeVisible()
+    expect((await row.boundingBox())!.y - box.y).toBeCloseTo(128 * (1 - Math.exp(-move * 35 / 180)), 0)
+    expect((await header.boundingBox())!.y).toBe(headerBox.y)
     const track = (await indicator.locator('.pull-refresh-track').boundingBox())!
     const ring = (await indicator.locator('.pull-refresh-ring').boundingBox())!
     expect(ring.x + ring.width / 2).toBeCloseTo(track.x + track.width / 2, 0)
@@ -96,8 +100,38 @@ test('animates a real roster pull with one haptic tick without opening the dragg
   await page.screenshot({ path: testInfo.outputPath('refresh-spinning.png') })
   await expect.poll(async () => (await fixtureCalls(page)).calls.filter(call => call.method === 'session.list').length).toBeGreaterThan(before)
   await expect(indicator).toHaveAttribute('data-phase', 'idle')
+  await expect.poll(async () => (await row.boundingBox())!.y).toBeCloseTo(box.y, 0)
   await expect(row).toBeVisible()
   expect(await page.evaluate(() => (window as any).refreshTicks)).toEqual([[20]])
+})
+
+test('pulls chat content and bounces home without moving its composer or refreshing a short pull', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Real touch injection uses CDP.')
+  await login(page)
+  const scroller = page.locator('.foreground-layer.active .view-container')
+  await scroller.evaluate(element => { element.scrollTop = 0 })
+  const content = scroller.locator('.chat-screen')
+  const composer = page.locator('.foreground-layer.active .composer-wrap')
+  const header = page.locator('.foreground-layer.active > .sessions-menu-content > .app-header')
+  const contentBox = (await content.boundingBox())!
+  const composerBox = (await composer.boundingBox())!
+  const headerBox = (await header.boundingBox())!
+  const before = (await fixtureCalls(page)).calls.filter(call => call.kind === 'http' && call.path === '/api/sessions/saved-default/messages').length
+  const start = { x: 180, y: contentBox.y + 30 }
+  await touchDrag(page, start, { x: start.x, y: start.y + 60 }, 3, async () => {
+    expect((await content.boundingBox())!.y).toBeGreaterThan(contentBox.y)
+    expect((await composer.boundingBox())!.y).toBe(composerBox.y)
+    expect((await header.boundingBox())!.y).toBe(headerBox.y)
+  })
+  await expect(page.locator('.pull-refresh')).toHaveAttribute('data-phase', 'idle')
+  await expect.poll(async () => (await content.boundingBox())!.y).toBeCloseTo(contentBox.y, 0)
+  expect((await fixtureCalls(page)).calls.filter(call => call.kind === 'http' && call.path === '/api/sessions/saved-default/messages').length).toBe(before)
+  await touchDrag(page, start, { x: start.x, y: start.y + 120 }, 3)
+  await expect(page.locator('.pull-refresh')).toHaveAttribute('data-phase', 'refreshing')
+  await expect.poll(async () => (await content.boundingBox())!.y).toBeCloseTo(contentBox.y, 0)
+  expect((await composer.boundingBox())!.y).toBe(composerBox.y)
+  await expect(page.locator('.pull-refresh')).toHaveAttribute('data-phase', 'idle')
+  await expect.poll(async () => (await fixtureCalls(page)).calls.filter(call => call.kind === 'http' && call.path === '/api/sessions/saved-default/messages').length).toBeGreaterThan(before)
 })
 
 test('shows shared pull feedback on a workspace screen and respects reduced motion', async ({ page }) => {

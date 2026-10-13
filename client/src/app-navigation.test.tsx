@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const createProfileDialogProps = vi.hoisted(() => vi.fn())
+const chatShellRender = vi.hoisted(() => vi.fn())
 
 const controller = vi.hoisted(() => ({
   conversation: {
@@ -31,7 +32,7 @@ vi.mock('~/native/deep-links', () => ({ observeHermesDeepLinks: () => () => unde
 vi.mock('~/components/chat-screen', async () => {
   const { useRef } = await import('react')
   let nextId = 0
-  return { ChatScreen: () => { const id = useRef(++nextId); return <div data-testid="chat-instance">Chat {id.current}</div> } }
+  return { ChatScreen: () => { chatShellRender(); const id = useRef(++nextId); return <div data-testid="chat-instance">Chat {id.current}</div> } }
 })
 vi.mock('~/features/agents/roster-screen', () => ({
   RosterScreen: ({ onManageAgent, onOpenAgent }: { onManageAgent?(agent: { isDefault: boolean; name: string }): void; onOpenAgent(profile: null | string): void }) => (
@@ -55,7 +56,6 @@ vi.mock('~/features/groups/group-screen', () => ({
   GroupChatScreen: ({ roomId }: { roomId: string }) => <div data-testid="group-instance">Group {roomId}</div>
 }))
 vi.mock('~/features/settings/settings-screen', () => ({
-  applyTheme: vi.fn(),
   SettingsScreen: ({ onExit }: { onExit?(): void }) => <div>Settings screen{onExit && <button onClick={onExit}>Settings back</button>}</div>
 }))
 vi.mock('~/features/capabilities/capabilities-screen', () => ({ CapabilitiesScreen: () => <div>Capabilities screen</div> }))
@@ -110,6 +110,26 @@ function expectBotConfigurationHeader(container: HTMLElement, section: string) {
 }
 
 describe('App navigation', () => {
+  it('does not rerender the workspace shell on message deltas but updates the session title', async () => {
+    const { container } = render(<App />)
+    await enterAgent()
+    const renders = chatShellRender.mock.calls.length
+
+    act(() => {
+      $chat.set(reduceGatewayEvent($chat.get(), {
+        type: 'message.delta', session_id: 'runtime-1', payload: { text: 'Streaming response' }
+      }))
+    })
+    expect(chatShellRender).toHaveBeenCalledTimes(renders)
+
+    act(() => {
+      $chat.set(reduceGatewayEvent($chat.get(), {
+        type: 'session.info', session_id: 'runtime-1', payload: { title: 'Updated title' }
+      }))
+    })
+    expect(container.querySelector('.header-bot-button small')?.textContent).toBe('Updated title')
+  })
+
   it('launches on the agent roster with settings access and no side navigation', () => {
     render(<App />)
 
@@ -194,11 +214,11 @@ describe('App navigation', () => {
     expect(container.querySelector('.header-bot-button small')?.textContent).toBe('New conversation')
   })
 
-  it('opens a desktop group chat from its URL with the top bar owning back and title', () => {
+  it('opens a desktop group chat from its URL with the top bar owning back and title', async () => {
     window.history.replaceState(null, '', '/group/id%3Ar-crew')
     const { container } = render(<App />)
 
-    expect(screen.getByTestId('group-instance')).not.toBeNull()
+    expect(await screen.findByTestId('group-instance')).not.toBeNull()
     expect(container.querySelector('.header-title strong')?.textContent).toBe('Group chat')
 
     // once the roster snapshot lands, the room name replaces the fallback.
@@ -258,7 +278,7 @@ describe('App navigation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
-    expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    expect(await screen.findByText('Capabilities screen')).not.toBeNull()
     expectBotConfigurationHeader(container, 'Capabilities')
     expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
@@ -281,11 +301,11 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('opens Settings from the main screen header button and returns to the roster', () => {
+  it('opens Settings from the main screen header button and returns to the roster', async () => {
     render(<App />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }))
-    expect(screen.getByText('Settings screen')).not.toBeNull()
+    expect(await screen.findByText('Settings screen')).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
 
     // The top bar owns settings exit: its chevron returns to the bots roster.
@@ -304,7 +324,7 @@ describe('App navigation', () => {
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     await settleNavigation()
-    expect(screen.getByText('Settings screen')).not.toBeNull()
+    expect(await screen.findByText('Settings screen')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
   })
 
@@ -315,12 +335,12 @@ describe('App navigation', () => {
     openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
     await settleNavigation()
-    expect(screen.getByText('Capabilities screen')).not.toBeNull()
+    expect(await screen.findByText('Capabilities screen')).not.toBeNull()
     const capabilitiesNavigation = screen.getByRole('navigation', { name: 'Bot workspace' })
     expect(within(capabilitiesNavigation).getByRole('button', { name: 'Capabilities' }).getAttribute('aria-current')).toBe('page')
 
     fireEvent.click(within(capabilitiesNavigation).getByRole('button', { name: 'Automations' }))
-    expect(screen.getByText('Cron screen')).not.toBeNull()
+    expect(await screen.findByText('Cron screen')).not.toBeNull()
     expectBotConfigurationHeader(container, 'Automations')
     const automationsNavigation = screen.getByRole('navigation', { name: 'Bot workspace' })
     expect(within(automationsNavigation).getByRole('button', { name: 'Automations' }).getAttribute('aria-current')).toBe('page')
@@ -329,7 +349,7 @@ describe('App navigation', () => {
     const menu = screen.getByRole('main', { name: 'Sessions menu' })
     expect(within(menu).getByRole('button', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page')
     fireEvent.click(within(menu).getByRole('button', { name: 'Back' }))
-    expect(screen.getByText('Cron screen')).not.toBeNull()
+    expect(await screen.findByText('Cron screen')).not.toBeNull()
   })
 
   it('opens model settings from the side navigation and returns to the chat', async () => {
@@ -339,7 +359,7 @@ describe('App navigation', () => {
     openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     await settleNavigation()
-    expect(screen.getByText('Settings screen')).not.toBeNull()
+    expect(await screen.findByText('Settings screen')).not.toBeNull()
     expectBotConfigurationHeader(container, 'Models')
     expect(screen.getByRole('button', { name: 'Back to menu' })).not.toBeNull()
 
@@ -415,7 +435,7 @@ describe('App navigation', () => {
     openNavigationPage()
     fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
     await settleNavigation()
-    expect(screen.getByText('Cron screen')).not.toBeNull()
+    expect(await screen.findByText('Cron screen')).not.toBeNull()
 
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Bot workspace' })).getByRole('button', { name: 'Sessions' }))
     fireEvent.click(screen.getByRole('button', { name: 'Open bot chat' }))
