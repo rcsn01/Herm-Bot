@@ -12,6 +12,7 @@ import { MemoryGateway } from '~/test/memory-gateway'
 beforeEach(() => {
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.example', theme: 'system' })
   $connection.set({
+    ...$connection.get(),
     authMode: 'token',
     error: null,
     phase: 'connected',

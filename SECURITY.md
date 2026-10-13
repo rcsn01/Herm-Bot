@@ -35,7 +35,10 @@ Logout removes this account's draft records locally even if remote sign-out
 fails. Browser storage restrictions can prevent writes or removal, so a device
 with unavailable storage cannot guarantee restart recovery or physical deletion.
 Clear site data through the browser when handing a device to someone else.
-Transcript-history cache privacy is separate from composer draft recovery.
+Logout also removes this account's transcript snapshots. Authentication expiry
+locks both stores and clears the private workspace without deleting recoverable
+records. Another tab's owner lock retires transcript memory and invalidates late
+history writes.
 
 Files, audio recordings, credentials, secret responses, and administrator-password
 responses are not stored by draft recovery. Attachment names and references are
@@ -48,3 +51,35 @@ data per account. Exceeding a limit keeps new work in memory and warns the user;
 it does not silently evict older unfinished messages. Pending or unconfirmed
 submissions are never retried automatically. Check conversation history before
 sending a recovered message again.
+
+## Saved conversation history
+
+`hermes.transcript.v2:` records include the verified gateway and organization/user
+principal, nullable profile, stored conversation ID, title, source, start time
+when known, last successful synchronization time, and up to 80 projected rows.
+Null profiles do not collide with a profile literally named `default`. The
+account-blind v1 cache is removed and is never imported or displayed, even when
+its removal fails.
+
+Each owner's cache is limited to 20 conversations and 2 MiB of serialized UTF-8
+persistent data including keys. Oldest synchronized snapshots are evicted first;
+draft records are never evicted by history storage. An individually oversized
+snapshot remains in memory without truncating its messages. Storage denial or
+quota failure does not imply that history or drafts will survive a restart.
+History records are not encrypted. Treat normal message text and tool output as
+private data accessible to scripts on this origin.
+
+Persistent history cannot be read until identity verification in the current
+app lifetime. A warm verified workspace remains readable during ordinary network
+failure; cold offline startup remains locked. Gateways without a stable principal
+use memory only. Cached content and last-known model/usage values are not live
+agent status, delivery receipts, or authority to edit remote history. Reconnect
+never sends a message. Send becomes available only after authoritative history
+reconciliation, and the user must invoke it intentionally.
+
+Runtime IDs, active turns, pending approvals, secret/sudo responses, credentials,
+and optimistic or incomplete streaming results are not persisted as confirmed
+history. Private API responses, drafts, and transcript snapshots are not stored
+in service-worker caches. User-facing Clear local data and a persistent-history
+preference remain separate work; use browser site-data deletion before sharing a
+device when local removal cannot be confirmed.

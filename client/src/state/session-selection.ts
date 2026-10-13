@@ -1,9 +1,11 @@
+import type { CachedConversation } from './transcript-cache'
 import { $draftOwner, draftOwnerKey } from '~/state/draft-owner'
 import { humanSessions, type SessionsApi } from '~/features/sessions/api'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { beginScopedTask, currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope, type ScopedTask } from '~/gateway/scope-guard'
 import { queryClient } from '~/gateway/query-client'
-import type { RuntimeSession, SessionRuntime } from '~/gateway/session-runtime'
+import { isConfirmedMissingSession, type RuntimeSession, type SessionRuntime } from '~/gateway/session-runtime'
+import { classifyGatewayError, GatewayError } from '~/gateway/gateway-error'
 import { $chat, type Conversation } from '~/state/conversation'
 import { $preferences, $sessionSelecting, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
@@ -46,6 +48,7 @@ export interface SessionSelection {
    * on the captured scope (failure rethrows); latest ⇒ see the implementation.
    */
   select(request: SelectionRequest): Promise<SelectionOutcome | undefined>
+  selectCached(snapshot: CachedConversation): void
 
   /** Refresh the full current-profile list using the captured Scope. */
   refreshSessions(scope?: CurrentGatewayScope): Promise<void>
@@ -233,6 +236,7 @@ export function createSessionSelection(deps: {
       const session = await runtime.branchSession(current.runtimeSessionId)
       if (!stillCurrent(epoch, task)) return undefined
       publish(session, epoch)
+      await conversation.reconcileHistory(scope)
       await refreshSessions(scope)
       return { session, resumed: false }
     }
@@ -243,6 +247,7 @@ export function createSessionSelection(deps: {
       const session = await runtime.createSession(scope.profile)
       if (!stillCurrent(epoch, task)) return undefined
       publish(session, epoch)
+      await conversation.reconcileHistory(scope)
       // Every other session mutation (branch/rename/archive/delete) refreshes
       // the list; a create must too — the roster tap picks the newest session
       // from this store, so a stale list sends the next tap into an older
@@ -286,7 +291,9 @@ export function createSessionSelection(deps: {
         publish(session, epoch)
         await conversation.reconcileHistory(scope)
         return { session, resumed: true }
-      } catch {
+      } catch (error) {
+        if (!stillCurrent(epoch, task)) return undefined
+        if (!isConfirmedMissingSession(classifyGatewayError(error))) throw error
         // The stored conversation may no longer exist; start a fresh one
         // instead. Re-verify epoch + Scope first: with one epoch a newer
         // in-flight selection wins instead of being retired by the fallback.
@@ -296,6 +303,7 @@ export function createSessionSelection(deps: {
     const session = await runtime.createSession(scope.profile)
     if (!stillCurrent(epoch, task)) return undefined
     publish(session, epoch)
+    await conversation.reconcileHistory(scope)
     try {
       await refreshSessions(scope)
     } catch {
@@ -321,6 +329,18 @@ export function createSessionSelection(deps: {
   }
 
   return {
+    selectCached: snapshot => {
+      const owner = $draftOwner.get()
+      if (owner.locked || owner.generation !== snapshot.owner.generation || draftOwnerKey(owner) !== draftOwnerKey(snapshot.owner) || $preferences.get().profile !== snapshot.profile) {
+        throw new GatewayError('This saved conversation is not available in the current workspace.', { kind: 'validation' })
+      }
+      ++selectionEpoch
+      ++pendingSelection
+      lastPublishedSelectionEpoch = selectionEpoch
+      $sessionSelecting.set(false)
+      conversation.adoptCached(snapshot)
+      writeSessionBookmark(snapshot.storedSessionId)
+    },
     select,
     refreshSessions,
     loadMoreSessions,

@@ -13,7 +13,7 @@ import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask, useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { chatDrafts } from '~/features/chat/chat-drafts'
-import { $draftOwner } from '~/state/draft-owner'
+import { draftOwnerKey, $draftOwner } from '~/state/draft-owner'
 import { useChatInteraction } from '~/features/chat/use-chat-interaction'
 import { createAgentsApi } from '~/features/agents/agents-api'
 import { displayNameFor } from '~/features/agents/agent-labels'
@@ -23,7 +23,7 @@ import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { SessionUsage } from '~/lib/types'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection, $preferences, $profileSwitching, $sessionSelecting } from '~/state/store'
+import { $gatewayReady, $connection, $preferences, $profileSwitching, $sessionSelecting } from '~/state/store'
 
 interface ChatScreenProps {
   active?: boolean
@@ -38,7 +38,9 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const selecting = useStore($sessionSelecting)
   const profileSwitching = useStore($profileSwitching)
   const owner = useStore($draftOwner)
-  const composerReady = connection.phase === 'connected' && !selecting && !profileSwitching && !owner.locked
+  const ready = useStore($gatewayReady)
+  const localReady = Boolean(chat.storedSessionId || chat.runtimeSessionId) && !selecting && !profileSwitching && !owner.locked
+  const composerReady = ready && localReady && chat.availability === 'live'
   useStore(chatDrafts.$version)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
   const entries = chat.transcript.entries
@@ -47,7 +49,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
   const draftRecord = interaction.record()
   const otherDrafts = chatDrafts.list().filter(record => record.key !== draftRecord?.key)
-  const editValid = !editTarget || entries.some(entry => entry.rowId === editTarget.rowId && 'editTarget' in entry && entry.editTarget)
+  const editValid = !editTarget || chat.availability === 'live' && entries.some(entry => entry.rowId === editTarget.rowId && 'editTarget' in entry && entry.editTarget)
   const copyDraft = async (text: string) => {
     try { await navigator.clipboard.writeText(text); setRecoveryError('Copied draft text.') }
     catch { setRecoveryError('Could not copy. Select the recovered text and copy it manually.') }
@@ -64,12 +66,13 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
     active,
     content: { entries, tools: chat.tools },
     history: {
-      hasMore: chat.historyHasMore,
+      hasMore: composerReady && chat.historyHasMore,
       loadingOlder: chat.historyLoadingOlder,
       nextOffset: chat.historyNextOffset
     },
     onLoadOlder,
     onLoadOlderError,
+    conversationIdentity: JSON.stringify([draftOwnerKey(owner), $preferences.get().profile, chat.storedSessionId ?? chat.runtimeSessionId]),
     session: {
       runtimeSessionId: chat.runtimeSessionId,
       storedSessionId: chat.storedSessionId
@@ -92,13 +95,13 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
     <section className="chat-screen">
       <div className="transcript" aria-live="polite" ref={viewport.transcriptRef}>
         {chat.historyHasMore && (
-          <Button className="load-earlier" disabled={chat.historyLoadingOlder} onClick={() => void viewport.loadOlderMessages()} ref={viewport.olderMessagesRef} size="sm" variant="secondary">
+          <Button className="load-earlier" disabled={!composerReady || chat.historyLoadingOlder} onClick={() => void viewport.loadOlderMessages()} ref={viewport.olderMessagesRef} size="sm" variant="secondary">
             {chat.historyLoadingOlder ? 'Loading earlier messages…' : 'Load earlier messages'}
           </Button>
         )}
         {chat.storedSessionId && (
           <div className="session-management">
-            <Button aria-expanded={showSessionActions} onClick={() => setShowSessionActions(value => !value)} size="sm" variant="secondary"><IconDots size={17} /> Session options</Button>
+            <Button disabled={!composerReady} aria-expanded={showSessionActions} onClick={() => setShowSessionActions(value => !value)} size="sm" variant="secondary"><IconDots size={17} /> Session options</Button>
             {showSessionActions && <div className="session-management-actions">
               <Button onClick={() => setRenameSession(true)} size="sm" variant="ghost"><IconPencil size={16} /> Edit name</Button>
               <Button onClick={() => setArchiveSession(true)} size="sm" variant="ghost"><IconArchive size={16} /> Archive</Button>
@@ -144,7 +147,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
               <div className="message-content"><MessageMarkdown content={entry.content || (entry.streaming ? '…' : '')} /></div>
               {entry.author === 'user' && (
                 <Button
-                  disabled={chat.running || !entry.editTarget}
+                  disabled={!composerReady || chat.running || !entry.editTarget}
                   onClick={() => {
                     if (!entry.editTarget || chat.running) return
                     interaction.beginEdit({ content: entry.content, rowId: entry.editTarget.rowId })
@@ -156,7 +159,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
                 </Button>
               )}
               {entry.author === 'assistant' && entry.content && (
-                <Button onClick={() => void interaction.speak(entry.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
+                <Button disabled={!composerReady} onClick={() => void interaction.speak(entry.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
                   <IconVolume size={16} />
                 </Button>
               )}
@@ -195,8 +198,8 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
       </div>
 
       {viewport.hasNewMessages && <Button aria-label="New messages. Jump to latest" className="new-messages-button" onClick={viewport.jumpToLatest} size="sm" variant="secondary">New messages <IconArrowDown size={16} /></Button>}
-      {renameSession && chat.storedSessionId && <TextDialog initialValue={chat.info?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
-      {archiveSession && chat.storedSessionId && <ConfirmDialog confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
+      {renameSession && chat.storedSessionId && <TextDialog disabled={!composerReady} initialValue={chat.info?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
+      {archiveSession && chat.storedSessionId && <ConfirmDialog disabled={!composerReady} confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard conversation={conversation} />}
       {(sessionActionError || interactionError || chat.error) && <div className="error-banner" role="alert">{sessionActionError || interactionError || chat.error}</div>}
       {editTarget && (
@@ -231,11 +234,11 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </div>
         )}
         <div className="draft-feedback">
-          {!composerReady && <p role="status">Selecting the conversation…</p>}
+          {!localReady ? <p role="status">Selecting the conversation…</p> : !composerReady ? <p role="status">{chat.availability === 'synchronizing' ? 'Updating this conversation. You can prepare your draft.' : 'Local conversation. You can prepare a draft while Hermes is unavailable.'}</p> : draft ? <p role="status">Connected. Your draft has not been sent.</p> : null}
       {(!owner.principal && !owner.locked) && <p className="composer-meta">Restart recovery unavailable. This gateway has not provided an account identity.</p>}
       {(draft || attachmentRefs.length > 0 || interaction.unsaved()) && <p className="composer-meta" role="status">{interaction.saved() ? 'Saved on this device.' : 'Not saved on this device. Copy your text before closing.'}</p>}
       {interaction.needsReattachment() && <p role="alert">Select the attached files again or remove them before sending. Files are not stored on this device.</p>}
-      {!editValid && <p role="alert">The edited message is not available for retry. Your text is preserved. Copy it or cancel the edit.</p>}
+      {!editValid && <p role="alert">{chat.availability !== 'live' ? 'Reconnect to validate the edited message before retrying. Your text is preserved.' : 'The edited message is not available for retry. Your text is preserved. Copy it or cancel the edit.'}</p>}
       {recoveryError && <p role="status">{recoveryError}</p>}
       {(draft || attachmentRefs.length > 0) && <div className="composer-meta">
         <Button onClick={() => void copyDraft(draft)} size="micro" variant="text">Copy draft</Button>
@@ -254,7 +257,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </label>
           <Textarea
             aria-label="Message Hermes"
-            disabled={!composerReady}
+            disabled={!localReady}
             autoCapitalize="sentences"
             autoComplete="off"
             autoCorrect="on"
@@ -271,7 +274,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             value={draft}
           />
           {chat.running ? (
-            <Button aria-label="Interrupt" onClick={() => void conversation.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
+            <Button disabled={!composerReady} aria-label="Interrupt" onClick={() => void conversation.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
           ) : (
             <Button aria-label="Send" disabled={!composerReady || submitting || !editValid || interaction.needsReattachment() || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
           )}
@@ -279,7 +282,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         <div className="composer-meta">
           {chat.info?.usage && <ContextUsage usage={chat.info.usage} />}
           {chat.info && (
-            <div className="composer-model" role="group" aria-label="Session model and effort">
+            <div className="composer-model" role="group" aria-label={composerReady ? 'Session model and effort' : 'Last-known session model and effort'}>
               <span className="composer-model-name" title={`Model: ${chat.info.model ?? 'unavailable'}`}>{chat.info.model ?? 'Model unavailable'}</span>
               <span aria-hidden="true">·</span>
               <span className="composer-model-effort" title={`Reasoning effort: ${chat.info.reasoningEffort ?? 'unavailable'}`}>{chat.info.reasoningEffort ?? 'Effort unavailable'}</span>
@@ -287,7 +290,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           )}
           <div className={`session-activity ${chat.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
             <span aria-hidden className="status-dot" />
-            <span>{chat.running ? 'Hermes is working' : 'Ready'}</span>
+            <span>{!composerReady ? 'Status unavailable' : chat.running ? 'Hermes is working' : 'Ready'}</span>
           </div>
         </div>
       </div>
@@ -324,6 +327,7 @@ function ContextUsage({ usage }: { usage: SessionUsage }) {
 
 function PromptCard({ conversation }: { conversation: Conversation }) {
   const pending = useStore($chat).pendingPrompt!
+  const ready = useStore($gatewayReady)
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
   const sensitive = pending.kind === 'secret' || pending.kind === 'sudo'
@@ -348,13 +352,13 @@ function PromptCard({ conversation }: { conversation: Conversation }) {
       {pending.question && <p>{pending.question}</p>}
       {pending.kind === 'approval' ? (
         <div className="prompt-actions">
-          <Button onClick={() => void conversation.respond('deny', 'deny')} type="button" variant="secondary">Deny</Button>
-          <Button onClick={() => void conversation.respond('allow', 'allow')} type="button">Allow once</Button>
+          <Button disabled={!ready} onClick={() => void conversation.respond('deny', 'deny')} type="button" variant="secondary">Deny</Button>
+          <Button disabled={!ready} onClick={() => void conversation.respond('allow', 'allow')} type="button">Allow once</Button>
         </div>
       ) : (
         <>
           <input autoComplete="off" onChange={event => setValue(event.target.value)} type={pending.kind === 'clarify' ? 'text' : 'password'} value={value} />
-          <Button type="submit">Respond</Button>
+          <Button disabled={!ready} type="submit">Respond</Button>
         </>
       )}
       {error && <div className="error-banner" role="alert">{error}</div>}

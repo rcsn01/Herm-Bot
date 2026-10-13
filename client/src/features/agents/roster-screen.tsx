@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
-import { $connection } from '~/state/store'
+import { transcriptCache } from '~/state/transcript-cache'
+import { $draftOwner } from '~/state/draft-owner'
+import { $connection, $gatewayReady } from '~/state/store'
 
 import { useGroupRooms } from '~/features/groups/known-rooms'
 
@@ -47,6 +49,12 @@ export function relativeDay(seconds: number): string {
  */
 export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = '' }: { onManageAgent?(agent: AgentRosterEntry): void; onOpenAgent(profile: null | string): void; onOpenGroup(roomId: string): void; query?: string }) {
   const connection = useStore($connection)
+  const ready = useStore($gatewayReady)
+  const owner = useStore($draftOwner)
+  useStore(transcriptCache.$version)
+  const snapshots = transcriptCache.list(owner)
+  const cachedProfiles = new Set(snapshots.map(item => item.profile))
+  const savedProfiles = new Set(snapshots.filter(item => item.persistent).map(item => item.profile))
   const api = useApi(createAgentsApi)
   const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
   const roster = useScopedQuery(rosterKey, { queryFn: signal => api.list(signal), retry: false })
@@ -57,6 +65,10 @@ export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = 
       })
     : connection.status?.profiles
   const agents = mergeAgentRoster(statusProfiles, roster.data?.entries)
+  for (const profile of cachedProfiles) {
+    const name = profile ?? 'default'
+    if (!agents.some(agent => agent.name === name)) agents.push({ name, isDefault: profile === null })
+  }
   // `known-rooms.ts` merges the roster and local rooms by key. It filters
   // local empty-log rows without a room id or members.
   const groups = useGroupRooms(roster.data?.groups ?? [])
@@ -82,7 +94,7 @@ export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = 
       <div className="roster-list">
         {visible.map(agent => (
           <div className="agent-row-wrap" key={agent.name}>
-            <button className="agent-row" onClick={() => onOpenAgent(agent.isDefault ? null : agent.name)}>
+            <button disabled={!ready && !cachedProfiles.has(agent.isDefault ? null : agent.name)} className="agent-row" onClick={() => onOpenAgent(agent.isDefault ? null : agent.name)}>
               <span aria-hidden className="agent-avatar">
                 {agent.meta?.image ?? agent.avatar
                   ? <img alt="" className="agent-avatar-img" src={agent.meta?.image ?? agent.avatar} />
@@ -93,10 +105,10 @@ export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = 
                   <strong>{displayNameFor(agent)}</strong>
                   {agent.startedAt !== undefined && <time>{relativeDay(agent.startedAt)}</time>}
                 </span>
-                {agent.preview && <small>{agent.preview}</small>}
+                {!ready ? <small>{savedProfiles.has(agent.isDefault ? null : agent.name) ? 'Saved conversations on this device' : cachedProfiles.has(agent.isDefault ? null : agent.name) ? 'Conversations available until this app closes' : 'Reconnect to open this bot'}</small> : agent.preview && <small>{agent.preview}</small>}
               </span>
             </button>
-            {onManageAgent && <button aria-label="Profile menu" className="agent-row-actions" data-profile-name={agent.name} onClick={() => onManageAgent(agent)} title={`Manage ${displayNameFor(agent)}`} type="button"><span aria-hidden>⋯</span></button>}
+            {onManageAgent && <button disabled={!ready} aria-label="Profile menu" className="agent-row-actions" data-profile-name={agent.name} onClick={() => onManageAgent(agent)} title={`Manage ${displayNameFor(agent)}`} type="button"><span aria-hidden>⋯</span></button>}
           </div>
         ))}
         {visibleGroups.map(room => {
@@ -105,7 +117,7 @@ export function RosterScreen({ onManageAgent, onOpenAgent, onOpenGroup, query = 
             ? `${latest.from.kind === 'user' ? 'You: ' : `${latest.from.name}: `}${latest.text}`
             : 'No messages yet'
           return (
-            <button className="agent-row group-row" key={room.key} onClick={() => onOpenGroup(room.key)}>
+            <button disabled={!ready} className="agent-row group-row" key={room.key} onClick={() => onOpenGroup(room.key)}>
               <span aria-hidden className="agent-avatar">
                 {room.image ? <img alt="" className="agent-avatar-img" src={room.image} /> : <GroupFaces members={room.members} name={room.name} />}
               </span>

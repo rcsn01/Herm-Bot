@@ -25,7 +25,7 @@ function beforeEachSetup() {
   resetNavigation()
   resetWorkspacePolicy()
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
-  $connection.set({ authMode: 'token', error: null, phase: 'connected', status: { profiles: ['default'] } as never })
+  $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connected', status: { profiles: ['default'] } as never })
 }
 
 function Harness({ controller }: { controller: GatewayController }) {

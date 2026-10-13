@@ -9,6 +9,7 @@ const USER_SCROLL_IDLE_MS = 200
 
 export interface ChatViewportOptions {
   active: boolean
+  conversationIdentity?: string
   session: {
     runtimeSessionId: null | string
     storedSessionId: null | string
@@ -71,6 +72,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
   const { entries, tools } = content
   const { hasMore, loadingOlder, nextOffset } = history
   const { runtimeSessionId, storedSessionId } = session
+  const conversationIdentity = options.conversationIdentity ?? storedSessionId ?? runtimeSessionId
 
   const transcriptRef = useRef<HTMLDivElement | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
@@ -384,7 +386,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
   useLayoutEffect(() => {
     if (!active) return
 
-    const sessionChanged = previousSessionRef.current !== runtimeSessionId
+    const sessionChanged = previousSessionRef.current !== conversationIdentity
     const contentChanged = previousEntriesRef.current !== entries || previousToolsRef.current !== tools
     const loadedOlder = !sessionChanged && previousHistoryOffsetRef.current > 0 && nextOffset > previousHistoryOffsetRef.current
     previousHistoryOffsetRef.current = nextOffset
@@ -392,7 +394,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
     previousToolsRef.current = tools
 
     if (sessionChanged) {
-      previousSessionRef.current = runtimeSessionId
+      previousSessionRef.current = conversationIdentity
       awaitingInitialHistoryRef.current = Boolean(runtimeSessionId && storedSessionId && entries.length === 0)
       pendingSessionPositionRef.current = true
       followingLatestRef.current = true
@@ -435,7 +437,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
       if (appliedOperation.settled) appliedOperationRef.current = null
       return
     }
-    if (!runtimeSessionId || loadingOlder || loadedOlder || inFlightRef.current) return
+    if (!conversationIdentity || loadingOlder || loadedOlder || inFlightRef.current) return
 
     if (sessionChanged || pendingSessionPositionRef.current || initialHistoryArrived) {
       bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
@@ -451,7 +453,7 @@ export function useChatViewport(options: ChatViewportOptions): ChatViewportBindi
     } else {
       setHasNewMessages(true)
     }
-  }, [active, discardOperation, entries, findScroller, isOperationSessionCurrent, loadRevision, loadingOlder, nextOffset, runtimeSessionId, scheduleCompensation, scrollerRevision, storedSessionId, tools])
+  }, [conversationIdentity, active, discardOperation, entries, findScroller, isOperationSessionCurrent, loadRevision, loadingOlder, nextOffset, runtimeSessionId, scheduleCompensation, scrollerRevision, storedSessionId, tools])
 
   useEffect(() => {
     if (!active || !mountedRef.current) return

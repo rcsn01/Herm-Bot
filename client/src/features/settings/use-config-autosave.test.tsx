@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getConfigValue } from '~/features/models/helpers'
 import type { HermesConfigRecord } from '~/lib/types'
-import { $preferences } from '~/state/store'
+import { $connection, $preferences } from '~/state/store'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { useConfigAutosave } from './use-config-autosave'
 
@@ -41,6 +41,38 @@ afterEach(() => {
 })
 
 describe('useConfigAutosave', () => {
+  it('cancels disconnected debounce work and never resumes it on reconnect', async () => {
+    vi.useFakeTimers()
+    const client = createClient()
+    const initial = { display: { personality: 'default' } }
+    client.setQueryData(queryKey, initial)
+    const savePartial = vi.fn(async () => ({ ok: true }))
+    const hook = renderHook(() => useConfigAutosave({ category: 'chat', config: initial, queryKey, settings: { savePartial } }), { wrapper: wrapperFor(client) })
+    act(() => hook.result.current.change('display.personality', 'concise'))
+    act(() => $connection.set({ ...$connection.get(), phase: 'reconnecting' }))
+    expect(hook.result.current.valueFor('display.personality')).toBe('default')
+    expect(hook.result.current.error).toBe('Unsaved setting changes were not applied. Reconnect and edit again.')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    act(() => $connection.set({ ...$connection.get(), phase: 'connected' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(savePartial).not.toHaveBeenCalled()
+  })
+  it('retires pending work even if loss and recovery are batched into one render', async () => {
+    vi.useFakeTimers()
+    const client = createClient()
+    const initial = { display: { personality: 'default' } }
+    client.setQueryData(queryKey, initial)
+    const savePartial = vi.fn(async () => ({ ok: true }))
+    const hook = renderHook(() => useConfigAutosave({ category: 'chat', config: initial, queryKey, settings: { savePartial } }), { wrapper: wrapperFor(client) })
+    act(() => hook.result.current.change('display.personality', 'concise'))
+    act(() => {
+      $connection.set({ ...$connection.get(), phase: 'reconnecting' })
+      $connection.set({ ...$connection.get(), phase: 'connected' })
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(savePartial).not.toHaveBeenCalled()
+    expect(hook.result.current.valueFor('display.personality')).toBe('default')
+  })
   it('updates a loaded config immediately and saves one nested field after 450 ms', async () => {
     vi.useFakeTimers()
     $preferences.set({ ...originalPreferences, profile: 'work', remoteURL: 'https://gateway.example' })

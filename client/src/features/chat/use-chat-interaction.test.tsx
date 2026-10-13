@@ -6,7 +6,9 @@ import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { useChatInteraction } from '~/features/chat/use-chat-interaction'
 import { chatDrafts } from './chat-drafts'
 import { $draftOwner } from '~/state/draft-owner'
-import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
+import { $chat, emptyChatState as emptyState, type Conversation } from '~/state/conversation'
+
+const emptyChatState = () => ({ ...emptyState(), availability: 'live' as const })
 
 function conversationStub() {
   return {
@@ -32,7 +34,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   chatDrafts.clearOwner(false)
-  $draftOwner.set({ gateway: '', principal: null, generation: $draftOwner.get().generation + 1, locked: false })
+  $draftOwner.set({ gateway: 'https://test.hermes', principal: null, generation: $draftOwner.get().generation + 1, locked: false })
   $chat.set(emptyChatState())
 })
 

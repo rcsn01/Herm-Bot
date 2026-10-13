@@ -5,12 +5,18 @@ import type { GatewayTransport } from '~/gateway/gateway-port'
 import type { ChatState } from '~/lib/types'
 import { SessionRuntime } from '~/gateway/session-runtime'
 import { MINIMUM_CONTRACT } from '~/state/gateway-controller'
-import { $chat, Conversation, emptyChatState, reduceGatewayEvent } from '~/state/conversation'
-import { loadCachedTranscript, saveCachedTranscript } from '~/state/transcript-cache'
+import { $chat, Conversation, emptyChatState as emptyState, reduceGatewayEvent } from '~/state/conversation'
+import { transcriptCache } from '~/state/transcript-cache'
 import { $preferences } from '~/state/store'
-import { lockDraftOwner } from '~/state/draft-owner'
+import { $draftOwner, lockDraftOwner } from '~/state/draft-owner'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
+
+const emptyChatState = (): ChatState => ({ ...emptyState(), availability: 'live' })
+function saveCachedTranscript(profile: string | null, snapshot: { storedSessionId: string; entries: import('~/transcript/transcript').TranscriptEntry[] }) {
+  transcriptCache.write({ owner: $draftOwner.get(), profile, storedSessionId: snapshot.storedSessionId }, { ...snapshot, title: '', source: null, startedAt: null, lastSyncedAt: 1 })
+}
+function loadCachedTranscript(profile: string | null) { return transcriptCache.latest($draftOwner.get(), profile) }
 
 function subject(gateway: GatewayTransport) {
   const runtime = new SessionRuntime(gateway, { minimumContract: MINIMUM_CONTRACT, retryDelays: [0] })
@@ -648,7 +654,7 @@ describe('incremental session loading', () => {
     })
     const { conversation, dispose } = subject(gateway)
     conversation.adopt({ contractVersion: null, info: {}, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
-    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    $chat.set({ ...$chat.get(), availability: 'live', historyHasMore: true, historyNextOffset: 80 })
 
     await expect(conversation.loadOlderMessages()).rejects.toMatchObject({ kind: 'server', message: 'history unavailable' })
     expect($chat.get().historyLoadingOlder).toBe(false)
@@ -661,7 +667,7 @@ describe('incremental session loading', () => {
     const gateway = new MemoryGateway().handle(path, () => new Promise(resolve => { resolvePage = resolve }))
     const { conversation, dispose } = subject(gateway)
     conversation.adopt({ contractVersion: null, info: {}, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' })
-    $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    $chat.set({ ...$chat.get(), availability: 'live', historyHasMore: true, historyNextOffset: 80 })
 
     const staleScope = conversation.loadOlderMessages()
     $preferences.set({ ...$preferences.get(), profile: 'work' })
@@ -686,10 +692,12 @@ describe('incremental session loading', () => {
     const sessionA = { contractVersion: null, info: {}, rows: [{ content: 'latest A', role: 'assistant' as const, row_id: 82 }], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' }
     conversation.adopt(sessionA)
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    $chat.set({ ...$chat.get(), availability: 'live' })
     const oldSameIds = conversation.loadOlderMessages()
 
     conversation.adopt(sessionA)
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    $chat.set({ ...$chat.get(), availability: 'live' })
     const replacement = conversation.loadOlderMessages()
     expect(releases).toHaveLength(2)
     releases[0]!({ messages: [{ content: 'old page', role: 'assistant', row_id: 81 }], pagination: { limit: 80, offset: 80, returned: 1 } })
@@ -707,6 +715,7 @@ describe('incremental session loading', () => {
     const sessionB = { contractVersion: null, info: {}, rows: [{ content: 'latest B', role: 'assistant' as const, row_id: 92 }], runtimeSessionId: 'runtime-2', storedSessionId: 'stored-2' }
     conversation.adopt(sessionB)
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    $chat.set({ ...$chat.get(), availability: 'live' })
     const oldA = conversation.loadOlderMessages()
     conversation.adopt(sessionA)
     rejectOld(new Error('old A failure'))
@@ -717,11 +726,12 @@ describe('incremental session loading', () => {
     gateway.handle(path, () => new Promise(resolve => { resolveReset = resolve }))
     conversation.adopt(sessionA)
     $chat.set({ ...$chat.get(), historyHasMore: true, historyNextOffset: 80 })
+    $chat.set({ ...$chat.get(), availability: 'live' })
     const resetLoad = conversation.loadOlderMessages()
     conversation.reset()
     resolveReset({ messages: [{ content: 'reset stale', role: 'assistant', row_id: 90 }], pagination: { limit: 80, offset: 80, returned: 1 } })
     await expect(resetLoad).resolves.toBe(false)
-    expect($chat.get()).toEqual(emptyChatState())
+    expect($chat.get()).toEqual(emptyState())
     dispose()
   })
 
@@ -783,6 +793,7 @@ describe('incremental session loading', () => {
     conversation.adopt(await runtime.resumeSession(null, 'stored-1'))
     $chat.set({
       ...$chat.get(),
+      availability: 'live',
       historyBackfilled: true,
       transcript: createTranscript({ source: null, storedSessionId: 'stored-1' }, [
         { content: 'older answer', role: 'assistant', row_id: 80 },
@@ -853,7 +864,7 @@ describe('local transcript cache', () => {
     dispose()
   })
 
-  it('persists the transcript when a turn completes', () => {
+  it('does not persist unconfirmed events when a turn completes', () => {
     const gateway = new MemoryGateway()
     const { conversation, dispose } = subject(gateway)
     conversation.adopt({
@@ -866,8 +877,7 @@ describe('local transcript cache', () => {
 
     conversation.onGatewayEvent({ type: 'message.complete', session_id: 'runtime-1', payload: {} })
 
-    expect(loadCachedTranscript(null)).toMatchObject({ storedSessionId: 'stored-1' })
-    expect(loadCachedTranscript(null)?.entries.map(entry => entry.content)).toContain('done answer')
+    expect(loadCachedTranscript(null)).toBeNull()
     dispose()
   })
 })

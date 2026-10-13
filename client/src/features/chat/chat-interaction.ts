@@ -33,6 +33,7 @@ export interface SlashCompletionPayload {
 }
 
 export interface ChatInteractionCommands {
+  isAvailable?(): boolean
   isCurrent?(context: DraftContext, runtimeId: string | null): boolean
   attach(file: File): Promise<string | undefined>
   completeSlash(draft: string): Promise<SlashCompletionPayload>
@@ -54,7 +55,22 @@ const initialState = (): ChatInteractionState => ({
 export class ChatInteraction {
   readonly $state = atom<ChatInteractionState>(initialState())
 
+  private gatewayAvailable = true
   private disposed = false
+
+  setGatewayAvailable(available: boolean) {
+    if (this.gatewayAvailable === available) return
+    this.gatewayAvailable = available
+    if (!available) {
+      ++this.sessionEpoch
+      ++this.draftRevision
+      for (const release of this.tasks) release()
+      this.tasks.clear()
+      this.patch({ slashItems: [] })
+    }
+  }
+
+  private remoteAvailable() { return this.gatewayAvailable && (this.commands.isAvailable?.() ?? true) }
   private draftRevision = 0
   private sessionEpoch = 0
   private sessionId: null | string = null
@@ -155,7 +171,7 @@ export class ChatInteraction {
     const epoch = this.sessionEpoch
     const revision = ++this.draftRevision
     this.patch({ draft: value })
-    if (!value.startsWith('/')) {
+    if (!value.startsWith('/') || !this.remoteAvailable()) {
       this.patch({ slashItems: [] })
       return
     }
@@ -217,6 +233,7 @@ export class ChatInteraction {
 
   async submit() {
     if (this.disposed || this.$state.get().submitting) return
+    if (!this.remoteAvailable()) { this.patch({ error: 'Reconnect and update this conversation before sending. Your draft has not been sent.' }); return }
     if (!this.contextCurrent()) { this.patch({ error: 'The conversation changed. Review your draft before sending.' }); return }
     if (this.needsReattachment()) { this.patch({ error: 'Select the attached files again or remove them before sending.' }); return }
     const snapshot = this.$state.get()
@@ -267,7 +284,7 @@ export class ChatInteraction {
   }
 
   async attach(files: FileList | readonly File[] | null) {
-    if (this.disposed || !files) return
+    if (this.disposed || !files || !this.remoteAvailable()) return
     if (!this.contextCurrent()) { this.patch({ error: 'The conversation changed. Select the files again.' }); return }
     const epoch = this.sessionEpoch
     const selected = Array.from(files)
@@ -297,7 +314,7 @@ export class ChatInteraction {
   }
 
   async transcribe(file: File | undefined) {
-    if (this.disposed || !file) return
+    if (this.disposed || !file || !this.remoteAvailable()) return
     if (!this.contextCurrent()) { this.patch({ error: 'The conversation changed. Select the recording again.' }); return }
     const epoch = this.sessionEpoch
     const revision = ++this.draftRevision
@@ -326,7 +343,7 @@ export class ChatInteraction {
   }
 
   async speak(text: string) {
-    if (this.disposed) return
+    if (this.disposed || !this.remoteAvailable()) return
     const epoch = this.sessionEpoch
     const revision = ++this.draftRevision
     this.patch({ error: null })

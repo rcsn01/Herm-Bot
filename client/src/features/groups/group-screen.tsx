@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { IconPlayerStop, IconSend } from '@tabler/icons-react'
+import { $gatewayReady } from '~/state/store'
 import { useStore } from '@nanostores/react'
 
 import { Button, Textarea } from '~/compat/primitives'
@@ -72,6 +73,7 @@ function describeActivity(entry: GroupActivityEntry): null | string {
  * stranded-reply harvest.
  */
 export function GroupChatScreen({ roomId }: { roomId: string }) {
+  const ready = useStore($gatewayReady)
   // The desktop-mirrored group chats come from the same unscoped profiles.list
   // RPC the roster uses — react-query dedupes the fetch, so opening a room
   // costs nothing on top of the main screen. `known-rooms.ts` owns the merge.
@@ -89,10 +91,10 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
   // screen owns the mount-once guard, keyed by the durable room key so a
   // display-name rename cannot re-trigger the adopt half.
   useEffect(() => {
-    if (!room || pulledRef.current === room.key) return
+    if (!ready || !room || pulledRef.current === room.key) return
     pulledRef.current = room.key
     openGroupRoom(room)
-  }, [room])
+  }, [room, ready])
 
   if (!room) {
     return (
@@ -111,10 +113,10 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
 
   const send = () => {
     const text = draft.trim()
-    if (!text || room.members.length === 0) return
+    if (!ready || !$gatewayReady.get() || !text || room.members.length === 0) return
+    if (!sendToGroupChat(room.key, room.members, text, targetThread)) return
     setDraft('')
     setNewThreadNext(false)
-    sendToGroupChat(room.key, room.members, text, targetThread)
   }
 
   return (
@@ -169,6 +171,7 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
           {engineRoom.running ? (
         <Button
           aria-label="Interrupt"
+          disabled={!ready}
           onClick={() => void stopGroupThread(room.key, targetThread, room.members)}
           size="icon"
           variant="destructive"
@@ -176,7 +179,7 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
           <IconPlayerStop size={19} />
         </Button>
       ) : (
-        <Button aria-label="Send" disabled={!draft.trim() || room.members.length === 0} onClick={send} size="icon">
+        <Button aria-label="Send" disabled={!ready || !draft.trim() || room.members.length === 0} onClick={send} size="icon">
           <IconSend size={19} />
         </Button>
       )}
@@ -194,7 +197,7 @@ export function GroupChatScreen({ roomId }: { roomId: string }) {
         <div className={`session-activity ${engineRoom.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
           <span aria-hidden className="status-dot" />
           <span>
-            {engineRoom.running
+            {!ready ? 'Status unavailable' : engineRoom.running
               ? engineRoom.turn && turnMemberName
                 ? `${turnMemberName} is thinking…`
                 : 'Bots are working'
@@ -222,7 +225,9 @@ function GroupPromptCard({ prompt, members }: { prompt: GroupPrompt; members: Gr
   const member = members.find(candidate => candidate.name === prompt.member) ?? { name: prompt.member }
   const [draft, setDraft] = useState('')
 
+  const ready = useStore($gatewayReady)
   const answer = (choice?: string) => {
+    if (!$gatewayReady.get()) return
     void answerGroupPrompt(prompt, member, choice ?? draft).catch(() => undefined)
   }
 
@@ -246,7 +251,7 @@ function GroupPromptCard({ prompt, members }: { prompt: GroupPrompt; members: Gr
         />
       )}
       {prompt.choices?.map(choice => (
-        <button className="group-prompt-choice" key={choice} onClick={() => answer(choice)}>
+        <button disabled={!ready} className="group-prompt-choice" key={choice} onClick={() => answer(choice)}>
           {choice}
         </button>
       ))}

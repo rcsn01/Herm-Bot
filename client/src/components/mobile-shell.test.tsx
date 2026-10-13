@@ -211,7 +211,7 @@ describe('MobileShell', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('disables foreground motion while the navigation page is open or reconnecting', () => {
+  it('disables foreground motion for the menu but keeps local swipe while reconnecting', () => {
     const navigationPage = renderShell({ navigationPageOpen: true })
     pointer(navigationPage.foreground, 'pointerDown', { clientX: 20, clientY: 100 })
     pointer(navigationPage.foreground, 'pointerMove', { clientX: 420, clientY: 108 })
@@ -221,19 +221,18 @@ describe('MobileShell', () => {
     const reconnecting = renderShell({ reconnecting: true })
     pointer(reconnecting.foreground, 'pointerDown', { clientX: 20, clientY: 100 })
     pointer(reconnecting.foreground, 'pointerMove', { clientX: 420, clientY: 108 })
-    expect(reconnecting.foreground.style.getPropertyValue('--swipe-progress')).toBe('0')
+    expect(Number(reconnecting.foreground.style.getPropertyValue('--swipe-progress'))).toBeGreaterThan(0)
   })
 
-  it('makes the shell inert while reconnecting', () => {
+  it('keeps local shell interaction available but does not refresh while reconnecting', () => {
     const { onAction, onRefresh, foreground } = renderShell({ reconnecting: true })
     const shell = foreground.closest('.mobile-shell')!
 
-    expect(shell.getAttribute('aria-busy')).toBe('true')
-    expect(shell.hasAttribute('inert')).toBe(true)
-    expect(screen.getByRole('status').textContent).toContain('Reconnecting')
+    expect(shell.hasAttribute('aria-busy')).toBe(false)
+    expect(shell.hasAttribute('inert')).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: 'Action' }))
-    expect(onAction).not.toHaveBeenCalled()
+    expect(onAction).toHaveBeenCalledOnce()
     expect(onRefresh).not.toHaveBeenCalled()
   })
 })

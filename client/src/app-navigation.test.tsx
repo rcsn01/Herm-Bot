@@ -83,9 +83,9 @@ beforeEach(() => {
   resetNavigation()
   // A stale open menu latch would render SessionsMenu over the app shell.
   resetWorkspacePolicy()
-  $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
+  $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
-  $chat.set({ ...emptyChatState(), info: { running: false, title: 'Current chat', usage: null }, runtimeSessionId: 'runtime-1' })
+  $chat.set({ ...emptyChatState(), availability: 'live', info: { running: false, title: 'Current chat', usage: null }, runtimeSessionId: 'runtime-1' })
   $sessions.set([])
   $profileSwitching.set(false)
 })
@@ -409,7 +409,7 @@ describe('App navigation', () => {
 
   it('renders the app shell during a switching connect and the boot takeover otherwise', () => {
     act(() => {
-      $connection.set({ authMode: 'token', error: null, phase: 'connecting', status: null })
+      $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connecting', workspaceAvailable: false, status: null })
       $profileSwitching.set(true)
     })
     const { container } = render(<App />)
@@ -485,11 +485,11 @@ describe('App navigation', () => {
 
     expect(screen.getByTestId('chat-instance')).toBe(chat)
     expect(screen.queryByRole('status')).toBeNull()
-    expect(view.container.querySelector('.mobile-shell')?.getAttribute('aria-busy')).toBe('false')
+    expect(view.container.querySelector('.mobile-shell')?.hasAttribute('inert')).toBe(false)
   })
 
   it('shows a neutral startup screen while connecting instead of flashing login', () => {
-    $connection.set({ ...$connection.get(), phase: 'connecting' })
+    $connection.set({ ...$connection.get(), phase: 'connecting', workspaceAvailable: false })
 
     render(<App />)
 
@@ -499,7 +499,7 @@ describe('App navigation', () => {
   })
 
   it('shows the startup screen while reconnecting without a cached session', () => {
-    $connection.set({ ...$connection.get(), phase: 'reconnecting' })
+    $connection.set({ ...$connection.get(), phase: 'reconnecting', workspaceAvailable: false })
     $chat.set(emptyChatState())
 
     render(<App />)
@@ -509,12 +509,11 @@ describe('App navigation', () => {
     expect(screen.getByRole('status').textContent).toBe('Connecting…')
   })
 
-  it('does not show cached chat after an unexpected disconnect', () => {
-    $connection.set({ ...$connection.get(), phase: 'disconnected' })
-
+  it('keeps the verified workspace after an ordinary disconnect', () => {
+    $connection.set({ ...$connection.get(), phase: 'error', errorKind: 'network' })
     render(<App />)
-
-    expect(screen.queryByTestId('chat-instance')).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Hermes Mobile' })).not.toBeNull()
+    expect(screen.getByTestId('chat-instance')).not.toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('Cannot reach Hermes.')
+    expect(screen.getByRole('button', { name: 'Retry' })).not.toBeNull()
   })
 })

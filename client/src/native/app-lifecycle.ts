@@ -31,24 +31,16 @@ export async function observeAppLifecycle(
     pageVisible = true
     emit(true)
   }
-  const onOffline = () => emit(false)
-  const onOnline = () => {
-    if (pageVisible && document.visibilityState !== 'hidden') emit(true)
-  }
 
   document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('pageshow', onPageShow)
-  window.addEventListener('offline', onOffline)
-  window.addEventListener('online', onOnline)
 
   return {
     async remove() {
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('pagehide', onPageHide)
       window.removeEventListener('pageshow', onPageShow)
-      window.removeEventListener('offline', onOffline)
-      window.removeEventListener('online', onOnline)
     }
   }
 }

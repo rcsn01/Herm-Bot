@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
+import { useStore } from '@nanostores/react'
+import { $gatewayReady } from '~/state/store'
 import { Button, Input } from '~/compat/primitives'
 
 import { ProfileAvatarPicker } from './profile-avatar-picker'
@@ -66,6 +68,7 @@ export function CreateProfileDialog({ onCancel, onCreated, open, seed = null }: 
     open
   })
   const busy = profile.mutation.busy
+  const ready = useStore($gatewayReady)
   const error = submitError || profile.mutation.error
   const dialogTitleId = 'create-profile-dialog-title'
   const nameHintId = 'create-profile-name-hint'
@@ -128,6 +131,7 @@ export function CreateProfileDialog({ onCancel, onCreated, open, seed = null }: 
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!$gatewayReady.get()) return
     const nextError = validateProfileName(name)
     if (nextError) {
       setSubmitError(nextError)
@@ -162,11 +166,13 @@ export function CreateProfileDialog({ onCancel, onCreated, open, seed = null }: 
         aria-labelledby={dialogTitleId}
         aria-modal="true"
         className="mobile-dialog profile-create-dialog profile-editor-dialog"
-        onKeyDown={event => { if (event.key === 'Escape' && !busy) onCancel() }}
+        onKeyDown={event => { if (event.key === 'Escape' && (!busy || !ready)) onCancel() }}
         onSubmit={submit}
         role="dialog"
       >
         <h3 id={dialogTitleId}>{mode === 'duplicate' ? 'Duplicate profile' : 'Create profile'}</h3>
+        {!ready && <p role="status">Reconnect to create this profile. Your values are kept here.</p>}
+        <div inert={!ready ? true : undefined} className="profile-editor-fields">
         <p className="dialog-help">{mode === 'duplicate' ? `Create a copy of ${seed?.cloneFrom}.` : 'Create a fresh Hermes profile. It will not switch the active bot.'}</p>
         <label htmlFor="create-profile-name">Profile name</label>
         <Input
@@ -230,9 +236,10 @@ export function CreateProfileDialog({ onCancel, onCreated, open, seed = null }: 
         )}
 
         {(validationError || error) && <p className="dialog-field-error" id={nameErrorId} role="alert">{error || validationError}</p>}
+        </div>
         <div className="button-row">
-          <Button disabled={busy} onClick={onCancel} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={busy || Boolean(validateProfileName(name))} type="submit">{busy ? (mode === 'duplicate' ? 'Duplicating…' : 'Creating…') : (mode === 'duplicate' ? 'Duplicate profile' : 'Create profile')}</Button>
+          <Button disabled={busy && ready} onClick={onCancel} type="button" variant="secondary">Cancel</Button>
+          <Button disabled={!ready || busy || Boolean(validateProfileName(name))} type="submit">{busy ? (mode === 'duplicate' ? 'Duplicating…' : 'Creating…') : (mode === 'duplicate' ? 'Duplicate profile' : 'Create profile')}</Button>
         </div>
       </form>
     </div>

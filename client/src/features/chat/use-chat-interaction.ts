@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { ChatInteraction, type ChatInteractionCommands, type ChatInteractionState, type ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { chatDrafts } from './chat-drafts'
 import { $draftOwner } from '~/state/draft-owner'
-import { $preferences } from '~/state/store'
+import { $gatewayReady, $preferences } from '~/state/store'
 import { $chat, type Conversation } from '~/state/conversation'
 
 export interface UseChatInteractionResult {
@@ -18,11 +18,13 @@ export function useChatInteraction({ conversation, mediaConnection }: {
 }): UseChatInteractionResult {
   const draftVersion = useStore(chatDrafts.$version)
   const chat = useStore($chat)
+  const ready = useStore($gatewayReady)
   const owner = useStore($draftOwner)
   const preferences = useStore($preferences)
   // A fresh literal, not the live instances: every method must be bound so
   // `this` resolves to its owner (Conversation).
   const commands = useMemo<ChatInteractionCommands>(() => ({
+    isAvailable: () => $gatewayReady.get() && $chat.get().availability === 'live',
     isCurrent: (context, runtimeId) => {
       const owner = $draftOwner.get()
       const chat = $chat.get()
@@ -55,6 +57,8 @@ export function useChatInteraction({ conversation, mediaConnection }: {
   useLayoutEffect(() => {
     interaction.setContext({ owner, profile: preferences.profile, conversation: chat.storedSessionId ?? chatDrafts.provisionalId(owner, preferences.profile, chat.runtimeSessionId), provisional: !chat.storedSessionId }, chat.runtimeSessionId)
   }, [chat.runtimeSessionId, chat.storedSessionId, owner, preferences.profile, interaction])
+
+  useLayoutEffect(() => { interaction.setGatewayAvailable(ready && chat.availability === 'live') }, [ready, chat.availability, interaction])
 
   useLayoutEffect(() => { interaction.sync() }, [draftVersion, interaction])
 

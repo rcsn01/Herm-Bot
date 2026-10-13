@@ -46,6 +46,9 @@ const stateFor = id => {
     calls: [],
     config: { display: { personality: 'default' } },
     messages: new Map(),
+    sockets: new Set(),
+    controls: {},
+    histories: [],
     mcpOAuth: null,
     profiles: initialProfiles()
   })
@@ -61,7 +64,7 @@ const body = req => new Promise((resolve, reject) => {
   req.on('end', () => { try { resolve(value ? JSON.parse(value) : {}) } catch (error) { reject(error) } })
   req.on('error', reject)
 })
-const initialMessages = id => id === 'activity-fixture' ? [
+const initialMessages = id => id.startsWith('created-') ? [] : id === 'activity-fixture' ? [
   { row_id: 1, role: 'user', content: 'Inspect the project' },
   ...Array.from({ length: 12 }, (_, index) => [
     { row_id: 2 + index * 2, role: 'assistant', content: '', reasoning: `Reasoning step ${index + 1}` },
@@ -80,6 +83,29 @@ const initialMessages = id => id === 'activity-fixture' ? [
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, origin)
   try {
+    const fixtureId = cookie(req)
+    // Controls and recording stay reachable even when gateway routes fail.
+    if (url.pathname === '/api/fixture-control' && req.method === 'POST') {
+      if (!fixtureId) return json(res, 401, { detail: 'Authentication required' })
+      const state = stateFor(fixtureId)
+      const update = await body(req)
+      if (update.reset === true) state.controls = {}
+      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory']) {
+        if (typeof update[key] === 'boolean') state.controls[key] = update[key]
+      }
+      if (typeof update.missingSession === 'string' || update.missingSession === null) state.controls.missingSession = update.missingSession
+      if (typeof update.longHistorySession === 'string' && update.longHistorySession.length <= 256) {
+        const stored = update.longHistorySession
+        state.messages.set(stored, [...initialMessages(stored), ...Array.from({ length: 30 }, (_, i) => ({ row_id: i + 3, role: i % 2 ? 'assistant' : 'user', content: `Saved history ${i + 1}. ${'Readable fixture paragraph. '.repeat(40)}` }))])
+      }
+      if (update.closeSockets === true) for (const ws of state.sockets) ws.close(1012, 'fixture interruption')
+      if (!state.controls.delayHistory) for (const release of state.histories.splice(0)) release()
+      return json(res, 200, { ok: true })
+    }
+    if (url.pathname === '/api/fixture-calls' && fixtureId) return json(res, 200, { calls: stateFor(fixtureId).calls })
+    const controls = fixtureId ? stateFor(fixtureId).controls : {}
+    if ((url.pathname.startsWith('/api/') || url.pathname === '/auth/logout') && controls.authExpired) return json(res, 401, { detail: 'Fixture session expired' })
+    if ((url.pathname.startsWith('/api/') || url.pathname === '/auth/logout') && controls.serverFailure) return json(res, 503, { detail: 'Fixture gateway unavailable' })
     if (url.pathname === '/api/status') {
       const current = cookie(req)
       const profiles = current
@@ -116,6 +142,8 @@ const server = http.createServer(async (req, res) => {
       const match = /^\/api\/sessions\/([^/]+)\/messages$/.exec(url.pathname)
       if (match && req.method === 'GET') {
         const stored = decodeURIComponent(match[1])
+        if (state.controls.delayHistory) await new Promise(resolve => state.histories.push(resolve))
+        if (state.controls.missingSession === stored) return json(res, 404, { detail: 'Session not found' })
         const messages = state.messages.get(stored) ?? initialMessages(stored)
         return json(res, 200, { messages, pagination: { offset: Number(url.searchParams.get('offset') || 0), limit: 80, returned: messages.length } })
       }
@@ -232,12 +260,19 @@ server.on('upgrade', (req, socket, head) => {
   if (url.pathname !== '/api/ws' || req.headers.origin !== origin || !id || !ticket || ticket.id !== id || ticket.used) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); socket.destroy(); return
   }
+  const state = stateFor(id)
+  state.calls.push({ kind: 'ws-handshake', profile: url.searchParams.get('profile') || 'default' })
+  if (state.controls.rejectHandshake || state.controls.serverFailure || state.controls.authExpired) {
+    socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); socket.destroy(); return
+  }
   ticket.used = true
   sockets.handleUpgrade(req, socket, head, ws => sockets.emit('connection', ws, req, id, url.searchParams.get('profile') || 'default'))
 })
 
 sockets.on('connection', (ws, _req, id, profile) => {
   const state = stateFor(id)
+  state.sockets.add(ws)
+  ws.on('close', () => state.sockets.delete(ws))
   let currentStored = `created-${profile}`
   state.calls.push({ kind: 'ws-connect', profile })
   ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
@@ -249,7 +284,9 @@ sockets.on('connection', (ws, _req, id, profile) => {
     const runtime = `runtime-${profile}-${stored}`
     let result
     let rpcError
-    if (request.method === 'session.create' || request.method === 'session.resume') {
+    if (request.method === 'session.resume' && state.controls.missingSession === stored) {
+      rpcError = { code: 'SESSION_NOT_FOUND', message: 'Session not found' }
+    } else if (request.method === 'session.create' || request.method === 'session.resume') {
       currentStored = stored
       result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: stored === 'footer-fixture' ? 'fixture/a-very-long-model-name-that-must-not-hide-the-status' : 'fixture/test-model', reasoning_effort: 'high', title: stored, ...(stored === 'footer-fixture' ? { usage: { total: 25000, context_limit: 100000 } } : {}) } }
     } else if (request.method === 'session.history') {

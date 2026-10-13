@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 
 import { chatDrafts } from '~/features/chat/chat-drafts'
+import { $connection } from '~/state/store'
+import { $draftOwner } from '~/state/draft-owner'
 import { $chat } from '~/state/conversation'
 
 import { activatePwaUpdate, $pwa, dismissPwaMessage, installPwa } from './lifecycle'
@@ -11,13 +13,16 @@ const $reloadBlocked = computed([$chat, chatDrafts.$blocked], (chat, draftsBlock
 
 export function PwaStatus() {
   const pwa = useStore($pwa)
+  const connection = useStore($connection)
+  const owner = useStore($draftOwner)
+  const offline = pwa.offline && !(connection.workspaceAvailable && !owner.locked && connection.phase !== 'unsupported')
   const reloadBlocked = useStore($reloadBlocked)
 
-  if (!pwa.offline && !pwa.updateAvailable && !pwa.installPrompt && !pwa.error) return null
+  if (!offline && !pwa.updateAvailable && !pwa.installPrompt && !pwa.error) return null
 
   return (
     <aside className="pwa-status" aria-label="App status">
-      {pwa.offline ? <span role="status">Offline. Reconnect to use your gateway.</span> : null}
+      {offline ? <span role="status">Offline. Reconnect to use your gateway.</span> : null}
       {pwa.error ? <span role="status">{pwa.error}</span> : null}
       {pwa.updateAvailable ? (
         <span>

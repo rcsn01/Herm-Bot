@@ -1,10 +1,11 @@
-import type { CSSProperties, ReactNode, SyntheticEvent } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 
 import { usePullToRefresh } from '~/gestures/use-pull-to-refresh'
 import { useSwipeMotion } from '~/gestures/use-swipe-motion'
 import { useKeyboardViewport } from '~/pwa/use-keyboard-viewport'
 
 interface MobileShellProps {
+  connectionBanner?: ReactNode
   navigationPage: ReactNode
   navigationPageOpen: boolean
   foreground: ReactNode
@@ -26,6 +27,7 @@ function gestureOwnedByControl(target: EventTarget | null): boolean {
 }
 
 export function MobileShell({
+  connectionBanner,
   navigationPage,
   navigationPageOpen,
   foreground,
@@ -50,30 +52,20 @@ export function MobileShell({
   const foregroundMotion = useSwipeMotion({
     canStart: target => !gestureOwnedByControl(target),
     direction: 'right',
-    enabled: foregroundVisible && foregroundDismissible && !navigationPageOpen && !reconnecting,
+    enabled: foregroundVisible && foregroundDismissible && !navigationPageOpen,
     extentPx: () => window.innerWidth,
     initialProgress: 0,
     onCommit: endpoint => { if (endpoint === 1) onDismissForeground?.() },
     restingEndpoint: 0
   })
 
-  const blockInteraction = (event: SyntheticEvent) => {
-    if (!reconnecting) return
-    event.preventDefault()
-    event.stopPropagation()
-  }
-
   return (
     <>
       <div
-        aria-busy={reconnecting}
         className={`mobile-shell${navigationPageOpen ? ' navigation-open' : ''}${reconnecting ? ' reconnecting' : ''}`}
-        inert={reconnecting ? true : undefined}
-        onClickCapture={blockInteraction}
-        onKeyDownCapture={blockInteraction}
-        onSubmitCapture={blockInteraction}
         ref={shellRef}
       >
+        {connectionBanner}
         <section aria-hidden={foregroundVisible || navigationPageOpen} className={`roster-layer${foregroundVisible ? ' underlay' : ''}`} inert={foregroundVisible || navigationPageOpen ? true : undefined}>
           <main className="sessions-menu-content">
             {rosterHeader}
@@ -118,7 +110,6 @@ export function MobileShell({
           <span>{refresh.phase === 'refreshing' ? 'Refreshing…' : refresh.phase === 'error' ? 'Could not refresh' : refresh.phase === 'armed' ? 'Release to refresh' : 'Pull to refresh'}</span>
         </div>
       </div>
-      {reconnecting && <div aria-live="polite" className="connection-status" role="status">Reconnecting to Hermes…</div>}
     </>
   )
 }

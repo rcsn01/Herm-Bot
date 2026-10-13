@@ -3,7 +3,7 @@ import { cleanup, renderHook, waitFor, act } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $preferences } from '~/state/store'
+import { $connection, $preferences } from '~/state/store'
 import { beginScopedTask, currentGatewayScope, useScopedMutation, useScopedQuery, useScopeKey, useScopeReset, useScopedTask, type ScopedTask } from './scope-guard'
 import { GatewayError } from './gateway-error'
 
@@ -54,6 +54,29 @@ afterEach(() => {
 })
 
 describe('scoped operation toolkit', () => {
+  it('retains query data and rejects unavailable mutations before optimism without replay', async () => {
+    const client = createClient()
+    const key = ['retained']
+    client.setQueryData(key, 'confirmed')
+    $connection.set({ ...$connection.get(), phase: 'reconnecting' })
+    const fetch = vi.fn(async () => 'remote')
+    const dispatch = vi.fn(async () => 'changed')
+    const apply = vi.fn(() => 'optimistic')
+    const hook = renderHook(() => ({
+      query: useScopedQuery(key, { queryFn: fetch }),
+      mutation: useScopedMutation<string, void, string>({ mutationFn: dispatch, optimistic: { queryKey: key, apply } })
+    }), { wrapper: wrapperFor(client) })
+    expect(hook.result.current.query.data).toBe('confirmed')
+    expect(fetch).not.toHaveBeenCalled()
+    await act(async () => { await expect(hook.result.current.mutation.mutateAsync()).rejects.toMatchObject({ code: 'GATEWAY_UNAVAILABLE' }) })
+    expect(apply).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(hook.result.current.mutation.isPaused).toBe(false)
+    expect(client.getQueryData(key)).toBe('confirmed')
+    act(() => $connection.set({ ...$connection.get(), phase: 'connected' }))
+    await act(async () => { await Promise.resolve() })
+    expect(dispatch).not.toHaveBeenCalled()
+  })
   it('runs callbacks for successful and failed mutations in the current scope', async () => {
     const client = createClient()
     const successDeferred = deferred<string>()

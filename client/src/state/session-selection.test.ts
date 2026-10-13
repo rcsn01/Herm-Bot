@@ -773,7 +773,7 @@ describe('session selection', () => {
     expect(api.list).not.toHaveBeenCalled()
   })
 
-  it.each(['resume', 'publish', 'reconcile'] as const)('latest %s failure falls back to a fresh session', async failure => {
+  it.each(['resume', 'publish', 'reconcile'] as const)('latest %s failure does not silently create another conversation', async failure => {
     $sessions.set([makeStoredSession('newest', { started_at: 300 })])
     const runtime = {
       resumeSession: vi.fn(async () => {
@@ -792,11 +792,9 @@ describe('session selection', () => {
     }
     const { selection } = createSelection({ runtime, conversation })
 
-    const outcome = await selection.select({ kind: 'latest', freshen: true })
-
+    await expect(selection.select({ kind: 'latest', freshen: true })).rejects.toThrow(`${failure} failed`)
     expect(runtime.resumeSession).toHaveBeenCalledWith(null, 'newest')
-    expect(runtime.createSession).toHaveBeenCalledOnce()
-    expect(outcome).toEqual({ session: expect.objectContaining({ storedSessionId: 'fallback' }), resumed: false })
+    expect(runtime.createSession).not.toHaveBeenCalled()
   })
 
   it('latest warm-tap propagates freshen failure without creating a replacement', async () => {
@@ -833,10 +831,10 @@ describe('session selection', () => {
   it('latest resume-failure falls back to a create; create failure propagates; a newer select wins the race', async () => {
     $sessions.set([{ id: 'newest', message_count: 1, preview: '', source: 'ios', started_at: 300, title: 'Newest' }])
 
-    // The fallback publishes the created session.
+    // Only a confirmed missing target permits cold latest/create fallback.
     const fallback = createSelection({
       runtime: {
-        resumeSession: vi.fn(async () => { throw new Error('conversation gone') }),
+        resumeSession: vi.fn(async () => { throw Object.assign(new Error('Session not found'), { code: 'SESSION_NOT_FOUND' }) }),
         createSession: vi.fn(async () => makeSession('fallback'))
       }
     })
@@ -846,7 +844,7 @@ describe('session selection', () => {
     // The create's failure propagates.
     const failing = createSelection({
       runtime: {
-        resumeSession: vi.fn(async () => { throw new Error('conversation gone') }),
+        resumeSession: vi.fn(async () => { throw Object.assign(new Error('Session not found'), { code: 'SESSION_NOT_FOUND' }) }),
         createSession: vi.fn(async () => { throw new Error('create failed') })
       }
     })
@@ -982,7 +980,7 @@ describe('session selection', () => {
 
     const runtimeOverrides: Record<string, unknown> = {}
     if (kind === 'latest-create fallback') {
-      runtimeOverrides.resumeSession = vi.fn(async () => { throw new Error('session no longer exists') })
+      runtimeOverrides.resumeSession = vi.fn(async () => { throw Object.assign(new Error('Session not found'), { code: 'SESSION_NOT_FOUND' }) })
     }
     const { selection, runtime, conversation } = createSelection({
       runtime: runtimeOverrides,

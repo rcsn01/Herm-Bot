@@ -175,6 +175,8 @@ export interface PendingPrompt {
 }
 
 export interface ChatState {
+  availability: 'empty' | 'cached' | 'synchronizing' | 'live' | 'unavailable'
+  lastSyncedAt: number | null
   contractVersion: number | null
   error: null | string
   historyBackfilled: boolean

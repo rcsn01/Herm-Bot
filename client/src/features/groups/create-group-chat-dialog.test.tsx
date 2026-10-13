@@ -19,7 +19,7 @@ afterEach(cleanup)
 
 beforeEach(() => {
   localStorage.clear()
-  $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
+  $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connected', status: null })
   $groupChatsState.set({})
 })
 

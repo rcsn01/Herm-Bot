@@ -47,8 +47,12 @@ test('serves precached split screens and fonts offline', async ({ page, context,
   expect(cached.some(url => /\/settings-screen-/.test(url))).toBe(true)
   expect(cached.some(url => url.includes('jetbrains-mono-latin-wght-normal') && url.includes('.woff2'))).toBe(true)
   await context.setOffline(true)
-  // The shell intentionally blocks interaction while the gateway reconnects.
-  // Check module/font availability directly rather than bypassing that guard.
+  // A verified workspace stays navigable offline. Split assets must be local
+  // too, so opening Appearance does not depend on another gateway request.
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: /Appearance/ }).click()
+  await expect(page.getByRole('combobox')).toBeEnabled()
+  await expect(page.locator('.mobile-shell')).not.toHaveAttribute('inert')
   const assets = cached.filter(url => /\/settings-screen-/.test(url) || url.includes('.woff2'))
   const offlineResponses = await page.evaluate(async urls => Promise.all(urls.map(async url => {
     const response = await fetch(url)

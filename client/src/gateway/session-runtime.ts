@@ -50,6 +50,7 @@ export interface OpenSessionResult<T = void> {
 }
 
 export interface OpenSessionOptions {
+  missingTargetPolicy?: 'create' | 'resume-only'
   profile: null | string
   storedSessionId: null | string
 }
@@ -58,9 +59,16 @@ export interface SessionRuntimeOptions {
   minimumContract: number
   retryDelays: readonly number[]
   sessionSource?: string
+  onAuthenticationFailure?: (error: GatewayError) => void
 }
 
 export class SessionRuntime implements GatewayPort {
+  private reportFailure(error: unknown, operation: { generation: number }) {
+    const classified = classifyGatewayError(error)
+    if (classified.kind === 'auth' && operation.generation === this.generation && !this.disposed) this.options.onAuthenticationFailure?.(classified)
+    return classified
+  }
+
   private scopeController = new AbortController()
   private generation = 0
   private disposed = false
@@ -116,7 +124,7 @@ export class SessionRuntime implements GatewayPort {
       this.assertCurrent(operation)
       return result
     } catch (error) {
-      throw classifyGatewayError(error)
+      throw this.reportFailure(error, operation)
     } finally {
       combined.cleanup()
     }
@@ -182,7 +190,7 @@ export class SessionRuntime implements GatewayPort {
       this.assertCurrent(operation)
       return result
     } catch (error) {
-      throw classifyGatewayError(error)
+      throw this.reportFailure(error, operation)
     } finally {
       combined.cleanup()
     }
@@ -196,7 +204,7 @@ export class SessionRuntime implements GatewayPort {
       this.assertCurrent(operation)
       return result
     } catch (error) {
-      throw classifyGatewayError(error)
+      throw this.reportFailure(error, operation)
     } finally {
       combined.cleanup()
     }
@@ -248,7 +256,7 @@ export class SessionRuntime implements GatewayPort {
         return { resumed: true, session }
       } catch (error) {
         const classified = classifyGatewayError(error)
-        if (!isConfirmedMissingSession(classified)) throw classified
+        if (!isConfirmedMissingSession(classified) || options.missingTargetPolicy === 'resume-only') throw classified
       }
     }
     return { resumed: false, session: await this.createCurrent(options.profile, operation) }

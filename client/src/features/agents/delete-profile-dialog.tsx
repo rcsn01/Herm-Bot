@@ -1,6 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
+import { useStore } from '@nanostores/react'
+import { $gatewayReady } from '~/state/store'
 import { Button } from '~/compat/primitives'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { useScopeKey, useScopedTask } from '~/gateway/scope-guard'
@@ -15,6 +17,7 @@ interface DeleteProfileDialogProps {
 }
 
 export function DeleteProfileDialog({ bot, onCancel, onDeleted, open }: DeleteProfileDialogProps) {
+  const ready = useStore($gatewayReady)
   const agents = useApi(createAgentsApi)
   const queryClient = useQueryClient()
   const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
@@ -26,6 +29,7 @@ export function DeleteProfileDialog({ bot, onCancel, onDeleted, open }: DeletePr
   if (!open || !bot) return null
 
   const remove = () => {
+    if (!$gatewayReady.get()) return
     if (bot.isDefault) {
       setError('The default profile cannot be deleted.')
       return
@@ -51,13 +55,14 @@ export function DeleteProfileDialog({ bot, onCancel, onDeleted, open }: DeletePr
 
   return (
     <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onCancel() }} role="presentation">
-      <section aria-describedby="delete-profile-description" aria-labelledby="delete-profile-title" aria-modal="true" className="mobile-dialog" onKeyDown={event => { if (event.key === 'Escape' && !busy) onCancel() }} role="alertdialog" tabIndex={-1}>
+      <section aria-describedby="delete-profile-description" aria-labelledby="delete-profile-title" aria-modal="true" className="mobile-dialog" onKeyDown={event => { if (event.key === 'Escape' && (!busy || !ready)) onCancel() }} role="alertdialog" tabIndex={-1}>
         <h3 id="delete-profile-title">Delete profile?</h3>
         <p id="delete-profile-description">Delete <strong>{bot.name}</strong> and its local configuration? This cannot be undone.</p>
+        {!ready && <p role="status">Reconnect to delete this profile.</p>}
         {error && <p className="dialog-field-error" role="alert">{error}</p>}
         <div className="button-row">
-          <Button disabled={busy} onClick={onCancel} ref={cancelRef} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={busy} onClick={remove} type="button" variant="destructive">{busy ? 'Deleting…' : 'Delete profile'}</Button>
+          <Button disabled={busy && ready} onClick={onCancel} ref={cancelRef} type="button" variant="secondary">Cancel</Button>
+          <Button disabled={!ready || busy} onClick={remove} type="button" variant="destructive">{busy ? 'Deleting…' : 'Delete profile'}</Button>
         </div>
       </section>
     </div>

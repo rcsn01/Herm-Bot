@@ -17,7 +17,7 @@ import { verifyDraftOwner } from '~/state/draft-owner'
 import { chatDrafts } from '~/features/chat/chat-drafts'
 import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
-import { $chat, emptyChatState, reduceGatewayEvent, type Conversation } from '~/state/conversation'
+import { $chat, emptyChatState as emptyState, reduceGatewayEvent, type Conversation } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $connection, $preferences } from '~/state/store'
 import { createTranscript } from '~/transcript/transcript'
@@ -61,6 +61,8 @@ function render(ui: React.ReactElement, profiles: unknown[] = []) {
   })
 }
 
+const emptyChatState = () => ({ ...emptyState(), availability: 'live' as const, runtimeSessionId: 'runtime-test' })
+
 beforeEach(() => {
   chatDrafts.clearOwner(false)
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
@@ -76,7 +78,7 @@ beforeEach(() => {
     }
   })
   $chat.set(emptyChatState())
-  $connection.set({ authMode: 'token', error: null, phase: 'connected', status: null })
+  $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: 'https://gateway.test', theme: 'system' })
 })
 
@@ -89,7 +91,7 @@ afterEach(() => {
 describe('chat interaction wiring', () => {
   it('shows an inline connecting state in the empty transcript while a switch connects', () => {
     act(() => {
-      $connection.set({ authMode: 'token', error: null, phase: 'connecting', status: null })
+      $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connecting', status: null })
     })
 
     const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
@@ -100,7 +102,7 @@ describe('chat interaction wiring', () => {
 
   it('shows the active profile character and greeting without gateway version details', async () => {
     $preferences.set({ ...$preferences.get(), profile: 'work' })
-    $connection.set({ authMode: 'token', error: null, phase: 'connected', status: { version: '0.20.5' } as never })
+    $connection.set({ ...$connection.get(), authMode: 'token', error: null, phase: 'connected', status: { version: '0.20.5' } as never })
 
     const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />, [{
       name: 'work',

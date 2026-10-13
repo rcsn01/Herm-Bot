@@ -21,6 +21,7 @@ const originalPreferences = $preferences.get()
 beforeEach(() => {
   $preferences.set({ ...originalPreferences, profile: null, remoteURL: 'https://gateway.example' })
   $connection.set({
+    ...$connection.get(),
     authMode: 'token',
     error: null,
     phase: 'connected',

@@ -7,7 +7,9 @@ import { classifyGatewayError, errorMessage, GatewayError } from '~/gateway/gate
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
 import type { ChatState, PendingPrompt, SessionInfoSnapshot, ToolActivity } from '~/lib/types'
-import { loadCachedTranscript, saveCachedTranscript } from '~/state/transcript-cache'
+import { transcriptCache, type CachedConversation } from '~/state/transcript-cache'
+import { $draftOwner, draftOwnerKey } from './draft-owner'
+import { $sessions, requireGatewayReady } from './store'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
 /**
@@ -23,6 +25,8 @@ import { createTranscript, updateTranscript } from '~/transcript/transcript'
  * *which* session is live; the Conversation owns session *content*.
  */
 export const emptyChatState = (): ChatState => ({
+  availability: 'empty',
+  lastSyncedAt: null,
   contractVersion: null,
   error: null,
   historyBackfilled: false,
@@ -112,7 +116,7 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
       }
     }
     case 'message.start':
-      return { ...state, error: null, running: true }
+      return { ...state, error: null, running: true, info: state.info ? { ...state.info, running: true } : null }
     case 'message.delta':
     case 'thinking.delta':
     case 'reasoning.delta':
@@ -124,7 +128,7 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
           createId: crypto.randomUUID(),
           event
         }),
-        ...(event.type === 'message.complete' ? { running: false } : {})
+        ...(event.type === 'message.complete' ? { running: false, info: state.info ? { ...state.info, running: false } : null } : {})
       }
     case 'tool.start':
       return { ...state, tools: upsertTool(state.tools, payload, 'running') }
@@ -167,6 +171,36 @@ function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): Sess
 
 export class Conversation {
   private historyLoadRequest = 0
+  private reconciliationRequest = 0
+  private historyDirty = false
+  private selectedIdentity: string | null = null
+
+  private identity(storedSessionId: string | null) {
+    return JSON.stringify([draftOwnerKey($draftOwner.get()), currentGatewayScope().profile, storedSessionId])
+  }
+
+  suspend(): void {
+    this.historyDirty = false
+    ++this.historyLoadRequest
+    ++this.reconciliationRequest
+    const current = $chat.get()
+    $chat.set({ ...current, availability: current.availability === 'empty' ? 'empty' : 'cached', pendingPrompt: null, running: false, tools: [], historyLoadingOlder: false,
+      transcript: { ...current.transcript, entries: current.transcript.entries.map(entry => 'streaming' in entry ? { ...entry, streaming: false } : entry) } })
+  }
+
+  adoptCached(snapshot: CachedConversation): void {
+    this.historyDirty = false
+    ++this.historyLoadRequest
+    ++this.reconciliationRequest
+    this.selectedIdentity = this.identity(snapshot.storedSessionId)
+    $chat.set({ ...emptyChatState(), availability: 'cached', lastSyncedAt: snapshot.lastSyncedAt, storedSessionId: snapshot.storedSessionId,
+      info: { title: snapshot.title, running: false, usage: null }, transcript: { context: { source: snapshot.source, storedSessionId: snapshot.storedSessionId }, entries: snapshot.entries } })
+  }
+
+  private requireLive() {
+    requireGatewayReady()
+    if ($chat.get().availability !== 'live') throw new GatewayError('This conversation is not synchronized. Reconnect before trying this action.', { kind: 'validation', code: 'GATEWAY_UNAVAILABLE', retryable: false })
+  }
 
   constructor(private readonly runtime: SessionRuntime) {}
 
@@ -175,15 +209,19 @@ export class Conversation {
    *  most recent visit fills the screen immediately; reconcile replaces it. */
   adopt(session: RuntimeSession, source: null | string = null): void {
     this.historyLoadRequest += 1
+    this.historyDirty = false
     const context = { source, storedSessionId: session.storedSessionId }
-    const cached = !session.rows?.length && session.storedSessionId
-      ? loadCachedTranscript(currentGatewayScope().profile)
-      : null
-    const transcript = cached && cached.storedSessionId === session.storedSessionId
-      ? { context, entries: cached.entries }
-      : createTranscript(context, session.rows)
+    ++this.reconciliationRequest
+    const current = $chat.get()
+    const same = this.selectedIdentity === this.identity(session.storedSessionId) && current.storedSessionId === session.storedSessionId
+      && (session.storedSessionId !== null || current.runtimeSessionId === session.runtimeSessionId)
+    const cached = session.storedSessionId ? transcriptCache.read({ owner: $draftOwner.get(), profile: currentGatewayScope().profile, storedSessionId: session.storedSessionId }) : null
+    const transcript = same ? current.transcript : cached ? { context: { ...context, source: source ?? cached.source }, entries: cached.entries } : createTranscript(context, session.rows)
+    this.selectedIdentity = this.identity(session.storedSessionId)
     $chat.set({
       ...emptyChatState(),
+      availability: 'synchronizing',
+      lastSyncedAt: same ? current.lastSyncedAt : cached?.lastSyncedAt ?? null,
       contractVersion: session.contractVersion,
       info: sessionInfoSnapshot(session.info),
       runtimeSessionId: session.runtimeSessionId,
@@ -216,6 +254,9 @@ export class Conversation {
   /** Clear the conversation (profile switch, logout, dispose). */
   reset(): void {
     this.historyLoadRequest += 1
+    ++this.reconciliationRequest
+    this.historyDirty = false
+    this.selectedIdentity = null
     $chat.set(emptyChatState())
   }
 
@@ -224,19 +265,23 @@ export class Conversation {
   private persistTranscript(): void {
     const current = $chat.get()
     if (!current.storedSessionId) return
-    saveCachedTranscript(currentGatewayScope().profile, {
-      entries: current.transcript.entries,
-      storedSessionId: current.storedSessionId
+    if (current.availability !== 'live' || current.lastSyncedAt === null) return
+    const session = $sessions.get().find(session => session.id === current.storedSessionId)
+    const startedAt = typeof session?.started_at === 'number' && Number.isFinite(session.started_at) ? session.started_at * 1000 : null
+    transcriptCache.write({ owner: $draftOwner.get(), profile: currentGatewayScope().profile, storedSessionId: current.storedSessionId }, {
+      entries: current.transcript.entries, title: current.info?.title ?? '', source: current.transcript.context.source,
+      startedAt, lastSyncedAt: current.lastSyncedAt
     })
   }
 
   onGatewayEvent(event: GatewayEvent): void {
     const previous = $chat.get()
-    if (event.session_id && event.session_id !== previous.runtimeSessionId) return
+    if (!previous.runtimeSessionId || !['live', 'synchronizing'].includes(previous.availability) || (event.session_id && event.session_id !== previous.runtimeSessionId)) return
     const next = reduceGatewayEvent(previous, event)
+    if (next.storedSessionId !== previous.storedSessionId) this.selectedIdentity = this.identity(next.storedSessionId)
     $chat.set(next)
     if (event.type === 'message.complete') {
-      this.persistTranscript()
+      if (previous.availability === 'synchronizing') { this.historyDirty = true; return }
       void this.reconcileHistory().catch(error => {
         const current = $chat.get()
         if (current.runtimeSessionId === event.session_id) {
@@ -247,6 +292,7 @@ export class Conversation {
   }
 
   async send(text: string): Promise<void | 'accepted' | 'uncertain'> {
+    this.requireLive()
     const content = text.trim()
     if (!content) return
     const scope = currentGatewayScope()
@@ -271,6 +317,7 @@ export class Conversation {
       if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== current.runtimeSessionId) {
         throw new GatewayError('The conversation changed before the message was sent.', { kind: 'validation' })
       }
+      this.requireLive()
       const acknowledgement = await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
       return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
     } catch (error) {
@@ -284,23 +331,27 @@ export class Conversation {
   }
 
   async interrupt(): Promise<void> {
+    this.requireLive()
     const sessionId = $chat.get().runtimeSessionId
     if (sessionId) await this.runtime.rpc('session.interrupt', { session_id: sessionId })
   }
 
   async steer(text: string): Promise<void> {
+    this.requireLive()
     const sessionId = $chat.get().runtimeSessionId
     const content = text.trim()
     if (sessionId && content) await this.runtime.rpc('session.steer', { session_id: sessionId, text: content })
   }
 
   async redirect(text: string): Promise<void> {
+    this.requireLive()
     const sessionId = $chat.get().runtimeSessionId
     const content = text.trim()
     if (sessionId && content) await this.runtime.rpc('session.redirect', { session_id: sessionId, text: content })
   }
 
   async retryFrom(rowId: number, text: string): Promise<void | 'accepted' | 'uncertain'> {
+    this.requireLive()
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
     if (!sessionId) throw new GatewayError('No active session.', { kind: 'validation' })
@@ -323,6 +374,7 @@ export class Conversation {
 
   /** Resolve slash-command suggestions for the composer's current draft. */
   async completeSlash(draft: string): Promise<SlashCompletionPayload> {
+    this.requireLive()
     const scope = currentGatewayScope()
     const response = await this.runtime.rpc<SlashCompletionResponse>('complete.slash', { text: draft })
     if (!isCurrentGatewayScope(scope)) throw new DOMException('Gateway scope changed.', 'AbortError')
@@ -333,6 +385,7 @@ export class Conversation {
   }
 
   async attach(file: File): Promise<string | undefined> {
+    this.requireLive()
     const scope = currentGatewayScope()
     const limit = file.type.startsWith('image/') ? 20 * 1_024 * 1_024 : 50 * 1_024 * 1_024
     if (file.size > limit) throw new Error(`This attachment exceeds the ${limit / 1_024 / 1_024} MB mobile upload limit.`)
@@ -340,6 +393,7 @@ export class Conversation {
     if (!sessionId) throw new Error('No active session.')
     const dataUrl = await fileToDataURL(file)
     if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
+    this.requireLive()
     const result = file.type.startsWith('image/')
       ? await this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
       : await this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
@@ -350,6 +404,7 @@ export class Conversation {
   }
 
   async respond(value: string, choice?: string): Promise<void> {
+    this.requireLive()
     const scope = currentGatewayScope()
     const pending = $chat.get().pendingPrompt
     const sessionId = $chat.get().runtimeSessionId
@@ -376,39 +431,53 @@ export class Conversation {
   async reconcileHistory(scope: CurrentGatewayScope = currentGatewayScope()): Promise<void> {
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
-    if (!sessionId) return
-    let page: SessionHistoryPage
-    if (snapshot.storedSessionId) {
-      try {
-        page = await this.runtime.historyPage(snapshot.storedSessionId, scope.profile)
-      } catch (error) {
-        const classified = classifyGatewayError(error)
-        if (!isConfirmedMissingSession(classified)) throw classified
-        // A resumed live/lazy session can be attached before it has a durable
-        // state.db row, and older gateways may not expose its durable identity
-        // consistently. Keep the resumed runtime and hydrate over JSON-RPC
-        // rather than misreporting this transcript 404 as an old gateway.
+    if (!sessionId || !['live', 'synchronizing'].includes(snapshot.availability)) return
+    const request = ++this.reconciliationRequest
+    try {
+      let page: SessionHistoryPage
+      if (snapshot.storedSessionId) {
+        try {
+          page = await this.runtime.historyPage(snapshot.storedSessionId, scope.profile)
+        } catch (error) {
+          const classified = classifyGatewayError(error)
+          if (!isConfirmedMissingSession(classified)) throw classified
+          // A resumed lazy session may not yet have a durable state.db row.
+          // Keep its selected runtime and ask for that runtime's history.
+          page = historyPage(await this.runtime.history(sessionId))
+        }
+      } else {
         page = historyPage(await this.runtime.history(sessionId))
       }
-    } else {
-      page = historyPage(await this.runtime.history(sessionId))
+      if (request !== this.reconciliationRequest || !isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return
+      const current = $chat.get()
+      const transcript = current.historyBackfilled
+        ? updateTranscript(current.transcript, { kind: 'reconcile-history', rows: page.rows })
+        : createTranscript(current.transcript.context, page.rows)
+      $chat.set({
+        ...current,
+        availability: 'live',
+        lastSyncedAt: Date.now(),
+        historyHasMore: page.hasMore,
+        historyNextOffset: page.nextOffset,
+        running: current.info?.running ?? false,
+        transcript
+      })
+      this.persistTranscript()
+      if (this.historyDirty) {
+        this.historyDirty = false
+        await this.reconcileHistory(scope)
+      }
+    } catch (error) {
+      if (request === this.reconciliationRequest && isCurrentGatewayScope(scope) && $chat.get().runtimeSessionId === sessionId && snapshot.availability === 'synchronizing') {
+        const current = $chat.get()
+        $chat.set({ ...current, availability: 'cached', error: errorMessage(error), pendingPrompt: null, running: false, tools: [] })
+      }
+      throw error
     }
-    if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return
-    const current = $chat.get()
-    const transcript = current.historyBackfilled
-      ? updateTranscript(current.transcript, { kind: 'reconcile-history', rows: page.rows })
-      : createTranscript(current.transcript.context, page.rows)
-    $chat.set({
-      ...current,
-      historyHasMore: page.hasMore,
-      historyNextOffset: page.nextOffset,
-      running: current.info?.running ?? false,
-      transcript
-    })
-    this.persistTranscript()
   }
 
   async loadOlderMessages(): Promise<boolean> {
+    this.requireLive()
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
     const storedSessionId = snapshot.storedSessionId

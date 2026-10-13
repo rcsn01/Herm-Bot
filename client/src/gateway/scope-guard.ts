@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient, type QueryKey, type UseMutationR
 import { classifyGatewayError, type GatewayError } from './gateway-error'
 import { gatewayScopeKey, gatewayScopeSnapshot, sameGatewayScope, type GatewayScopeKey, type GatewayScopeSnapshot } from './gateway-scope'
 import { $draftOwner } from '~/state/draft-owner'
-import { $preferences } from '~/state/store'
+import { $gatewayReady, requireGatewayReady, $preferences } from '~/state/store'
 
 export interface CurrentGatewayScope extends GatewayScopeSnapshot {
   /** Changes even when the user switches away and back to the same profile. */
@@ -136,11 +136,13 @@ export function useScopedQuery<TData>(
   key: QueryKey,
   options: ScopedQueryOptions<TData>
 ): ScopedQueryResult<TData> {
+  const ready = useStore($gatewayReady)
   return useQuery<TData, GatewayError>({
-    ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
+    enabled: ready && options.enabled !== false,
     queryKey: key,
     queryFn: async ({ signal }) => {
       try {
+        requireGatewayReady()
         return await options.queryFn(signal)
       } catch (caught) {
         throw classifyGatewayError(caught)
@@ -194,13 +196,17 @@ export function useScopedMutation<TData, TVariables, TQueryData = unknown>(
   const queryClient = useQueryClient()
 
   const mutation = useMutation<TData, unknown, TVariables, ScopedMutationContext<TQueryData>>({
-    mutationFn: options.mutationFn,
+    networkMode: 'always',
+    retry: false,
+    mutationFn: variables => { requireGatewayReady(); return options.mutationFn(variables) },
     onMutate: async variables => {
+      requireGatewayReady()
       const scope = currentGatewayScope()
       if (!options.optimistic) return { scope }
 
       const { apply, queryKey } = options.optimistic
       await queryClient.cancelQueries({ queryKey })
+      requireGatewayReady()
       const previous = queryClient.getQueryData<TQueryData>(queryKey)
       if (isCurrentGatewayScope(scope)) {
         const next = apply(previous, variables)

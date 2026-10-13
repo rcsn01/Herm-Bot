@@ -43,6 +43,8 @@ const $groupNeedsYou = readonlyType($groupNeedsYouState)
 
 // --- Lifecycle — the GatewayController is the only caller. -------------------
 
+import { $gatewayReady, requireGatewayReady } from '~/state/store'
+
 let activeMirror: GroupMirror | null = null
 let activeTurns: GroupTurnModule | null = null
 let activeDriver: GroupRoundDriver | null = null
@@ -110,6 +112,7 @@ export function openGroupRoom(room: GroupRoom): void {
   adoptMirrorRoom(room)
   const mirror = activeMirror
   const turns = activeTurns
+  if (!$gatewayReady.get()) return
   if (mirror) void mirror.pull().catch(() => undefined)
   if (turns) void turns.harvestRoom(room.key, room.members).catch(() => undefined)
 }
@@ -134,10 +137,12 @@ export { GROUP_CHAT_MAX_MEMBERS, getGroupRoom } from './group-store'
 // --- Actions — thin wrappers over the active captured lifecycle. ------------
 
 export function sendToGroupChat(roomKey: string, members: EngineMember[], text: string, thread?: null | string): null | string {
+  requireGatewayReady()
   return activeDriver ? activeDriver.sendToGroupChat(roomKey, members, text, thread) : null
 }
 
 export async function stopGroupThread(roomKey: string, thread: null | string, members: EngineMember[] | null = null): Promise<void> {
+  requireGatewayReady()
   if (!activeDriver) return
   await activeDriver.stopGroupThread(roomKey, thread, members)
 }
@@ -147,6 +152,7 @@ export async function answerGroupPrompt(
   member: GroupMember,
   answers: Record<string, string> | string | undefined
 ): Promise<void> {
+  requireGatewayReady()
   if (!activeTurns) return
   await activeTurns.answer(entry, member, answers)
 }

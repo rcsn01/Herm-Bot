@@ -1,5 +1,10 @@
+import { $chat } from './conversation'
+import { $networkStatus, observeNetworkStatus } from './network-status'
+import { transcriptCache, type CachedConversation } from './transcript-cache'
+import { createGuardedGateway } from '~/gateway/guarded-gateway'
+import { GatewayError } from '~/gateway/gateway-error'
 import { chatDrafts } from '~/features/chat/chat-drafts'
-import { $draftOwner, lockDraftOwner, verifyDraftOwner } from '~/state/draft-owner'
+import { $draftOwner, draftPrincipal, lockDraftOwner, verifyDraftOwner } from '~/state/draft-owner'
 import { observeAppLifecycle, type AppLifecycleHandle } from '~/native/app-lifecycle'
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
@@ -13,8 +18,8 @@ import { createSessionsApi, type SessionsApi } from '~/features/sessions/api'
 import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/native/hermes-connection'
 import { resetWorkspace } from '~/navigation/workspace-navigation'
 import { Conversation } from '~/state/conversation'
-import { $connection, $preferences, $profileSwitching, savePreferences } from '~/state/store'
-import { createSessionSelection, type SessionSelection } from '~/state/session-selection'
+import { $connection, $preferences, $profileSwitching, $gatewayReady, requireGatewayReady, savePreferences } from '~/state/store'
+import { createSessionSelection, type SessionSelection, type SelectionRequest } from '~/state/session-selection'
 import { startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'
 
 export const MINIMUM_CONTRACT = 6
@@ -35,6 +40,9 @@ export class GatewayController {
   private unsubscribeEvents?: () => void
   private unsubscribeState?: () => void
   private unsubscribeOwner?: () => void
+  private unsubscribeNetwork?: () => void
+  private stopNetworkObservation?: () => void
+  private recovery: Promise<void> | null = null
 
   constructor(
     private readonly connection: HermesConnectionPlugin = HermesConnection,
@@ -44,9 +52,10 @@ export class GatewayController {
     this.runtime = new SessionRuntime(this.transport, {
       minimumContract: MINIMUM_CONTRACT,
       retryDelays: RETRY_DELAYS,
-      sessionSource: isNativeIOS() ? 'ios' : 'mobile'
+      sessionSource: isNativeIOS() ? 'ios' : 'mobile',
+      onAuthenticationFailure: error => this.applyConnectionError(error)
     })
-    this.gateway = this.runtime
+    this.gateway = createGuardedGateway(this.runtime)
     this.conversation = new Conversation(this.runtime)
     this.selection = createSessionSelection({
       runtime: this.runtime,
@@ -62,19 +71,22 @@ export class GatewayController {
     this.disposed = false
     this.appBackgrounded = false
     if (wasDisposed) this.subscribeRuntime()
+    this.unsubscribeNetwork?.()
+    this.stopNetworkObservation?.()
+    this.stopNetworkObservation = observeNetworkStatus()
+    this.unsubscribeNetwork = $networkStatus.listen(({ status }) => {
+      if (status === 'offline') this.suspendTransport()
+      else if (status === 'online' && this.canRecover() && $connection.get().phase !== 'connected') void this.retryConnection()
+    })
     await this.activeListener?.remove()
     const listener = await observeAppLifecycle(({ isActive }) => {
       if (lifecycle !== this.lifecycleGeneration || this.disposed) return
       if (isActive) {
         this.appBackgrounded = false
-        if (!this.logoutInProgress && $connection.get().phase !== 'disconnected') void this.reconnect(true)
+        if (this.canRecover() && $connection.get().phase !== 'connected') void this.retryConnection()
       } else {
         this.appBackgrounded = true
-        this.invalidateReconnect()
-        if ($connection.get().phase === 'connected') {
-          $connection.set({ ...$connection.get(), error: null, phase: 'reconnecting' })
-        }
-        this.runtime.close()
+        this.suspendTransport()
       }
     })
     if (lifecycle !== this.lifecycleGeneration || this.disposed) {
@@ -95,17 +107,19 @@ export class GatewayController {
     const configured = await this.connection.configure({ remoteURL, token })
     if (previousURL && previousURL !== configured.remoteURL) {
       this.invalidateReconnect()
-      $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
+      $connection.set({ ...$connection.get(), error: null, phase: 'connecting', workspaceAvailable: false })
+      lockDraftOwner()
       await this.teardownGatewayScope()
     }
     savePreferences({ remoteURL: configured.remoteURL })
     const { authMode, status } = await this.connection.probe()
     savePreferences({ authMode })
-    $connection.set({ authMode, error: null, phase: 'disconnected', status })
+    $connection.set({ ...$connection.get(), authMode, error: null, errorKind: null, phase: 'disconnected', status })
     if (authMode === 'interactive') {
       try {
         await this.connection.request({ path: '/api/auth/me' })
-      } catch {
+      } catch (error) {
+        this.applyConnectionError(error)
         return
       }
     }
@@ -122,7 +136,7 @@ export class GatewayController {
       if (!this.isCurrentReconnect(generation)) return
       scope = currentGatewayScope()
       restored = await this.selection.restore(
-        stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored }, async () => preparation),
+        stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored, missingTargetPolicy: this.savedTargetPolicy(stored, scope) }, async () => preparation),
         () => this.isCurrentReconnect(generation)
       )
     } catch (error) {
@@ -134,14 +148,12 @@ export class GatewayController {
     const { opened } = restored
     const { authMode, status } = opened.preparation
     savePreferences({ authMode })
-    // The transport opened successfully. The session may instead belong to a
-    // user selection made while restore was pending; in either case the current
-    // connection is ready, but only a published restore needs its own reconcile.
-    $connection.set({ authMode, error: null, phase: 'connected', status })
-    this.installGroupEngine(scope)
     try {
-      if (restored.kind === 'published' && opened.resumed) await this.conversation.reconcileHistory(scope)
-      await this.refreshSessions(scope)
+      if (restored.kind === 'published') await this.conversation.reconcileHistory(scope)
+      if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope) || $chat.get().availability !== 'live') return
+      $connection.set({ ...$connection.get(), authMode, error: null, errorKind: null, workspaceAvailable: true, phase: 'connected', status })
+      this.installGroupEngine(scope)
+      await this.selection.refreshSessions(scope).catch(() => undefined)
     } catch (error) {
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
       this.applyConnectionError(error)
@@ -162,10 +174,11 @@ export class GatewayController {
 
   async logout() {
     this.logoutInProgress = true
+    const historyCleared = transcriptCache.clearOwner($draftOwner.get())
     const draftsCleared = chatDrafts.clearOwner()
     lockDraftOwner()
     this.invalidateReconnect()
-    $connection.set({ ...$connection.get(), error: null, phase: 'disconnected' })
+    $connection.set({ ...$connection.get(), error: null, phase: 'disconnected', workspaceAvailable: false })
     this.runtime.close()
     let logoutError: unknown
     try {
@@ -178,8 +191,8 @@ export class GatewayController {
       $connection.set({ ...$connection.get(), phase: 'disconnected' })
       this.logoutInProgress = false
     }
-    if (!draftsCleared) {
-      const message = 'Local draft removal could not be confirmed. Clear this site’s data before sharing the device.'
+    if (!draftsCleared || !historyCleared) {
+      const message = 'Local draft or saved conversation removal could not be confirmed. Clear this site’s data before sharing the device.'
       $connection.set({ ...$connection.get(), phase: 'disconnected', error: message })
       throw new Error(message, { cause: logoutError })
     }
@@ -191,6 +204,7 @@ export class GatewayController {
 
   async switchProfile(profile: null | string) {
     if (profile === $preferences.get().profile) return
+    if (!$gatewayReady.get()) return this.openProfile(profile)
     this.invalidateReconnect()
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
     $profileSwitching.set(true)
@@ -204,42 +218,60 @@ export class GatewayController {
   }
 
   async newSession() {
-    const outcome = await this.selection.select({ kind: 'create' })
+    requireGatewayReady()
+    const outcome = await this.selectRemote({ kind: 'create' })
     if (!outcome) return
   }
 
   async resumeSession(storedSessionId: string) {
-    return this.selection.select({ kind: 'resume', storedSessionId })
+    if (!$gatewayReady.get()) {
+      const cached = transcriptCache.read({ owner: $draftOwner.get(), profile: $preferences.get().profile, storedSessionId })
+      if (!cached) throw new GatewayError('This conversation is not saved on this device.', { kind: 'validation' })
+      await this.selectCached(cached)
+      return
+    }
+    return this.selectRemote({ kind: 'resume', storedSessionId })
   }
 
   async openProfile(profile: null | string) {
+    if (!$gatewayReady.get()) {
+      const cached = transcriptCache.latest($draftOwner.get(), profile)
+      if (!cached) throw new GatewayError('No conversation for this bot is saved on this device.', { kind: 'validation' })
+      return this.selectCached(cached)
+    }
     const switched = profile !== $preferences.get().profile
     if (switched) await this.switchProfile(profile)
-    return this.selection.select({ kind: 'latest', freshen: !switched })
+    return this.selectRemote({ kind: 'latest', freshen: !switched })
   }
 
   async refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()) {
+    requireGatewayReady()
     await this.selection.refreshSessions(scope)
   }
 
   async loadMoreSessions() {
+    requireGatewayReady()
     await this.selection.loadMoreSessions()
   }
 
   async renameSession(storedSessionId: string, title: string) {
+    requireGatewayReady()
     await this.selection.renameSession(storedSessionId, title)
   }
 
   async deleteSession(storedSessionId: string) {
+    requireGatewayReady()
     await this.selection.deleteSession(storedSessionId)
   }
 
   async archiveSession(storedSessionId: string) {
+    requireGatewayReady()
     await this.selection.archiveSession(storedSessionId)
   }
 
   async branchSession() {
-    await this.selection.select({ kind: 'branch' })
+    requireGatewayReady()
+    await this.selectRemote({ kind: 'branch' })
   }
 
   dispose() {
@@ -255,6 +287,11 @@ export class GatewayController {
     this.unsubscribeState = undefined
     this.unsubscribeOwner?.()
     this.unsubscribeOwner = undefined
+    this.unsubscribeNetwork?.()
+    this.stopNetworkObservation?.()
+    $connection.set({ ...$connection.get(), workspaceAvailable: false, phase: 'disconnected' })
+    lockDraftOwner()
+    this.conversation.reset()
     this.runtime.dispose()
     void this.activeListener?.remove()
   }
@@ -269,18 +306,21 @@ export class GatewayController {
     } catch (error) {
       const classified = classifyGatewayError(error)
       // Some token/no-auth gateways do not expose a principal. Those modes remain memory-only.
-      if (preparation.authMode === 'interactive' || !['auth', 'unsupported'].includes(classified.kind)) throw error
+      if (preparation.authMode === 'interactive' || classified.kind === 'auth' && $draftOwner.get().principal !== null || !['auth', 'unsupported'].includes(classified.kind)) throw error
     }
     if (generation !== this.reconnectGeneration || gateway !== $preferences.get().remoteURL || this.disposed) return preparation
     const previous = $draftOwner.get()
-    const changed = verifyDraftOwner(gateway, identity)
+    const changed = previous.gateway !== gateway || previous.principal !== draftPrincipal(identity) || previous.locked
     if (changed && (previous.gateway || previous.principal || previous.locked)) {
+      $connection.set({ ...$connection.get(), workspaceAvailable: false })
       this.selection.invalidate()
       stopGroupEngine()
       this.runtime.close()
       clearGatewayQueries()
       this.clearForegroundScope()
     }
+    // Publish the newly verified owner only after the previous private view is gone.
+    verifyDraftOwner(gateway, identity)
     return preparation
   }
 
@@ -288,13 +328,14 @@ export class GatewayController {
     try {
       const { authMode, status } = await this.connection.probe()
       savePreferences({ authMode })
-      $connection.set({ authMode, error: null, phase: 'connecting', status })
+      $connection.set({ ...$connection.get(), authMode, error: null, errorKind: null, phase: 'connecting', status })
       if (authMode === 'interactive') {
         try {
           await this.connection.request({ path: '/api/auth/me' })
         } catch (error) {
           if (classifyGatewayError(error).kind === 'auth') {
-            $connection.set({ authMode, error: null, phase: 'disconnected', status })
+            lockDraftOwner()
+            $connection.set({ ...$connection.get(), authMode, error: null, phase: 'disconnected', status, workspaceAvailable: false })
             return
           }
           throw error
@@ -319,6 +360,24 @@ export class GatewayController {
     resetWorkspace()
   }
 
+  private async selectRemote(request: SelectionRequest) {
+    requireGatewayReady()
+    const scope = currentGatewayScope()
+    try { return await this.selection.select(request) }
+    catch (error) {
+      const classified = classifyGatewayError(error)
+      if (isCurrentGatewayScope(scope) && (classified.kind === 'auth' || classified.kind === 'unsupported' || $chat.get().availability === 'cached' || $chat.get().availability === 'synchronizing')) this.applyConnectionError(error)
+      throw error
+    }
+  }
+
+  private savedTargetPolicy(stored: string | null, scope: CurrentGatewayScope): 'resume-only' | 'create' {
+    if (!stored) return 'create'
+    const selected = $chat.get().storedSessionId === stored
+    const cached = transcriptCache.read({ owner: $draftOwner.get(), profile: scope.profile, storedSessionId: stored })
+    return selected || cached ? 'resume-only' : 'create'
+  }
+
   private sessionsApi(scope: CurrentGatewayScope): SessionsApi {
     return createSessionsApi(createGatewayApi(this.runtime, scope.profile))
   }
@@ -330,7 +389,7 @@ export class GatewayController {
    *  profile switch restarts the engine with the same key and keeps them. */
   private installGroupEngine(scope: CurrentGatewayScope) {
     startGroupEngine(
-      (method, params, options) => this.runtime.rpc(method, params, options),
+      (method, params, options) => this.gateway.rpc(method, params, options),
       scope.connectionKey
     )
   }
@@ -339,15 +398,20 @@ export class GatewayController {
     this.unsubscribeOwner = $draftOwner.listen(owner => {
       if (!owner.locked || this.disposed || this.logoutInProgress) return
       this.invalidateReconnect()
-      $connection.set({ ...$connection.get(), phase: 'disconnected' })
+      $connection.set({ ...$connection.get(), phase: 'disconnected', workspaceAvailable: false })
+      stopGroupEngine()
+      clearGatewayQueries()
       this.runtime.close()
       this.clearForegroundScope()
     })
-    this.unsubscribeEvents = this.transport.subscribe(event => this.conversation.onGatewayEvent(event))
+    this.unsubscribeEvents = this.transport.subscribe(event => {
+      if (this.disposed || this.appBackgrounded || $draftOwner.get().locked) return
+      this.conversation.onGatewayEvent(event)
+    })
     this.unsubscribeState = this.transport.subscribeState(state => {
       if (state === 'closed' && !this.disposed && !this.appBackgrounded && !this.logoutInProgress && $connection.get().phase === 'connected') {
-        $connection.set({ ...$connection.get(), error: null, phase: 'reconnecting' })
-        void this.reconnect(true)
+        this.suspendTransport()
+        if (this.canRecover()) void this.retryConnection()
       }
     })
   }
@@ -356,8 +420,8 @@ export class GatewayController {
     if (this.disposed) return
     const generation = ++this.reconnectGeneration
     let scope = currentGatewayScope()
-    const previousPhase = $connection.get().phase
-    const hasCachedSession = previousPhase === 'reconnecting' && this.selection.hasLiveSession()
+    const hasCachedSession = $connection.get().workspaceAvailable
+    this.conversation.suspend()
     $connection.set({
       ...$connection.get(),
       error: null,
@@ -368,13 +432,16 @@ export class GatewayController {
       if (!this.isCurrentReconnect(generation)) return
       scope = currentGatewayScope()
       const restored = await this.selection.restore(
-        stored => this.runtime.reopen({ profile: scope.profile, storedSessionId: stored }),
+        stored => this.runtime.reopen({ profile: scope.profile, storedSessionId: stored, missingTargetPolicy: this.savedTargetPolicy(stored, scope) }),
         () => this.isCurrentReconnect(generation)
       )
       if (!restored) return
       if (restored.kind === 'published' && reconcile) await this.conversation.reconcileHistory(scope)
       if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
-      $connection.set({ ...$connection.get(), error: null, phase: 'connected' })
+      if ($chat.get().availability !== 'live') return
+      $connection.set({ ...$connection.get(), error: null, errorKind: null, workspaceAvailable: true, phase: 'connected' })
+      this.installGroupEngine(scope)
+      await this.selection.refreshSessions(scope).catch(() => undefined)
     } catch (error) {
       const classified = classifyGatewayError(error)
       if (classified.kind === 'aborted' || !this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
@@ -383,7 +450,12 @@ export class GatewayController {
   }
 
   private applyConnectionError(error: unknown) {
+    this.invalidateReconnect()
     const classified = classifyGatewayError(error)
+    $connection.set({ ...$connection.get(), phase: 'error', errorKind: classified.kind })
+    this.conversation.suspend()
+    stopGroupEngine()
+    this.runtime.close()
     if (classified.kind === 'unsupported') {
       $connection.set({ ...$connection.get(), error: classified.message, phase: 'unsupported' })
     } else if (classified.kind === 'auth') {
@@ -399,8 +471,43 @@ export class GatewayController {
     this.selection.resetSessionList()
   }
 
+  retryConnection(): Promise<void> {
+    if (this.recovery) return this.recovery
+    if (!this.canRecover()) return Promise.resolve()
+    const recovery = this.reconnect(true).finally(() => { if (this.recovery === recovery) this.recovery = null })
+    this.recovery = recovery
+    return recovery
+  }
+
+  private canRecover() {
+    return !this.disposed && !this.appBackgrounded && !this.logoutInProgress && Boolean($preferences.get().remoteURL)
+      && !$draftOwner.get().locked && $networkStatus.get().status !== 'offline' && $connection.get().errorKind !== 'auth' && $connection.get().phase !== 'unsupported'
+  }
+
+  private suspendTransport() {
+    const current = $connection.get()
+    this.invalidateReconnect()
+    $connection.set({ ...current, phase: current.phase === 'connected' || current.workspaceAvailable && current.phase !== 'error' ? 'reconnecting' : current.phase })
+    this.conversation.suspend()
+    stopGroupEngine()
+    void cancelGatewayQueries()
+    this.runtime.close()
+  }
+
+  private async selectCached(snapshot: CachedConversation) {
+    const recovering = Boolean(this.recovery)
+    chatDrafts.flush()
+    this.suspendTransport()
+    this.selection.invalidate()
+    void cancelGatewayQueries()
+    savePreferences({ profile: snapshot.profile })
+    this.selection.selectCached(snapshot)
+    if (recovering && this.canRecover()) void this.retryConnection()
+  }
+
   private invalidateReconnect() {
     ++this.reconnectGeneration
+    this.recovery = null
   }
 
   private isCurrentReconnect(generation: number) {

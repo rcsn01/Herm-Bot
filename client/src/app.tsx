@@ -9,6 +9,9 @@ import { CreateOptionsDialog } from '~/components/create-options-dialog'
 import { BotWorkspaceHeader } from '~/components/bot-workspace-header'
 import { BotWorkspaceNavigation } from '~/components/bot-workspace-navigation'
 import { ChatScreen } from '~/components/chat-screen'
+import { ConnectionBanner } from '~/components/connection-banner'
+import { GatewayActionRegion } from '~/components/gateway-action-region'
+import { $draftOwner } from '~/state/draft-owner'
 import { ConnectScreen } from '~/components/connect-screen'
 import { MobileShell } from '~/components/mobile-shell'
 import { SessionsMenu } from '~/components/sessions-menu'
@@ -32,7 +35,7 @@ import { groupIdFromRoute, restoreWorkspacePath } from '~/navigation/workspace-n
 import { observeHermesDeepLinks } from '~/native/deep-links'
 import { $chat } from '~/state/conversation'
 import { GatewayController } from '~/state/gateway-controller'
-import { $connection, $preferences, $profileSwitching } from '~/state/store'
+import { $connection, $gatewayReady, $preferences, $profileSwitching } from '~/state/store'
 
 // Keep screens that are not needed by the roster/chat out of the startup bundle.
 const GroupChatScreen = lazy(() => import('~/features/groups/group-screen').then(module => ({ default: module.GroupChatScreen })))
@@ -43,11 +46,13 @@ const MobileSettingsScreen = lazy(() => import('~/features/settings/settings-scr
 const controller = new GatewayController()
 const deepLinks = new DeepLinkCoordinator(controller)
 // Streamed content belongs to ChatScreen, not the surrounding workspace shell.
-const $runtimeSessionId = computed($chat, chat => chat.runtimeSessionId)
+const $conversationAvailability = computed($chat, chat => chat.availability)
 const $headerSubtitle = computed($chat, chat => chat.info?.title || 'New conversation')
 
 export function App() {
   const connection = useStore($connection)
+  const owner = useStore($draftOwner)
+  const gatewayReady = useStore($gatewayReady)
   const preferences = useStore($preferences)
   const profileSwitching = useStore($profileSwitching)
   const navigation = useStore($navigation)
@@ -55,7 +60,7 @@ export function App() {
   const activeGroupId = groupIdFromRoute(activeRoute)
   const groups = useKnownRooms()
   const activeGroup = activeGroupId ? groups.find(room => room.key === activeGroupId) ?? null : null
-  const runtimeSessionId = useStore($runtimeSessionId)
+  const conversationAvailability = useStore($conversationAvailability)
   const headerSubtitle = useStore($headerSubtitle)
   const [refreshing, setRefreshing] = useState(false)
   const [rosterQuery, setRosterQuery] = useState('')
@@ -69,6 +74,18 @@ export function App() {
   const [profileNotice, setProfileNotice] = useState<string | null>(null)
   const initialNavigationRestoredRef = useRef(false)
   const workspace = useWorkspaceNavigation()
+
+  useEffect(() => {
+    setCreateOptionsOpen(false)
+    setCreateProfileOpen(false)
+    setCreateGroupOpen(false)
+    setCreateProfileSeed(null)
+    setEditingProfile(null)
+    setActionsProfile(null)
+    setDeletingProfile(null)
+    setProfileNotice(null)
+    setRosterQuery('')
+  }, [owner.generation])
 
   useEffect(() => {
     applyTheme(preferences.theme)
@@ -97,7 +114,8 @@ export function App() {
     return () => deepLinks.setReady(false)
   }, [connection.phase])
 
-  const reconnecting = connection.phase === 'reconnecting' && Boolean(runtimeSessionId)
+  const reconnecting = !gatewayReady || conversationAvailability !== 'live'
+  const retainedWorkspace = connection.workspaceAvailable && !owner.locked
   // The sessions menu belongs to profile surfaces only; the main screen is
   // the roster, so it has no menu button or sessions menu.
   const inProfile = navigation.activeTab !== 'roster'
@@ -109,10 +127,10 @@ export function App() {
   // tap (a profile switch) renders the destination shell in place instead —
   // the chat screen shows its own inline connecting state.
   const switchingConnect = connection.phase === 'connecting' && profileSwitching
-  if (connection.phase === 'connecting' && !profileSwitching || (connection.phase === 'reconnecting' && !reconnecting)) {
+  if (!retainedWorkspace && (connection.phase === 'connecting' && !profileSwitching || connection.phase === 'reconnecting')) {
     return <main aria-label="Connecting to Hermes" className="blocking-screen startup-screen"><BrandMark small /><p role="status">Connecting…</p></main>
   }
-  if (connection.phase !== 'connected' && !reconnecting && !switchingConnect) return <ConnectScreen controller={controller} />
+  if (!retainedWorkspace && connection.phase !== 'connected' && !switchingConnect) return <ConnectScreen controller={controller} />
 
   const refresh = async () => {
     setRefreshing(true)
@@ -123,13 +141,14 @@ export function App() {
     // Enter the destination first; the wire work (profile switch, session
     // resume) streams into the already-visible chat shell.
     workspace.openChatSurface()
-    void controller.openProfile(profile)
+    void controller.openProfile(profile).catch(error => setProfileNotice(String(error)))
   }
   const closeCreateProfile = () => {
     setCreateProfileOpen(false)
     setCreateProfileSeed(null)
   }
   const openCreateProfile = () => {
+    if (!gatewayReady) return
     setCreateProfileSeed(null)
     setCreateOptionsOpen(true)
   }
@@ -157,6 +176,7 @@ export function App() {
   }
   const botName = displayNameFor({ name: preferences.profile || 'default' })
   const manageAgent = (agent: AgentRosterEntry) => {
+    if (!gatewayReady) return
     setActionsProfile(agent)
     setProfileNotice(null)
   }
@@ -183,7 +203,7 @@ export function App() {
         <Input aria-label="Search bots" onChange={event => setRosterQuery(event.target.value)} placeholder="Search bots" type="search" value={rosterQuery} />
       </div>
       <div className="header-actions">
-        <Button aria-label="Create profile" className="header-add-button" onClick={openCreateProfile} variant="ghost"><IconPlus aria-hidden="true" className="size-6" /></Button>
+        <Button disabled={!gatewayReady} aria-label="Create profile" className="header-add-button" onClick={openCreateProfile} variant="ghost"><IconPlus aria-hidden="true" className="size-6" /></Button>
         <Button aria-label="Open settings" className="header-gear-button" onClick={openSettingsFrom} variant="ghost"><IconSettings aria-hidden="true" className="size-6" /></Button>
       </div>
       {profileNotice && <p className="profile-notice" role="status">{profileNotice}</p>}
@@ -205,7 +225,7 @@ export function App() {
             )}
             {navigation.activeTab === 'sessions' ? (
               <div className="header-bot-button">
-                <div><strong>{botName}</strong><small>{reconnecting ? 'Reconnecting…' : headerSubtitle}</small></div>
+                <div><strong>{botName}</strong><small>{conversationAvailability === 'synchronizing' ? 'Updating conversation…' : reconnecting ? 'Saved conversation' : headerSubtitle}</small></div>
               </div>
             ) : inProfile ? (
               <div aria-level={1} className="header-title" role="heading"><div><strong>{workspace.header.title}</strong></div></div>
@@ -222,8 +242,8 @@ export function App() {
       </div>
       <Suspense fallback={<p className="muted" role="status">Loading screen…</p>}>
         {activeGroupId && <GroupChatScreen roomId={activeGroupId} />}
-        {navigation.activeTab === 'capabilities' && <CapabilitiesScreen workspace={workspace.screen('capabilities')} />}
-        {navigation.activeTab === 'cron' && <CronScreen onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.openChatSurface() }} workspace={workspace.screen('cron')} />}
+        {navigation.activeTab === 'capabilities' && <GatewayActionRegion><CapabilitiesScreen workspace={workspace.screen('capabilities')} /></GatewayActionRegion>}
+        {navigation.activeTab === 'cron' && <GatewayActionRegion><CronScreen onOpenSession={async sessionId => { await controller.resumeSession(sessionId); workspace.openChatSurface() }} workspace={workspace.screen('cron')} /></GatewayActionRegion>}
         {navigation.activeTab === 'settings' && <MobileSettingsScreen controller={controller} workspace={workspace.screen('settings')} />}
       </Suspense>
     </>
@@ -232,6 +252,7 @@ export function App() {
   return (
     <GatewayProvider gateway={controller.gateway}>
       <MobileShell
+        connectionBanner={<ConnectionBanner onRetry={() => void controller.retryConnection()} />}
         navigationPage={workspace.menuOpen || inProfile ? <SessionsMenu controller={controller} onDismissRequest={workspace.dismissMenu} open={workspace.menuOpen} /> : null}
         navigationPageOpen={workspace.menuOpen}
         foreground={foregroundContent}

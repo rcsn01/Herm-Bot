@@ -6,7 +6,12 @@ import { Badge, Button } from '~/compat/primitives'
 import { PageList, PageListButton } from '~/components/page-list'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection, $preferences, savePreferences } from '~/state/store'
+import { $networkStatus } from '~/state/network-status'
+import { transcriptCache } from '~/state/transcript-cache'
+import { $draftOwner } from '~/state/draft-owner'
+import { GatewayActionRegion } from '~/components/gateway-action-region'
+import type { ReactNode } from 'react'
+import { $connection, $gatewayReady, $preferences, savePreferences } from '~/state/store'
 import type { SettingsRoute, SettingsAdministrationPage, SettingsCategory } from '~/navigation/routes'
 import type { WorkspaceSettingsScreenApi } from '~/navigation/use-workspace-navigation'
 import { ModelsScreen } from '~/features/models/models-screen'
@@ -45,21 +50,30 @@ export function SettingsScreen({ controller, workspace }: { controller: GatewayC
   const { back, navigate, route, showModelBack } = workspace
   const preferences = useStore($preferences)
   const connection = useStore($connection)
+  const ready = useStore($gatewayReady)
+  const owner = useStore($draftOwner)
+  useStore(transcriptCache.$version)
+  const cachedProfiles = new Set(transcriptCache.list(owner).map(item => item.profile))
   const profiles = (connection.status?.profiles ?? []).map(profile => typeof profile === 'string' ? profile : profile.name)
   const [confirmSignOut, setConfirmSignOut] = useState(false)
 
   if (route.type === 'settings-category') {
-    if (route.category === 'model') return <ModelsScreen onBack={back} showBack={showModelBack} />
+    if (route.category === 'model') return <RemoteSettings onBack={back}><ModelsScreen onBack={back} showBack={showModelBack} /></RemoteSettings>
     if (route.category === 'appearance') return <AppearanceSettings onBack={back} />
-    if (route.category === 'memory') return <MemorySettings onBack={back} />
+    if (route.category === 'memory') return <RemoteSettings onBack={back}><MemorySettings onBack={back} /></RemoteSettings>
     if (route.category === 'notifications') return <NotificationsSettings onBack={back} />
     if (route.category === 'keyboard-shortcuts') return <KeyboardShortcutsSettings onBack={back} />
     if (route.category === 'about') return <AboutSettings onBack={back} />
-    return <ConfigSectionScreen category={route.category} onBack={back} />
+    return <RemoteSettings onBack={back}><ConfigSectionScreen category={route.category} onBack={back} /></RemoteSettings>
   }
-  if (route.type === 'settings-administration') return <SettingsAdministrationScreen controller={controller} onBack={back} page={route.page} />
+  if (route.type === 'settings-administration') return <RemoteSettings onBack={back}><SettingsAdministrationScreen controller={controller} onBack={back} page={route.page} /></RemoteSettings>
 
-  return <SettingsPageShell heading={false} subtitle="Profile defaults, mobile preferences, and gateway administration." title="Settings"><section className="settings-section"><h3>Connection</h3><div className="settings-list static"><div><span><strong>Gateway</strong><small>{preferences.remoteURL}</small></span><Badge>{connection.phase}</Badge></div><label><span><strong>Profile</strong><small>All remote settings and capability requests use this profile.</small></span><select onChange={event => void controller.switchProfile(event.target.value || null).catch(() => undefined)} value={preferences.profile ?? ''}><option value="">Default</option>{profiles.filter(name => name !== 'default').map(name => <option key={name} value={name}>{name}</option>)}</select></label></div></section><PageList className="capability-list">{SETTINGS_ENTRIES.map(entry => <SettingsRow entry={entry} key={`${entry.kind}:${entry.id}`} onClick={() => navigateEntry(entry, navigate)} />)}</PageList><Button className="touch-button" onClick={() => setConfirmSignOut(true)} variant="destructive">Sign out</Button>{confirmSignOut && <ConfirmDialog confirmLabel="Sign out" description="Sign out of this gateway? The remote agent keeps running, but this device will clear its active session." onCancel={() => setConfirmSignOut(false)} onConfirm={() => { setConfirmSignOut(false); void controller.logout().catch(() => undefined) }} title="Sign out" />}</SettingsPageShell>
+  return <SettingsPageShell heading={false} subtitle="Profile defaults, mobile preferences, and gateway administration." title="Settings"><section className="settings-section"><h3>Connection</h3><div className="settings-list static"><div><span><strong>Gateway</strong><small>{preferences.remoteURL}</small></span><Badge>{connection.phase}</Badge></div><label><span><strong>Profile</strong><small>All remote settings and capability requests use this profile.</small></span><select onChange={event => void controller.switchProfile(event.target.value || null).catch(() => undefined)} value={preferences.profile ?? ''}><option disabled={!ready && !cachedProfiles.has(null)} value="">Default</option>{[...new Set([...profiles, ...[...cachedProfiles].filter((profile): profile is string => profile !== null)])].filter(name => name !== 'default').map(name => <option disabled={!ready && !cachedProfiles.has(name)} key={name} value={name}>{name}</option>)}</select></label></div></section><PageList className="capability-list">{SETTINGS_ENTRIES.map(entry => <SettingsRow entry={entry} key={`${entry.kind}:${entry.id}`} onClick={() => navigateEntry(entry, navigate)} />)}</PageList><Button className="touch-button" onClick={() => setConfirmSignOut(true)} variant="destructive">Sign out</Button>{confirmSignOut && <ConfirmDialog confirmLabel="Sign out" description="Sign out of this gateway? The remote agent keeps running, but this device will clear its active session." onCancel={() => setConfirmSignOut(false)} onConfirm={() => { setConfirmSignOut(false); void controller.logout().catch(() => undefined) }} title="Sign out" />}</SettingsPageShell>
+}
+
+function RemoteSettings({ children, onBack }: { children: ReactNode; onBack(): void }) {
+  const ready = useStore($gatewayReady)
+  return <>{!ready && <Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>}<GatewayActionRegion>{children}</GatewayActionRegion></>
 }
 
 function navigateEntry(entry: SettingsEntry, onNavigate: (route: SettingsRoute) => void) {
@@ -79,9 +93,11 @@ function AppearanceSettings({ onBack }: { onBack(): void }) {
 
 function NotificationsSettings({ onBack }: { onBack(): void }) {
   const push = useStore($webPush)
-  useEffect(() => { if (!isNativeIOS()) void refreshWebPushState() }, [])
+  const network = useStore($networkStatus)
+  const ready = useStore($gatewayReady)
+  useEffect(() => { if (!isNativeIOS() && ready && network.status !== 'offline') void refreshWebPushState() }, [ready, network.status])
 
-  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Notifications"><div className="data-card"><h3>Background notifications</h3>{isNativeIOS() ? <p className="muted">Web Push is available in the installed PWA. Native app notifications require APNs support.</p> : <><p className="muted">{push.enabled ? 'This device can receive messages delivered to the Hermes Web Push channel.' : 'Enable Web Push so cron jobs and explicit deliveries can notify this device while Hermes Mobile is closed.'}</p><Button className="touch-button" disabled={push.busy || push.permission === 'unsupported' || push.permission === 'denied'} onClick={() => void (push.enabled ? disableWebPush() : enableWebPush())}>{push.busy ? 'Updating…' : push.enabled ? 'Disable notifications' : 'Enable notifications'}</Button>{push.permission === 'denied' && <p className="error-text">Notifications are blocked. Allow them in this site’s browser settings, then try again.</p>}{push.error && <p className="error-text">{push.error}</p>}</>}</div></SettingsPageShell>
+  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Notifications"><div className="data-card"><h3>Background notifications</h3>{isNativeIOS() ? <p className="muted">Web Push is available in the installed PWA. Native app notifications require APNs support.</p> : <><p className="muted">{push.enabled ? 'This device can receive messages delivered to the Hermes Web Push channel.' : 'Enable Web Push so cron jobs and explicit deliveries can notify this device while Hermes Mobile is closed.'}</p><Button className="touch-button" disabled={!ready || network.status === 'offline' || push.busy || push.permission === 'unsupported' || push.permission === 'denied'} onClick={() => { if ($gatewayReady.get() && $networkStatus.get().status !== 'offline') void (push.enabled ? disableWebPush() : enableWebPush()) }}>{push.busy ? 'Updating…' : push.enabled ? 'Disable notifications' : 'Enable notifications'}</Button>{push.permission === 'denied' && <p className="error-text">Notifications are blocked. Allow them in this site’s browser settings, then try again.</p>}{push.error && <p className="error-text">{push.error}</p>}</>}</div></SettingsPageShell>
 }
 
 function KeyboardShortcutsSettings({ onBack }: { onBack(): void }) {

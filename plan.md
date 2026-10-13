@@ -1,6 +1,6 @@
 # Herm PWA improvement plan
 
-Status: Proposed. This file replaces the previous plan. No application changes have been made.
+Status: Items 1 and 2 have application implementations. Later items remain proposed. Item 2 includes the account-scoped history and logout cleanup prerequisites from item 3, but not its new privacy settings.
 
 ## Goal and scope
 
@@ -102,7 +102,7 @@ Use synchronous writes for user mutations to close the final-keystroke refresh g
 
 Handle multiple tabs without silent last-writer-wins loss. Detect stale record revisions and storage events. Preserve conflicting text as a separately identified recovery copy, then require an explicit user choice instead of merging automatically. If even the conflict copy cannot be persisted, keep it in memory and block destructive reload. Account logout in another tab locks the owner and prevents stale callbacks from recreating its deleted drafts.
 
-Ordinary React cleanup flushes but does not delete drafts. Logout clears this account's active, provisional, edit, and submission records, invalidates callbacks first, and leaves unrelated preferences alone. Gateway/profile switching flushes the origin, resets visible state, and loads only the verified destination. Transcript-cache cleanup and the general local-history preference remain item 3; do not silently implement that separate feature here.
+Ordinary React cleanup flushes but does not delete drafts. Logout clears this account's active, provisional, edit, and submission records, invalidates callbacks first, and leaves unrelated preferences alone. Gateway/profile switching flushes the origin, resets visible state, and loads only the verified destination. Account-scoped transcript storage and logout cleanup are now covered by item 2. The general local-history preference and Clear local data setting remain item 3.
 
 ### Implementation sequence and file changes
 
@@ -183,22 +183,27 @@ Priority: First implementation batch.
 
 ### Current evidence
 
-The reconnect state makes the entire shell inert. This prevents unsafe actions but also blocks reading, scrolling, navigating, and preparing messages.
+Previously, reconnect made the entire shell inert. The implementation now retains a workspace verified during the current app lifetime. Gateway readiness and selected-conversation availability guard remote work independently of local navigation and drafting.
 
 Relevant files:
 - `client/src/components/mobile-shell.tsx`
 - `client/src/app.tsx`
 - `client/src/state/gateway-controller.ts`
 
-### Planned improvements
+### Implemented behavior
 
-- Keep available cached conversations readable and scrollable during reconnects.
-- Allow local draft composition and safe navigation where cached data is available.
-- Disable actions that require the gateway rather than disabling the entire shell.
-- Show a compact connection banner with a retry action.
-- Distinguish a phone being offline from the gateway being unavailable when there is reliable evidence for that distinction.
-- Require explicit user confirmation to send a locally prepared message after reconnecting. Do not automatically trigger agent work.
-- Keep cached content clearly separate from confirmed live gateway state.
+- Keep transcripts readable, scrolling and local swipe navigation available, and ordinary draft editing active during interruptions and after exhausted retries.
+- Store multiple visited conversations under `hermes.transcript.v2:`. Identity includes verified gateway/account, nullable profile, and stored session ID. Discard account-blind v1 history; never import it.
+- Keep at most 20 conversations per owner, with 80 projected entries per snapshot and a 2 MiB serialized UTF-8 persistent budget including keys. Evict oldest successful synchronizations, never drafts. Individually oversized history stays in memory without truncating message text.
+- Persist authoritative reconciled history only. Cache data does not establish message delivery or authorize Edit & retry. Empty histories are valid saved selections.
+- Support exact saved-session selection and latest-synchronized saved conversation per profile without network dispatch. Uncached destinations preserve the current selection. Cached targets supersede reconnect work, including across profiles.
+- Suspend live prompts, streaming indicators, history requests, media tasks, and group drives on loss. Reconcile the selected conversation before enabling sending. A deleted saved target is not silently replaced with a newly created session.
+- Enforce readiness in gateway adapters, command methods, query/mutation hooks, and UI controls. Unavailable mutations are rejected rather than queued. Settings autosave cancels and rolls back on interruption; reconnect does not restart it.
+- Show a compact polite connection banner. Browser offline evidence, explicit server errors, generic reachability errors, reconnect, and history synchronization have different wording. Retry coalesces recovery for the same destination.
+- Keep local Appearance, About, keyboard help, settings navigation, and sign out available. Existing remote editors remain mounted but inactive. Group-room expansion while offline is not included.
+- The user's ordinary Send click or enabled Enter-to-send is confirmation after recovery. There is no automatic sending, offline outbox, extra confirmation dialog, or background synchronization.
+- Cold offline startup does not reveal stored history without current account verification. Authentication expiry locks local records and clears the foreground. Principal-less gateways have memory-only snapshots and drafts.
+- Logout removes this owner's history and drafts locally before remote sign out. Storage removal failures are reported; browser site-data deletion is still required when removal cannot be confirmed.
 
 ### Verification
 
@@ -208,13 +213,25 @@ Relevant files:
 - Cached navigation preserves account and profile isolation.
 - Exercise offline, unavailable gateway, expired authentication, and successful recovery paths in a browser.
 
+Final automated checks passed: `npm run typecheck`, all 1,289 unit tests across
+98 test files, `npm run build`, and the full phone-sized Chromium/WebKit browser
+suite with 114 passed and 10 browser-specific skips. Reconnect coverage includes
+cross-profile cached navigation, scroll retention, exact drafts, exhausted
+retries, missing saved targets, auth expiry, uncertain delivery without resend,
+open editor preservation, and offline Appearance/sign out. `git diff --check`
+also passed.
+
+Physical-device installed-PWA checks were not available in this session. Native
+simulator/WebView checks were not performed because `xcrun simctl` is unavailable.
+Clear local data and the persistent-history preference remain unimplemented.
+
 ## 3. Tighten local conversation privacy
 
 Priority: First implementation batch, ahead of cosmetic changes.
 
 ### Current evidence
 
-The transcript cache stores up to 80 entries per profile in `localStorage`. Its keys do not include account identity. The inspected logout teardown does not appear to clear that persistent cache.
+Item 2 now scopes history by verified account, gateway, profile, and conversation, discards the old account-blind cache, and removes this owner's history and drafts on logout. The remaining work here is user-facing local-data removal and persistent-history preferences.
 
 Relevant files:
 - `client/src/state/transcript-cache.ts`
@@ -224,12 +241,8 @@ Relevant files:
 
 ### Planned improvements
 
-- Scope cached history by account and gateway as well as profile.
-- Clear cached conversation data on logout.
 - Add a "Clear local data" setting with a clear explanation of what it removes. Do not imply that it deletes gateway-owned history.
 - Offer a setting to disable persistent history on shared devices.
-- Define a safe migration or removal policy for existing profile-only cache entries.
-- Apply the same account-isolation and logout rules to new draft persistence.
 
 ### Verification
 

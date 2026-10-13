@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
+import { useStore } from '@nanostores/react'
+import { $gatewayReady } from '~/state/store'
 import { Button, Input } from '~/compat/primitives'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 
@@ -49,6 +51,7 @@ export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileD
     open
   })
   const busy = profile.mutation.busy
+  const ready = useStore($gatewayReady)
 
   useEffect(() => {
     if (!open || !bot) return
@@ -92,7 +95,7 @@ export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileD
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (busy || profile.avatar.loading || !avatarBaseline) return
+    if (!$gatewayReady.get() || busy || profile.avatar.loading || !avatarBaseline) return
     const command: EditProfileCommand = {
       advanced: advancedState,
       appearance: { color, created: bot.meta?.created, shape, title, touched: appearanceTouched },
@@ -113,11 +116,13 @@ export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileD
         aria-labelledby="edit-profile-title"
         aria-modal="true"
         className="mobile-dialog profile-editor-dialog"
-        onKeyDown={event => { if (event.key === 'Escape' && !busy) onCancel() }}
+        onKeyDown={event => { if (event.key === 'Escape' && (!busy || !ready)) onCancel() }}
         onSubmit={submit}
         role="dialog"
       >
         <h3 id="edit-profile-title">Edit profile</h3>
+        {!ready && <p role="status">Reconnect to save this profile. Your values are kept here.</p>}
+        <div inert={!ready ? true : undefined} className="profile-editor-fields">
         <p className="dialog-help" id="edit-profile-description-hint">Changes apply to <strong>{bot.name}</strong>. The active conversation will not switch.</p>
         <label htmlFor="edit-profile-title-input">Title</label>
         <Input id="edit-profile-title-input" onChange={event => { setAppearanceTouched(true); setTitle(event.target.value) }} placeholder="Optional display title" ref={titleRef} value={title} />
@@ -147,12 +152,14 @@ export function EditProfileDialog({ bot, onCancel, onSaved, open }: EditProfileD
           state={advancedState}
         />}
         {profile.mutation.error && <p className="dialog-field-error" role="alert">{profile.mutation.error}</p>}
+        </div>
         <div className="button-row">
-          <Button disabled={busy} onClick={onCancel} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={busy || profile.avatar.loading || !avatarBaseline} type="submit">{busy ? 'Saving…' : 'Save changes'}</Button>
+          <Button disabled={busy && ready} onClick={onCancel} type="button" variant="secondary">Cancel</Button>
+          <Button disabled={!ready || busy || profile.avatar.loading || !avatarBaseline} type="submit">{busy ? 'Saving…' : 'Save changes'}</Button>
         </div>
       </form>
       {profile.mutation.confirmation && <ConfirmDialog
+        disabled={!ready}
         confirmLabel="Apply model"
         description={profile.mutation.confirmation}
         onCancel={profile.mutation.declineConfirmation}

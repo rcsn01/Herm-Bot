@@ -12,6 +12,21 @@ beforeEach(() => {
 })
 
 describe('observeAppLifecycle', () => {
+  it('emits real visibility transitions without duplicate foreground events', async () => {
+    mocks.native = false
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const handler = vi.fn()
+    const handle = await observeAppLifecycle(handler)
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('online'))
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(handler.mock.calls).toEqual([[{ isActive: false }], [{ isActive: true }]])
+    await handle.remove()
+    visibility.mockRestore()
+  })
   it('preserves the Capacitor appStateChange adapter', async () => {
     const handler = vi.fn()
     const remove = vi.fn()
@@ -22,7 +37,7 @@ describe('observeAppLifecycle', () => {
     expect(remove).toHaveBeenCalledOnce()
   })
 
-  it('maps browser lifecycle and connectivity events and cleans up', async () => {
+  it('maps browser page lifecycle but ignores connectivity events and cleans up', async () => {
     mocks.native = false
     const handler = vi.fn()
     const handle = await observeAppLifecycle(handler)
@@ -30,16 +45,16 @@ describe('observeAppLifecycle', () => {
     window.dispatchEvent(new Event('offline'))
     window.dispatchEvent(new Event('online'))
     window.dispatchEvent(new Event('focus'))
-    expect(handler.mock.calls).toEqual([[{ isActive: false }], [{ isActive: true }]])
+    expect(handler).not.toHaveBeenCalled()
 
     window.dispatchEvent(new Event('pagehide'))
     window.dispatchEvent(new Event('online'))
-    expect(handler).toHaveBeenCalledTimes(3)
+    expect(handler).toHaveBeenCalledTimes(1)
     window.dispatchEvent(new Event('pageshow'))
     expect(handler).toHaveBeenLastCalledWith({ isActive: true })
 
     await handle.remove()
     window.dispatchEvent(new Event('offline'))
-    expect(handler).toHaveBeenCalledTimes(4)
+    expect(handler).toHaveBeenCalledTimes(2)
   })
 })

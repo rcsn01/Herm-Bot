@@ -16,7 +16,9 @@ import { workspaceMenuIntent, type WorkspaceMenuIntent } from '~/navigation/work
 import { useScopedTask } from '~/gateway/scope-guard'
 import { $chat } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $preferences } from '~/state/store'
+import { transcriptCache } from '~/state/transcript-cache'
+import { $draftOwner } from '~/state/draft-owner'
+import { $gatewayReady, $preferences } from '~/state/store'
 import { $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 interface SessionsMenuProps {
@@ -31,6 +33,9 @@ const NAVIGATION_CONTROLS = 'button, input, textarea, select, [contenteditable="
 
 interface SessionRowProps {
   active: boolean
+  remoteReady: boolean
+  savedAt?: number
+  savedPersistently?: boolean
   onDelete(title: string): void
   onReveal(id: string | null): void
   onOpen(id: string, active: boolean): void
@@ -39,7 +44,7 @@ interface SessionRowProps {
   session: StoredSession
 }
 
-function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, session }: SessionRowProps) {
+function SessionRow({ remoteReady, savedAt, savedPersistently, active, onDelete, onOpen, onReveal, pending, revealed, session }: SessionRowProps) {
   const date = new Date(session.started_at * 1_000)
   const title = session.title || 'Untitled session'
   const motion = useSwipeMotion({
@@ -50,7 +55,7 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
       return true
     },
     direction: 'left',
-    enabled: !pending,
+    enabled: remoteReady && !pending,
     extentPx: () => 104,
     initialProgress: revealed ? 1 : 0,
     onCommit: endpoint => onReveal(endpoint === 1 ? session.id : null),
@@ -72,7 +77,7 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
         <Button
           aria-hidden={!revealed}
           aria-label={`Delete ${title}`}
-          disabled={pending}
+          disabled={!remoteReady || pending}
           onClick={() => {
             onReveal(null)
             onDelete(title)
@@ -94,6 +99,7 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
       >
         <strong>{title}</strong>
         <time dateTime={date.toISOString()}>{date.toLocaleDateString()}</time>
+        {savedAt !== undefined && <small>{savedPersistently ? 'Saved on this device' : 'Available until this app closes'} · {new Date(savedAt).toLocaleString()}</small>}
       </button>
     </article>
   )
@@ -102,7 +108,13 @@ function SessionRow({ active, onDelete, onOpen, onReveal, pending, revealed, ses
 export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMenuProps) {
   const chat = useStore($chat)
   const preferences = useStore($preferences)
-  const sessions = useStore($sessions)
+  const remoteSessions = useStore($sessions)
+  const ready = useStore($gatewayReady)
+  const owner = useStore($draftOwner)
+  useStore(transcriptCache.$version)
+  const cached = transcriptCache.list(owner, preferences.profile)
+  const savedTimes = new Map(cached.map(item => [item.storedSessionId, item.lastSyncedAt]))
+  const sessions: StoredSession[] = ready ? remoteSessions : cached.map(item => ({ id: item.storedSessionId, title: item.title, message_count: item.entries.length, preview: '', source: item.source ?? '', started_at: (item.startedAt ?? item.lastSyncedAt) / 1000 }))
   const sessionsHaveMore = useStore($sessionsHasMore)
   const sessionsLoadingMore = useStore($sessionsLoadingMore)
   const [query, setQuery] = useState('')
@@ -133,10 +145,10 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
     restingEndpoint: 0
   })
   const filtered = useMemo(() => {
-    const visible = humanSessions(sessions)
+    const visible = ready ? humanSessions(sessions) : sessions
     const needle = query.trim().toLowerCase()
     return needle ? visible.filter(session => session.title.toLowerCase().includes(needle)) : visible
-  }, [query, sessions])
+  }, [query, sessions, ready])
   const loadMoreSessions = useCallback(async () => {
     await action.run(() => controller.loadMoreSessions(), { onError: error => setError(error.message) })
   }, [action, controller])
@@ -146,26 +158,30 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     panelRef.current?.focus({ preventScroll: true })
     setError(null)
+    return () => {
+      const opener = restoreFocusRef.current
+      if (opener?.isConnected) opener.focus()
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !ready) return
     const generation = ++refreshGeneration.current
     void action.run(async () => { await controller.refreshSessions() }, {
       onError: error => { if (refreshGeneration.current === generation) setError(error.message) }
     })
-    return () => {
-      ++refreshGeneration.current
-      const opener = restoreFocusRef.current
-      if (opener?.isConnected) opener.focus()
-    }
-  }, [action, controller, open])
+    return () => { ++refreshGeneration.current }
+  }, [action, controller, open, ready])
 
   useEffect(() => {
     const target = loadMoreRef.current
-    if (!open || !target || !sessionsHaveMore || sessionsLoadingMore || typeof IntersectionObserver === 'undefined') return
+    if (!ready || !open || !target || !sessionsHaveMore || sessionsLoadingMore || typeof IntersectionObserver === 'undefined') return
     const observer = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting)) void loadMoreSessions()
     }, { root: target.closest('.navigation-session-list') })
     observer.observe(target)
     return () => observer.disconnect()
-  }, [loadMoreSessions, open, sessionsHaveMore, sessionsLoadingMore])
+  }, [ready, loadMoreSessions, open, sessionsHaveMore, sessionsLoadingMore])
 
   const runSessionAction = async (callback: () => Promise<unknown>) => {
     if (actionPendingRef.current) return
@@ -247,13 +263,14 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
         <div className="sessions-menu-body">
           <label className="search-box sessions-menu-search"><IconSearch aria-hidden="true" size={17} /><Input aria-label="Search sessions" onChange={event => setQuery(event.target.value)} placeholder="Search sessions" value={query} /></label>
 
+          {!ready && <p role="status">Saved conversations only. Reconnect to create, delete, or load more sessions.</p>}
           {error && <div className="error-banner navigation-error" role="alert">{error}</div>}
 
           <section className="navigation-sessions" onClick={event => {
           if (swipedId && !(event.target as HTMLElement).closest('.session-row')) setSwipedId(null)
         }}>
           <div aria-label="Sessions" className="session-list navigation-session-list" role="region">
-            <Button className="navigation-new-session" disabled={pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} type="button" variant="ghost">
+            <Button className="navigation-new-session" disabled={!ready || pendingSessionAction} onClick={() => void runSessionAction(() => controller.newSession())} type="button" variant="ghost">
               <IconPlus aria-hidden="true" size={20} /><span>New session</span>
             </Button>
             {filtered.map(session => {
@@ -262,6 +279,9 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
               return (
                 <SessionRow
                   active={active}
+                  remoteReady={ready}
+                  savedAt={!ready ? savedTimes.get(session.id) : undefined}
+                  savedPersistently={cached.find(item => item.storedSessionId === session.id)?.persistent}
                   key={session.id}
                   onDelete={title => { setRemove({ id: session.id, title }) }}
                   onOpen={(id, isActive) => {
@@ -276,7 +296,7 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
               )
             })}
             {filtered.length === 0 && <div className="empty-panel">No sessions match your search.</div>}
-            {sessionsHaveMore && (
+            {ready && sessionsHaveMore && (
               <Button
                 className="load-more-sessions"
                 disabled={pendingSessionAction || sessionsLoadingMore}
@@ -295,7 +315,7 @@ export function SessionsMenu({ controller, onDismissRequest, open }: SessionsMen
           if (destination === 'sessions' || actionPendingRef.current) return
           onDismissRequest(workspaceMenuIntent(destination))
         }} />
-        {remove && <ConfirmDialog confirmLabel="Delete" description={`Delete ${remove.title}? This cannot be undone.`} onCancel={() => setRemove(null)} onConfirm={() => { const id = remove.id; setRemove(null); void deleteSession(id) }} title="Delete session" />}
+        {remove && <ConfirmDialog disabled={!ready} confirmLabel="Delete" description={`Delete ${remove.title}? This cannot be undone.`} onCancel={() => setRemove(null)} onConfirm={() => { const id = remove.id; setRemove(null); void deleteSession(id) }} title="Delete session" />}
       </main>
     </div>
   )

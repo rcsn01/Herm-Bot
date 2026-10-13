@@ -1,6 +1,7 @@
 import { useQueryClient, type QueryKey } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import { $gatewayReady } from '~/state/store'
 import { getConfigValue, setConfigValue } from '~/features/models/helpers'
 import { classifyGatewayError } from '~/gateway/gateway-error'
 import { beginScopedTask, useScopeReset, type ScopedTask } from '~/gateway/scope-guard'
@@ -77,7 +78,7 @@ export function useConfigAutosave({ category, config, queryKey, settings }: UseC
   }
 
   const drain = () => {
-    if (active.current) return
+    if (active.current || !$gatewayReady.get()) return
     const operation = [...pending.current.values()].find(candidate => candidate.ready)
     if (!operation) {
       invalidateIfIdle(queryKey)
@@ -154,11 +155,34 @@ export function useConfigAutosave({ category, config, queryKey, settings }: UseC
     }
   }, category, settings.savePartial)
 
+  useEffect(() => {
+    const retire = () => {
+      ++epoch.current
+      const changed = pending.current.size > 0 || active.current !== null
+      for (const [path, record] of fields.current) {
+        if (record.timer !== undefined) window.clearTimeout(record.timer)
+        if (record.hasDraft) queryClient.setQueryData<HermesConfigRecord>(queryKey, current => current && Object.is(getConfigValue(current, path), record.draft) ? setConfigValue(current, path, record.confirmed) : current)
+      }
+      pending.current.clear()
+      active.current?.controller.abort()
+      active.current = null
+      fields.current.clear()
+      needsInvalidation.current = false
+      setDrafts({})
+      if (changed) setError('Unsaved setting changes were not applied. Reconnect and edit again.')
+    }
+    // Retire on the state transition, even when React batches loss and recovery.
+    const stop = $gatewayReady.listen(available => { if (!available) retire() })
+    if (!$gatewayReady.get()) retire()
+    return stop
+  }, [queryClient, category, settings.savePartial])
+
   const valueFor = (path: string) => Object.prototype.hasOwnProperty.call(drafts, path)
     ? drafts[path]
     : getConfigValue(queryClient.getQueryData<HermesConfigRecord>(queryKey) ?? config, path)
 
   const change = (path: string, value: unknown) => {
+    if (!$gatewayReady.get()) { setError('Unsaved setting changes were not applied. Reconnect and edit again.'); return }
     const currentConfig = queryClient.getQueryData<HermesConfigRecord>(queryKey) ?? config
     let record = fields.current.get(path)
     if (!record) {

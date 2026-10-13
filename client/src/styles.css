@@ -102,7 +102,9 @@ pre { white-space: pre-wrap; word-break: break-word; }
 @media (display-mode: standalone) {
   html, body, #root, .mobile-shell { height: 100vh; }
 }
-.mobile-shell.reconnecting { pointer-events: none; }
+.connection-banner { position: absolute; top: calc(var(--safe-top) + 66px); left: 8px; right: 8px; z-index: 80; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--panel); color: var(--foreground); border: 1px solid var(--line); border-radius: var(--radius-control); font-size: var(--font-control); }
+.connection-banner[hidden] { display: none; }
+.mobile-shell.reconnecting .view-container { padding-top: 72px; }
 .app-header { position: relative; z-index: 30; height: 100%; padding: var(--safe-top) calc(var(--spacing) * 2.5) 0; display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 1.25); background: var(--bg); border-bottom: 1px solid var(--line); }
 .bot-workspace-header { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; justify-content: stretch; }
 .navigation-icon-button { min-width: 40px; min-height: 40px; flex: none; }
@@ -529,6 +531,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .message-content a { color: inherit; text-decoration: underline; }
 .dialog-backdrop { position: fixed; z-index: 80; inset: 0; padding: calc(var(--spacing) * 5); display: grid; place-items: center; background: #0008; }
 .mobile-dialog { width: min(100%, 420px); padding: calc(var(--spacing) * 4.5); display: grid; gap: calc(var(--spacing) * 3.5); border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 20px 60px #0006; }
+.profile-editor-fields { display: grid; gap: calc(var(--spacing) * 3.5); }
 .mobile-dialog h3, .mobile-dialog p { margin: 0; }
 .mobile-dialog label { display: grid; gap: calc(var(--spacing) * 1.75); }
 .mobile-dialog .button-row { justify-content: flex-end; }

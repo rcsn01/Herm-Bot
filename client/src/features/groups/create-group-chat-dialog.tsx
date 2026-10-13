@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
+import { useStore } from '@nanostores/react'
+import { $gatewayReady } from '~/state/store'
 import { Button, Input } from '~/compat/primitives'
 import { displayNameFor } from '~/features/agents/agent-labels'
 import { createAgentsApi } from '~/features/agents/agents-api'
@@ -19,6 +21,7 @@ interface CreateGroupChatDialogProps {
 }
 
 export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroupChatDialogProps) {
+  const ready = useStore($gatewayReady)
   const api = useApi(createAgentsApi)
   const rosterKey = useScopeKey('agents', ['roster'], { unscoped: true })
   const roster = useScopedQuery(rosterKey, { enabled: open, queryFn: signal => api.list(signal), retry: false })
@@ -53,6 +56,7 @@ export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroup
 
   const create = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!$gatewayReady.get()) return
     if (selected.length < 2) {
       setError('Choose at least 2 bots.')
       return
@@ -81,10 +85,11 @@ export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroup
         <h3 id="create-group-chat-title">New group chat</h3>
         <p className="dialog-help" id="create-group-chat-help">Choose 2–{GROUP_CHAT_MAX_MEMBERS} bots to share the conversation.</p>
         <label htmlFor="create-group-chat-name">Group name</label>
-        <Input id="create-group-chat-name" maxLength={GROUP_NAME_MAX_LENGTH} onChange={event => { setError(null); setName(event.target.value) }} placeholder={suggestedName || 'Research team'} ref={nameRef} value={name} />
+        {!ready && <p role="status">Reconnect to create a group chat. Your values are kept here.</p>}
+        <Input disabled={!ready} id="create-group-chat-name" maxLength={GROUP_NAME_MAX_LENGTH} onChange={event => { setError(null); setName(event.target.value) }} placeholder={suggestedName || 'Research team'} ref={nameRef} value={name} />
         <p className="dialog-help">Leave the name blank to use the selected bot names.</p>
 
-        <fieldset className="group-member-fieldset">
+        <fieldset disabled={!ready} className="group-member-fieldset">
           <legend>Choose bots ({selected.length}/{GROUP_CHAT_MAX_MEMBERS})</legend>
           {roster.isPending && <p className="dialog-help" role="status">Loading bots…</p>}
           {roster.error && <p className="dialog-field-error" role="alert">Bots could not be loaded.</p>}
@@ -107,7 +112,7 @@ export function CreateGroupChatDialog({ onCancel, onCreated, open }: CreateGroup
         {error && <p className="dialog-field-error" role="alert">{error}</p>}
         <div className="button-row">
           <Button onClick={onCancel} type="button" variant="secondary">Cancel</Button>
-          <Button disabled={!canCreate} type="submit">{selected.length ? `Create group chat (${selected.length})` : 'Create group chat'}</Button>
+          <Button disabled={!ready || !canCreate} type="submit">{selected.length ? `Create group chat (${selected.length})` : 'Create group chat'}</Button>
         </div>
       </form>
     </div>
