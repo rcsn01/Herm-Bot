@@ -27,7 +27,7 @@ function Harness({
 
   useEffect(() => { onReady(motion) }, [motion, onReady])
 
-  return <div data-testid="surface" ref={motion.ref} {...motion.bind} />
+  return <div data-testid="surface" ref={motion.ref} {...motion.bind}><button type="button">Nested control</button></div>
 }
 
 function pointer(node: HTMLElement, type: 'pointerDown' | 'pointerMove' | 'pointerUp' | 'pointerCancel', values: Record<string, unknown>) {
@@ -46,6 +46,15 @@ describe('useSwipeMotion', () => {
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
+  })
+
+  it('keeps dragging when implicit touch capture transfers from a nested control', () => {
+    render(<Harness />)
+    const surface = screen.getByTestId('surface')
+    pointer(surface, 'pointerDown', { clientX: 20, clientY: 100 })
+    pointer(surface, 'pointerMove', { clientX: 120, clientY: 104 })
+    fireEvent.lostPointerCapture(screen.getByRole('button', { name: 'Nested control' }), { pointerId: 1 })
+    expect(surface.dataset.swipePhase).toBe('dragging')
   })
 
   it('tracks horizontal progress without committing during the drag', () => {

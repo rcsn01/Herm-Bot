@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { useChatInteraction } from '~/features/chat/use-chat-interaction'
+import { chatDrafts } from './chat-drafts'
+import { $draftOwner } from '~/state/draft-owner'
 import { $chat, emptyChatState, type Conversation } from '~/state/conversation'
 
 function conversationStub() {
@@ -29,6 +31,8 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  chatDrafts.clearOwner(false)
+  $draftOwner.set({ gateway: '', principal: null, generation: $draftOwner.get().generation + 1, locked: false })
   $chat.set(emptyChatState())
 })
 
@@ -91,7 +95,23 @@ describe('useChatInteraction lifecycle', () => {
 
     expect(hook.result.current.interaction.$state.get()).toMatchObject({
       attachmentRefs: [],
-      draft: 'preserved draft'
+      draft: ''
     })
   })
+})
+
+
+it('recovers a provisional draft after unmounting and promotes it when a stored ID arrives', async () => {
+  const conversation = conversationStub()
+  const mediaConnection = mediaStub()
+  $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-provisional' })
+  const first = renderHook(() => useChatInteraction({ conversation, mediaConnection }))
+  act(() => first.result.current.interaction.updateDraft('not linked yet'))
+  first.unmount()
+  await Promise.resolve()
+  const second = renderHook(() => useChatInteraction({ conversation, mediaConnection }))
+  expect(second.result.current.state.draft).toBe('not linked yet')
+  act(() => $chat.set({ ...$chat.get(), storedSessionId: 'stored-now' }))
+  expect(second.result.current.state.draft).toBe('not linked yet')
+  expect(second.result.current.interaction.record()?.conversation).toBe('stored-now')
 })

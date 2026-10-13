@@ -1,10 +1,11 @@
+import { $draftOwner, draftOwnerKey } from '~/state/draft-owner'
 import { humanSessions, type SessionsApi } from '~/features/sessions/api'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
 import { beginScopedTask, currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope, type ScopedTask } from '~/gateway/scope-guard'
 import { queryClient } from '~/gateway/query-client'
 import type { RuntimeSession, SessionRuntime } from '~/gateway/session-runtime'
 import { $chat, type Conversation } from '~/state/conversation'
-import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+import { $preferences, $sessionSelecting, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 /**
  * SessionSelection owns which session is live, including the selection epoch
@@ -93,16 +94,28 @@ function scopeSnapshot() {
   return { connectionKey: preferences.remoteURL, profile: preferences.profile }
 }
 
-function sessionBookmarkKey(scope: { connectionKey: string; profile: null | string } = scopeSnapshot()) {
-  return `hermes.mobile.session:${encodeURIComponent(scope.connectionKey)}:${encodeURIComponent(scope.profile ?? 'default')}`
+export function sessionBookmarkKey(scope: { connectionKey: string; profile: null | string } = scopeSnapshot()) {
+  return `hermes.mobile.session.v2:${encodeURIComponent(JSON.stringify([draftOwnerKey($draftOwner.get()), scope.connectionKey, scope.profile]))}`
 }
 
+const memoryBookmarks = new Map<string, string>()
 function readSessionBookmark(scope: { connectionKey: string; profile: null | string } = scopeSnapshot()) {
-  return localStorage.getItem(sessionBookmarkKey(scope))
+  if ($draftOwner.get().locked) return null
+  const key = sessionBookmarkKey(scope)
+  if (!$draftOwner.get().principal) return memoryBookmarks.get(key) ?? null
+  try { return localStorage.getItem(key) } catch { return memoryBookmarks.get(key) ?? null }
 }
-
+function writeSessionBookmark(value: string) {
+  const key = sessionBookmarkKey()
+  memoryBookmarks.set(key, value)
+  if ($draftOwner.get().principal && !$draftOwner.get().locked) {
+    try { localStorage.setItem(key, value) } catch { /* Restore remains available in this process. */ }
+  }
+}
 function clearSessionBookmark(scope: { connectionKey: string; profile: null | string } = scopeSnapshot()) {
-  localStorage.removeItem(sessionBookmarkKey(scope))
+  const key = sessionBookmarkKey(scope)
+  memoryBookmarks.delete(key)
+  try { localStorage.removeItem(key) } catch { /* Unavailable storage must not break selection. */ }
 }
 
 const SESSION_LIST_PAGE_SIZE = 30
@@ -113,6 +126,7 @@ export function createSessionSelection(deps: {
   sessionsApi: (scope: CurrentGatewayScope) => SessionsApi
 }): SessionSelection {
   const { runtime, conversation, sessionsApi } = deps
+  let pendingSelection = 0
   let selectionEpoch = 0
   let lastPublishedSelectionEpoch = 0
   let sessionListLimit = SESSION_LIST_PAGE_SIZE
@@ -124,7 +138,7 @@ export function createSessionSelection(deps: {
       : null
     conversation.adopt(session, typeof source === 'string' ? source : null)
     if (selectionPublicationEpoch !== undefined) lastPublishedSelectionEpoch = selectionPublicationEpoch
-    if (session.storedSessionId) localStorage.setItem(sessionBookmarkKey(), session.storedSessionId)
+    if (session.storedSessionId) writeSessionBookmark(session.storedSessionId)
   }
 
   /** A publish requires the captured epoch to still be the newest user
@@ -168,6 +182,8 @@ export function createSessionSelection(deps: {
   }
 
   function resetSessionList(): void {
+    pendingSelection += 1
+    $sessionSelecting.set(false)
     sessionListLimit = SESSION_LIST_PAGE_SIZE
     $sessions.set([])
     $sessionsHasMore.set(false)
@@ -197,6 +213,14 @@ export function createSessionSelection(deps: {
   }
 
   async function select(request: SelectionRequest): Promise<SelectionOutcome | undefined> {
+    if (request.kind === 'branch' && (!$chat.get().runtimeSessionId || !$chat.get().storedSessionId)) return undefined
+    const pending = ++pendingSelection
+    $sessionSelecting.set(true)
+    try { return await performSelection(request) }
+    finally { if (pending === pendingSelection) $sessionSelecting.set(false) }
+  }
+
+  async function performSelection(request: SelectionRequest): Promise<SelectionOutcome | undefined> {
     const task = beginScopedTask()
     const scope = task.scope
 
@@ -307,6 +331,8 @@ export function createSessionSelection(deps: {
     restore,
     invalidate: () => {
       selectionEpoch += 1
+      pendingSelection += 1
+      $sessionSelecting.set(false)
     },
     activeStoredSessionId: () => $chat.get().storedSessionId,
     hasLiveSession: () => Boolean($chat.get().runtimeSessionId)

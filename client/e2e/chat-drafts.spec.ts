@@ -1,0 +1,199 @@
+import { expect, test, type Page } from '@playwright/test'
+
+async function signIn(page: Page, username = 'draft-user', fromSettings = false) {
+  await page.getByRole('button', { name: 'Continue' }).click()
+  await page.getByRole('button', { name: 'Use password for Test account' }).click()
+  await page.getByPlaceholder('Username').fill(username)
+  await page.getByPlaceholder('Password').fill('fixture-password')
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  if (fromSettings) await page.getByRole('button', { name: 'Back to bots' }).click()
+  await page.getByRole('button', { name: 'Hermes', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toBeEditable()
+}
+async function login(page: Page) { await page.goto('/'); await signIn(page) }
+async function reopen(page: Page) {
+  page.once('dialog', dialog => dialog.accept())
+  await page.reload()
+  await page.getByRole('button', { name: 'Hermes', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toBeEditable()
+}
+async function signOut(page: Page) {
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  await page.getByRole('button', { name: 'Open settings' }).click()
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Sign out', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible()
+}
+
+test('recovers exact draft text after refresh and keeps sessions separate', async ({ page }, testInfo) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('  First unfinished question\nwith another line')
+  await expect(page.getByText('Saved on this device.', { exact: true })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('saved-draft.png') })
+  await reopen(page)
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('  First unfinished question\nwith another line')
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'New session', exact: true }).click()
+  await expect(page.getByRole('main', { name: 'Sessions menu' })).not.toBeVisible()
+  await expect(page.locator('[data-testid="sessions-menu"]')).toHaveAttribute('data-swipe-phase', 'idle')
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('')
+  await page.getByLabel('Message Hermes').fill('Second unfinished question')
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await expect(page.locator('[data-testid="sessions-menu"]')).toHaveAttribute('data-swipe-phase', 'idle')
+  await page.getByRole('button', { name: /^Saved default/ }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('  First unfinished question\nwith another line')
+})
+
+test('keeps profile drafts separate', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('Default profile draft')
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  await page.getByRole('button', { name: 'Work', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('')
+  await page.getByLabel('Message Hermes').fill('Work profile draft')
+  await page.getByRole('button', { name: 'Back to bots' }).click()
+  await page.getByRole('button', { name: 'Hermes', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Default profile draft')
+})
+
+test('clears drafts on logout and does not expose them to another account', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('Private draft for account one')
+  await signOut(page)
+  const saved = await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('hermes.drafts.v1:')))
+  expect(saved).toEqual([])
+  await signIn(page, 'other-draft-user', true)
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('')
+  await expect(page.getByText('Private draft for account one', { exact: true })).toHaveCount(0)
+})
+
+test('preserves newer typing when an earlier submission fails', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('draft delayed failure')
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await page.getByLabel('Message Hermes').fill('My next question')
+  await expect(page.getByText('Failed message preserved', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('My next question')
+  await page.getByText('Failed message preserved', { exact: true }).click()
+  await page.getByRole('button', { name: 'Restore draft', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('draft delayed failure')
+  await expect(page.getByText('Another draft was preserved', { exact: true })).toBeVisible()
+})
+
+test('does not resend an uncertain message after refresh', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('draft uncertain response')
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.locator('summary').getByText('Delivery not confirmed.', { exact: false })).toBeVisible()
+  await reopen(page)
+  await expect(page.locator('summary').getByText('Delivery not confirmed.', { exact: false })).toBeVisible()
+  const submissions = await page.evaluate(async () => {
+    const { calls } = await (await fetch('/api/fixture-calls')).json()
+    return calls.filter((call: { method: string; params?: { text: string } }) => call.method === 'prompt.submit' && call.params?.text === 'draft uncertain response').length
+  })
+  expect(submissions).toBe(1)
+})
+
+test('requires attachments to be reselected after refresh', async ({ page }) => {
+  await login(page)
+  await page.locator('input[type="file"][multiple]').setInputFiles({ name: 'draft-note.txt', mimeType: 'text/plain', buffer: Buffer.from('note') })
+  await expect(page.locator('.attachment-chips')).toContainText('draft-note.txt')
+  await reopen(page)
+  await expect(page.getByText('Select the attached files again or remove them before sending. Files are not stored on this device.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
+  await page.locator('input[type="file"][multiple]').setInputFiles({ name: 'draft-note.txt', mimeType: 'text/plain', buffer: Buffer.from('note') })
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
+  await expect(page.locator('.attachment-chips button')).toHaveCount(1)
+})
+
+test('reports storage failure while keeping the composer usable', async ({ page }) => {
+  await login(page)
+  await page.evaluate(() => {
+    const set = Storage.prototype.setItem
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith('hermes.drafts.v1:')) throw new DOMException('Fixture quota exceeded', 'QuotaExceededError')
+      return set.call(this, key, value)
+    }
+  })
+  await page.getByLabel('Message Hermes').fill('Not lost in memory')
+  await expect(page.getByText('Not saved on this device. Copy your text before closing.', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Not lost in memory')
+})
+
+test('updates saved text safely and blocks an update with attached files', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Service worker activation is checked in Chromium.')
+  await login(page)
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true))
+  await reopen(page)
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
+  await page.getByLabel('Message Hermes').fill('Restore after app update')
+  await page.evaluate(async () => {
+    await fetch('/api/fixture-update', { method: 'POST' })
+    await (await navigator.serviceWorker.getRegistration())!.update()
+  })
+  await expect(page.getByRole('button', { name: 'Update', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Update', exact: true }).click()
+  await page.getByRole('button', { name: 'Hermes', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Restore after app update')
+  await page.locator('input[type="file"][multiple]').setInputFiles({ name: 'update-note.txt', mimeType: 'text/plain', buffer: Buffer.from('note') })
+  await page.evaluate(async () => {
+    await fetch('/api/fixture-update', { method: 'POST' })
+    await (await navigator.serviceWorker.getRegistration())!.update()
+  })
+  await expect(page.getByRole('button', { name: 'Update when safe', exact: true })).toBeDisabled()
+  await page.locator('.attachment-chips button').click()
+  await expect(page.getByRole('button', { name: 'Update', exact: true })).toBeEnabled()
+})
+
+test('opens a saved session with a normal pointer click', async ({ page }) => {
+  await login(page)
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: 'New session', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toBeEditable()
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  await page.getByRole('button', { name: /^Saved default/ }).click()
+  await expect(page.getByRole('main', { name: 'Sessions menu' })).not.toBeVisible()
+  await expect(page.getByText('Durable reply from saved-default', { exact: true })).toBeVisible()
+})
+
+test('recovers an edit after refresh and restores the separate normal draft on cancel', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('My separate next question')
+  await page.getByRole('button', { name: 'Edit & retry', exact: true }).click()
+  await page.getByLabel('Message Hermes').fill('Revised earlier question')
+  await reopen(page)
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Revised earlier question')
+  await expect(page.getByRole('button', { name: 'Cancel edit' })).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel edit' }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('My separate next question')
+})
+
+test('preserves conflicting text from two browser tabs', async ({ page, context }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('First tab question')
+  const other = await context.newPage()
+  await other.goto('/')
+  await other.getByRole('button', { name: 'Hermes', exact: true }).click()
+  await expect(other.getByLabel('Message Hermes')).toHaveValue('First tab question')
+  await other.getByLabel('Message Hermes').fill('Second tab question')
+  const preserved = page.getByText('Another draft was preserved', { exact: true })
+  await expect(preserved).toBeVisible()
+  await preserved.click()
+  await expect(page.locator('.draft-recovery pre').filter({ hasText: 'First tab question' })).toBeVisible()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Second tab question')
+  await page.getByRole('button', { name: 'Restore draft', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('First tab question')
+})
+
+test('locks an open conversation when the account logs out in another tab', async ({ page, context }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('Private shared draft')
+  const other = await context.newPage()
+  await other.goto('/')
+  await other.getByRole('button', { name: 'Hermes', exact: true }).click()
+  await expect(other.getByLabel('Message Hermes')).toHaveValue('Private shared draft')
+  await signOut(page)
+  await expect(other.getByRole('button', { name: 'Continue' })).toBeVisible()
+  await expect(other.getByLabel('Message Hermes')).not.toBeVisible()
+  expect(await other.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('hermes.drafts.v1:')))).toEqual([])
+})

@@ -9,6 +9,7 @@ Object.defineProperty(window, 'matchMedia', {
   })
 })
 
+let uuidCounter = 0
 Object.defineProperty(globalThis, 'crypto', {
-  value: { ...globalThis.crypto, randomUUID: () => 'test-uuid' }
+  value: { ...globalThis.crypto, randomUUID: () => `test-uuid-${++uuidCounter}` }
 })

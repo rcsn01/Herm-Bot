@@ -3,7 +3,7 @@ import type { GatewayEvent } from '~/compat/hermes-shared'
 import { atom } from 'nanostores'
 
 import type { ChatSuggestion, SlashCompletionPayload } from '~/features/chat/chat-interaction'
-import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
+import { classifyGatewayError, errorMessage, GatewayError } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
 import type { ChatState, PendingPrompt, SessionInfoSnapshot, ToolActivity } from '~/lib/types'
@@ -246,23 +246,19 @@ export class Conversation {
     }
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string): Promise<void | 'accepted' | 'uncertain'> {
     const content = text.trim()
     if (!content) return
     const scope = currentGatewayScope()
     const current = $chat.get()
     if (!current.runtimeSessionId) throw new Error('No active session.')
     if (current.running) {
-      try {
-        await this.runtime.rpc('prompt.submit', {
-          queued: true,
-          session_id: current.runtimeSessionId,
-          text: content
-        }, { timeoutMs: 1_800_000 })
-      } catch (error) {
-        if (isCurrentGatewayScope(scope)) throw error
-      }
-      return
+      const acknowledgement = await this.runtime.rpc('prompt.submit', {
+        queued: true,
+        session_id: current.runtimeSessionId,
+        text: content
+      }, { timeoutMs: 1_800_000 })
+      return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
     }
     $chat.set({
       ...current,
@@ -272,9 +268,13 @@ export class Conversation {
     })
     await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
     try {
-      await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
+      if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== current.runtimeSessionId) {
+        throw new GatewayError('The conversation changed before the message was sent.', { kind: 'validation' })
+      }
+      const acknowledgement = await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
+      return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
     } catch (error) {
-      if (!isCurrentGatewayScope(scope)) return
+      if (!isCurrentGatewayScope(scope)) throw error
       const latest = $chat.get()
       if (latest.runtimeSessionId === current.runtimeSessionId) {
         $chat.set({ ...latest, error: errorMessage(error), running: false })
@@ -300,29 +300,25 @@ export class Conversation {
     if (sessionId && content) await this.runtime.rpc('session.redirect', { session_id: sessionId, text: content })
   }
 
-  async retryFrom(rowId: number, text: string): Promise<void> {
-    const scope = currentGatewayScope()
+  async retryFrom(rowId: number, text: string): Promise<void | 'accepted' | 'uncertain'> {
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
-    if (!sessionId) return
+    if (!sessionId) throw new GatewayError('No active session.', { kind: 'validation' })
     if (!Number.isInteger(rowId) || rowId <= 0) throw new Error('A durable message row is required to edit history safely.')
     const target = snapshot.transcript.entries.find(entry => entry.rowId === rowId && 'editTarget' in entry && entry.editTarget)
     const userOrdinal = target && 'editTarget' in target ? target.editTarget?.userOrdinal : undefined
     if (userOrdinal === undefined) throw new Error('The selected message is no longer editable.')
     const content = text.trim()
     if (!content) return
-    try {
-      await this.runtime.rpc('prompt.submit', {
-        ...(userOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
-        confirm_truncate: true,
-        session_id: sessionId,
-        text: content,
-        truncate_before_row_id: rowId,
-        truncate_before_user_ordinal: userOrdinal
-      }, { timeoutMs: 1_800_000 })
-    } catch (error) {
-      if (isCurrentGatewayScope(scope)) throw error
-    }
+    const acknowledgement = await this.runtime.rpc('prompt.submit', {
+      ...(userOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
+      confirm_truncate: true,
+      session_id: sessionId,
+      text: content,
+      truncate_before_row_id: rowId,
+      truncate_before_user_ordinal: userOrdinal
+    }, { timeoutMs: 1_800_000 })
+    return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
   }
 
   /** Resolve slash-command suggestions for the composer's current draft. */
@@ -343,11 +339,12 @@ export class Conversation {
     const sessionId = $chat.get().runtimeSessionId
     if (!sessionId) throw new Error('No active session.')
     const dataUrl = await fileToDataURL(file)
-    if (!isCurrentGatewayScope(scope)) return undefined
+    if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
     const result = file.type.startsWith('image/')
       ? await this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
       : await this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
     const response = result as { ref_text?: string; text?: string } | undefined
+    if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
     if (!response) return undefined
     return response.ref_text ?? response.text ?? `@file:${file.name}`
   }

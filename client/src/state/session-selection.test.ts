@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionsApi } from '~/features/sessions/api'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
@@ -7,10 +7,12 @@ import { queryClient } from '~/gateway/query-client'
 import type { RuntimeSession, SessionRuntime } from '~/gateway/session-runtime'
 import type { StoredSession } from '~/lib/types'
 import { $chat, Conversation, emptyChatState } from '~/state/conversation'
-import { createSessionSelection, type SessionSelection } from '~/state/session-selection'
+import { verifyDraftOwner } from '~/state/draft-owner'
+import { createSessionSelection, sessionBookmarkKey, type SessionSelection } from '~/state/session-selection'
 import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
-const BOOKMARK_KEY = 'hermes.mobile.session::default'
+let BOOKMARK_KEY = ''
+afterEach(() => vi.restoreAllMocks())
 
 function makeSession(storedSessionId: null | string): RuntimeSession {
   return {
@@ -141,6 +143,8 @@ beforeEach(() => {
   $sessionsLoadingMore.set(false)
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
   localStorage.clear()
+  verifyDraftOwner('', { org_id: 'test', user_id: 'user' })
+  BOOKMARK_KEY = sessionBookmarkKey()
 })
 
 describe('session roster list', () => {
@@ -1102,7 +1106,7 @@ describe('session selection', () => {
     expect(localStorage.getItem(BOOKMARK_KEY)).toBe('user-session')
   })
 
-  it('records publication before a bookmark write that throws', async () => {
+  it('keeps publication and restore ordering when bookmark storage is unavailable', async () => {
     let releaseOpen!: (opened: { resumed: boolean; session: RuntimeSession }) => void
     const openGate = new Promise<{ resumed: boolean; session: RuntimeSession }>(resolve => { releaseOpen = resolve })
     const { selection, conversation } = createSelection()
@@ -1110,7 +1114,7 @@ describe('session selection', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('storage unavailable') })
 
     const restoring = selection.restore(() => openGate)
-    await expect(selection.select({ kind: 'create' })).rejects.toThrow('storage unavailable')
+    await expect(selection.select({ kind: 'create' })).resolves.toMatchObject({ resumed: false })
     expect(conversation.adopt).toHaveBeenCalledOnce()
     expect(localStorage.getItem(BOOKMARK_KEY)).toBe('old-session')
 

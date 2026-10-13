@@ -8,6 +8,7 @@ import { MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $chat, Conversation, emptyChatState, reduceGatewayEvent } from '~/state/conversation'
 import { loadCachedTranscript, saveCachedTranscript } from '~/state/transcript-cache'
 import { $preferences } from '~/state/store'
+import { lockDraftOwner } from '~/state/draft-owner'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript, updateTranscript } from '~/transcript/transcript'
 
@@ -396,7 +397,18 @@ describe('prompt submission safety', () => {
     dispose()
   })
 
-  it('discards prompt failures that resolve after the gateway scope changed', async () => {
+  it('does not dispatch a prompt after authentication changes during pre-send feedback', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    const gateway = new MemoryGateway().handle('prompt.submit', () => ({ accepted: true }))
+    const { conversation, dispose } = subject(gateway)
+    const sending = conversation.send('private draft')
+    lockDraftOwner()
+    await expect(sending).rejects.toMatchObject({ kind: 'validation' })
+    expect(gateway.calls.some(call => call.method === 'prompt.submit')).toBe(false)
+    dispose()
+  })
+
+  it('reports prompt failure without mutating the destination after scope changed', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
     let release!: () => void
     const submitted = new Promise<void>(resolve => { release = resolve })
@@ -406,10 +418,11 @@ describe('prompt submission safety', () => {
     const { conversation, dispose } = subject(gateway)
 
     const sending = conversation.send('hello')
+    await vi.waitFor(() => expect(gateway.calls.some(call => call.method === 'prompt.submit')).toBe(true))
     const stale = $chat.get()
     $preferences.set({ ...$preferences.get(), profile: 'work' })
     release()
-    await sending
+    await expect(sending).rejects.toThrow('gateway exploded')
 
     expect($chat.get()).toBe(stale)
     dispose()

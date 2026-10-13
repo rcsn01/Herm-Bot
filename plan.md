@@ -1,179 +1,376 @@
-# Implementation Plan: Isolate Known rooms from Group lifecycle
+# Herm PWA improvement plan
 
-**Status:** Ready to implement. This is a design and implementation plan only; no application source changes have been made in this task.
+Status: Proposed. This file replaces the previous plan. No application changes have been made.
 
-## Goal
+## Goal and scope
 
-Move the Known rooms read policy out of `client/src/features/groups/group-engine.ts` into a focused `client/src/features/groups/known-rooms.ts` module. This removes the React-hook dependency from the Group send engine module imported by `GatewayController`, while preserving the current room projection, retained roster, content-signature dedupe, synchronous hook view, and public read behavior.
+Make Herm more dependable during everyday phone use before adding more features. Preserve the bot-first layout and existing streaming chat, grouped tool activity, session branching, profile management, push support, and lazy-loaded screens.
 
-The Group send engine remains responsible for lifecycle and room actions. The Known rooms module remains responsible for the shared read view. Both observe the same `$groupChats` state owned by `group-store.ts`; do not create a second store or duplicate the room data.
+These recommendations come from source inspection, not a hands-on visual review. Validate the current behavior before implementing each item.
 
-## Current evidence
+Herm remains a standalone app. Do not embed it in, launch it from, or give Moirasia control over it. Use shared Moirasia UI controls and conventions. Keep app-specific behavior in Herm; changes intended for all apps belong in the shared packages and must be verified in both integrated and standalone contexts.
 
-- `client/src/features/groups/group-engine.ts:1–13` describes one public module for lifecycle, room actions, and Known rooms. Lines 15–17 import `useEffect`, `useMemo`, and `useStore` solely for the Known rooms hooks; `atom` and `computed` from `nanostores` are also used only by that policy, while `readonlyType` remains needed for the Group state handles.
-- The Group lifecycle is implemented in `group-engine.ts:48–106`. `openGroupRoom` and `createGroupChat` are actions at lines 108–132; the Known rooms policy occupies lines 134–261; the remaining send/stop/prompt actions are at lines 267–285. `GroupChatRoom` is imported only for the projection and can leave `group-engine.ts` when that block moves.
-- `client/src/state/gateway-controller.ts:16` imports `startGroupEngine` and `stopGroupEngine` from `group-engine.ts`. It does not use the read policy. Removing React imports from the lifecycle module will make that dependency more local; do not claim a bundle-size or runtime-performance gain, since React is used elsewhere in the application.
-- Known rooms currently combines the projection (`groupRoomsView`), the retained roster atom, `$knownRooms`, complete-content signature generation, `publishRosterRooms`, `resetKnownRooms`, and both hooks. The projection is roster rooms ∪ local rooms by durable room key; roster rows win duplicate keys and empty local tombstones are filtered.
-- The roster snapshot is module-retained, not owned by a mounted roster screen. `useGroupRooms` publishes complete ordered content, returns that render's merged view synchronously, and deduplicates by content rather than array identity. `useKnownRooms` reads the retained projection without requiring a roster publisher. The projection recomputes when the existing `$groupChats` atom changes.
-- Production hook callers are `client/src/app.tsx:22,50`, `client/src/features/agents/roster-screen.tsx:6,62`, `client/src/features/groups/group-screen.tsx:22,81`, and `client/src/features/groups/create-group-chat-dialog.tsx:10,31`. The latter two also import room actions from `group-engine.ts` and will need imports from both modules.
-- Direct test setup/publish callers are `client/src/app-navigation.test.tsx:66,73,77,206` and `client/src/features/agents/roster-screen.test.tsx:7,13,25`. In `group-engine.test.ts:764–1314`, `describe('groupRoomsView')` has 2 test declarations and `describe('known rooms')` has 19. The shared setup resets Known rooms alongside Group state.
-- The `CONTEXT.md` entries for **Group send engine** and **Known rooms** currently assign the read surface to `group-engine.ts`. There is no `docs/adr/` directory or existing ADR to reconcile.
+## 1. Protect unfinished messages
 
-This is an **in-process** deepening: the behavior is local computation over in-memory Nanostores state. Keep the existing store as the dependency; no adapter, port, new domain term, or ADR is needed.
+Priority: First implementation batch. The following is the full implementation plan for this item. Items 2 through 7 remain separate work.
 
-## Decisions settled with recommended defaults
+### Required outcome
 
-1. **Use the existing domain concept and a focused module.** Place `known-rooms.ts` beside `group-engine.ts` in `features/groups/`; do not create a new feature folder or new domain name.
-2. **Keep the complete read policy together.** The new module owns the roster snapshot, merge/projection, content signature, computed `$knownRooms`, `publishRosterRooms`, `resetKnownRooms`, and both hooks. Do not split React hooks from projection/retention into multiple shallow modules.
-3. **Reuse the existing room state.** Import `$groupChats` from `group-store.ts` inside `known-rooms.ts`. Preserve one shared atom and its lifecycle; do not create a read-side copy, factory, adapter, or reset tied to Group engine start/stop.
-4. **Do not re-export the read module through `group-engine.ts`.** Update read callers to import directly from `known-rooms.ts`. A re-export would keep the React dependency in the import path used by `GatewayController` and would defeat the goal.
-5. **Keep the useful read seam, not the test-only helper export.** Keep `$knownRooms`, `useGroupRooms`, `useKnownRooms`, `publishRosterRooms`, and `resetKnownRooms` as the Known rooms module's exports. Make `groupRoomsView` private and test its observable merge results through the module's read surface instead of importing the helper directly.
-6. **Preserve behavior, not implementation structure.** Retain all room ordering, collision, timestamp, nested-content, tombstone, roster precedence, retention, and hook timing semantics. This is an import/locality refactor, not a policy redesign.
-7. **Update the domain notes as part of implementation.** Amend the existing Group send engine and Known rooms entries in `CONTEXT.md` to record the split ownership. Add no new term. Do not change the glossary during this planning-only task while the code still has the old ownership.
-8. **Do not add unrelated scope.** Leave GatewayController behavior, Group send/turn logic, mirror policy, persistence, wire behavior, and UI markup unchanged. Do not commit unless separately requested.
+An ordinary message draft belongs to one verified account, gateway, profile, and conversation. Navigating away, switching sessions, reconnecting, refreshing, or updating the PWA must not silently lose that draft or put it in another conversation. A failed or uncertain submission must remain recoverable without automatic resubmission.
 
-## Target module shape and dependency direction
+Save text and completed attachment metadata locally. Do not persist raw files, audio recordings, generated speech, slash suggestions, transient errors, or secret and administrator-password responses. Local persistence is best effort, not a backup guarantee. Report storage failures instead of claiming a draft was saved.
 
-The external read surface moves intact except that the pure `groupRoomsView` implementation becomes private. The interface also includes the existing behavioral invariants callers rely on:
+### Source findings that determine the implementation
 
-- `useGroupRooms(rosterGroups)` publishes the full ordered roster content and returns the current merged view synchronously; array identity alone does not publish.
-- `useKnownRooms()` reads the live retained projection without requiring a mounted roster publisher.
-- `$knownRooms` is a read-only computed view over the retained roster and the same `$groupChats` atom used by the Group send engine. Keep its order: deduplicated roster rows stay at their first key position with the last duplicate row as the value, then non-colliding local rows follow `$groupChats`'s `Object.entries` order. A roster row wins a shared key. The local store key is authoritative; do not recompute it from `roomId` or `name`. Project local rows to `GroupRoom` fields only, never exposing runtime coordination fields.
-- The projection filters local rows only when their log is empty and either `roomId` is falsy or `members` is empty. A local row with a transcript remains visible without a durable id. The projection does not filter roster inputs; the gateway parser already filters empty-log roster rows.
-- All `useGroupRooms` callers publish into one module-level roster slot; there is no per-publisher aggregation. A later publication replaces the earlier one, including `[]` clearing the retained roster while another publisher remains mounted. Publishing equal content or another `[]` is a no-op. Unmounting a publisher does not clear its last publication. `resetKnownRooms` clears only the roster half and its signature, not local Group rooms.
+- `client/src/features/chat/chat-interaction.ts` owns composer state. `setSession()` compares only the runtime session ID, resets attachment and edit state, and carries the current text into the next session. `submit()` clears the composer before awaiting a command and restores the old snapshot on failure. That restoration can overwrite text typed during the request.
+- `client/src/features/chat/use-chat-interaction.ts` creates the interaction for the mounted chat screen. Its effect watches both session IDs but passes only `runtimeSessionId`. Unmounting discards the instance. The StrictMode disposal guard must remain intact.
+- `client/src/state/conversation.ts` is the sole writer of `$chat`. It exposes both runtime and stored session IDs. Uploads use session-scoped `image.attach_bytes` and `file.attach`. The client has no demonstrated contract proving their references survive a new runtime session.
+- `Conversation.send()` and `retryFrom()` await `prompt.submit` with a 30-minute timeout. The command interface returns `Promise<void>`, not an explicit accepted, rejected, or uncertain outcome. Some stale-scope failures are swallowed. Promise resolution must not be mistaken for a guaranteed submission acknowledgement without checking the gateway contract.
+- `client/src/state/session-selection.ts` owns selection publication and bookmarks. Bookmarks currently include gateway and profile, not account. Runtime creation can return a null stored session ID, and `session.info` can supply it later.
+- `client/src/state/gateway-controller.ts` checks `/api/auth/me` in browser interactive-auth flows but does not retain the response. Login responses contain an identity. `NativeIdentity` in `client/src/lib/types.ts` includes `org_id` and `user_id`.
+- `client/src/gateway/scope-guard.ts` guards gateway/profile generations, not authenticated account changes. Draft work needs an authentication generation as well.
+- `client/src/pwa/lifecycle.ts` and `client/src/pwa/PwaStatus.tsx` guard active turns and pending approvals, but cannot see composer state. `PromptCard` keeps sensitive responses in separate component state and must stay outside draft storage.
 
-Target dependency sketch:
+### Settled behavior
 
-```text
-GatewayController ──lifecycle──> group-engine.ts ──> group-store.ts
-                                        ├──────────> group-rounds / group-turns / groups-sync
+#### Identity and restore eligibility
 
-React read callers ──hooks────────> known-rooms.ts ──> group-store.ts
-React action callers ──actions────> group-engine.ts
+Use a normalized gateway URL, verified organization/user identity, profile, and stored session ID as the durable draft key. Encode structured fields without conflating null profiles with a literal profile named `default`. Never use an access token, cookie, display name, or email as a storage key.
 
-No import or re-export: group-engine.ts ──X──> known-rooms.ts
-```
+Resolve identity during connection preparation before reading persistent drafts or restoring an account's session bookmark. Revalidate it after sign-in and authenticated reconnect. Capture an authentication generation for async operations so signing out and back into the same account still retires old work.
 
-`known-rooms.ts` may import React hooks and `@nanostores/react`; `group-engine.ts` must not. The Group engine mutates `$groupChats`; Known rooms reads that same atom and separately owns only its retained roster snapshot. The UI import path may include both modules when a screen needs actions and read state; the GatewayController lifecycle path must remain independent of the Known rooms module.
+The first implementation step must verify `/api/auth/me` behavior for password, OAuth, token, and no-auth deployments. The gateway implementation is not in this repository. If a mode cannot provide a stable authenticated principal, retain drafts only in memory for that connection and explain that restart recovery is unavailable. Do not invent an account identity from the gateway URL. Do not call that mode fully restart-recoverable until its identity contract is established.
 
-## Files in scope
+Network failure is not proof of a different account. Keep known drafts intact but do not expose another account's records before verification. Explicit auth failure locks persistent recovery until sign-in; explicit logout deletes this account's draft records even when remote logout fails.
 
-### New
+#### Conversation identity
 
-- `client/src/features/groups/known-rooms.ts` — extracted read module.
-- `client/src/features/groups/known-rooms.test.ts` — focused projection, retention, signature, and hook tests moved from `group-engine.test.ts`.
+- Resuming the same stored conversation with a new runtime ID keeps its draft. Invalidate stale upload/completion callbacks without clearing durable text.
+- A newly created session with a stored ID gets its own empty draft. Never carry the previous session's draft into it.
+- While the stored ID is unknown, use a locally generated provisional ID bound to the selected session. Persist provisional text only under a verified account, and mark it as not yet linked to a recoverable remote conversation.
+- When `session.info` supplies the stored ID for that same selection, promote the provisional record without overwriting a newer destination draft. Retire the old key only after the destination write succeeds.
+- If a provisional session cannot be restored after restart, show its text as an unlinked recovery record. Offer explicit copy or move into the selected conversation. Never attach it automatically to the newest session.
+- Branching creates a distinct draft. Renaming does not change a draft key. Deleting a remote session does not silently delete its unfinished local text; expose it as an unlinked recovery record.
+- Scope account-aware bookmarks to the verified account before restoration. Do not import legacy account-blind bookmarks automatically. This is a narrow prerequisite for correct draft recovery, not a session-navigation redesign.
 
-### Update
+#### Text, editing, and attachments
 
-- `client/src/features/groups/group-engine.ts` — remove the Known rooms read policy and React hook imports; retain Group lifecycle, actions, and the existing read-only `$groupChats`, `$groupActivity`, `$groupPrompts`, and `$groupNeedsYou` handles.
-- `client/src/features/groups/group-engine.test.ts` — remove the Known rooms test block, roster reset from shared setup, and React test helpers that become unused; retain Group engine lifecycle, read-only-handle, and action coverage.
-- `client/src/app.tsx` — import `useKnownRooms` from `known-rooms.ts`.
-- `client/src/features/agents/roster-screen.tsx` — import `useGroupRooms` from `known-rooms.ts`.
-- `client/src/features/groups/group-screen.tsx` — import `useGroupRooms` from `known-rooms.ts`; keep actions and Group state handles from `group-engine.ts`.
-- `client/src/features/groups/create-group-chat-dialog.tsx` — import `useGroupRooms` from `known-rooms.ts`; keep `createGroupChat` and `GROUP_CHAT_MAX_MEMBERS` from `group-engine.ts`.
-- `client/src/app-navigation.test.tsx` — import `publishRosterRooms` and `resetKnownRooms` from `known-rooms.ts`.
-- `client/src/features/agents/roster-screen.test.tsx` — import `resetKnownRooms` from `known-rooms.ts`.
-- `CONTEXT.md` — document Known rooms ownership in its new module and remove the read surface from the Group send engine interface description.
+Keep the normal message draft separately while editing an earlier message. Cancel edit restores that normal draft. Persist edit text with its stored conversation ID and durable row ID, not as an ordinary message. Before enabling recovered Edit & retry, reconcile history and verify the row is still editable. An invalid target remains recoverable text with an explicit copy action, never an automatic destructive retry.
 
-Do not edit `group-screen.test.tsx`, `create-group-chat-dialog.test.tsx`, `roster-screen-local-room.test.tsx`, or `gateway-controller.test.ts`: none imports Known rooms exports directly. Run them because they exercise the affected components and lifecycle through existing imports. Do not edit `gateway-controller.ts`; its lifecycle import remains the same and becomes free of the read module's React dependency.
+All user-driven mutations must save through the same draft module: typing, slash selection, transcription success, attachment completion/removal, begin/cancel edit, and submit recovery. An empty normal draft with no attachments or recovery snapshot removes its record. Preserve whitespace exactly; trim only the outgoing prompt as today.
 
-## Implementation sequence
+Persist completed attachment reference text, filename, media type, size, and the originating runtime ID. Raw `File`, Blob, and base64 data stay out of storage. Within the same live runtime, returning to the draft restores its attachment references. After a runtime change or restart, mark those references as needing reattachment unless the verified gateway contract guarantees durability. Show filenames and an explanation; do not quietly submit invalid references or claim files were restored. Unresolved attachments block sending until reattached or explicitly removed.
 
-### Phase 1 — Move read tests to a focused test module
+Track upload and transcription work as transient busy state. Switching conversations cancels or retires the old task, saves existing text and completed references, and reports that an unfinished attachment must be selected again. Do not transfer late results into the destination draft. Attachment metadata display here is limited to recovery and removal; item 4 still owns the broader composer redesign.
 
-1. Create `known-rooms.test.ts` and move the Known rooms coverage from `group-engine.test.ts`, including its React Testing Library helpers and read-specific setup. Keep behavior assertions, not incidental dependency wiring.
-2. Set up the new test module by clearing `localStorage`, replacing the local room store with `{}`, and calling `resetKnownRooms()` before each case. Clean up rendered hooks after each case. Do not reset activity, prompt, lifecycle, or mirror state; none of the moved read-policy cases uses them.
-3. Keep the existing local-room creation integration assertion: call the public `createGroupChat` action and assert its result appears in `$knownRooms`. It verifies that the read module observes the Group engine's existing shared store rather than a copied read model.
-4. Convert the two tests that directly called `groupRoomsView` to drive the read surface: publish roster content through `publishRosterRooms`, seed local rooms with a small `GroupChatRoom` fixture local to the new test file, and assert exact `$knownRooms` output and order. Cover duplicate-roster position and value, roster-over-local precedence, the local map key winning over mismatched room fields, empty local rows with absent/null/empty-string `roomId`, an empty local row with a truthy id but no members, a valid empty-log room, and a transcript room without a durable id. Do not export the projection helper or import a fixture from `group-engine.test.ts`.
-5. Preserve the rest of the current coverage: retention across local clears and hook unmount; content-equal no-ops; every nested log/member field; object property-order equality; timestamp special values (`NaN`, infinities, `-0`); delimiter collision resistance; roster/member/log ordering; reset and empty-publication semantics; reused array identity changes; updates from `$groupChats` without a roster publisher; and hook re-rendering. Strengthen the existing immediate-view test with an assertion during the first render, before passive effects run; a post-render DOM assertion alone does not prove synchronous return. Strengthen the existing two-publisher test to cover distinct hook publications with last-wins behavior and an empty publication clearing the shared roster while the other publisher remains mounted. Do not add per-publisher retained state.
-6. Remove the moved Known rooms cases/imports and React test helpers from `group-engine.test.ts`. No rendered React tests remain there, so remove `act`, `cleanup`, `render`, and `screen`, the `createElement` import, and the `cleanup()` call in `afterEach`. Remove the `GroupMember` and `GroupRoom` test type imports; keep lifecycle, read-only-handle, action assertions, `GroupMessage`, and fixtures still used there. Avoid duplicating the same assertions in both files. The test file may temporarily import the not-yet-created `known-rooms.ts`; do not treat that intermediate state as a finished or verified change.
+#### Submission without draft loss
 
-### Phase 2 — Extract the Known rooms implementation
+Capture the origin draft key, authentication generation, revision, edit target, text, and attachment references before dispatch. Save a recovery snapshot before clearing the visible composer. Users may type a next message while the command is pending, but it is a separate revision.
 
-1. Create `known-rooms.ts` and move the existing read implementation without semantic changes: `groupRoomsView`, retained roster atom, `$knownRooms`, timestamp/content signature, publish/reset functions, and both hooks.
-2. Import `$groupChats` and `GroupChatRoom` from `group-store.ts`, and `GroupRoom` from `group-model.ts`. Import only the React hooks and Nanostores primitives used by the moved implementation. Do not import `group-engine.ts`; this prevents a cycle and makes the direction explicit. Preserve the exact existing shared `$groupChats` atom.
-3. Keep `groupRoomsView` module-private. Export only the read handle, hooks, and roster publish/reset verbs listed above. Preserve its pure implementation and current merge ordering.
-4. Remove the Known rooms block from `group-engine.ts`. Remove `useEffect`, `useMemo`, `useStore`, Nanostores imports (`atom`, `computed`), and the `GroupChatRoom` type import made unused by that block; retain `readonlyType` and model/store imports still used by Group actions or the existing public state handles.
-5. Update the full `group-engine.ts` header comment to describe lifecycle, room actions, and its remaining read-only engine state handles, without claiming ownership of the Known rooms read policy. Do not import or re-export any symbol from `known-rooms.ts` there.
+- On confirmed success, remove only the matching submission snapshot. Do not delete or overwrite newer text, another conversation's draft, or a later submission.
+- On known failure, restore the original snapshot if the composer has not changed. Otherwise retain it as a separate failed-message recovery entry with explicit restore/copy/discard actions.
+- Session switching must not strand a failed snapshot. Update the captured origin record when the outcome is known, while leaving the destination composer untouched.
+- A timeout, transport interruption, or page restart during submission may leave delivery uncertain. Label it "Delivery not confirmed. Check the conversation before sending again." Reconcile history when possible, but do not use text equality alone as proof of acceptance.
+- Never retry automatically. Queued prompts and edit-and-retry submissions follow the same rules.
+- Replace stale-scope swallowed success and no-session no-ops at the changed command seam with explicit outcomes or errors. Do not let them clear a recovery snapshot as though a send succeeded.
 
-### Phase 3 — Retarget consumers and test setup
+If the gateway has no early acceptance acknowledgement, keep the snapshot pending until the existing command settles. Do not add a speculative gateway protocol or infer acceptance from `message.start` without a contract that correlates it to this submission.
 
-1. Update the four production read callers to import hooks from `known-rooms.ts`. In `group-screen.tsx` and `create-group-chat-dialog.tsx`, keep room actions, constants, and engine state handles imported from `group-engine.ts`; use separate module imports rather than adding a façade. Update the merge-ownership comments in `group-screen.tsx` and `roster-screen.tsx`, which currently say the engine owns the merge, to name `known-rooms.ts`.
-2. Update `app-navigation.test.tsx` to import the roster publish/reset verbs from `known-rooms.ts` and preserve the group-room header title assertion.
-3. Update `roster-screen.test.tsx` to reset the read module directly in setup/teardown. Keep the actual roster screen tests exercising the `useGroupRooms` call through the screen.
-4. Search all `client/src` references to `useGroupRooms`, `useKnownRooms`, `$knownRooms`, `publishRosterRooms`, `resetKnownRooms`, and `groupRoomsView`. Confirm no caller still imports read exports from `group-engine.ts`, no unintended direct helper consumers remain, and no read module is re-exported by the lifecycle module.
+#### Update and exit protection
 
-### Phase 4 — Update the architecture notes
+Expose an app-level reactive draft safety summary so PWA lifecycle code does not depend on a mounted `ChatScreen`. Include unsaved records, pending submissions, active uploads/transcription, and attachments that would need reattachment after reload. Account for drafts outside the currently visible chat.
 
-Update only the Group send engine and Known rooms entries in `CONTEXT.md`:
+Both the update button and `activatePwaUpdate()` must use the same policy. Recheck immediately before applying an update.
 
-- **Group send engine:** remove Known rooms hooks/projection/publish/reset from its interface list. Keep `$groupChats`, `$groupActivity`, `$groupPrompts`, and `$groupNeedsYou` as its read-only state handles, along with lifecycle ordering, room actions, feed behavior, and Group member turn ownership. State that the engine and the Known rooms read module share the local room store; do not transfer the store's ownership to the read module.
-- **Known rooms:** keep the current domain semantics (gateway roster ∪ local rooms, durable key, roster precedence, content signature, hook behavior, retained roster) and change ownership from `group-engine.ts` to `features/groups/known-rooms.ts`. State that the gateway parser drops empty-log roster rows, while the projection filters a local row only when its log is empty and either its `roomId` is falsy or it has no members; durable local empty-log rooms remain visible. Note that it reads the existing `$groupChats` atom from `group-store.ts`, so the room list remains live without a mounted publisher.
-- Add no new domain entry or ADR. Do not rewrite unrelated Group terminology.
+- A durably saved text-only draft may survive an explicit update. Tell the user it will be restored.
+- Block updates during active turns, approvals, submission dispatch, uploads, or transcription, retaining existing guards.
+- Block updates when storage failed or reload would invalidate attachments. Offer saving again, copying text, removing attachments, or explicitly discarding the affected local work. No silent discard or forced reload.
+- Flush before unmount, selection changes, visibility loss, pagehide, and explicit update. Persist mutations immediately, so mobile recovery does not depend on exit events firing.
+- Register `beforeunload` only while there is unrecoverable work. Treat the browser warning as additional protection, not the recovery mechanism. The service worker must not gain access to draft contents.
 
-### Phase 5 — Verify the seam and behavior
+### Module ownership and storage
 
-Run focused tests first, then the broader client checks. Do not claim implementation completion unless each command passes and record any real warnings/results in the implementation record.
+Add `client/src/features/chat/chat-drafts.ts` as the draft module. It owns key construction, validated versioned records, provisional promotion, submission snapshots, conflict preservation, persistence status, account cleanup, and the reactive safety summary. Accept the storage adapter for tests. Use the platform's existing `localStorage`; no new dependency or raw-file database is needed for this scope.
 
-From `client/`:
+Keep its interface small. Callers select a draft context, read/write the current draft, begin/settle a submission, and clear an account. Hide serialization and storage keys inside the module. `ChatInteraction` continues to own slash completion and media tasks. `Conversation` continues to own gateway commands and transcript state. `SessionSelection` continues to own session publication.
+
+Use a distinct versioned namespace such as `hermes.drafts.v1`, not the transcript cache key. Records include owner fields, durable or provisional conversation identity, record revision, timestamp, normal/edit content, attachment metadata, and submission recovery data. Parse stored data as untrusted input. Validate types, lengths, discriminants, owner equality, and edit row IDs. Do not spread arbitrary parsed objects into interaction state.
+
+Set explicit storage limits in the implementation, initially 50 conversation records per account and 1 MiB of serialized draft data per account. Include edit and failed-submission recovery content in the budget. Exceeding a limit must retain the current draft in memory, report "Not saved on this device", and offer copy/discard actions. Do not truncate text or evict another unfinished draft silently. Test the exact limits using the serializer's documented byte measurement.
+
+Use synchronous writes for user mutations to close the final-keystroke refresh gap. Catch blocked storage and quota failures. Keep existing data intact when a write fails, and expose unsaved state to update protection. Do not advertise localStorage as encrypted or secure against other scripts on the origin.
+
+Handle multiple tabs without silent last-writer-wins loss. Detect stale record revisions and storage events. Preserve conflicting text as a separately identified recovery copy, then require an explicit user choice instead of merging automatically. If even the conflict copy cannot be persisted, keep it in memory and block destructive reload. Account logout in another tab locks the owner and prevents stale callbacks from recreating its deleted drafts.
+
+Ordinary React cleanup flushes but does not delete drafts. Logout clears this account's active, provisional, edit, and submission records, invalidates callbacks first, and leaves unrelated preferences alone. Gateway/profile switching flushes the origin, resets visible state, and loads only the verified destination. Transcript-cache cleanup and the general local-history preference remain item 3; do not silently implement that separate feature here.
+
+### Implementation sequence and file changes
+
+1. Establish identity and acknowledgement contracts.
+   - Check the existing connection request interface, login identity responses, gateway documentation, and available contract fixtures.
+   - Add verified draft-owner state and an auth generation in a focused state module, proposed `client/src/state/draft-owner.ts`.
+   - Integrate identity resolution, account change, auth failure, and logout into `client/src/state/gateway-controller.ts` without persisting credentials.
+   - Update `client/src/state/session-selection.ts` so account-aware restore cannot select a previous account's bookmark. Keep current selection-epoch guards.
+   - Record the capability decision for token/no-auth identity and attachment durability. Unsupported recovery must be visible, not a hidden fallback.
+2. Build and test the draft module.
+   - Add `chat-drafts.ts` and `chat-drafts.test.ts` for validated storage, per-context selection, promotion, recovery snapshots, limits, failures, and conflicts.
+   - Make draft storage independent of React mounting. Add a recovery-list read operation only for the explicit unlinked/failed/conflicting records needed here.
+3. Connect interaction state to durable context.
+   - Replace runtime-only `setSession()` behavior with full draft-context selection in `chat-interaction.ts` and `use-chat-interaction.ts`.
+   - Separate durable conversation identity from runtime task epochs. React to stored-ID promotion even when the runtime ID does not change.
+   - Route every draft mutation through the module. Preserve StrictMode safety and guard callbacks across account/profile/session changes.
+   - Add normal/edit draft separation and attachment metadata/busy state.
+4. Make submission recovery revision-safe.
+   - Change the narrow send/retry command seam in `chat-interaction.ts` and `conversation.ts` as needed to report truthful outcomes.
+   - Persist before dispatch, keep next-message edits separate, and settle captured origin snapshots without overwriting newer revisions.
+   - Add explicit recovery actions for failed and uncertain sends. Keep automatic resubmission disabled.
+5. Add recovery feedback and update protection.
+   - Update `client/src/components/chat-screen.tsx` with saved/unsaved status, restored-draft feedback, attachment reattachment guidance, and explicit recovery/copy/discard controls.
+   - Update `client/src/pwa/lifecycle.ts` and `PwaStatus.tsx` to share the draft safety policy and flush before activation.
+   - Use existing shared primitives. No shared UI package change is planned.
+6. Extend regression tests and document behavior.
+   - Update the tests listed below and browser fixtures only where required for account changes, failures, stored-ID promotion, and recovery.
+   - Update the relevant chat ownership notes in `CONTEXT.md` and local-data explanation in `SECURITY.md` after implementation.
+   - Run the checks below and record any device verification that remains unavailable.
+
+### Test matrix and acceptance criteria
+
+Automated tests must prove the following through the draft module and existing interaction interfaces.
+
+| Area | Required cases |
+| --- | --- |
+| Persistence | Exact text and whitespace survive new module instances; empty records clear; blocked storage, quota failure, malformed JSON, unsupported versions, and over-limit data retain usable in-memory work and report unsaved status. |
+| Isolation | Same session IDs across different accounts, gateways, and profiles never share drafts; null profile is distinct from a profile named `default`; unresolved identity never unlocks persistent records. |
+| Session lifecycle | A/B/A switching restores A; new and branched sessions start independently; reconnect with a new runtime preserves text; late stored-ID promotion is lossless; missing/deleted/provisional sessions offer explicit unlinked recovery. |
+| Interaction lifecycle | Unmount/remount and StrictMode rehearsals preserve records; slash choice and transcription save; stale upload/completion/transcription results never mutate another context. |
+| Edit recovery | Begin/cancel edit preserves the normal draft; recovered edit targets are validated; missing rows cannot trigger a destructive retry. |
+| Attachments | Completed references survive same-runtime navigation; restart/new-runtime records require reattachment unless contract-proven safe; in-flight files are not represented as uploaded; removal saves; unresolved references cannot be submitted. |
+| Submission | Success clears only its snapshot; failure restores exact content; newer text survives late success/failure; navigation updates the origin recovery record; queue/retry/no-session/stale-auth outcomes do not claim false success; uncertain work is never automatically resent. |
+| Logout and tabs | Logout clears all draft kinds even if remote sign-out fails; late callbacks cannot recreate them; another tab's owner change locks recovery; concurrent edits preserve conflict copies rather than overwriting. |
+| PWA safety | Saved text allows explicit updates and restores afterward; unsaved text, pending sends, media tasks, and runtime-bound attachments block reload; direct calls cannot bypass the UI guard; idle updates still work. |
+| Sensitive responses | Secret and sudo input never enter draft records, safety summaries, recovery UI, or debug logs. |
+
+Extend these existing suites rather than replacing them wholesale:
+- `client/src/features/chat/chat-interaction.test.ts`
+- `client/src/features/chat/use-chat-interaction.test.tsx`
+- `client/src/components/chat-screen.test.tsx`
+- `client/src/state/conversation.test.ts`
+- `client/src/state/gateway-controller.test.ts`
+- `client/src/state/session-selection.test.ts`
+- `client/src/pwa/lifecycle.test.ts`
+
+Add browser coverage in `client/e2e/chat-drafts.spec.ts` and extend the existing PWA update fixtures. Cover refresh recovery, session/profile switching, account sign-out/sign-in, failed send with newer typing, reattachment guidance, provisional recovery, edit validation, conflict handling, and storage failure. Exercise keyboard and screen-reader access to recovery controls.
+
+Run from `client/`:
 
 ```sh
-npx vitest run \
-  src/features/groups/known-rooms.test.ts \
-  src/features/groups/group-engine.test.ts \
-  src/features/groups/group-screen.test.tsx \
-  src/features/groups/create-group-chat-dialog.test.tsx \
-  src/features/agents/roster-screen.test.tsx \
-  src/features/agents/roster-screen-local-room.test.tsx \
-  src/app-navigation.test.tsx \
-  src/state/gateway-controller.test.ts
-npm test
-npm run build # runs typecheck before Vite build
+npm run test -- src/features/chat/chat-drafts.test.ts src/features/chat/chat-interaction.test.ts src/features/chat/use-chat-interaction.test.tsx src/components/chat-screen.test.tsx src/state/conversation.test.ts src/state/gateway-controller.test.ts src/state/session-selection.test.ts src/pwa/lifecycle.test.ts
+npm run typecheck
+npm run test
+npm run build
+npm run test:e2e -- e2e/chat-drafts.spec.ts e2e/pwa-foundation.spec.ts e2e/pwa-performance.spec.ts e2e/pwa-status-bar.spec.ts
 ```
 
-From the repository root:
+The new files in these commands are implementation targets, not files added by this planning task. Include additional draft-owner tests in the focused run when created.
 
-```sh
-rg -n "from ['\"](react|@nanostores/react)|known-rooms" \
-  client/src/features/groups/group-engine.ts client/src/state/gateway-controller.ts
-rg -n '(useGroupRooms|useKnownRooms|\$knownRooms|publishRosterRooms|resetKnownRooms|groupRoomsView)' client/src
-git diff --check
-git status --short
-```
+Finally, verify on an installed phone PWA: type a long message, background/close and reopen the app, switch profiles, update with saved text, attempt an update with an attachment, and recover after a dropped send. Browser fixtures cannot prove mobile process-kill behavior or real gateway reference durability. Verify native WebView draft behavior if the same code ships there; PWA registration must remain browser-only.
 
-Review the import search manually: the first command should show no React / React-hook or `known-rooms` dependency in either Group engine or GatewayController; the second should show all read calls importing from `known-rooms.ts` and no stale `group-engine.ts` read exports. Run the existing component tests above to verify the hook-based read flow; no markup or wire behavior changes are planned, so do not add E2E fixture controls solely for this extraction.
+Item 1 is complete only when these flows preserve text without cross-account leakage or unexpected submissions, and all unsupported recovery cases have explicit UI guidance. This document authorizes planning only, not application changes, deployment, or commits.
 
-## Test ownership and deletion test
+## 2. Keep the app usable while reconnecting
 
-The current read-test tail has 21 declared test blocks: 2 in `describe('groupRoomsView')` and 19 in `describe('known rooms')`. The two `fieldChanges` tables each have 17 rows, and the timestamp table has 3, so the suite expands to 55 test executions (53 Known rooms and 2 projection). Move or convert all 21 blocks to `known-rooms.test.ts`; strengthen the existing immediate-view case in place rather than adding a duplicate suite. The engine's lifecycle and send/action tests remain in `group-engine.test.ts`.
+Priority: First implementation batch.
 
-The deletion test supports the extraction: removing Known rooms policy would make the app header and three roster-carrying screens each need to combine roster rooms with local rooms, maintain ordering/retention, and avoid identity-based stale updates. Keep the deep read module. The refactor changes its location and callers, not the amount or meaning of room policy.
+### Current evidence
 
-The external read seam is the test surface: tests should observe `$knownRooms`, the two hooks, and roster publish/reset behavior. `groupRoomsView` stays private. The existing Group store remains the in-process dependency, not a second test-only or production-only adapter.
+The reconnect state makes the entire shell inert. This prevents unsafe actions but also blocks reading, scrolling, navigating, and preparing messages.
 
-## Risks and guardrails
+Relevant files:
+- `client/src/components/mobile-shell.tsx`
+- `client/src/app.tsx`
+- `client/src/state/gateway-controller.ts`
 
-- **React remains reachable from the lifecycle module:** do not re-export hooks/read state from `group-engine.ts`; re-exporting `known-rooms.ts` would defeat import locality even if individual imports tree-shake in production.
-- **Two room stores drift:** `known-rooms.ts` must import the existing `$groupChats` from `group-store.ts`; never create a duplicate atom or copy that needs synchronization.
-- **Roster retention changes accidentally:** keep one roster snapshot and content signature at module level, independent of mounted hooks and Group lifecycle start/stop. Unmounting does not clear the last publication, but a later publisher's `[]` does, even while another publisher remains mounted.
-- **Merge behavior changes accidentally:** preserve first-key roster order with the last duplicate value, local append order, roster precedence, and the local store key as the room key. Keep the exact local tombstone predicate (empty log and either falsy `roomId` or no members); non-empty local transcripts still render without a durable id. Roster rows are not filtered in this projection. Keep the timestamp encoding and complete ordered snapshot signature unchanged.
-- **Synchronous UI view changes:** `useGroupRooms` must still return the current merged view in the same render, while publishing the retained roster in its effect. Do not change it to effect-delayed UI data; the moved test must check the result during initial render, before effects.
-- **Signature misses nested data:** preserve the fields covered by `groupRoomsContentSignature`, its treatment of special numeric timestamps, and array order. Keep the edge-case tests.
-- **Interface becomes shallow:** keep the read policy cohesive in one module and do not add a one-method wrapper around the existing computed store. Do not introduce a new adapter for this in-process dependency.
-- **Group action imports break:** several screens need both Known rooms reads and Group engine actions. Update each import independently without moving actions into the read module.
-- **Test setup becomes coupled:** read tests should reset the retained roster explicitly and seed the local room store deliberately. Do not make production Known rooms state follow test lifecycle or Group engine stop/start.
-- **Overclaiming benefit:** the verified benefit is source-level locality and removal of React imports from the Group engine/GatewayController path, not an assumed bundle-size or runtime improvement.
-- **Scope creep:** no redesign of the room read interface, group-store, Group mirror, app navigation, room persistence, room domain model, or GatewayController lifecycle.
+### Planned improvements
 
-## Acceptance criteria
+- Keep available cached conversations readable and scrollable during reconnects.
+- Allow local draft composition and safe navigation where cached data is available.
+- Disable actions that require the gateway rather than disabling the entire shell.
+- Show a compact connection banner with a retry action.
+- Distinguish a phone being offline from the gateway being unavailable when there is reliable evidence for that distinction.
+- Require explicit user confirmation to send a locally prepared message after reconnecting. Do not automatically trigger agent work.
+- Keep cached content clearly separate from confirmed live gateway state.
 
-- `known-rooms.ts` owns the existing projection, retained roster state, complete content signature, publish/reset verbs, computed read handle, and both hooks.
-- `group-engine.ts` no longer imports `react` or `@nanostores/react`, and does not import or re-export `known-rooms.ts`.
-- `GatewayController` continues importing and invoking Group lifecycle verbs without acquiring the Known rooms read module through that import path.
-- All four UI read callers import from `known-rooms.ts`; screens needing Group actions continue to import those from `group-engine.ts`.
-- The same `$groupChats` atom drives the engine and Known rooms projection. No second store, synchronization path, adapter, or lifecycle reset is added.
-- Existing observable room merge, exact local filtering and field projection, ordering, retention and empty-publication behavior, dedupe, special timestamps, reset, synchronous-hook, and local-room update behavior remains covered at the Known rooms read interface.
-- Known rooms tests live in the focused test file; Group engine lifecycle/action tests remain in the engine test file; no duplicate old read suite remains.
-- The Group send engine and Known rooms entries in `CONTEXT.md` and the merge-ownership comments in `group-screen.tsx` and `roster-screen.tsx` accurately describe the ownership split.
-- Focused tests, full client tests, and `git diff --check` pass; `npm run build` passes its typecheck step and the Vite build. Record actual results after implementation; this plan itself does not claim those checks have run.
-- The change stays limited to the listed Group read extraction and its direct imports, tests, and domain notes; no unrelated files are staged or committed.
+### Verification
+
+- Reading, scrolling, and drafting work during a connection interruption.
+- Gateway-dependent actions remain unavailable and explain why.
+- Reconnection reconciles history without duplicate messages or unexpected submissions.
+- Cached navigation preserves account and profile isolation.
+- Exercise offline, unavailable gateway, expired authentication, and successful recovery paths in a browser.
+
+## 3. Tighten local conversation privacy
+
+Priority: First implementation batch, ahead of cosmetic changes.
+
+### Current evidence
+
+The transcript cache stores up to 80 entries per profile in `localStorage`. Its keys do not include account identity. The inspected logout teardown does not appear to clear that persistent cache.
+
+Relevant files:
+- `client/src/state/transcript-cache.ts`
+- `client/src/state/conversation.ts`
+- `client/src/state/gateway-controller.ts`
+- `client/src/features/settings/settings-screen.tsx`
+
+### Planned improvements
+
+- Scope cached history by account and gateway as well as profile.
+- Clear cached conversation data on logout.
+- Add a "Clear local data" setting with a clear explanation of what it removes. Do not imply that it deletes gateway-owned history.
+- Offer a setting to disable persistent history on shared devices.
+- Define a safe migration or removal policy for existing profile-only cache entries.
+- Apply the same account-isolation and logout rules to new draft persistence.
+
+### Verification
+
+- Another account cannot render the previous account's cached history or drafts.
+- Logout clears the intended local data even if gateway sign-out fails.
+- Disabling persistent history stops future writes and handles existing cached content according to the stated policy.
+- Clearing local data does not delete remote sessions or change unrelated settings without warning.
+- Corrupt cache entries and storage quota failures do not break chat.
+
+## 4. Give the composer clearer feedback
+
+Priority: Second implementation batch.
+
+### Current evidence
+
+Attachments appear as reference strings. Uploading and transcription have no dedicated progress state. While Hermes is running, the send button becomes an interrupt button even though the input says "Queue another prompt." Read aloud starts playback without dedicated playback controls.
+
+Relevant files:
+- `client/src/components/chat-screen.tsx`
+- `client/src/features/chat/chat-interaction.ts`
+- `client/src/state/conversation.ts`
+
+### Planned improvements
+
+- Show filename chips, image previews where practical, and explicit remove buttons.
+- Show uploading and transcribing states, including failures. Use indeterminate feedback unless actual progress is available.
+- Provide a visible Queue action alongside Stop while Hermes is working.
+- Confirm queued-prompt submission using the gateway's actual acknowledgement semantics. Do not imply execution has begun merely because submission was accepted.
+- Add audio playback controls instead of a one-shot Read aloud action.
+- Prevent repeated actions from accidentally starting duplicate uploads, submissions, or overlapping playback.
+
+### Verification
+
+- Attach, remove, upload failure, and conversation-switch flows behave correctly.
+- Queue and Stop remain distinct and usable on a narrow phone viewport.
+- Queue acknowledgement and errors accurately describe the gateway state.
+- Transcription does not overwrite newer user edits.
+- Audio can be stopped and does not continue unexpectedly after leaving the conversation.
+- Exercise the composer with the software keyboard open in a browser.
+
+## 5. Make answers easier to use
+
+Priority: Second implementation batch.
+
+### Current evidence
+
+Markdown rendering is minimal. The entire transcript is an `aria-live` region, which needs screen-reader testing during streaming. Collapsed tool activity already keeps execution details out of the main conversation.
+
+Relevant files:
+- `client/src/components/message-markdown.tsx`
+- `client/src/components/chat-screen.tsx`
+- `client/src/components/agent-activity.tsx`
+
+### Planned improvements
+
+- Add copy controls for assistant answers and code blocks, with success and failure feedback.
+- Improve code formatting and mobile handling of wide tables without causing page-wide horizontal overflow.
+- Review streaming announcements so screen readers receive useful updates without repeatedly reading the entire transcript.
+- Preserve collapsed tool activity rather than turning chat into a wall of execution logs.
+- Preserve existing safe Markdown rendering and external-link behavior.
+
+### Verification
+
+- Copy produces the intended plain text or code and handles clipboard restrictions.
+- Long code, tables, links, and streamed Markdown remain readable on phone screens.
+- Controls are keyboard-accessible and have descriptive accessible names.
+- Test streaming with a screen reader; automated accessibility checks alone are insufficient.
+- Unchanged messages retain the current memoized rendering behavior.
+
+## 6. Improve finding older conversations
+
+Priority: After the core reliability and composer work.
+
+### Current evidence
+
+Session search filters the titles of loaded sessions, not the complete remote history.
+
+Relevant files:
+- `client/src/components/sessions-menu.tsx`
+- `client/src/features/sessions/api.ts`
+
+### Planned improvements
+
+- Make the current search limitation explicit.
+- Inspect gateway support before adding remote search. Use gateway-backed search only if the API supports it; do not simulate complete search over a partial local list.
+- Group sessions by recent date where that improves scanning.
+- Add richer session previews where gateway data supports them.
+- Provide an accessible archive view if the gateway supports listing and opening archived sessions.
+- Avoid elaborate folders until there is evidence users need them.
+
+### Verification
+
+- Search results and empty states accurately describe the searched data.
+- Pagination does not conceal matches while implying the search is complete.
+- Date grouping works across time zones and date boundaries.
+- Archived-session behavior matches the gateway contract.
+- Preserve existing session opening, branching, deletion confirmation, focus handling, and swipe behavior.
+
+## 7. Make notification setup testable
+
+Priority: After the core reliability and composer work.
+
+### Current evidence
+
+Notification settings offer an enable/disable control, but users need a direct way to verify background delivery without waiting for a real job.
+
+Relevant files:
+- `client/src/features/settings/settings-screen.tsx`
+- `client/src/pwa/push.ts`
+- `client/src/pwa/sw.ts`
+- `web-push-relay/`
+
+### Planned improvements
+
+- Add a "Send test notification" flow after checking the relay and gateway capabilities needed to support it.
+- Show clearer device status, distinguishing permission, local subscription, and server registration where observable.
+- Provide platform-specific instructions when installation or permission is missing.
+- Explain unsupported and blocked-permission states with actionable guidance.
+- Report test submission separately from confirmed delivery. Do not claim delivery when only the send request succeeded.
+
+### Verification
+
+- Test supported, unsupported, denied-permission, expired-subscription, and relay-failure states.
+- Verify a real notification arrives while the installed PWA is backgrounded or closed on supported devices.
+- Tapping a notification opens the intended conversation without bypassing authentication or crossing account/profile boundaries.
+- Test notification content does not include sensitive conversation data.
+
+## Implementation order
+
+1. Draft protection, selective reconnect blocking, and account-scoped cache cleanup.
+2. Composer feedback, explicit Queue and Stop actions, answer-copy controls, and transcript readability/accessibility.
+3. Session discovery and notification setup diagnostics.
+
+Resolve account identity and persistence boundaries before implementing draft and history storage. Keep changes within the existing gateway ownership model: the app owns navigation and UI state; the gateway owns conversations, agent work, configuration, and remote files.
+
+## Verification approach
+
+- Start with focused tests around changed state and persistence behavior.
+- Run typechecking and relevant unit tests, then broader checks in proportion to risk.
+- Extend existing Playwright coverage for changed user workflows and integration boundaries.
+- Exercise phone-sized Chromium and WebKit views, keyboard-open layouts, offline/reconnect paths, refresh/update recovery, and account switching.
+- Check actual installed-PWA behavior on supported devices for lifecycle, installation, audio, and background notifications where browser fixtures cannot prove the workflow.
+- If device or browser verification is unavailable, record that limitation rather than treating static checks as proof.
+- No implementation, deployment, publication, or commit is authorized by this planning document alone.

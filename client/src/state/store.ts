@@ -16,6 +16,7 @@ export const $connection = atom<{
 /** True while a roster-tapped profile switch is connecting; the app shell
  *  renders the destination in place instead of the full-screen boot takeover. */
 export const $profileSwitching = atom(false)
+export const $sessionSelecting = atom(false)
 
 export const $preferences = atom<ConnectionPreferences>({
   authMode: 'token',

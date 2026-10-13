@@ -96,6 +96,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { detail: 'Invalid fixture credentials' })
       }
       const id = `browser-${++sequence}`
+      stateFor(id).userId = credentials.username
       stateFor(id).calls.push({ kind: 'http', method: req.method, path: url.pathname, body: credentials })
       return json(res, 200, { ok: true }, { 'set-cookie': `fixture_session=${id}; Path=/; HttpOnly; SameSite=Lax` })
     }
@@ -104,7 +105,9 @@ const server = http.createServer(async (req, res) => {
       if (!id) return json(res, 401, { detail: 'Authentication required' })
       const state = stateFor(id)
       state.calls.push({ kind: 'http', method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams) })
-      if (url.pathname === '/api/auth/me') return json(res, 200, { user_id: 'fixture-user', provider: 'password', org_id: 'fixture', expires_at: 4_102_444_800 })
+      if (url.pathname === '/auth/logout') return json(res, 200, { ok: true }, { 'set-cookie': 'fixture_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' })
+      if (url.pathname === '/api/fixture-update') { state.swVersion = (state.swVersion ?? 0) + 1; return json(res, 200, { ok: true }) }
+      if (url.pathname === '/api/auth/me') return json(res, 200, { user_id: state.userId ?? 'fixture-user', provider: 'password', org_id: 'fixture', expires_at: 4_102_444_800 })
       if (url.pathname === '/api/auth/ws-ticket' && req.method === 'POST') {
         const ticket = `ticket-${++sequence}`
         tickets.set(ticket, { id, used: false })
@@ -208,7 +211,8 @@ const server = http.createServer(async (req, res) => {
     const target = path.resolve(root, relative)
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) return json(res, 404, { detail: 'Not found' })
     try {
-      const content = await fs.readFile(target)
+      let content = await fs.readFile(target)
+      if (relative === 'sw.js') content = Buffer.concat([content, Buffer.from(`\n// fixture update ${cookie(req) ? stateFor(cookie(req)).swVersion ?? 0 : 0}\n`)])
       res.writeHead(200, { 'content-type': mime.get(path.extname(target)) || 'application/octet-stream' })
       res.end(content)
     } catch {
@@ -333,12 +337,17 @@ sockets.on('connection', (ws, _req, id, profile) => {
     } else if (request.method === 'commands.catalog') result = { commands: [] }
     else if (request.method === 'model.info') result = { model: 'fixture/test-model' }
     else if (request.method === 'session.events.since') result = { events: [] }
+    else if (request.method === 'file.attach' || request.method === 'image.attach_bytes') result = { ref_text: `@file:${params.name}` }
     else if (request.method === 'prompt.submit') {
+      if (params.text === 'draft delayed failure') {
+        setTimeout(() => ws.readyState === 1 && ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'Fixture submission rejected' } })), 800)
+        return
+      }
       const messages = state.messages.get(currentStored) ?? []
       messages.push({ row_id: messages.length + 1, role: 'user', content: params.text })
       messages.push({ row_id: messages.length + 1, role: 'assistant', content: `Fixture answer: ${params.text}` })
       state.messages.set(currentStored, messages)
-      result = { accepted: true }
+      result = params.text === 'draft uncertain response' ? {} : { accepted: true }
     } else result = {}
     ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
     if (request.method === 'prompt.submit') {

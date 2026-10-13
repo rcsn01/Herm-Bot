@@ -172,7 +172,6 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
     if (!current.enabled || event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) return
     if (current.canStart && !current.canStart(event.target, event)) return
     cancelAnimation()
-    const element = event.currentTarget
     const startedAt = now()
     activePointerRef.current = {
       id: event.pointerId,
@@ -186,7 +185,6 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
     }
     suppressClickRef.current = false
     writePhase('pending')
-    element.setPointerCapture?.(event.pointerId)
   }, [cancelAnimation, writePhase])
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
@@ -209,6 +207,8 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
         return
       }
       active.locked = true
+      // Capturing on pointerdown retargets ordinary clicks away from nested buttons.
+      event.currentTarget.setPointerCapture?.(event.pointerId)
       writePhase('dragging')
     }
     event.preventDefault()
@@ -250,7 +250,8 @@ export function useSwipeMotion(options: SwipeMotionOptions): SwipeMotionBinding 
   }, [settlePointer])
 
   const onLostPointerCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    if (activePointerRef.current?.id === event.pointerId) settlePointer(event, true)
+    // A child's implicit touch capture is released when this element takes over.
+    if (event.target === event.currentTarget && activePointerRef.current?.id === event.pointerId) settlePointer(event, true)
   }, [settlePointer])
 
   const onClickCapture = useCallback((event: ReactMouseEvent<HTMLElement>) => {

@@ -1,3 +1,5 @@
+import { chatDrafts } from '~/features/chat/chat-drafts'
+import { $draftOwner, lockDraftOwner, verifyDraftOwner } from '~/state/draft-owner'
 import { observeAppLifecycle, type AppLifecycleHandle } from '~/native/app-lifecycle'
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
@@ -32,6 +34,7 @@ export class GatewayController {
   private activeListener?: AppLifecycleHandle
   private unsubscribeEvents?: () => void
   private unsubscribeState?: () => void
+  private unsubscribeOwner?: () => void
 
   constructor(
     private readonly connection: HermesConnectionPlugin = HermesConnection,
@@ -111,12 +114,15 @@ export class GatewayController {
 
   async connect() {
     const generation = ++this.reconnectGeneration
-    const scope = currentGatewayScope()
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
     let restored
+    let scope = currentGatewayScope()
     try {
+      const preparation = await this.prepareDraftOwner()
+      if (!this.isCurrentReconnect(generation)) return
+      scope = currentGatewayScope()
       restored = await this.selection.restore(
-        stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored }, () => this.connection.probe()),
+        stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored }, async () => preparation),
         () => this.isCurrentReconnect(generation)
       )
     } catch (error) {
@@ -156,6 +162,8 @@ export class GatewayController {
 
   async logout() {
     this.logoutInProgress = true
+    const draftsCleared = chatDrafts.clearOwner()
+    lockDraftOwner()
     this.invalidateReconnect()
     $connection.set({ ...$connection.get(), error: null, phase: 'disconnected' })
     this.runtime.close()
@@ -169,6 +177,11 @@ export class GatewayController {
       await this.teardownGatewayScope()
       $connection.set({ ...$connection.get(), phase: 'disconnected' })
       this.logoutInProgress = false
+    }
+    if (!draftsCleared) {
+      const message = 'Local draft removal could not be confirmed. Clear this site’s data before sharing the device.'
+      $connection.set({ ...$connection.get(), phase: 'disconnected', error: message })
+      throw new Error(message, { cause: logoutError })
     }
     if (logoutError) {
       $connection.set({ ...$connection.get(), phase: 'disconnected', error: 'Disconnected locally. Gateway sign out could not be confirmed. Reconnect to finish signing out.' })
@@ -240,8 +253,35 @@ export class GatewayController {
     this.unsubscribeEvents = undefined
     this.unsubscribeState?.()
     this.unsubscribeState = undefined
+    this.unsubscribeOwner?.()
+    this.unsubscribeOwner = undefined
     this.runtime.dispose()
     void this.activeListener?.remove()
+  }
+
+  private async prepareDraftOwner() {
+    const generation = this.reconnectGeneration
+    const gateway = $preferences.get().remoteURL
+    const preparation = await this.connection.probe()
+    let identity: unknown = null
+    try {
+      identity = (await this.connection.request({ path: '/api/auth/me' })).body
+    } catch (error) {
+      const classified = classifyGatewayError(error)
+      // Some token/no-auth gateways do not expose a principal. Those modes remain memory-only.
+      if (preparation.authMode === 'interactive' || !['auth', 'unsupported'].includes(classified.kind)) throw error
+    }
+    if (generation !== this.reconnectGeneration || gateway !== $preferences.get().remoteURL || this.disposed) return preparation
+    const previous = $draftOwner.get()
+    const changed = verifyDraftOwner(gateway, identity)
+    if (changed && (previous.gateway || previous.principal || previous.locked)) {
+      this.selection.invalidate()
+      stopGroupEngine()
+      this.runtime.close()
+      clearGatewayQueries()
+      this.clearForegroundScope()
+    }
+    return preparation
   }
 
   private async restoreBrowserConnection() {
@@ -296,6 +336,13 @@ export class GatewayController {
   }
 
   private subscribeRuntime() {
+    this.unsubscribeOwner = $draftOwner.listen(owner => {
+      if (!owner.locked || this.disposed || this.logoutInProgress) return
+      this.invalidateReconnect()
+      $connection.set({ ...$connection.get(), phase: 'disconnected' })
+      this.runtime.close()
+      this.clearForegroundScope()
+    })
     this.unsubscribeEvents = this.transport.subscribe(event => this.conversation.onGatewayEvent(event))
     this.unsubscribeState = this.transport.subscribeState(state => {
       if (state === 'closed' && !this.disposed && !this.appBackgrounded && !this.logoutInProgress && $connection.get().phase === 'connected') {
@@ -308,7 +355,7 @@ export class GatewayController {
   private async reconnect(reconcile: boolean) {
     if (this.disposed) return
     const generation = ++this.reconnectGeneration
-    const scope = currentGatewayScope()
+    let scope = currentGatewayScope()
     const previousPhase = $connection.get().phase
     const hasCachedSession = previousPhase === 'reconnecting' && this.selection.hasLiveSession()
     $connection.set({
@@ -317,6 +364,9 @@ export class GatewayController {
       phase: hasCachedSession ? 'reconnecting' : 'connecting'
     })
     try {
+      await this.prepareDraftOwner()
+      if (!this.isCurrentReconnect(generation)) return
+      scope = currentGatewayScope()
       const restored = await this.selection.restore(
         stored => this.runtime.reopen({ profile: scope.profile, storedSessionId: stored }),
         () => this.isCurrentReconnect(generation)
@@ -337,6 +387,7 @@ export class GatewayController {
     if (classified.kind === 'unsupported') {
       $connection.set({ ...$connection.get(), error: classified.message, phase: 'unsupported' })
     } else if (classified.kind === 'auth') {
+      lockDraftOwner()
       $connection.set({ ...$connection.get(), error: 'Your Hermes session expired. Sign in again.', phase: 'error' })
     } else {
       $connection.set({ ...$connection.get(), error: classified.message, phase: 'error' })

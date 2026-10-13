@@ -2,6 +2,7 @@ import { Capacitor } from '@capacitor/core'
 import { atom } from 'nanostores'
 import { registerSW } from 'virtual:pwa-register'
 
+import { chatDrafts } from '~/features/chat/chat-drafts'
 import { $chat } from '~/state/conversation'
 
 export interface BeforeInstallPromptEvent extends Event {
@@ -93,9 +94,10 @@ export async function installPwa(): Promise<void> {
 
 /** Called only from the visible update action; registration never forces reload. */
 export async function activatePwaUpdate(): Promise<void> {
+  chatDrafts.flush()
   const chat = $chat.get()
   const pwa = $pwa.get()
-  if (!applyUpdate || !pwa.updateAvailable || pwa.updating || pwa.offline || chat.running || chat.pendingPrompt) return
+  if (!applyUpdate || !pwa.updateAvailable || pwa.updating || pwa.offline || chat.running || chat.pendingPrompt || chatDrafts.$blocked.get()) return
   patchState({ updating: true, error: null })
   try {
     await applyUpdate(true)

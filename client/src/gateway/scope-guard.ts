@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, type QueryKey, type UseMutationR
 
 import { classifyGatewayError, type GatewayError } from './gateway-error'
 import { gatewayScopeKey, gatewayScopeSnapshot, sameGatewayScope, type GatewayScopeKey, type GatewayScopeSnapshot } from './gateway-scope'
+import { $draftOwner } from '~/state/draft-owner'
 import { $preferences } from '~/state/store'
 
 export interface CurrentGatewayScope extends GatewayScopeSnapshot {
@@ -12,6 +13,10 @@ export interface CurrentGatewayScope extends GatewayScopeSnapshot {
 }
 
 let generation = 0
+let ownerGeneration = $draftOwner.get().generation
+$draftOwner.listen(owner => {
+  if (owner.generation !== ownerGeneration) { generation += 1; ownerGeneration = owner.generation }
+})
 let last = gatewayScopeSnapshot($preferences.get().remoteURL, $preferences.get().profile)
 
 $preferences.listen(preferences => {

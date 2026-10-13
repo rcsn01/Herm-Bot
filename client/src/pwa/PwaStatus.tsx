@@ -1,12 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 
+import { chatDrafts } from '~/features/chat/chat-drafts'
 import { $chat } from '~/state/conversation'
 
 import { activatePwaUpdate, $pwa, dismissPwaMessage, installPwa } from './lifecycle'
 import './pwa.css'
 
-const $reloadBlocked = computed($chat, chat => chat.running || Boolean(chat.pendingPrompt))
+const $reloadBlocked = computed([$chat, chatDrafts.$blocked], (chat, draftsBlocked) => chat.running || Boolean(chat.pendingPrompt) || draftsBlocked)
 
 export function PwaStatus() {
   const pwa = useStore($pwa)
@@ -24,10 +25,10 @@ export function PwaStatus() {
           <button
             type="button"
             disabled={reloadBlocked || pwa.updating || pwa.offline}
-            title={reloadBlocked ? 'Finish the active turn or approval first' : undefined}
+            title={reloadBlocked ? 'Finish active work and save or resolve unfinished drafts first' : undefined}
             onClick={() => void activatePwaUpdate()}
           >
-            {pwa.updating ? 'Updating…' : reloadBlocked ? 'Update after turn' : 'Update'}
+            {pwa.updating ? 'Updating…' : reloadBlocked ? 'Update when safe' : 'Update'}
           </button>
         </span>
       ) : null}

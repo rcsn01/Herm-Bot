@@ -12,6 +12,8 @@ import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import { TextDialog } from '~/components/ui/text-dialog'
 import { useScopedTask, useScopeKey, useScopedQuery } from '~/gateway/scope-guard'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
+import { chatDrafts } from '~/features/chat/chat-drafts'
+import { $draftOwner } from '~/state/draft-owner'
 import { useChatInteraction } from '~/features/chat/use-chat-interaction'
 import { createAgentsApi } from '~/features/agents/agents-api'
 import { displayNameFor } from '~/features/agents/agent-labels'
@@ -21,7 +23,7 @@ import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
 import type { SessionUsage } from '~/lib/types'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $connection, $preferences } from '~/state/store'
+import { $connection, $preferences, $profileSwitching, $sessionSelecting } from '~/state/store'
 
 interface ChatScreenProps {
   active?: boolean
@@ -33,10 +35,23 @@ interface ChatScreenProps {
 export function ChatScreen({ active = true, controller, conversation, mediaConnection = controller.gateway }: ChatScreenProps) {
   const chat = useStore($chat)
   const connection = useStore($connection)
+  const selecting = useStore($sessionSelecting)
+  const profileSwitching = useStore($profileSwitching)
+  const owner = useStore($draftOwner)
+  const composerReady = connection.phase === 'connected' && !selecting && !profileSwitching && !owner.locked
+  useStore(chatDrafts.$version)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
   const entries = chat.transcript.entries
   const displayItems = useMemo(() => groupAgentActivity(entries), [entries])
   const { interaction, state: interactionState } = useChatInteraction({ conversation, mediaConnection })
   const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
+  const draftRecord = interaction.record()
+  const otherDrafts = chatDrafts.list().filter(record => record.key !== draftRecord?.key)
+  const editValid = !editTarget || entries.some(entry => entry.rowId === editTarget.rowId && 'editTarget' in entry && entry.editTarget)
+  const copyDraft = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); setRecoveryError('Copied draft text.') }
+    catch { setRecoveryError('Could not copy. Select the recovered text and copy it manually.') }
+  }
   const [sessionActionError, setSessionActionError] = useState<string | null>(null)
   const [showSessionActions, setShowSessionActions] = useState(false)
   const [renameSession, setRenameSession] = useState(false)
@@ -151,6 +166,31 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         {chat.tools.length > 0 && (
           <AgentActivity hasSessionError={Boolean(chat.error)} key={`tools:${chat.runtimeSessionId ?? chat.storedSessionId ?? 'current'}`} running={chat.running} tools={chat.tools} />
         )}
+      {draftRecord?.recoveries.map(item => <details className="data-card draft-recovery" key={item.id}>
+        <summary>{item.status === 'pending' ? 'Message submission pending' : item.status === 'uncertain' ? 'Delivery not confirmed. Check the conversation before sending again.' : item.status === 'conflict' ? 'Another draft was preserved' : 'Failed message preserved'}</summary>
+        <pre>{item.content.text}</pre>
+        {item.content.attachments.map((file, index) => <p key={index}>{file.name}</p>)}
+        <Button onClick={() => void copyDraft(item.content.text)} size="sm" variant="text">Copy recovered text</Button>
+        {item.status !== 'pending' && <>
+          <Button onClick={() => interaction.recover(item.id)} size="sm" variant="text">Restore draft</Button>
+          <Button onClick={() => interaction.discard(item.id)} size="sm" variant="text">Discard recovered message</Button>
+        </>}
+      </details>)}
+      {otherDrafts.length > 0 && <details className="data-card draft-recovery">
+        <summary>Other unfinished messages ({otherDrafts.length})</summary>
+        {otherDrafts.map(record => <details key={record.key}>
+          <summary>{record.profile === null ? 'Default profile' : `Profile ${record.profile}`} · {record.provisional ? 'Unlinked draft' : `Conversation ${record.conversation}`}</summary>
+          <pre>{record.content.text}</pre>
+          {record.content.normal && <pre>{record.content.normal.text}</pre>}
+          {record.content.attachments.map((file, index) => <p key={index}>{file.name}. Select this file again after recovery.</p>)}
+          <Button onClick={() => void copyDraft(record.content.text)} size="sm" variant="text">Copy draft text</Button>
+          {record.recoveries.map(item => <div key={item.id}>
+            <p>{item.status === 'pending' ? 'Submission pending' : 'Check the conversation before sending recovered text.'}</p><pre>{item.content.text}</pre>
+            <Button onClick={() => void copyDraft(item.content.text)} size="sm" variant="text">Copy recovered text</Button>
+          </div>)}
+          {!record.recoveries.some(item => item.status === 'pending') && <Button onClick={() => chatDrafts.discard(record.key)} size="sm" variant="text">Discard this draft</Button>}
+        </details>)}
+      </details>}
         <div ref={viewport.bottomRef} />
       </div>
 
@@ -172,12 +212,12 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </Button>
         </div>
       )}
+      <div className="composer-wrap" ref={viewport.composerRef}>
       {attachmentRefs.length > 0 && (
         <div className="attachment-chips">
-          {attachmentRefs.map((ref, index) => <button key={`${ref}-${index}`} onClick={() => interaction.removeAttachment(index)}>{ref}</button>)}
+          {attachmentRefs.map((ref, index) => <button aria-label={`Remove attachment ${draftRecord?.content.attachments[index]?.name ?? ref}`} key={`${ref}-${index}`} onClick={() => interaction.removeAttachment(index)}>{draftRecord?.content.attachments[index]?.name ?? ref}{draftRecord?.content.attachments[index]?.runtimeId !== chat.runtimeSessionId ? ' · Select again' : ''}</button>)}
         </div>
       )}
-      <div className="composer-wrap" ref={viewport.composerRef}>
         {slashItems.length > 0 && (
           <div className="slash-popover">
             {slashItems.slice(0, 8).map((item, index) => (
@@ -190,24 +230,38 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             ))}
           </div>
         )}
+        <div className="draft-feedback">
+          {!composerReady && <p role="status">Selecting the conversation…</p>}
+      {(!owner.principal && !owner.locked) && <p className="composer-meta">Restart recovery unavailable. This gateway has not provided an account identity.</p>}
+      {(draft || attachmentRefs.length > 0 || interaction.unsaved()) && <p className="composer-meta" role="status">{interaction.saved() ? 'Saved on this device.' : 'Not saved on this device. Copy your text before closing.'}</p>}
+      {interaction.needsReattachment() && <p role="alert">Select the attached files again or remove them before sending. Files are not stored on this device.</p>}
+      {!editValid && <p role="alert">The edited message is not available for retry. Your text is preserved. Copy it or cancel the edit.</p>}
+      {recoveryError && <p role="status">{recoveryError}</p>}
+      {(draft || attachmentRefs.length > 0) && <div className="composer-meta">
+        <Button onClick={() => void copyDraft(draft)} size="micro" variant="text">Copy draft</Button>
+        <Button onClick={() => interaction.discard()} size="micro" variant="text">Discard draft</Button>
+        {!interaction.saved() && <Button onClick={() => chatDrafts.flush()} size="micro" variant="text">Try saving again</Button>}
+      </div>}
+        </div>
         <div className="composer">
           <label className="icon-input" aria-label="Attach photo, PDF, or file">
             <IconPaperclip size={21} />
-            <input accept="image/*,application/pdf,audio/*,*/*" multiple onChange={event => void interaction.attach(event.target.files)} type="file" />
+            <input accept="image/*,application/pdf,audio/*,*/*" disabled={!composerReady} multiple onChange={event => { void interaction.attach(event.target.files); event.target.value = '' }} type="file" />
           </label>
           <label className="icon-input" aria-label="Record audio">
             <IconMicrophone size={21} />
-            <input accept="audio/*" capture="user" onChange={event => void interaction.transcribe(event.target.files?.[0])} type="file" />
+            <input accept="audio/*" capture="user" disabled={!composerReady} onChange={event => { void interaction.transcribe(event.target.files?.[0]); event.target.value = '' }} type="file" />
           </label>
           <Textarea
             aria-label="Message Hermes"
+            disabled={!composerReady}
             autoCapitalize="sentences"
             autoComplete="off"
             autoCorrect="on"
             spellCheck
             onChange={event => interaction.updateDraft(event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (composerReady && event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
                 void interaction.submit()
               }
@@ -219,7 +273,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           {chat.running ? (
             <Button aria-label="Interrupt" onClick={() => void conversation.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
           ) : (
-            <Button aria-label="Send" disabled={submitting || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
+            <Button aria-label="Send" disabled={!composerReady || submitting || !editValid || interaction.needsReattachment() || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
           )}
         </div>
         <div className="composer-meta">

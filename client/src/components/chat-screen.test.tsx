@@ -13,6 +13,8 @@ vi.mock('~/compat/primitives', () => ({
   Textarea: (props: React.ComponentProps<'textarea'>) => <textarea {...props} />
 }))
 
+import { verifyDraftOwner } from '~/state/draft-owner'
+import { chatDrafts } from '~/features/chat/chat-drafts'
 import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
 import { $chat, emptyChatState, reduceGatewayEvent, type Conversation } from '~/state/conversation'
@@ -60,6 +62,7 @@ function render(ui: React.ReactElement, profiles: unknown[] = []) {
 }
 
 beforeEach(() => {
+  chatDrafts.clearOwner(false)
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
   vi.stubGlobal('FileReader', class {
     error = null
@@ -567,4 +570,20 @@ describe('session management and prompts', () => {
 
     expect(container.querySelector('.prompt-card p')).toBeNull()
   })
+})
+
+
+it.each(['secret', 'sudo'] as const)('does not persist %s prompt responses', async kind => {
+  verifyDraftOwner('https://gateway.test', { org_id: 'org', user_id: 'user' })
+  $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-private', storedSessionId: 'stored-private', pendingPrompt: { kind, question: 'Provide a value', requestId: 'private-request' } })
+  const conversation = conversationStub()
+  vi.mocked(conversation.respond).mockResolvedValue(undefined)
+  const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversation} mediaConnection={mediaConnectionStub()} />)
+  fireEvent.change(screen.getByLabelText('Message Hermes'), { target: { value: 'ordinary draft' } })
+  const input = container.querySelector('input[type="password"]')!
+  fireEvent.change(input, { target: { value: 'private-password-value' } })
+  fireEvent.click(screen.getByRole('button', { name: /^Respond$/ }))
+  await waitFor(() => expect(conversation.respond).toHaveBeenCalledWith('private-password-value'))
+  expect(JSON.stringify(chatDrafts.list())).not.toContain('private-password-value')
+  expect(Object.keys(localStorage).map(key => localStorage.getItem(key)).join('')).not.toContain('private-password-value')
 })

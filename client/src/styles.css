@@ -266,7 +266,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .prompt-card p { margin: 0; color: var(--muted-foreground); }
 .prompt-card input { min-height: 44px; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5); border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); }
 .prompt-actions { display: flex; justify-content: flex-end; gap: calc(var(--spacing) * 2); }
-.attachment-chips { position: fixed; z-index: 24; inset: auto 0 calc(var(--composer-safe-lift) + 91px); padding: calc(var(--spacing) * 1.75) calc(var(--spacing) * 3.5); display: flex; gap: calc(var(--spacing) * 1.5); overflow-x: auto; }
+.attachment-chips { min-width: 0; padding: calc(var(--spacing) * 1.75) calc(var(--spacing) * 3.5); display: flex; gap: calc(var(--spacing) * 1.5); overflow-x: auto; }
 .attachment-chips button { border: 1px solid var(--line); border-radius: 999px; padding: calc(var(--spacing) * 1.25) calc(var(--spacing) * 2.25); background: var(--panel); color: var(--muted-foreground); font-size: var(--font-caption); white-space: nowrap; }
 .composer-wrap { position: fixed; z-index: 25; inset: auto 0 0; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) 0; background: linear-gradient(transparent, var(--bg) 28%); }
 .composer { min-height: 54px; padding: calc(var(--spacing) * 1.75); display: grid; grid-template-columns: auto auto 1fr auto; align-items: end; gap: calc(var(--spacing) * .75); border: 1px solid var(--line); border-radius: var(--radius-bubble); background: var(--panel); box-shadow: 0 8px 25px #0002; }
@@ -609,3 +609,13 @@ pre { white-space: pre-wrap; word-break: break-word; }
 }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+
+/* Draft recovery stays in the scrollable transcript; controls remain above the keyboard. */
+.draft-feedback { color: var(--muted-foreground); font-size: var(--font-caption); }
+.draft-feedback p { margin: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2); }
+.draft-feedback .composer-meta { padding: 0 calc(var(--spacing) * 2); }
+.draft-recovery { min-width: 0; margin-top: 0; overflow-wrap: anywhere; }
+.draft-recovery summary { min-height: 44px; cursor: pointer; }
+.draft-recovery pre { max-height: min(30dvh, 180px); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.draft-feedback button, .draft-recovery button { min-height: 44px; }

@@ -10,6 +10,8 @@ const { register, update } = vi.hoisted(() => {
 })
 vi.mock('virtual:pwa-register', () => ({ registerSW: register }))
 
+import { chatDrafts, emptyDraft } from '~/features/chat/chat-drafts'
+import { $draftOwner, verifyDraftOwner } from '~/state/draft-owner'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { $pwa, activatePwaUpdate, initializePwa, installPwa } from './lifecycle'
 
@@ -19,6 +21,8 @@ describe('PWA lifecycle', () => {
     vi.spyOn(Capacitor, 'isNativePlatform').mockReturnValue(false)
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true })
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {} })
+    chatDrafts.clearOwner(false)
+    verifyDraftOwner('https://gateway.test', { org_id: 'org', user_id: 'user' })
     $chat.set(emptyChatState())
     $pwa.set({ error: null, installPrompt: null, offline: false, updateAvailable: false, updating: false })
     register.mockClear()
@@ -64,6 +68,32 @@ describe('PWA lifecycle', () => {
     $chat.set(emptyChatState())
     await activatePwaUpdate()
     expect(update).toHaveBeenCalledOnce()
+    cleanup()
+  })
+
+  it('updates saved text but cannot reload unsaved work, uploads, or attachments', async () => {
+    const cleanup = initializePwa()
+    register.mock.calls[0]?.[0]?.onNeedRefresh?.()
+    const context = { owner: $draftOwner.get(), profile: null, conversation: 'draft-test', provisional: false }
+    const { key } = chatDrafts.select(context)
+    chatDrafts.write(key, { ...emptyDraft(), text: 'recover after update' })
+    await activatePwaUpdate()
+    expect(update).toHaveBeenCalledOnce()
+    $pwa.set({ ...$pwa.get(), updating: false })
+    update.mockClear()
+    const stop = chatDrafts.task(key)
+    await activatePwaUpdate()
+    expect(update).not.toHaveBeenCalled()
+    stop()
+    chatDrafts.write(key, { ...emptyDraft(), text: 'attachment', attachments: [{ ref: '@file:a', name: 'a', size: 1, type: '', runtimeId: 'runtime' }] })
+    await activatePwaUpdate()
+    expect(update).not.toHaveBeenCalled()
+    chatDrafts.write(key, { ...emptyDraft(), text: 'unsaved' })
+    const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    chatDrafts.write(key, { ...emptyDraft(), text: 'cannot save' })
+    await activatePwaUpdate()
+    expect(update).not.toHaveBeenCalled()
+    failure.mockRestore()
     cleanup()
   })
 

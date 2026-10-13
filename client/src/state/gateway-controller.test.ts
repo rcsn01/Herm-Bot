@@ -9,11 +9,16 @@ vi.mock('~/native/app-lifecycle', () => ({
 import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $chat, emptyChatState } from '~/state/conversation'
+import { chatDrafts, emptyDraft } from '~/features/chat/chat-drafts'
+import { $draftOwner, verifyDraftOwner } from '~/state/draft-owner'
+import { sessionBookmarkKey } from '~/state/session-selection'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
 import { $groupChats, createGroupChat, sendToGroupChat } from '~/features/groups/group-engine'
 import { $connection, $preferences, $profileSwitching, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 import { MemoryGateway } from '~/test/memory-gateway'
 import { createTranscript } from '~/transcript/transcript'
+
+const identityRequest = () => vi.fn().mockResolvedValue({ body: { org_id: 'test', user_id: 'user' }, status: 200, headers: {} })
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -67,6 +72,7 @@ beforeEach(() => {
   $connection.set({ authMode: 'token', error: null, phase: 'disconnected', status: null })
   $preferences.set({ authMode: 'token', profile: null, remoteURL: '', theme: 'system' })
   localStorage.clear()
+  verifyDraftOwner('', { org_id: 'test', user_id: 'user' })
 })
 
 afterEach(() => vi.restoreAllMocks())
@@ -151,9 +157,10 @@ describe('profile switching', () => {
 
   it('restarts the group engine on the same connection key across a profile switch', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     let created = 0
     let resumes = 0
-    const connection = { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) }
+    const connection = { request: identityRequest(), probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) }
     const gateway = new ConnectionAwareGateway()
       .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: `runtime-${++created}` }))
       .handle('session.list', () => ({ sessions: [] }))
@@ -221,7 +228,7 @@ describe('roster tap flow', () => {
       .handle('/api/sessions/newest/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
         messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
       }))
-    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
+    const controller = new GatewayController({ request: identityRequest(), probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
@@ -256,7 +263,7 @@ describe('roster tap flow', () => {
   it('does not resume again when the profile switch already landed on the newest session', async () => {
     // A profile switch clears the foreground conversation; the scope bookmark
     // is what connect() restores from.
-    localStorage.setItem('hermes.mobile.session::work', 'newest')
+    localStorage.setItem(sessionBookmarkKey({ connectionKey: '', profile: 'work' }), 'newest')
     const gateway = new ConnectionAwareGateway()
       .handle('session.resume', params => ({
         info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: (params as { session_id: string }).session_id },
@@ -266,7 +273,7 @@ describe('roster tap flow', () => {
       .handle('/api/sessions/newest/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=work', () => ({
         messages: [], pagination: { limit: 80, offset: 0, returned: 0 }
       }))
-    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
+    const controller = new GatewayController({ request: identityRequest(), probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     await controller.openProfile('work')
 
@@ -279,12 +286,13 @@ describe('roster tap flow', () => {
 
   it('reports connected as soon as a session is selected, before the list loads', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     let releaseList!: () => void
     const listGate = new Promise<void>(resolve => { releaseList = resolve })
     const gateway = new ConnectionAwareGateway()
       .handle('session.create', () => ({ info: { desktop_contract: MINIMUM_CONTRACT }, session_id: 'runtime-default' }))
       .handle('session.list', () => listGate.then(() => ({ sessions: [] })))
-    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
+    const controller = new GatewayController({ request: identityRequest(), probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) } as never, gateway)
 
     const connecting = controller.connect()
     await vi.waitFor(() => expect(gateway.calls.some(call => call.kind === 'rpc' && call.method === 'session.list')).toBe(true))
@@ -308,6 +316,7 @@ describe('roster tap flow', () => {
         return profiles
       })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const controller = new GatewayController(connection as never, gateway)
@@ -344,6 +353,7 @@ describe('roster tap flow', () => {
 describe('connection restoration', () => {
   it('completes initial connect when a user selection supersedes the pending restore', async () => {
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const resumeStarted = deferred<void>()
@@ -362,7 +372,7 @@ describe('connection restoration', () => {
         messages: [{ role: 'user', content: 'stale restore row' }]
       }))
     const controller = new GatewayController(connection as never, gateway)
-    localStorage.setItem('hermes.mobile.session::default', 'old-session')
+    localStorage.setItem(sessionBookmarkKey(), 'old-session')
 
     const connecting = controller.connect()
     await resumeStarted.promise
@@ -371,7 +381,7 @@ describe('connection restoration', () => {
 
     await controller.newSession()
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
-    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(localStorage.getItem(sessionBookmarkKey())).toBe('new-session')
     expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list')).toHaveLength(1)
     expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.list')).toHaveLength(0)
 
@@ -386,7 +396,7 @@ describe('connection restoration', () => {
     expect($connection.get()).toMatchObject({ authMode: 'token', error: null, phase: 'connected', status: { version: 'current' } })
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
     expect($chat.get().transcript.entries.some(entry => entry.content === 'stale restore row')).toBe(false)
-    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(localStorage.getItem(sessionBookmarkKey())).toBe('new-session')
     expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list')).toHaveLength(2)
     await vi.waitFor(() => expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'profiles.list')).toHaveLength(1))
     expect(gateway.calls.some(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/old-session/messages'))).toBe(false)
@@ -396,6 +406,7 @@ describe('connection restoration', () => {
 
   it('completes reconnect when a user selection supersedes the pending restore', async () => {
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const resumeStarted = deferred<void>()
@@ -423,7 +434,7 @@ describe('connection restoration', () => {
       }))
       .handle('/api/sessions/new-session/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({ messages: [] }))
     const controller = new GatewayController(connection as never, gateway)
-    localStorage.setItem('hermes.mobile.session::default', 'old-session')
+    localStorage.setItem(sessionBookmarkKey(), 'old-session')
 
     await controller.connect()
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-old-session', storedSessionId: 'old-session' })
@@ -436,7 +447,7 @@ describe('connection restoration', () => {
 
     await controller.newSession()
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
-    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(localStorage.getItem(sessionBookmarkKey())).toBe('new-session')
     const listCallsAfterCreate = gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list').length
 
     oldResume.resolve({
@@ -448,7 +459,7 @@ describe('connection restoration', () => {
     await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
 
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-new-session', storedSessionId: 'new-session' })
-    expect(localStorage.getItem('hermes.mobile.session::default')).toBe('new-session')
+    expect(localStorage.getItem(sessionBookmarkKey())).toBe('new-session')
     expect(gateway.calls.filter(call => call.kind === 'request' && String((call.value as { path: string }).path).includes('/api/sessions/')).length).toBe(historyCallsBeforeReconnect)
     expect(gateway.calls.filter(call => call.kind === 'rpc' && call.method === 'session.list')).toHaveLength(listCallsAfterCreate)
     controller.dispose()
@@ -456,6 +467,7 @@ describe('connection restoration', () => {
 
   it('a warm latest tap during reconnect does not supersede restore or retain stale history', async () => {
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const resumeStarted = deferred<void>()
@@ -486,7 +498,7 @@ describe('connection restoration', () => {
         return { messages: [{ role: 'assistant', content: `history-${historyCount}` }] }
       })
     const controller = new GatewayController(connection as never, gateway)
-    localStorage.setItem('hermes.mobile.session::default', 'same-session')
+    localStorage.setItem(sessionBookmarkKey(), 'same-session')
 
     await controller.connect()
     expect($chat.get()).toMatchObject({ runtimeSessionId: 'runtime-before-reconnect', storedSessionId: 'same-session' })
@@ -567,7 +579,9 @@ describe('connection restoration', () => {
 
   it('restores transport-state observation when StrictMode reinitializes the controller', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new ConnectionAwareGateway()
@@ -592,7 +606,9 @@ describe('connection restoration', () => {
 
   it('reconnects when the foreground transport drops after being connected', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new ConnectionAwareGateway()
@@ -614,8 +630,10 @@ describe('connection restoration', () => {
 
   it('retains the cached session while an intentional background close reconnects', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     $chat.set({ ...emptyChatState(), storedSessionId: 'stored-1' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new ConnectionAwareGateway()
@@ -663,7 +681,9 @@ describe('connection restoration', () => {
 
   it('lets the latest foreground reconnect win when resume fires twice', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     let createCount = 0
@@ -707,7 +727,9 @@ describe('connection restoration', () => {
 
   it('surfaces authentication failure after a foreground reconnect', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     let createCount = 0
@@ -736,10 +758,12 @@ describe('connection restoration', () => {
 
   it('does not let a foreground event undo an in-progress logout', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     let releaseLogout!: () => void
     const logoutGate = new Promise<void>(resolve => { releaseLogout = resolve })
     const connection = {
       logout: vi.fn(() => logoutGate),
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new ConnectionAwareGateway()
@@ -767,6 +791,7 @@ describe('connection restoration', () => {
   it('opens a fresh session when a saved session no longer exists', async () => {
     $chat.set({ ...emptyChatState(), storedSessionId: 'deleted-session' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new MemoryGateway()
@@ -784,7 +809,9 @@ describe('connection restoration', () => {
 
   it('does not report connected when the profile session refresh fails', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new ConnectionAwareGateway()
@@ -801,7 +828,9 @@ describe('connection restoration', () => {
 
   it('does not publish a session list after the captured profile changes mid-connect', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     let releaseList!: () => void
@@ -829,9 +858,11 @@ describe('connection restoration', () => {
 
   it('opens the selected profile after a delayed connection is superseded', async () => {
     $preferences.set({ ...$preferences.get(), remoteURL: 'https://gateway.test' })
+    verifyDraftOwner('https://gateway.test', { org_id: 'test', user_id: 'user' })
     let releaseInitial!: () => void
     const initialGate = new Promise<void>(resolve => { releaseInitial = resolve })
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new ConnectionAwareGateway()
@@ -876,6 +907,7 @@ describe('connection restoration', () => {
 describe('conversation delegation', () => {
   it('publishes the opened session through the conversation when connecting', async () => {
     const connection = {
+      request: identityRequest(),
       probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } })
     }
     const gateway = new MemoryGateway()
@@ -915,7 +947,7 @@ describe('transcript provenance', () => {
 
   it('reclassifies a non-prefixed active session when refresh supplies cron source', async () => {
     $chat.set({ ...emptyChatState(), storedSessionId: 'scheduled-1' })
-    const connection = { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) }
+    const connection = { request: identityRequest(), probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { version: 'current' } }) }
     const gateway = new MemoryGateway()
       .handle('session.resume', () => ({
         info: { desktop_contract: MINIMUM_CONTRACT, stored_session_id: 'scheduled-1' },
@@ -1136,7 +1168,7 @@ describe('roster tap into a desktop conversation', () => {
         pagination: { limit: 80, offset: 0, returned: 1 }
       }))
     const controller = new GatewayController(
-      { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: null }) } as never,
+      { request: identityRequest(), probe: vi.fn().mockResolvedValue({ authMode: 'token', status: null }) } as never,
       gateway
     )
 
@@ -1147,6 +1179,31 @@ describe('roster tap into a desktop conversation', () => {
       .map(call => (call.value as { session_id: string }).session_id)
     expect(resumedIds).toContain('codex-desktop-1')
     expect($chat.get().storedSessionId).toBe('codex-desktop-1')
+    controller.dispose()
+  })
+})
+
+
+describe('draft account lifecycle', () => {
+  it('clears local drafts even when remote logout rejects', async () => {
+    const { key } = chatDrafts.select({ owner: $draftOwner.get(), profile: null, conversation: 'private', provisional: false })
+    chatDrafts.write(key, { ...emptyDraft(), text: 'private draft' })
+    const controller = new GatewayController({ logout: vi.fn().mockRejectedValue(new Error('offline')) } as never, new MemoryGateway())
+    await expect(controller.logout()).rejects.toThrow('offline')
+    expect(localStorage.getItem(key)).toBeNull()
+    expect(chatDrafts.list()).toEqual([])
+    expect($draftOwner.get().locked).toBe(true)
+    controller.dispose()
+  })
+
+  it('keeps token gateways without account identity memory-only', async () => {
+    const connection = { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { auth_required: false } }), request: vi.fn().mockRejectedValue(Object.assign(new Error('unsupported'), { status: 404 })) }
+    const gateway = new MemoryGateway().handle('session.create', () => sessionReply('new'))
+      .handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController(connection as never, gateway)
+    await controller.connect()
+    expect($draftOwner.get().principal).toBeNull()
+    expect($connection.get().phase).toBe('connected')
     controller.dispose()
   })
 })

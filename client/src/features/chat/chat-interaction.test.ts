@@ -64,7 +64,7 @@ beforeEach(() => {
 })
 
 describe('session state', () => {
-  it('preserves typed text and clears session-bound state on a session switch', async () => {
+  it('isolates typed text and restores it when returning to the conversation', async () => {
     const { commands, interaction: subject } = interaction()
     vi.mocked(commands.attach).mockResolvedValue('@file:one')
     await subject.attach([new File(['one'], 'one.txt')])
@@ -75,12 +75,14 @@ describe('session state', () => {
 
     expect(subject.$state.get()).toEqual({
       attachmentRefs: [],
-      draft: 'plain draft',
+      draft: '',
       editTarget: null,
       error: null,
       slashItems: [],
       submitting: false
     })
+    subject.setSession('session-1')
+    expect(subject.$state.get().draft).toBe('plain draft')
   })
 
   it('does not reset state when setSession receives the current ID', () => {
@@ -262,7 +264,7 @@ describe('attachments', () => {
 
     expect(commands.attach).toHaveBeenCalledTimes(3)
     expect(subject.$state.get()).toMatchObject({
-      attachmentRefs: ['@file:first', '@file:third'],
+      attachmentRefs: ['@file:first', '', '@file:third'],
       error: 'second failed'
     })
   })
@@ -280,15 +282,15 @@ describe('attachments', () => {
     await attaching
 
     expect(commands.attach).toHaveBeenCalledTimes(1)
-    expect(subject.$state.get()).toMatchObject({ attachmentRefs: [], error: null })
+    expect(subject.$state.get()).toMatchObject({ attachmentRefs: ['', ''], error: null })
   })
 
-  it('treats an undefined reference as a silent full stop', async () => {
+  it('retains filenames for an unconfirmed upload and stops the batch', async () => {
     const { commands, interaction: subject } = interaction()
     vi.mocked(commands.attach).mockResolvedValue(undefined)
     await subject.attach([new File(['1'], 'one.txt'), new File(['2'], 'two.txt')])
     expect(commands.attach).toHaveBeenCalledTimes(1)
-    expect(subject.$state.get()).toMatchObject({ attachmentRefs: [], error: null })
+    expect(subject.$state.get()).toMatchObject({ attachmentRefs: ['', ''], error: expect.stringContaining('not confirmed') })
   })
 
   it('appends an empty-string reference and continues to the next file', async () => {
@@ -426,4 +428,81 @@ describe('disposal', () => {
     subject.updateDraft('ignored')
     expect(subject.$state.get().draft).toBe('/')
   })
+})
+
+
+describe('draft recovery', () => {
+  it('keeps a newer draft when an older send fails', async () => {
+    const { commands, interaction: subject } = interaction()
+    const pending = deferred<void>()
+    vi.mocked(commands.send).mockReturnValue(pending.promise)
+    subject.updateDraft('first message')
+    const submitted = subject.submit()
+    subject.updateDraft('next message')
+    pending.reject(new Error('request refused'))
+    await submitted
+    expect(subject.$state.get().draft).toBe('next message')
+    expect(subject.record()?.recoveries[0]).toMatchObject({ status: 'failed', content: { text: 'first message' } })
+  })
+
+  it('preserves an uncertain acknowledgement for explicit recovery', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.send).mockResolvedValue('uncertain')
+    subject.updateDraft('possibly submitted')
+    await subject.submit()
+    expect(subject.record()?.recoveries[0].status).toBe('uncertain')
+    expect(subject.$state.get().error).toContain('Delivery not confirmed')
+    expect(commands.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores the normal draft when cancelling an edit', () => {
+    const { interaction: subject } = interaction()
+    subject.updateDraft('next question')
+    subject.beginEdit({ content: 'old question', rowId: 4 })
+    subject.updateDraft('edited question')
+    subject.cancelEdit()
+    expect(subject.$state.get().draft).toBe('next question')
+  })
+
+  it('requires file selection again after a new runtime and replaces its placeholder', async () => {
+    const { commands, interaction: subject } = interaction()
+    const file = new File(['one'], 'one.txt')
+    vi.mocked(commands.attach).mockResolvedValue('@file:one')
+    await subject.attach([file])
+    const owner = { gateway: '', principal: null, generation: 0, locked: false }
+    subject.setContext({ owner, profile: null, conversation: 'session-1', provisional: false }, 'new-runtime')
+    expect(subject.needsReattachment()).toBe(true)
+    await subject.submit()
+    expect(commands.send).not.toHaveBeenCalled()
+    await subject.attach([file])
+    expect(subject.needsReattachment()).toBe(false)
+    expect(subject.$state.get().attachmentRefs).toEqual(['@file:one'])
+  })
+})
+
+
+it('keeps an in-flight upload attached to the same conversation during stored-ID promotion', async () => {
+  const { commands, media } = interaction()
+  const subject = new ChatInteraction(commands, media)
+  const owner = { gateway: '', principal: null, generation: 0, locked: false }
+  subject.setContext({ owner, profile: null, conversation: 'provisional', provisional: true }, 'runtime')
+  const pending = deferred<string>()
+  vi.mocked(commands.attach).mockReturnValue(pending.promise)
+  const uploaded = subject.attach([new File(['one'], 'one.txt')])
+  subject.setContext({ owner, profile: null, conversation: 'stored', provisional: false }, 'runtime')
+  pending.resolve('@file:one')
+  await uploaded
+  expect(subject.$state.get().attachmentRefs).toEqual(['@file:one'])
+  expect(subject.record()?.conversation).toBe('stored')
+})
+
+
+it('does not send a draft into a newly selected conversation before React updates its context', async () => {
+  const { commands, interaction: subject } = interaction()
+  commands.isCurrent = () => false
+  subject.updateDraft('belongs to the original conversation')
+  await subject.submit()
+  expect(commands.send).not.toHaveBeenCalled()
+  expect(subject.$state.get().draft).toBe('belongs to the original conversation')
+  expect(subject.$state.get().error).toContain('conversation changed')
 })
