@@ -35,7 +35,7 @@ Save text and completed attachment metadata locally. Do not persist raw files, a
 
 #### Identity and restore eligibility
 
-Use a normalized gateway URL, verified organization/user identity, profile, and stored session ID as the durable draft key. Encode structured fields without conflating null profiles with a literal profile named `default`. Never use an access token, cookie, display name, or email as a storage key.
+Use a normalized gateway URL, verified organization/user identity (or a distinct provider/user identity for gateway-local accounts with an explicitly empty organization), profile, and stored session ID as the durable draft key. Encode structured fields without conflating null profiles with a literal profile named `default`. Never use an access token, cookie, display name, or email as a storage key.
 
 Resolve identity during connection preparation before reading persistent drafts or restoring an account's session bookmark. Revalidate it after sign-in and authenticated reconnect. Capture an authentication generation for async operations so signing out and back into the same account still retires old work.
 

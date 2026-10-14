@@ -133,7 +133,7 @@ const server = http.createServer(async (req, res) => {
       state.calls.push({ kind: 'http', method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams) })
       if (url.pathname === '/auth/logout') return json(res, 200, { ok: true }, { 'set-cookie': 'fixture_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' })
       if (url.pathname === '/api/fixture-update') { state.swVersion = (state.swVersion ?? 0) + 1; return json(res, 200, { ok: true }) }
-      if (url.pathname === '/api/auth/me') return json(res, 200, { user_id: state.userId ?? 'fixture-user', provider: 'password', org_id: 'fixture', expires_at: 4_102_444_800 })
+      if (url.pathname === '/api/auth/me') return json(res, 200, { user_id: state.userId ?? 'fixture-user', provider: 'password', org_id: '', expires_at: 4_102_444_800 })
       if (url.pathname === '/api/auth/ws-ticket' && req.method === 'POST') {
         const ticket = `ticket-${++sequence}`
         tickets.set(ticket, { id, used: false })

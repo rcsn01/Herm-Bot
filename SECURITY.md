@@ -25,8 +25,11 @@ metadata, and failed or unconfirmed submission snapshots in this origin's
 `localStorage`. These records are not encrypted and are accessible to other
 scripts on the same origin. Do not use local draft recovery as a secure backup.
 
-Persistent recovery requires a gateway identity with stable organization and
-user IDs. Records also include the gateway, profile, and conversation identity.
+Persistent recovery requires an authenticated gateway identity with a stable
+user ID. Organization accounts use organization/user IDs. Gateway-local accounts
+with an explicitly empty organization use provider/user IDs in a distinct local
+namespace. Missing organization fields or incomplete local identities remain
+memory-only. Records also include the gateway, profile, and conversation identity.
 Gateways without that identity use memory-only drafts and display a warning.
 Account-aware session bookmarks use a new namespace; old account-blind bookmarks
 are not imported. Authentication changes retire pending callbacks.
@@ -55,7 +58,7 @@ sending a recovered message again.
 ## Saved conversation history
 
 `hermes.transcript.v2:` records include the verified gateway and organization/user
-principal, nullable profile, stored conversation ID, title, source, start time
+principal (or gateway-local provider/user principal), nullable profile, stored conversation ID, title, source, start time
 when known, last successful synchronization time, and up to 80 projected rows.
 Null profiles do not collide with a profile literally named `default`. The
 account-blind v1 cache is removed and is never imported or displayed, even when

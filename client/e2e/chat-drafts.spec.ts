@@ -29,6 +29,13 @@ test('recovers exact draft text after refresh and keeps sessions separate', asyn
   await login(page)
   await page.getByLabel('Message Hermes').fill('  First unfinished question\nwith another line')
   await expect(page.getByText('Saved on this device.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Restart recovery unavailable.', { exact: false })).toHaveCount(0)
+  const identity = await page.evaluate(async () => {
+    const response = await fetch('/api/auth/me')
+    const body = await response.json()
+    return { status: response.status, org_id: body.org_id, hasUser: typeof body.user_id === 'string' && body.user_id.length > 0, provider: body.provider }
+  })
+  expect(identity).toEqual({ status: 200, org_id: '', hasUser: true, provider: 'password' })
   await page.screenshot({ path: testInfo.outputPath('saved-draft.png') })
   await reopen(page)
   await expect(page.getByLabel('Message Hermes')).toHaveValue('  First unfinished question\nwith another line')
