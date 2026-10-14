@@ -4,12 +4,14 @@ import { useMutation, useQuery, useQueryClient, type QueryKey, type UseMutationR
 
 import { classifyGatewayError, type GatewayError } from './gateway-error'
 import { gatewayScopeKey, gatewayScopeSnapshot, sameGatewayScope, type GatewayScopeKey, type GatewayScopeSnapshot } from './gateway-scope'
-import { $draftOwner } from '~/state/draft-owner'
+import { $draftOwner, draftOwnerKey } from '~/state/draft-owner'
+import { localPrivacy } from '~/state/local-privacy'
 import { $gatewayReady, requireGatewayReady, $preferences } from '~/state/store'
 
 export interface CurrentGatewayScope extends GatewayScopeSnapshot {
   /** Changes even when the user switches away and back to the same profile. */
   generation: number
+  privacyRevision?: string | null
 }
 
 let generation = 0
@@ -35,13 +37,14 @@ export function currentGatewayScope(): CurrentGatewayScope {
     generation += 1
     last = current
   }
-  return { ...current, generation }
+  return { ...current, generation, privacyRevision: localPrivacy.revision(draftOwnerKey($draftOwner.get())) }
 }
 
 /** True only while the captured connection/profile is still foreground. */
 export function isCurrentGatewayScope(scope: CurrentGatewayScope): boolean {
   const current = currentGatewayScope()
   return scope.generation === current.generation && sameGatewayScope(scope, current)
+    && (scope.privacyRevision === undefined || scope.privacyRevision === current.privacyRevision)
 }
 
 export interface ScopedTask {

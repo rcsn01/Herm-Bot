@@ -141,7 +141,7 @@ describe('chat interaction wiring', () => {
     const connection = mediaConnectionStub()
     vi.mocked(connection.request).mockResolvedValue({ body: { data_url: 'data:audio/wav;base64,AA==' }, headers: {}, status: 200 })
     const play = vi.fn().mockResolvedValue(undefined)
-    vi.stubGlobal('Audio', class { play = play })
+    vi.stubGlobal('Audio', class { play = play; pause = vi.fn() })
 
     render(<ChatScreen mediaConnection={connection} controller={controllerStub()} conversation={conversationStub()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }))

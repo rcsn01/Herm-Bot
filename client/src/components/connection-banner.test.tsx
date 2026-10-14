@@ -14,6 +14,12 @@ it('uses evidence-based wording and offers Retry after failure', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   expect(retry).toHaveBeenCalledOnce()
 })
+it('explains an authenticated empty selection after clearing without claiming the gateway failed', () => {
+  $chat.set(emptyChatState())
+  render(<ConnectionBanner onRetry={vi.fn()} />)
+  expect(screen.getByRole('status').textContent).toBe('No conversation selected. Open a conversation to load history.')
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+})
 it('explicit offline evidence never claims the server failed', () => {
   $networkStatus.set({ status: 'offline' })
   render(<ConnectionBanner onRetry={vi.fn()} />)

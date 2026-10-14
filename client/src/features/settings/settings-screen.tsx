@@ -20,6 +20,7 @@ import { SettingsPageShell } from './settings-page-shell'
 import { SETTINGS_ENTRIES, type SettingsEntry } from './settings-registry'
 import { SettingsAdministrationScreen } from './settings-administration-screen'
 import { MemorySettings } from './memory-settings'
+import { PrivacySettings } from './privacy-settings'
 import { isNativeIOS } from '~/native/hermes-connection'
 import { PwaInstallHelp } from '~/pwa/PwaStatus'
 import { $webPush, disableWebPush, enableWebPush, refreshWebPushState } from '~/pwa/push'
@@ -40,6 +41,7 @@ const ICONS: Record<string, typeof IconSettings> = {
   notifications: IconBell,
   plugins: IconPlug,
   providers: IconNetwork,
+  privacy: IconLock,
   safety: IconShield,
   'tools-keys': IconKey,
   voice: IconSpeakerphone,
@@ -59,6 +61,7 @@ export function SettingsScreen({ controller, workspace }: { controller: GatewayC
 
   if (route.type === 'settings-category') {
     if (route.category === 'model') return <RemoteSettings onBack={back}><ModelsScreen onBack={back} showBack={showModelBack} /></RemoteSettings>
+    if (route.category === 'privacy') return <PrivacySettings controller={controller} onBack={back} />
     if (route.category === 'appearance') return <AppearanceSettings onBack={back} />
     if (route.category === 'memory') return <RemoteSettings onBack={back}><MemorySettings onBack={back} /></RemoteSettings>
     if (route.category === 'notifications') return <NotificationsSettings onBack={back} />

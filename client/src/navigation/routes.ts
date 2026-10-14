@@ -78,6 +78,7 @@ export type SettingsCategory =
   | 'memory'
   | 'model'
   | 'notifications'
+  | 'privacy'
   | 'keyboard-shortcuts'
   | 'safety'
   | 'voice'
@@ -92,6 +93,7 @@ export const SETTINGS_CATEGORIES = [
   'memory',
   'model',
   'notifications',
+  'privacy',
   'keyboard-shortcuts',
   'safety',
   'voice',

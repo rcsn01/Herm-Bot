@@ -375,10 +375,23 @@ describe('transcription', () => {
 })
 
 describe('speech', () => {
+  it('stops local playback when privacy cleanup changes context or disposes the composer', async () => {
+    const { interaction: subject, media } = interaction()
+    const pause = vi.fn()
+    vi.stubGlobal('Audio', class { play = vi.fn().mockResolvedValue(undefined); pause = pause })
+    vi.mocked(media.request).mockResolvedValue(response({ data_url: 'data:audio/wav;base64,AA==' }))
+    await subject.speak('private audio')
+    subject.setSession('cleared-session')
+    expect(pause).toHaveBeenCalledOnce()
+    await subject.speak('new audio')
+    subject.dispose()
+    expect(pause).toHaveBeenCalledTimes(2)
+  })
+
   it('plays returned audio and reports missing response fields', async () => {
     const { interaction: subject, media } = interaction()
     const play = vi.fn().mockResolvedValue(undefined)
-    vi.stubGlobal('Audio', class { play = play })
+    vi.stubGlobal('Audio', class { play = play; pause = vi.fn() })
     vi.mocked(media.request)
       .mockResolvedValueOnce(response({ data_url: 'data:audio/wav;base64,AA==' }))
       .mockResolvedValueOnce(response({}))
@@ -394,7 +407,7 @@ describe('speech', () => {
     const { interaction: subject, media } = interaction()
     const pending = deferred<ReturnType<typeof response<{ data_url: string }>>>()
     const play = deferred<void>()
-    vi.stubGlobal('Audio', class { play = () => play.promise })
+    vi.stubGlobal('Audio', class { play = () => play.promise; pause = vi.fn() })
     vi.mocked(media.request).mockReturnValue(pending.promise)
     const speaking = subject.speak('old')
 

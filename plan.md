@@ -1,6 +1,6 @@
 # Herm PWA improvement plan
 
-Status: Items 1 and 2 have application implementations. Later items remain proposed. Item 2 includes the account-scoped history and logout cleanup prerequisites from item 3, but not its new privacy settings.
+Status: Items 1, 2, and 3 have application implementations. Items 4 through 7 remain proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
 
 ## Goal and scope
 
@@ -223,34 +223,144 @@ also passed.
 
 Physical-device installed-PWA checks were not available in this session. Native
 simulator/WebView checks were not performed because `xcrun simctl` is unavailable.
-Clear local data and the persistent-history preference remain unimplemented.
+Clear local data and the persistent-history preference are implemented separately in item 3.
 
 ## 3. Tighten local conversation privacy
 
 Priority: First implementation batch, ahead of cosmetic changes.
 
-### Current evidence
+### Required outcome and settled scope
 
-Item 2 now scopes history by verified account, gateway, profile, and conversation, discards the old account-blind cache, and removes this owner's history and drafts on logout. The remaining work here is user-facing local-data removal and persistent-history preferences.
+Provide an offline-capable local Privacy settings page with two independent controls. These scope choices were confirmed by the user:
 
-Relevant files:
-- `client/src/state/transcript-cache.ts`
-- `client/src/state/conversation.ts`
-- `client/src/state/gateway-controller.ts`
-- `client/src/features/settings/settings-screen.tsx`
+1. **Save conversation history on this device** applies to the entire browser origin or native app installation, across accounts, gateways, and profiles. Turning it off removes all existing persistent conversation-history snapshots and stops future history reads and writes to persistent storage. It does not remove drafts.
+2. **Clear local data** removes the currently verified account's conversation data across every profile on the current gateway: saved history, ordinary/edit/provisional drafts, attachment metadata, failed/uncertain/conflict recovery copies, and session bookmarks. It also clears corresponding in-process conversation data. It does not clear another account or gateway.
 
-### Planned improvements
+These controls cover regular chats. During implementation the user confirmed that the separate, shared `hermes.group-chats.v4` group-room store remains outside item 3. Explain this limitation in Privacy and recommend browser site-data deletion for a full local reset; do not silently delete other accounts' group logs. Account-scoping group storage requires separate work.
 
-- Add a "Clear local data" setting with a clear explanation of what it removes. Do not imply that it deletes gateway-owned history.
-- Offer a setting to disable persistent history on shared devices.
+Both controls leave remote conversations, remote agent work, authentication, theme, gateway URL, selected profile, notification subscriptions, and unrelated preferences unchanged. Do not use `localStorage.clear()`, delete all Cache Storage, unregister the service worker, or reset native credentials. This is conversation-data cleanup, not a full app reset or secure erasure guarantee.
 
-### Verification
+History opt-out alone is not a no-storage mode. Explain next to the control that unfinished drafts are still saved separately and that sign out or Clear local data removes this account's drafts. Keep item 1's draft-loss protection intact.
 
-- Another account cannot render the previous account's cached history or drafts.
-- Logout clears the intended local data even if gateway sign-out fails.
-- Disabling persistent history stops future writes and handles existing cached content according to the stated policy.
-- Clearing local data does not delete remote sessions or change unrelated settings without warning.
-- Corrupt cache entries and storage quota failures do not break chat.
+### Source evidence
+
+- `client/src/state/transcript-cache.ts` owns `hermes.transcript.v2:` snapshots and the in-process visited-conversation map. It already verifies account/profile identity, enforces limits, and rejects malformed records. `clearOwner()` lacks a reactive notification, installation-wide persistent purge, history preference, and cross-tab invalidation.
+- `client/src/features/chat/chat-drafts.ts` owns `hermes.drafts.v1:` records and `hermes.drafts.logout:` markers. Its ordinary storage-deletion handler intentionally preserves local text as unsaved work. Explicit privacy cleanup therefore needs an invalidation signal, not just key removal. Logout markers currently lock authentication and must not be reused unchanged for a clear action that retains sign-in.
+- `client/src/state/session-selection.ts` owns `hermes.mobile.session.v2:` bookmarks and their memory fallback. Existing deletion is private and single-profile; logout does not currently remove all owner bookmarks.
+- `client/src/state/gateway-controller.ts` already coordinates logout, runtime teardown, reconnect invalidation, and account cleanup. Conversation remains the sole writer of `$chat`. Scope/auth generations retire asynchronous work, but a clear action must not be treated as remote logout.
+- `client/src/features/settings/settings-screen.tsx` renders local Appearance/About separately from remote settings. Privacy must follow that local pattern and remain available during interruptions.
+
+### History preference behavior
+
+- Default to enabled when the preference has never been set, preserving existing behavior. Store an explicit versioned installation-wide boolean, proposed `hermes.privacy.v1`. Validate stored input; a present but invalid or unreadable preference must not silently authorize persistent history access. Report degraded storage capability without breaking chat.
+- Read the policy before the cache can load persistent history or write its first snapshot. Enforce it inside TranscriptCache, not only in settings or Conversation call sites.
+- Turning off requires confirmation that saved history for all accounts on this installation will be removed, while drafts and remote history remain. Cancel leaves both policy and data unchanged.
+- Once confirmed, block persistent history reads/writes first, persist the disabled policy, then remove every app-owned `hermes.transcript.v2:` record and the legacy `hermes.transcript.v1` key. Delete by namespace even when record contents or encoded identities are corrupt. Do not read or render another account's content to purge it.
+- Keep verified in-process history and the current transcript usable. Mark all retained snapshots as memory-only so navigation never claims they are saved on this device. Existing snapshot limits and account-verification rules still apply.
+- Synchronize the policy across tabs. A tab must recheck the persisted policy before persistent reads/writes, not rely solely on delayed storage events. Receiving opt-out must discard persistent-status bookkeeping and stop loading disk snapshots without losing current draft text.
+- When disabled at startup, retry removal of leftover history. If deletion fails, keep persistence disabled and report that existing saved data may remain. Never display a success message without confirming removal.
+- If saving the preference fails, disable history for the current process anyway, attempt cleanup, and explicitly warn that the setting may not survive restart or reach other tabs. Do not claim installation-wide protection was established.
+- Turning on permits future authoritative history synchronizations to persist. Do not bulk-save the in-memory backlog or bypass current identity validation. Draft persistence is unchanged in either direction.
+
+### Clear local data behavior
+
+- Show the verified account/gateway scope and list the data categories in a destructive confirmation dialog. State that unfinished drafts will be permanently discarded locally, remote conversations remain, and sign-in/preferences are retained. Escape or Cancel performs no work.
+- Require a currently verified, unlocked owner for persistent account cleanup. For principal-less connections, offer clearly labeled current-connection memory cleanup only; do not guess ownership of stored records. During authentication expiry, explain that account verification is required rather than exposing old account data.
+- Disable confirmation while this tab has an active turn, approval, pending submission, upload, transcription, or another privacy operation. Explain which work must finish or be resolved first. Failed and uncertain recovery records can be discarded after the explicit warning. Do not send, retry, or remotely cancel work as part of cleanup.
+- On confirmation, capture the owner and retire pending local work before deleting anything. Invalidate reconnect/selection/history/composer callbacks, stop local media tasks, retire the local conversation runtime's operations, and clear foreground/query projections through their owning modules. Keep the authenticated gateway connection and Privacy page available.
+- Clear all owner profiles, including profiles not currently loaded. Match ownership from validated structured keys, not string-prefix guesses or message bodies. Delete a matching key even if its stored value is malformed. Unparseable keys with unknown ownership must be reported as a cleanup limitation, not used to justify deleting other accounts' data.
+- Clear the active draft, edit mode, attachment references, recovery lists, provisional mappings, submission bookkeeping, memory bookmarks, and cached session selections. Notify cache/draft subscribers so stale entries disappear from navigation immediately.
+- Do not automatically restore the cleared session, reload its history, or recreate its bookmark. Remain on Privacy with no selected conversation. Connection recovery can restore the authenticated transport without restoring or creating a conversation, so the user is not stranded after clearing offline. The user can explicitly reopen a remote conversation afterward; its authoritative history may then be cached again if history saving is enabled. New typing after cleanup is new draft work.
+- Coordinate account-scoped clear operations across tabs using a durable, content-free reset revision distinct from authentication logout. Publish invalidation before record deletion. All owner-scoped persistence paths must reject work from an older revision, including tabs that have not yet handled the event. Late callbacks must not repopulate history, drafts, or bookmarks.
+- Other tabs showing the same account must retire local work and clear corresponding foreground/memory state without remote logout or automatic resubmission. A remotely running turn may continue; explain that local clearing does not stop the agent. Tabs on other accounts retain their data and selection.
+- Clear is not a transaction that can restore deleted text on failure. Attempt all independent deletions, verify each owned namespace, and return category-level results. On partial failure, keep old callbacks invalidated, preserve failure details, and offer Retry. Warn that browser site-data deletion may be needed before sharing the device. Never announce complete removal if enumeration, deletion, verification, or cross-tab invalidation failed.
+- Leave minimal policy/reset markers in place where needed to prevent stale tabs from recreating deleted content. They contain no transcript, draft, credential, or display-name data.
+
+### Module ownership and implementation sequence
+
+Keep storage details out of settings JSX. Add a small app-local privacy module, proposed `client/src/state/local-privacy.ts`, owning validated history policy, reset revisions, initialization/disposal of cross-tab listeners, and structured operation results. Inject a storage adapter for tests. Keep transcript/draft/bookmark serialization and deletion within their existing owning modules. GatewayController coordinates live workspace teardown and exposes the clear command to settings.
+
+1. **Add the history policy and cache enforcement.**
+   - Implement the versioned preference and failure/status reporting.
+   - Extend TranscriptCache with installation-wide persistent purge and reactive invalidation. Preserve memory snapshots when disabling, and enforce the policy on every persistent read/write.
+   - Initialize privacy policy/listeners early enough to avoid a startup read or write race. Use the existing app lifecycle setup/cleanup pattern, including StrictMode-safe disposal.
+2. **Add complete owner cleanup and reset guards.**
+   - Add owner-wide bookmark removal and memory cleanup in SessionSelection. Add reset guards at bookmark publication as well as history/draft persistence.
+   - Extend draft cleanup with non-logout reset semantics and read-back verification. Keep existing logout markers and cross-tab logout behavior working.
+   - Make transcript cleanup notify subscribers and reject stale resets. Avoid introducing another account identity scheme; use existing gateway-local and organization principals.
+3. **Coordinate clearing in GatewayController.**
+   - Capture and recheck owner/reset revision at confirmation; never apply a dialog opened for one account to a newly selected account.
+   - Retire local runtime, reconnect, selection, and query work through existing modules. Clear `$chat` through Conversation, never directly from settings.
+   - Add the all-profile bookmark cleanup to logout too, including remote-sign-out failure paths. Share cleanup internals without making clear-local-data sign out or lock a valid account.
+   - Return explicit complete/partial/blocked results that the UI can render without inspecting storage keys.
+4. **Add local Privacy settings.**
+   - Extend `navigation/routes.ts`, settings registry metadata, route parsing tests, and local/remote category typing so Privacy never requests a backend config section.
+   - Add `features/settings/privacy-settings.tsx`, using existing page shell, shared controls, destructive confirmation, and accessible status/error feedback. Mount it outside GatewayActionRegion.
+   - Handle busy, cancelled, blocked, successful, partial-failure, memory-only, and cross-tab-change states. Keep focus sensible after dialogs and announce results without exposing draft text.
+5. **Document and verify.**
+   - Update `SECURITY.md` with exact scope, history/draft distinction, cross-tab behavior, partial-failure limits, and browser-origin/native-installation storage boundaries.
+   - Update ownership notes in `CONTEXT.md`. Mark item 3 complete only after the automated and browser checks below pass; record unavailable physical-device checks separately.
+
+No shared UI package change, dependency addition, remote deletion endpoint, offline outbox, or broader settings redesign is planned. Herm remains standalone.
+
+### Test matrix and acceptance criteria
+
+| Area | Required evidence |
+| --- | --- |
+| Policy and startup | Missing preference defaults on; valid off blocks the first persistent read/write; malformed/unreadable settings do not authorize persistence; setting-write failures are visible; reload preserves successfully saved choices. |
+| History opt-out | Removes all accounts' persistent history, including corrupt values/keys within the history namespace; current verified memory history stays readable and is labeled memory-only; drafts, bookmarks, tokens, theme, and unrelated records remain. |
+| Re-enable | Only future authoritative synchronizations persist; no automatic backlog write; existing identity, profile, limits, validation, and cold-start verification remain intact. |
+| Owner clearing | All profiles and all draft/recovery kinds plus bookmarks are removed from disk and memory; another account/gateway and unrelated preferences survive; no remote deletion/logout/cancel command occurs. |
+| Runtime and races | Deferred history, selection, upload, transcription, submission settlement, reconnect, and unmount/pagehide flush cannot recreate old data; no automatic restore; account change after opening confirmation cannot clear the wrong owner. |
+| Multiple tabs | History off is installation-wide; clear affects only matching owner tabs; same-owner foreground/cache/draft state clears without a conflict copy; delayed events cannot permit stale writes; unrelated account tabs remain usable. |
+| Failure handling | Blocked storage, quota failure, enumeration failure, partial remove failure, missing reset marker, and malformed records do not crash chat or claim successful removal; retry attempts all failed categories. |
+| Existing privacy | Organization and gateway-local accounts remain isolated; auth expiry still locks local records; logout removes history/drafts/bookmarks even if remote logout fails; callback and cross-tab logout guards remain effective. |
+| UI | Privacy is accessible offline and after exhausted retries; confirmation names the scope; Cancel/Escape is inert; destructive action has an accessible name; focus and polite/error announcements work; history-only opt-out never silently discards drafts. |
+
+Extend existing tests rather than replacing them:
+- Add `client/src/state/local-privacy.test.ts` and `client/src/features/settings/privacy-settings.test.tsx`.
+- Extend `transcript-cache.test.ts`, `draft-owner.test.ts`, `chat-drafts.test.ts`, `chat-interaction.test.ts`, `gateway-controller.test.ts`, `session-selection.test.ts`, and `conversation.test.ts` for the changed seams and races.
+- Extend settings-registry, settings-screen, navigation, and app lifecycle tests where routing or initialization changes.
+- Add `client/e2e/local-privacy.spec.ts`. Exercise history off/reload/on, current-account cleanup across profiles, another-account preservation, two-tab invalidation, offline clearing, confirmation cancellation, and injected storage failures in Chromium and WebKit. Assert actual storage contents and fixture RPC calls, not only success banners.
+
+Run from `client/`:
+
+```sh
+npm run test -- src/state/local-privacy.test.ts src/state/transcript-cache.test.ts src/state/draft-owner.test.ts src/features/chat/chat-drafts.test.ts src/features/chat/chat-interaction.test.ts src/state/gateway-controller.test.ts src/state/session-selection.test.ts src/state/conversation.test.ts src/features/settings/privacy-settings.test.tsx src/features/settings/settings-screen.test.tsx src/features/settings/settings-registry.test.ts
+npm run typecheck
+npm run test
+npm run build
+npm run test:e2e -- e2e/local-privacy.spec.ts e2e/chat-drafts.spec.ts e2e/reconnect.spec.ts e2e/pwa-foundation.spec.ts
+```
+
+Also run `git diff --check` from the repository root. Check the changed UI at phone width with keyboard navigation; manually inspect confirmation focus and status announcements. On an installed phone PWA, verify off/reopen, offline clearing, and no unwanted session restoration. If native builds ship this code, verify preference persistence and cleanup in the WebView without modifying native credentials. Report device/simulator checks that are unavailable. The user subsequently authorized implementation and a commit for item 3; deployment remains outside this work.
+
+### Implementation and verification record
+
+Implemented Settings > Privacy with the shared switch and destructive confirmation,
+installation-wide regular-chat history opt-out, account-wide history/draft/bookmark
+cleanup, reset-revision guards, category-level partial failures and retry, and
+transport-only recovery after offline clearing. Logout now clears all owner
+bookmarks too. Shared group-room logs remain excluded by the user's explicit
+scope decision, with a warning in the UI and `SECURITY.md`.
+
+Verification passed:
+- All 1,321 unit tests across 100 test files, plus TypeScript checking.
+- Production build.
+- Phone-sized Chromium/WebKit checks for local privacy, chat drafts, reconnect,
+  and PWA foundation: 99 passed, 9 existing browser-specific skips. A final
+  fresh-build Privacy run, including history-removal retry, passed all 14 tests.
+- Privacy coverage includes history off/reload/on, all-profile offline clearing,
+  preservation of other-account records/preferences, cross-tab invalidation,
+  confirmation cancellation/focus, and partial-deletion retry. Storage tests cover
+  malformed preferences, blocked writes/enumeration/removal, stale callbacks,
+  undeleted old records after reset, and delayed storage events.
+- `git diff --check`, read-only implementation review, and screenshot inspection.
+
+Physical-device installed-PWA checks and manual screen-reader announcements were
+not available. Native simulator/WebView checks could not run because
+`xcrun simctl` is unavailable. These remain device-verification limitations,
+not claims established by browser fixtures.
 
 ## 4. Give the composer clearer feedback
 

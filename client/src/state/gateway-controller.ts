@@ -4,7 +4,7 @@ import { transcriptCache, type CachedConversation } from './transcript-cache'
 import { createGuardedGateway } from '~/gateway/guarded-gateway'
 import { GatewayError } from '~/gateway/gateway-error'
 import { chatDrafts } from '~/features/chat/chat-drafts'
-import { $draftOwner, draftPrincipal, lockDraftOwner, verifyDraftOwner } from '~/state/draft-owner'
+import { $draftOwner, draftOwnerKey, draftPrincipal, lockDraftOwner, verifyDraftOwner } from '~/state/draft-owner'
 import { observeAppLifecycle, type AppLifecycleHandle } from '~/native/app-lifecycle'
 
 import { classifyGatewayError } from '~/gateway/gateway-error'
@@ -19,8 +19,9 @@ import { HermesConnection, isNativeIOS, type HermesConnectionPlugin } from '~/na
 import { resetWorkspace } from '~/navigation/workspace-navigation'
 import { Conversation } from '~/state/conversation'
 import { $connection, $preferences, $profileSwitching, $gatewayReady, requireGatewayReady, savePreferences } from '~/state/store'
-import { createSessionSelection, type SessionSelection, type SelectionRequest } from '~/state/session-selection'
-import { startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'
+import { localPrivacy, type PrivacyResult } from './local-privacy'
+import { createSessionSelection, clearOwnerBookmarks, type SessionSelection, type SelectionRequest } from '~/state/session-selection'
+import { $groupChats, $groupPrompts, startGroupEngine, stopGroupEngine } from '~/features/groups/group-engine'
 
 export const MINIMUM_CONTRACT = 6
 const RETRY_DELAYS = [0, 500, 1_500, 3_000, 5_000]
@@ -43,6 +44,10 @@ export class GatewayController {
   private unsubscribeNetwork?: () => void
   private stopNetworkObservation?: () => void
   private recovery: Promise<void> | null = null
+  private privacyCleared = false
+  private lastPrivacyReset: string | null = null
+  private unsubscribePrivacy?: () => void
+  private privacyResult: PrivacyResult = { complete: true, failures: [] }
 
   constructor(
     private readonly connection: HermesConnectionPlugin = HermesConnection,
@@ -126,7 +131,8 @@ export class GatewayController {
     return this.connect()
   }
 
-  async connect() {
+  async connect(requestedSession?: string) {
+    this.privacyCleared = false
     const generation = ++this.reconnectGeneration
     $connection.set({ ...$connection.get(), error: null, phase: 'connecting' })
     let restored
@@ -136,7 +142,7 @@ export class GatewayController {
       if (!this.isCurrentReconnect(generation)) return
       scope = currentGatewayScope()
       restored = await this.selection.restore(
-        stored => this.runtime.open({ profile: scope.profile, storedSessionId: stored, missingTargetPolicy: this.savedTargetPolicy(stored, scope) }, async () => preparation),
+        stored => this.runtime.open({ profile: scope.profile, storedSessionId: requestedSession ?? stored, missingTargetPolicy: requestedSession ? 'resume-only' : this.savedTargetPolicy(stored, scope) }, async () => preparation),
         () => this.isCurrentReconnect(generation)
       )
     } catch (error) {
@@ -172,10 +178,53 @@ export class GatewayController {
     return this.connect()
   }
 
+  privacyClearBlocker(): string | null {
+    const owner = $draftOwner.get()
+    if (owner.locked || !owner.gateway) return 'Verify your account before clearing its local data.'
+    const chat = $chat.get()
+    if (chat.running || chat.pendingPrompt || chatDrafts.hasActiveWork() || Object.values($groupChats.get()).some(room => room.running) || Object.keys($groupPrompts.get()).length > 0) return 'Finish the active turn, approval, submission, upload, or transcription before clearing local data.'
+    return null
+  }
+
+  clearLocalData(expectedOwner: string): PrivacyResult {
+    const blocker = this.privacyClearBlocker()
+    if (blocker) return { complete: false, failures: [blocker] }
+    if (draftOwnerKey($draftOwner.get()) !== expectedOwner) return { complete: false, failures: ['The account changed. Review the scope and confirm again.'] }
+    if (!$draftOwner.get().principal) {
+      this.applyPrivacyReset(expectedOwner, crypto.randomUUID(), true)
+      return this.privacyResult
+    }
+    const reset = localPrivacy.beginReset(expectedOwner)
+    return { complete: reset.complete && this.privacyResult.complete, failures: [...reset.failures, ...this.privacyResult.failures] }
+  }
+
+  private applyPrivacyReset(ownerKey: string, revision: string, external: boolean) {
+    const owner = $draftOwner.get()
+    const resetKey = JSON.stringify([ownerKey, revision])
+    if (this.disposed || ownerKey !== draftOwnerKey(owner) || this.lastPrivacyReset === resetKey) return
+    this.lastPrivacyReset = resetKey
+    this.privacyCleared = true
+    this.invalidateReconnect()
+    this.selection.invalidate()
+    stopGroupEngine()
+    this.runtime.retireOperations()
+    clearGatewayQueries()
+    this.clearForegroundScope()
+    const failures: string[] = []
+    if (!transcriptCache.clearOwner(owner, !external)) failures.push('Saved history removal could not be confirmed.')
+    if (!chatDrafts.clearOwner(false, !external)) failures.push('Draft and recovery removal could not be confirmed.')
+    if (!clearOwnerBookmarks(owner, !external)) failures.push('Session bookmark removal could not be confirmed.')
+    // Retire every captured Scope/composer context, without locking authentication.
+    $draftOwner.set({ ...owner, generation: owner.generation + 1 })
+    this.privacyResult = { complete: failures.length === 0, failures }
+    $connection.set({ ...$connection.get(), workspaceAvailable: true })
+  }
+
   async logout() {
     this.logoutInProgress = true
     const historyCleared = transcriptCache.clearOwner($draftOwner.get())
     const draftsCleared = chatDrafts.clearOwner()
+    const bookmarksCleared = clearOwnerBookmarks($draftOwner.get())
     lockDraftOwner()
     this.invalidateReconnect()
     $connection.set({ ...$connection.get(), error: null, phase: 'disconnected', workspaceAvailable: false })
@@ -191,8 +240,8 @@ export class GatewayController {
       $connection.set({ ...$connection.get(), phase: 'disconnected' })
       this.logoutInProgress = false
     }
-    if (!draftsCleared || !historyCleared) {
-      const message = 'Local draft or saved conversation removal could not be confirmed. Clear this site’s data before sharing the device.'
+    if (!draftsCleared || !historyCleared || !bookmarksCleared) {
+      const message = 'Local draft, saved conversation, or bookmark removal could not be confirmed. Clear this site’s data before sharing the device.'
       $connection.set({ ...$connection.get(), phase: 'disconnected', error: message })
       throw new Error(message, { cause: logoutError })
     }
@@ -224,6 +273,10 @@ export class GatewayController {
   }
 
   async resumeSession(storedSessionId: string) {
+    if (this.privacyCleared && !$gatewayReady.get() && $networkStatus.get().status !== 'offline') {
+      this.privacyCleared = false
+      return this.connect(storedSessionId)
+    }
     if (!$gatewayReady.get()) {
       const cached = transcriptCache.read({ owner: $draftOwner.get(), profile: $preferences.get().profile, storedSessionId })
       if (!cached) throw new GatewayError('This conversation is not saved on this device.', { kind: 'validation' })
@@ -234,6 +287,10 @@ export class GatewayController {
   }
 
   async openProfile(profile: null | string) {
+    if (this.privacyCleared && $networkStatus.get().status !== 'offline') {
+      if (!$gatewayReady.get()) { savePreferences({ profile }); await this.connect() }
+      else await this.selection.refreshSessions()
+    }
     if (!$gatewayReady.get()) {
       const cached = transcriptCache.latest($draftOwner.get(), profile)
       if (!cached) throw new GatewayError('No conversation for this bot is saved on this device.', { kind: 'validation' })
@@ -287,6 +344,8 @@ export class GatewayController {
     this.unsubscribeState = undefined
     this.unsubscribeOwner?.()
     this.unsubscribeOwner = undefined
+    this.unsubscribePrivacy?.()
+    this.unsubscribePrivacy = undefined
     this.unsubscribeNetwork?.()
     this.stopNetworkObservation?.()
     $connection.set({ ...$connection.get(), workspaceAvailable: false, phase: 'disconnected' })
@@ -362,9 +421,16 @@ export class GatewayController {
 
   private async selectRemote(request: SelectionRequest) {
     requireGatewayReady()
+    const wasCleared = this.privacyCleared
     const scope = currentGatewayScope()
-    try { return await this.selection.select(request) }
-    catch (error) {
+    try {
+      const outcome = await this.selection.select(request)
+      if (outcome && isCurrentGatewayScope(scope)) {
+        this.privacyCleared = false
+        if (wasCleared) this.installGroupEngine(scope)
+      }
+      return outcome
+    } catch (error) {
       const classified = classifyGatewayError(error)
       if (isCurrentGatewayScope(scope) && (classified.kind === 'auth' || classified.kind === 'unsupported' || $chat.get().availability === 'cached' || $chat.get().availability === 'synchronizing')) this.applyConnectionError(error)
       throw error
@@ -395,6 +461,7 @@ export class GatewayController {
   }
 
   private subscribeRuntime() {
+    this.unsubscribePrivacy = localPrivacy.$reset.listen(reset => { if (reset) this.applyPrivacyReset(reset.owner, reset.revision, reset.external) })
     this.unsubscribeOwner = $draftOwner.listen(owner => {
       if (!owner.locked || this.disposed || this.logoutInProgress) return
       this.invalidateReconnect()
@@ -474,9 +541,22 @@ export class GatewayController {
   retryConnection(): Promise<void> {
     if (this.recovery) return this.recovery
     if (!this.canRecover()) return Promise.resolve()
-    const recovery = this.reconnect(true).finally(() => { if (this.recovery === recovery) this.recovery = null })
+    const recovery = (this.privacyCleared ? this.reconnectWithoutSelection() : this.reconnect(true)).finally(() => { if (this.recovery === recovery) this.recovery = null })
     this.recovery = recovery
     return recovery
+  }
+
+  private async reconnectWithoutSelection() {
+    const generation = ++this.reconnectGeneration
+    $connection.set({ ...$connection.get(), phase: 'reconnecting', error: null })
+    try {
+      const preparation = await this.prepareDraftOwner()
+      if (!this.isCurrentReconnect(generation)) return
+      const scope = currentGatewayScope()
+      await this.runtime.connectTransport(scope.profile)
+      if (!this.isCurrentReconnect(generation) || !isCurrentGatewayScope(scope)) return
+      $connection.set({ ...$connection.get(), ...preparation, phase: 'connected', error: null, errorKind: null, workspaceAvailable: true })
+    } catch (error) { if (this.isCurrentReconnect(generation)) this.applyConnectionError(error) }
   }
 
   private canRecover() {

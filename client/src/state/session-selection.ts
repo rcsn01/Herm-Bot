@@ -1,4 +1,6 @@
 import type { CachedConversation } from './transcript-cache'
+import { localPrivacy } from './local-privacy'
+import type { DraftOwner } from './draft-owner'
 import { $draftOwner, draftOwnerKey } from '~/state/draft-owner'
 import { humanSessions, type SessionsApi } from '~/features/sessions/api'
 import { gatewayScopeKey } from '~/gateway/gateway-scope'
@@ -102,17 +104,52 @@ export function sessionBookmarkKey(scope: { connectionKey: string; profile: null
 }
 
 const memoryBookmarks = new Map<string, string>()
+let bookmarkRevision = localPrivacy.revision(draftOwnerKey($draftOwner.get()))
+$draftOwner.listen(owner => { bookmarkRevision = localPrivacy.revision(draftOwnerKey(owner)) })
+
+export function clearOwnerBookmarks(owner: DraftOwner, persistent = true): boolean {
+  const prefix = 'hermes.mobile.session.v2:'
+  let complete = true
+  const keys = new Set(memoryBookmarks.keys())
+  try { if (persistent) for (let i = 0; i < localStorage.length; i++) { const key = localStorage.key(i); if (key?.startsWith(prefix)) keys.add(key) } } catch { complete = false }
+  for (const key of keys) {
+    try {
+      const scope: unknown = JSON.parse(decodeURIComponent(key.slice(prefix.length)))
+      if (!Array.isArray(scope) || scope.length !== 3 || typeof scope[0] !== 'string' || typeof scope[1] !== 'string' || !(scope[2] === null || typeof scope[2] === 'string')) { complete = false; continue }
+      if (scope[0] !== draftOwnerKey(owner)) continue
+      memoryBookmarks.delete(key)
+      if (persistent) {
+        localStorage.removeItem(key)
+        if (localStorage.getItem(key) !== null) complete = false
+      }
+    } catch { complete = false }
+  }
+  return complete
+}
 function readSessionBookmark(scope: { connectionKey: string; profile: null | string } = scopeSnapshot()) {
-  if ($draftOwner.get().locked) return null
+  if ($draftOwner.get().locked || !localPrivacy.isCurrent(draftOwnerKey($draftOwner.get()), bookmarkRevision)) return null
   const key = sessionBookmarkKey(scope)
   if (!$draftOwner.get().principal) return memoryBookmarks.get(key) ?? null
-  try { return localStorage.getItem(key) } catch { return memoryBookmarks.get(key) ?? null }
+  try {
+    const raw = localStorage.getItem(key)
+    if (!localPrivacy.resetDurable(draftOwnerKey($draftOwner.get()))) return memoryBookmarks.get(key) ?? null
+    if (!raw || bookmarkRevision === null) return raw
+    const value: unknown = JSON.parse(raw)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const bookmark = value as { privacyRevision?: unknown; sessionId?: unknown }
+    return bookmark.privacyRevision === bookmarkRevision && typeof bookmark.sessionId === 'string' ? bookmark.sessionId : null
+  } catch { return memoryBookmarks.get(key) ?? null }
 }
 function writeSessionBookmark(value: string) {
+  if ($draftOwner.get().locked || !localPrivacy.isCurrent(draftOwnerKey($draftOwner.get()), bookmarkRevision)) return
   const key = sessionBookmarkKey()
   memoryBookmarks.set(key, value)
-  if ($draftOwner.get().principal && !$draftOwner.get().locked) {
-    try { localStorage.setItem(key, value) } catch { /* Restore remains available in this process. */ }
+  if ($draftOwner.get().principal && !$draftOwner.get().locked && localPrivacy.resetDurable(draftOwnerKey($draftOwner.get()))) {
+    try {
+      const raw = bookmarkRevision === null ? value : JSON.stringify({ privacyRevision: bookmarkRevision, sessionId: value })
+      localStorage.setItem(key, raw)
+      if (!localPrivacy.isCurrent(draftOwnerKey($draftOwner.get()), bookmarkRevision)) localStorage.removeItem(key)
+    } catch { /* Restore remains available in this process. */ }
   }
 }
 function clearSessionBookmark(scope: { connectionKey: string; profile: null | string } = scopeSnapshot()) {

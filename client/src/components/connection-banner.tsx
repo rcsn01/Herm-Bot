@@ -9,14 +9,16 @@ export function ConnectionBanner({ onRetry }: { onRetry(): unknown }) {
   const network = useStore($networkStatus)
   const chat = useStore($chat)
   const ready = useStore($gatewayReady)
+  const noSelection = ready && connection.workspaceAvailable && chat.availability === 'empty'
   const recovering = connection.phase === 'connecting' || connection.phase === 'reconnecting'
   const message = network.status === 'offline' ? 'Device offline. You can read saved conversations and prepare drafts.'
+    : noSelection ? 'No conversation selected. Open a conversation to load history.'
     : chat.availability === 'synchronizing' ? 'Updating this conversation…'
     : recovering ? 'Reconnecting to Hermes…'
     : connection.errorKind === 'server' ? 'Gateway unavailable. Saved conversations remain available.'
     : 'Cannot reach Hermes.'
   return <div className="connection-banner" hidden={ready && chat.availability === 'live'}>
     <span aria-live="polite" role="status">{ready && chat.availability === 'live' ? '' : message}</span>
-    {(!ready || chat.availability !== 'live') && !recovering && network.status !== 'offline' && connection.errorKind !== 'auth' && <Button onClick={onRetry} size="sm" variant="secondary">Retry</Button>}
+    {(!ready || chat.availability !== 'live') && !noSelection && !recovering && network.status !== 'offline' && connection.errorKind !== 'auth' && <Button onClick={onRetry} size="sm" variant="secondary">Retry</Button>}
   </div>
 }

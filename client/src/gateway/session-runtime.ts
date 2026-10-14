@@ -94,6 +94,12 @@ export class SessionRuntime implements GatewayPort {
     return { ...await this.restoreOrCreate(options, operation), preparation }
   }
 
+  /** Recover the authenticated transport without restoring or creating a conversation. */
+  async connectTransport(profile: null | string): Promise<void> {
+    const operation = this.beginScope()
+    await this.connectCurrentScope(profile, operation)
+  }
+
   async reopen(options: OpenSessionOptions): Promise<OpenSessionResult> {
     const operation = this.beginScope()
     let lastError: GatewayError | undefined
@@ -210,10 +216,15 @@ export class SessionRuntime implements GatewayPort {
     }
   }
 
-  closeScope(): void {
+  /** Retire local operations without logging out or stopping the remote agent. */
+  retireOperations(): void {
     this.generation += 1
     this.scopeController.abort(abortError())
     this.scopeController = new AbortController()
+  }
+
+  closeScope(): void {
+    this.retireOperations()
     this.transport.close()
   }
 

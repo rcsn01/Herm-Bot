@@ -38,7 +38,7 @@ Logout removes this account's draft records locally even if remote sign-out
 fails. Browser storage restrictions can prevent writes or removal, so a device
 with unavailable storage cannot guarantee restart recovery or physical deletion.
 Clear site data through the browser when handing a device to someone else.
-Logout also removes this account's transcript snapshots. Authentication expiry
+Logout also removes this account's transcript snapshots and all-profile session bookmarks. Authentication expiry
 locks both stores and clears the private workspace without deleting recoverable
 records. Another tab's owner lock retires transcript memory and invalidates late
 history writes.
@@ -83,6 +83,63 @@ reconciliation, and the user must invoke it intentionally.
 Runtime IDs, active turns, pending approvals, secret/sudo responses, credentials,
 and optimistic or incomplete streaming results are not persisted as confirmed
 history. Private API responses, drafts, and transcript snapshots are not stored
-in service-worker caches. User-facing Clear local data and a persistent-history
-preference remain separate work; use browser site-data deletion before sharing a
-device when local removal cannot be confirmed.
+in service-worker caches.
+
+## Local privacy controls
+
+Settings > Privacy is available during connection interruptions. Its controls
+cover regular chats, not the separate shared group-room store.
+
+"Save conversation history on this device" applies to the browser origin or
+native WebView installation, across all accounts, gateways, and profiles. It is
+on by default when no choice has been saved. Turning it off disables persistent
+history reads/writes and removes existing `hermes.transcript.v2:` and legacy v1
+history, including malformed history records. Verified in-memory history stays
+readable until the app closes. Turning it on saves future authoritative
+synchronizations, not an automatic dump of previously visited memory history.
+An unreadable privacy preference disables history saving rather than granting
+storage access. Removal or preference-write failures are reported separately
+from successful changes.
+
+Draft recovery is independent of history saving. Turning history off does not
+remove drafts, attachment metadata, session bookmarks, or credentials. Use sign
+out or Clear local data to remove this account's regular-chat drafts.
+
+"Clear local data" requires confirmation and removes the currently verified
+account's regular-chat history, ordinary/edit/provisional drafts, attachment
+metadata, submission/conflict recovery records, and bookmarks across every
+profile on the current gateway. Its scope excludes other accounts/gateways,
+preferences, authentication, notifications, remote conversations, and remotely
+running agents. Principal-less connections can clear their current memory only.
+Active local turns, approvals, submissions, uploads, and transcription must finish
+or be resolved before confirming. Cancel does not change data.
+
+Clear retires local operations and resets the selected conversation without
+signing out or navigating away from Privacy. Connection recovery can re-establish
+the transport, but it does not restore or create a conversation after clearing.
+Explicitly opening a conversation can load remote history again and save new
+snapshots if history saving is enabled. Other tabs showing the account reset
+their views; they do not sign out or delete new work created after the reset.
+
+`hermes.privacy.v1` stores the installation-wide policy.
+`hermes.privacy.reset.v1:` markers contain only the owner key and a random reset
+revision. Draft/history records and post-reset bookmarks carry that revision,
+so undeleted old records, delayed storage events, and stale callbacks cannot
+restore pre-reset content. Markers remain after clearing to protect against
+stale tabs. They do not contain conversation text or credentials.
+
+Storage restrictions can prevent enumeration, marker publication, preference
+writes, or deletion. A partial result is not confirmation of removal. Retry,
+close other tabs, and use browser site-data deletion before sharing a device
+when removal cannot be confirmed. Failed preference writes disable history in
+the current process but cannot guarantee that choice survives restart or reaches
+other tabs. These controls do not promise physical secure erasure or protection
+against other scripts on the origin.
+
+Group-room working copies use `hermes.group-chats.v4` and older migration keys.
+They are shared rather than account-scoped and remain outside these controls,
+including regular-chat history opt-out and sign-out cleanup. Use browser site-data
+deletion for a full local reset. Account-scoping group persistence requires a
+separate migration; current-account cleanup must not silently delete every
+account's group logs. Native WebView storage is separate from browser storage;
+clearing one installation does not clear the other or reset native credentials.

@@ -7,8 +7,9 @@ import { queryClient } from '~/gateway/query-client'
 import type { RuntimeSession, SessionRuntime } from '~/gateway/session-runtime'
 import type { StoredSession } from '~/lib/types'
 import { $chat, Conversation, emptyChatState } from '~/state/conversation'
-import { verifyDraftOwner } from '~/state/draft-owner'
-import { createSessionSelection, sessionBookmarkKey, type SessionSelection } from '~/state/session-selection'
+import { localPrivacy } from '~/state/local-privacy'
+import { $draftOwner, draftOwnerKey, verifyDraftOwner } from '~/state/draft-owner'
+import { clearOwnerBookmarks, createSessionSelection, sessionBookmarkKey, type SessionSelection } from '~/state/session-selection'
 import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
 
 let BOOKMARK_KEY = ''
@@ -145,6 +146,37 @@ beforeEach(() => {
   localStorage.clear()
   verifyDraftOwner('', { org_id: 'test', user_id: 'user' })
   BOOKMARK_KEY = sessionBookmarkKey()
+})
+
+describe('privacy bookmark resets', () => {
+  it('ignores an undeleted pre-reset bookmark and restores newly selected post-reset bookmarks', async () => {
+    localStorage.setItem(BOOKMARK_KEY, 'old-private-session')
+    const owner = $draftOwner.get()
+    localPrivacy.beginReset(draftOwnerKey(owner))
+    $draftOwner.set({ ...owner, generation: owner.generation + 1 })
+    const { selection } = createSelection()
+    const open = vi.fn(async () => ({ resumed: false, session: makeSession('new-session') }))
+    await selection.restore(open)
+    expect(open).toHaveBeenCalledWith(null)
+    const raw = JSON.parse(localStorage.getItem(BOOKMARK_KEY)!)
+    expect(raw).toMatchObject({ sessionId: 'new-session', privacyRevision: localPrivacy.revision(draftOwnerKey(owner)) })
+    const reopen = vi.fn(async () => ({ resumed: true, session: makeSession('new-session') }))
+    await selection.restore(reopen)
+    expect(reopen).toHaveBeenCalledWith('new-session')
+  })
+
+  it('clears all owner profiles, keeps other owners, and reports unidentifiable keys', () => {
+    const owner = $draftOwner.get()
+    const keys = [null, 'work'].map(profile => sessionBookmarkKey({ connectionKey: owner.gateway, profile }))
+    keys.forEach(key => localStorage.setItem(key, 'private'))
+    const other = 'hermes.mobile.session.v2:' + encodeURIComponent(JSON.stringify(['other-owner', 'other-gateway', null]))
+    localStorage.setItem(other, 'keep')
+    expect(clearOwnerBookmarks(owner)).toBe(true)
+    keys.forEach(key => expect(localStorage.getItem(key)).toBeNull())
+    expect(localStorage.getItem(other)).toBe('keep')
+    localStorage.setItem('hermes.mobile.session.v2:invalid', 'unknown')
+    expect(clearOwnerBookmarks(owner)).toBe(false)
+  })
 })
 
 describe('session roster list', () => {

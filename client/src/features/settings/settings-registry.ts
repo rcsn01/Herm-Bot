@@ -1,6 +1,6 @@
 import type { SettingsAdministrationPage, SettingsCategory } from '~/navigation/routes'
 
-export type BackendSettingsSectionId = Exclude<SettingsCategory, 'notifications' | 'keyboard-shortcuts' | 'about'>
+export type BackendSettingsSectionId = Exclude<SettingsCategory, 'notifications' | 'keyboard-shortcuts' | 'about' | 'privacy'>
 
 export interface MobileSettingsSection {
   id: BackendSettingsSectionId
@@ -75,6 +75,7 @@ const backendEntries: SettingsEntry[] = BACKEND_SETTINGS_SECTIONS.map(section =>
 
 export const SETTINGS_ENTRIES: readonly SettingsEntry[] = [
   ...backendEntries,
+  { category: 'privacy', description: 'Saved conversation history and this account’s local data.', id: 'privacy', kind: 'local', label: 'Privacy' },
   { category: 'notifications', description: 'Background Web Push delivery for this device.', id: 'notifications', kind: 'local', label: 'Notifications' },
   { description: 'Plan, entitlement, balance, and usage.', id: 'billing', kind: 'administration', label: 'Billing' },
   { description: 'Provider accounts, OAuth, keys, and endpoints.', id: 'providers', kind: 'administration', label: 'Providers' },

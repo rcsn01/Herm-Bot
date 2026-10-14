@@ -1,4 +1,5 @@
 import { atom } from 'nanostores'
+import { LocalPrivacy, localPrivacy } from '~/state/local-privacy'
 
 import { $draftOwner, draftOwnerKey, lockDraftOwner, type DraftOwner } from '~/state/draft-owner'
 
@@ -29,6 +30,7 @@ export interface DraftRecovery {
 }
 export interface DraftRecord {
   version: 1
+  privacyRevision?: string | null
   key: string
   owner: string
   conversation: string
@@ -72,12 +74,12 @@ function keyScope(key: string): [string, string | null, string] | null {
   } catch { return null }
 }
 
-function parse(raw: string | null, key: string, owner: string): DraftRecord | null {
+function parse(raw: string | null, key: string, owner: string, privacyRevision: string | null): DraftRecord | null {
   if (!raw || bytes(raw) > MAX_BYTES) return null
   try {
     const value: unknown = JSON.parse(raw)
     const scope = keyScope(key)
-    if (!scope || scope[0] !== owner || !isObject(value) || value.version !== 1 || value.key !== key || value.owner !== owner
+    if (!scope || scope[0] !== owner || !isObject(value) || value.version !== 1 || (value.privacyRevision ?? null) !== privacyRevision || value.key !== key || value.owner !== owner
       || value.conversation !== scope[2] || !string(value.conversation) || typeof value.provisional !== 'boolean' || !string(value.revision)
       || typeof value.updatedAt !== 'number' || !Number.isFinite(value.updatedAt) || !content(value.content)
       || !Array.isArray(value.recoveries) || value.recoveries.length > 100
@@ -85,7 +87,7 @@ function parse(raw: string | null, key: string, owner: string): DraftRecord | nu
         && ['pending', 'failed', 'uncertain', 'conflict'].includes(String(item.status)))) return null
     // Rebuild the validated fields rather than spreading untrusted storage into state.
     return {
-      version: 1, key, owner, profile: scope[1], conversation: value.conversation, provisional: value.provisional,
+      version: 1, privacyRevision, key, owner, profile: scope[1], conversation: value.conversation, provisional: value.provisional,
       revision: value.revision, updatedAt: value.updatedAt,
       content: cleanContent(value.content),
       recoveries: value.recoveries.map(item => ({ id: item.id, status: item.status, content: cleanContent(item.content) }))
@@ -114,7 +116,12 @@ export class ChatDrafts {
   private logoutRevision: string | null = null
   private owner: DraftOwner = { gateway: '', principal: null, generation: 0, locked: false }
 
-  constructor(private readonly storage: Storage | null) {}
+  private resetRevision: string | null = null
+  constructor(private readonly storage: Storage | null, private readonly privacy = new LocalPrivacy(storage)) {}
+
+  hasActiveWork() {
+    return this.tasks.size > 0 || this.list().some(record => record.recoveries.some(item => item.status === 'pending'))
+  }
 
   setOwner(owner: DraftOwner) {
     const changed = this.owner.generation !== owner.generation || draftOwnerKey(this.owner) !== draftOwnerKey(owner)
@@ -133,6 +140,7 @@ export class ChatDrafts {
     }
     this.owner = owner
     if (changed) {
+      this.resetRevision = this.privacy.revision(draftOwnerKey(owner))
       try { this.logoutRevision = this.storage?.getItem(LOGOUT_PREFIX + encodeURIComponent(draftOwnerKey(owner))) ?? null } catch { this.logoutRevision = null }
     }
     if (!owner.locked) this.loadOwner()
@@ -151,7 +159,7 @@ export class ChatDrafts {
     let record = this.records.get(key)
     if (!record) {
       record = {
-        version: 1, key, owner, profile: context.profile, conversation: context.conversation, provisional: context.provisional,
+        version: 1, privacyRevision: this.resetRevision, key, owner, profile: context.profile, conversation: context.conversation, provisional: context.provisional,
         revision: '', updatedAt: Date.now(), content: emptyDraft(), recoveries: []
       }
       this.records.set(key, record)
@@ -171,7 +179,7 @@ export class ChatDrafts {
 
   hasUnsaved(key: string) { return this.unsaved.has(key) }
 
-  isSaved(key: string) { return !this.unsaved.has(key) && this.owner.principal !== null }
+  isSaved(key: string) { return !this.unsaved.has(key) && this.owner.principal !== null && this.privacy.resetDurable(draftOwnerKey(this.owner)) }
 
   write(key: string, value: DraftContent) {
     const record = this.records.get(key)
@@ -269,7 +277,7 @@ export class ChatDrafts {
     for (const [source, target] of this.promotions) if (this.isSaved(target)) this.retirePromotedSource(source)
   }
 
-  clearOwner(broadcast = true) {
+  clearOwner(broadcast = true, persistent = true) {
     const owner = draftOwnerKey(this.owner)
     // Clear memory before storage or network work, so late callbacks cannot recreate it.
     for (const [key, record] of this.records) if (record.owner === owner) {
@@ -277,13 +285,27 @@ export class ChatDrafts {
       this.unsaved.delete(key)
     }
     this.tasks.clear()
+    this.promotions.clear()
+    this.provisionalIds.clear()
+    this.submissionGenerations.clear()
     let cleared = true
     try {
-      const keys = this.storageKeys()
+      const keys = persistent ? this.storageKeys() : []
       for (const key of keys) {
-        if (keyScope(key)?.[0] === owner) this.storage!.removeItem(key)
+        const scope = keyScope(key)
+        if (!scope) { cleared = false; continue }
+        if (scope[0] !== owner) continue
+        try {
+          this.storage!.removeItem(key)
+          if (this.storage!.getItem(key) !== null) cleared = false
+        } catch { cleared = false }
       }
-      if (broadcast) this.storage?.setItem(LOGOUT_PREFIX + encodeURIComponent(owner), crypto.randomUUID())
+      if (broadcast && this.storage) {
+        const key = LOGOUT_PREFIX + encodeURIComponent(owner)
+        const revision = crypto.randomUUID()
+        this.storage.setItem(key, revision)
+        if (this.storage.getItem(key) !== revision) cleared = false
+      }
     } catch { cleared = false }
     this.notify()
     return cleared
@@ -299,6 +321,8 @@ export class ChatDrafts {
     }
     if (!event.key?.startsWith(PREFIX) || this.owner.locked) return
     if (!event.newValue) {
+      // A delayed deletion event must not invalidate new work saved after a reset.
+      try { if (this.storage?.getItem(event.key)) return } catch { /* Preserve unsaved work when storage is unavailable. */ }
       const local = this.records.get(event.key)
       if (!local || !this.allowed(local)) return
       for (const recovery of local.recoveries) {
@@ -309,7 +333,7 @@ export class ChatDrafts {
       this.notify()
       return
     }
-    const external = parse(event.newValue, event.key, draftOwnerKey(this.owner))
+    const external = parse(event.newValue, event.key, draftOwnerKey(this.owner), this.resetRevision)
     if (!external) return
     const local = this.records.get(event.key)
     if (!local || local.revision === external.revision) { this.records.set(event.key, external); this.notify(); return }
@@ -335,7 +359,7 @@ export class ChatDrafts {
   }
 
   private allowed(record: DraftRecord) {
-    if (this.owner.locked || record.owner !== draftOwnerKey(this.owner)) return false
+    if (this.owner.locked || record.owner !== draftOwnerKey(this.owner) || (record.privacyRevision ?? null) !== this.resetRevision || !this.privacy.isCurrent(record.owner, this.resetRevision)) return false
     try { return (this.storage?.getItem(LOGOUT_PREFIX + encodeURIComponent(record.owner)) ?? null) === this.logoutRevision }
     catch { return true } // Unavailable storage still permits in-memory recovery.
   }
@@ -348,7 +372,7 @@ export class ChatDrafts {
     try {
       for (const key of this.storageKeys()) {
         if (this.records.has(key)) continue
-        const record = parse(this.storage!.getItem(key), key, draftOwnerKey(this.owner))
+        const record = parse(this.storage!.getItem(key), key, draftOwnerKey(this.owner), this.resetRevision)
         if (!record) continue
         const invalidateFiles = (value: DraftContent) => {
           for (const item of value.attachments) item.runtimeId = null
@@ -366,7 +390,7 @@ export class ChatDrafts {
   private preserveExternal(record: DraftRecord) {
     if (!this.owner.principal) return
     try {
-      const external = parse(this.storage?.getItem(record.key) ?? null, record.key, record.owner)
+      const external = parse(this.storage?.getItem(record.key) ?? null, record.key, record.owner, this.resetRevision)
       if (external && external.revision !== record.revision) {
         if (hasContent(external.content)) record.recoveries.push({ id: crypto.randomUUID(), content: external.content, status: 'conflict' })
         record.recoveries.push(...external.recoveries.filter(item => !record.recoveries.some(other => other.id === item.id)))
@@ -380,15 +404,18 @@ export class ChatDrafts {
     record.updatedAt = Date.now()
     const nonempty = hasContent(record.content) || record.recoveries.length > 0
     try {
-      if (!this.storage || !this.owner.principal) throw new Error('Memory-only draft')
+      if (!this.storage || !this.owner.principal || !this.privacy.resetDurable(record.owner)) throw new Error('Memory-only draft')
       if (!content(record.content) || record.recoveries.length > 100 || !record.recoveries.every(item => content(item.content))) throw new Error('Draft too large')
       const raw = JSON.stringify(record)
       const others = this.storageKeys().filter(key => key !== record.key)
         .map(key => this.storage!.getItem(key)).filter((raw): raw is string => raw !== null)
         .filter(raw => { try { return bytes(raw) <= MAX_BYTES && JSON.parse(raw).owner === record.owner } catch { return false } })
       if (nonempty && (others.length >= MAX_RECORDS || bytes(raw) + others.reduce((sum, value) => sum + bytes(value), 0) > MAX_BYTES)) throw new Error('Draft limit')
-      if (nonempty) this.storage.setItem(record.key, raw)
-      else this.storage.removeItem(record.key)
+      if (!this.allowed(record)) return
+      if (nonempty) {
+        this.storage.setItem(record.key, raw)
+        if (!this.allowed(record)) { this.storage.removeItem(record.key); return }
+      } else this.storage.removeItem(record.key)
       this.unsaved.delete(record.key)
     } catch {
       if (nonempty || this.owner.principal) this.unsaved.add(record.key)
@@ -409,7 +436,7 @@ export class ChatDrafts {
 function browserStorage(): Storage | null {
   try { return typeof window === 'undefined' ? null : window.localStorage } catch { return null }
 }
-export const chatDrafts = new ChatDrafts(browserStorage())
+export const chatDrafts = new ChatDrafts(browserStorage(), localPrivacy)
 chatDrafts.setOwner($draftOwner.get())
 $draftOwner.listen(owner => chatDrafts.setOwner(owner))
 

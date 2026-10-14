@@ -57,11 +57,14 @@ export class ChatInteraction {
 
   private gatewayAvailable = true
   private disposed = false
+  private audio: HTMLAudioElement | null = null
+  private stopAudio() { this.audio?.pause(); this.audio = null }
 
   setGatewayAvailable(available: boolean) {
     if (this.gatewayAvailable === available) return
     this.gatewayAvailable = available
     if (!available) {
+      this.stopAudio()
       ++this.sessionEpoch
       ++this.draftRevision
       for (const release of this.tasks) release()
@@ -104,6 +107,7 @@ export class ChatInteraction {
     } else this.key = next.key
     this.context = context
     if (promoted && JSON.stringify(this.record()?.content) === JSON.stringify(this.content())) return
+    this.stopAudio()
     this.sessionId = runtimeId
     this.sessionEpoch += 1
     this.draftRevision += 1
@@ -356,7 +360,9 @@ export class ChatInteraction {
       if (!this.isRevisionCurrent(epoch, revision)) return
       const audioURL = response.body.data_url
       if (!audioURL) throw new Error('The speech response did not include audio.')
-      await new Audio(audioURL).play()
+      this.stopAudio()
+      this.audio = new Audio(audioURL)
+      await this.audio.play()
     } catch (caught) {
       if (this.isRevisionCurrent(epoch, revision)) this.patch({ error: errorMessage(caught) })
     }
@@ -364,6 +370,7 @@ export class ChatInteraction {
 
   dispose() {
     if (this.disposed) return
+    this.stopAudio()
     this.drafts.flush()
     for (const release of this.tasks) release()
     this.tasks.clear()

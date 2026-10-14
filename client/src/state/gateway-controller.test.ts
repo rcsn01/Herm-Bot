@@ -10,7 +10,8 @@ import type { GatewayRequestOptions } from '~/gateway/gateway-port'
 import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
 import { $chat, emptyChatState } from '~/state/conversation'
 import { chatDrafts, emptyDraft } from '~/features/chat/chat-drafts'
-import { $draftOwner, verifyDraftOwner } from '~/state/draft-owner'
+import { localPrivacy } from '~/state/local-privacy'
+import { $draftOwner, draftOwnerKey, verifyDraftOwner } from '~/state/draft-owner'
 import { transcriptCache } from '~/state/transcript-cache'
 import { sessionBookmarkKey } from '~/state/session-selection'
 import { GatewayController, MINIMUM_CONTRACT } from '~/state/gateway-controller'
@@ -1200,6 +1201,82 @@ describe('roster tap into a desktop conversation', () => {
 })
 
 
+describe('local privacy cleanup', () => {
+  it('clears every owner profile without logout, route reset, remote deletion, or automatic restore', async () => {
+    const gateway = new ConnectionAwareGateway().handle('session.create', () => sessionReply('new')).handle('session.list', () => ({ sessions: [] }))
+    const logout = vi.fn()
+    const controller = new GatewayController({ logout, probe: vi.fn().mockResolvedValue({ authMode: 'token', status: null }), request: identityRequest() } as never, gateway)
+    await controller.connect()
+    const owner = $draftOwner.get()
+    const bookmarkKeys = [null, 'work'].map(profile => sessionBookmarkKey({ connectionKey: owner.gateway, profile }))
+    for (const profile of [null, 'work']) {
+      const draft = chatDrafts.select({ owner, profile, conversation: 'private', provisional: false })
+      chatDrafts.write(draft.key, { ...emptyDraft(), text: 'unfinished' })
+      transcriptCache.write({ owner, profile, storedSessionId: 'private' }, { title: 'Private', source: null, startedAt: null, lastSyncedAt: 1, entries: [] })
+    }
+    bookmarkKeys.forEach(key => localStorage.setItem(key, 'private'))
+    localStorage.setItem('hermes.theme', 'dark')
+    localStorage.setItem('unrelated', 'keep')
+    const before = gateway.calls.length
+    const result = controller.clearLocalData(draftOwnerKey(owner))
+    expect(result).toEqual({ complete: true, failures: [] })
+    expect(gateway.connected).toBe(true)
+    expect(logout).not.toHaveBeenCalled()
+    expect(gateway.calls.slice(before).filter(call => call.kind === 'rpc' || call.kind === 'request')).toEqual([])
+    expect($draftOwner.get()).toMatchObject({ principal: owner.principal, locked: false, generation: owner.generation + 1 })
+    expect($chat.get()).toMatchObject({ runtimeSessionId: null, storedSessionId: null })
+    expect(chatDrafts.list()).toEqual([])
+    expect(transcriptCache.list($draftOwner.get())).toEqual([])
+    bookmarkKeys.forEach(key => expect(localStorage.getItem(key)).toBeNull())
+    expect(localStorage.getItem('hermes.theme')).toBe('dark')
+    expect(localStorage.getItem('unrelated')).toBe('keep')
+    await controller.retryConnection()
+    expect($chat.get().storedSessionId).toBeNull()
+    controller.dispose()
+  })
+
+  it('rejects a confirmation captured for another owner and blocks active work', () => {
+    const controller = new GatewayController({} as never, new MemoryGateway())
+    expect(controller.clearLocalData('other').complete).toBe(false)
+    $chat.set({ ...emptyChatState(), running: true })
+    expect(controller.privacyClearBlocker()).toMatch(/Finish the active/)
+    expect(controller.clearLocalData(draftOwnerKey($draftOwner.get())).complete).toBe(false)
+    controller.dispose()
+  })
+
+  it('retains other accounts and reports failed removals while attempting every category', () => {
+    const owner = $draftOwner.get()
+    const draft = chatDrafts.select({ owner, profile: null, conversation: 'a', provisional: false })
+    chatDrafts.write(draft.key, { ...emptyDraft(), text: 'private' })
+    const otherKey = 'hermes.drafts.v1:' + encodeURIComponent(JSON.stringify(['other-owner', null, 'a']))
+    localStorage.setItem(otherKey, 'other private data')
+    const bookmark = sessionBookmarkKey(); localStorage.setItem(bookmark, 'a')
+    const remove = Storage.prototype.removeItem
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, key) { if (key === draft.key) throw new Error('Denied'); remove.call(this, key) })
+    const controller = new GatewayController({} as never, new MemoryGateway())
+    expect(controller.clearLocalData(draftOwnerKey(owner))).toMatchObject({ complete: false, failures: ['Draft and recovery removal could not be confirmed.'] })
+    expect(localStorage.getItem(bookmark)).toBeNull()
+    expect(localStorage.getItem(otherKey)).toBe('other private data')
+    controller.dispose()
+  })
+
+  it('retires deferred history and handles another tab’s reset without locking the account', async () => {
+    const history = deferred<{ messages: [] }>()
+    const gateway = new MemoryGateway().handle('session.create', () => sessionReply('a')).handle('session.list', () => ({ sessions: [] }))
+    const controller = new GatewayController({ probe: vi.fn().mockResolvedValue({ authMode: 'token', status: null }), request: identityRequest() } as never, gateway)
+    await controller.connect()
+    gateway.handle('/api/sessions/a/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => history.promise)
+    const pending = controller.conversation.reconcileHistory()
+    localPrivacy.beginReset(draftOwnerKey($draftOwner.get()))
+    history.resolve({ messages: [] })
+    await pending.catch(() => undefined)
+    expect($draftOwner.get().locked).toBe(false)
+    expect($chat.get().storedSessionId).toBeNull()
+    expect(Object.keys(localStorage).filter(key => key.startsWith('hermes.transcript.v2:') || key.startsWith('hermes.mobile.session.v2:'))).toEqual([])
+    controller.dispose()
+  })
+})
+
 describe('draft account lifecycle', () => {
   it('locks a warm verified token workspace when account verification expires', async () => {
     const connection = { probe: vi.fn().mockResolvedValue({ authMode: 'token', status: { auth_required: false } }), request: vi.fn().mockRejectedValue(Object.assign(new Error('expired'), { status: 401 })) }
@@ -1228,8 +1305,11 @@ describe('draft account lifecycle', () => {
   it('clears local drafts even when remote logout rejects', async () => {
     const { key } = chatDrafts.select({ owner: $draftOwner.get(), profile: null, conversation: 'private', provisional: false })
     chatDrafts.write(key, { ...emptyDraft(), text: 'private draft' })
+    const bookmarks = [null, 'work'].map(profile => sessionBookmarkKey({ connectionKey: $draftOwner.get().gateway, profile }))
+    bookmarks.forEach(key => localStorage.setItem(key, 'private'))
     const controller = new GatewayController({ logout: vi.fn().mockRejectedValue(new Error('offline')) } as never, new MemoryGateway())
     await expect(controller.logout()).rejects.toThrow('offline')
+    bookmarks.forEach(key => expect(localStorage.getItem(key)).toBeNull())
     expect(localStorage.getItem(key)).toBeNull()
     expect(chatDrafts.list()).toEqual([])
     expect($draftOwner.get().locked).toBe(true)

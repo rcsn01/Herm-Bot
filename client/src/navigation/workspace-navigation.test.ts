@@ -499,6 +499,8 @@ describe('restoreWorkspacePath', () => {
   })
 
   it('parses settings and group-room routes', () => {
+    expect(restoreWorkspacePath('/settings/privacy')).toBe(true)
+    expect($navigation.get().stacks.settings.at(-1)).toMatchObject({ type: 'settings-category', category: 'privacy' })
     expect(restoreWorkspacePath('/settings/model')).toBe(true)
     expect($navigation.get().activeTab).toBe('settings')
     expect($navigation.get().stacks.settings).toEqual([
