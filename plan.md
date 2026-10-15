@@ -1,6 +1,6 @@
 # Herm PWA improvement plan
 
-Status: Items 1 through 4 have application implementations. Items 5 through 7 remain proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
+Status: Items 1 through 5 have application implementations. Items 6 and 7 remain proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
 
 ## Goal and scope
 
@@ -672,32 +672,268 @@ cancellation guarantees.
 
 ## 5. Make answers easier to use
 
-Priority: Second implementation batch.
+Priority: Completed in the second implementation batch, after items 1–4.
+Status: Implemented following explicit user authorization for implementation,
+local dev-container rebuild, and commit. No remote deployment or push authorized.
 
-### Current evidence
+### Required outcome and scope
 
-Markdown rendering is minimal. The entire transcript is an `aria-live` region, which needs screen-reader testing during streaming. Collapsed tool activity already keeps execution details out of the main conversation.
+Regular-chat assistant answers should be easy to copy, read, and navigate on a
+phone. Code and tables must scroll within their own containers rather than make
+the page wider. Streaming must not repeatedly announce the conversation to a
+screen reader.
 
-Relevant files:
-- `client/src/components/message-markdown.tsx`
-- `client/src/components/chat-screen.tsx`
-- `client/src/components/agent-activity.tsx`
+Keep this work in Herm. Reuse the shared Button and existing typography, spacing,
+colors, focus styles, and 44px action targets. No shared-package change is planned.
+Do not change group-engine behavior, gateway contracts, storage, queue semantics,
+read-aloud behavior, or draft recovery. Group chat remains plain text.
 
-### Planned improvements
+Do not add syntax-highlighting packages, a Markdown-to-plain-text converter,
+rich-HTML clipboard output, automatic copying, or message export in this item.
 
-- Add copy controls for assistant answers and code blocks, with success and failure feedback.
-- Improve code formatting and mobile handling of wide tables without causing page-wide horizontal overflow.
-- Review streaming announcements so screen readers receive useful updates without repeatedly reading the entire transcript.
-- Preserve collapsed tool activity rather than turning chat into a wall of execution logs.
-- Preserve existing safe Markdown rendering and external-link behavior.
+### Evidence at planning time and constraints
 
-### Verification
+- `client/src/components/message-markdown.tsx` already uses `react-markdown`,
+  `remark-gfm`, `skipHtml`, secure external-link attributes, and `memo`. Its tests
+  prove unchanged content is not reparsed and streamed changes do render.
+- `client/src/components/chat-screen.tsx` renders Markdown for regular-chat
+  messages and already offers assistant read-aloud actions. Its whole transcript
+  is polite-live, including history, recovery controls, and execution activity.
+  A separate compact session status already says "Hermes is working", "Ready",
+  or "Status unavailable". There is no need for another token-announcement loop.
+- Existing draft-copy code calls `navigator.clipboard.writeText` directly and
+  reports through draft-recovery feedback. Answer-copy feedback must stay beside
+  the copied answer or code, not reuse that draft-specific state.
+- `client/src/transcript/transcript.ts` retains live assistant entry identity as
+  deltas arrive. History reconciliation can replace it with a durable history ID.
+  Completion clears streaming; a gateway error clears `running` without clearing
+  the entry's streaming flag. Disconnect separately finalizes streaming flags.
+  Consequently, `streaming === false` alone is not proof of successful completion.
+- `client/src/components/agent-activity.tsx` and transcript grouping already keep
+  reasoning/tool output in initially closed, independently expandable disclosures.
+  Preserve their keys, expansion state, and error visibility.
+- `client/src/styles.css` already gives code and tables horizontal overflow rules,
+  but global wrapping rules and `display: block` on tables need scoped review.
+  Code currently uses hard-coded dark colors instead of shared theme tokens.
+- `client/src/features/groups/group-screen.tsx` renders plain text but shares
+  `.message` and `.message-content` styles. Scope new Markdown rules to a dedicated
+  wrapper so group messages and tool/reasoning output do not change accidentally.
+- `client/e2e/server.mjs` supports held turns and echoed answer text, but does not
+  yet provide a deterministic paced Markdown stream or explicit completion control.
+  Extend the local fixture rather than introduce timing-dependent sleeps.
 
-- Copy produces the intended plain text or code and handles clipboard restrictions.
-- Long code, tables, links, and streamed Markdown remain readable on phone screens.
-- Controls are keyboard-accessible and have descriptive accessible names.
-- Test streaming with a screen reader; automated accessibility checks alone are insufficient.
-- Unchanged messages retain the current memoized rendering behavior.
+### Copy behavior
+
+1. Offer "Copy answer" for nonempty ordinary assistant messages only, not system
+   events, reasoning, tools, cron instructions, user messages, or recovery entries.
+   Pair it with the existing read-aloud action without changing speech ownership.
+2. Copy the exact `entry.content` captured at click time as plain clipboard text.
+   This includes its Markdown syntax. Do not copy rendered `innerText`, reasoning,
+   action labels, tool output, or other messages. Do not claim formatting has been
+   stripped. No newline trimming or content truncation.
+3. Permit copying cached/offline answers without a live gateway. During streaming,
+   label the action "Copy answer so far" and copy that snapshot. Do not wait for a
+   remote completion or silently replace the clipboard with later deltas.
+4. Give fenced and indented code blocks their own "Copy code" action. Inline code
+   keeps its normal inline rendering and has no toolbar. Read the code text from
+   the existing parsed code node, not a second Markdown parser, DOM scraping, or
+   a regex over the whole answer. Exclude fence markers, language labels, toolbar
+   text, and surrounding prose. Preserve indentation, blank lines, Unicode, and
+   the parsed code text's terminal newline. Fixtures must assert the exact payload.
+5. Use the Clipboard API directly from the user gesture. Do not preflight browser
+   permissions or require a gateway connection. Missing API, insecure-origin,
+   denied-permission, and rejected-write cases must be handled without throwing
+   through the screen. No success before the write promise resolves.
+6. Each control owns idle/pending/success/failure feedback. Disable duplicate clicks
+   while its write is pending. Keep focus on the same button as its label changes.
+   Announce concise local feedback and offer a labelled, selectable plain-text
+   fallback on failure, with an explicit selection action for manual copying.
+   The fallback must contain the same captured text, not a newer stream revision.
+7. Associate feedback with the captured snapshot, not a promise that newer deltas
+   were copied. If text changes while a write is pending, report "Copied snapshot"
+   on success and retain that snapshot for manual copying on failure. A new copy
+   attempt replaces the old feedback/fallback. Guard callbacks by operation and
+   current account/profile/session; distinguish source revisions when describing
+   results. Navigation, logout, local-data clearing, or unmount must not display
+   old text or copy feedback in another context. A clipboard write already issued
+   to the platform cannot be retracted; local cleanup must not imply otherwise.
+8. Keep all copy state and fallback text in memory. Never log answer/code payloads,
+   persist clipboard feedback, add analytics, or read clipboard contents in app code.
+
+### Module ownership and rendering
+
+- Add a small app-local `client/src/components/copy-text-button.tsx` module, with
+  tests, to own clipboard operations, stale-result guards, stable focus, local
+  feedback, and manual-copy fallback. Its interface should take the text, a
+  descriptive label, and a context identity. Derive identity from the existing
+  gateway/owner/profile/session scope and owner-generation/privacy-reset guards;
+  do not create a new account store or require a live gateway. Callers should not
+  manage promises, timers, permissions, or shared clipboard status themselves.
+  Reuse this module for answer and code controls; do not refactor existing
+  draft-copy flows here.
+- Extend `MessageMarkdown` with an optional code-copy capability, defaulting off.
+  Enable it only for ordinary assistant answers. Use stable renderer maps and
+  primitive props so unchanged messages retain their memoization behavior.
+- Keep clipboard state in child modules below `ReactMarkdown`. Clicking Copy or
+  changing its feedback must not rerun Markdown parsing. Do not add a second parse
+  to extract code or a separate parse on every composer keystroke.
+- Implement the code-block wrapper through the existing parsed `pre`/`code` nodes.
+  Preserve semantic `<pre><code>`, safe language classes, and text escaping. Treat
+  a language label as plain display text, never HTML, CSS, or executable input.
+- Add a dedicated Markdown wrapper class. Put answer actions beside their answer,
+  not in the fixed composer. Context-key local action state so live-to-history ID
+  replacement safely resets it instead of associating it with another message.
+
+### Code, table, and phone layout
+
+- Give code a compact header with an optional language label and copy control.
+  Use shared theme tokens for background, border, text, spacing, and focus rings.
+  Long lines remain unwrapped inside the code scroller, with normal text selection.
+- Wrap tables in a bounded horizontal scroller while retaining native table,
+  header, and cell semantics. Remove the need to make the table itself a block.
+  Do not render a second mobile copy, clip columns, or truncate cell contents.
+- Give code/table scroll containers descriptive accessible names, keyboard access,
+  and visible focus. Arrow-key horizontal scrolling must work without moving the
+  page horizontally. Do not intercept ordinary text selection or vertical scrolling.
+- Check explicit `min-width: 0` and `max-width: 100%` through the Markdown wrapper,
+  block wrappers, and bubbles. Inline code, long URLs, and ordinary prose can wrap;
+  they must not inherit the code block's no-wrap behavior.
+- Test 320px and 390px viewports, light/dark themes, browser text enlargement,
+  long language labels, and the keyboard-reduced visual viewport.
+  Copy actions must not obscure content or the existing read-aloud control.
+- Preserve measured composer occlusion, history-prepend anchoring, paused follow,
+  jump-to-latest, and current-position reading while copy fallback expands.
+  Do not force a user reading older content back to the newest message.
+
+### Streaming announcements and accessibility
+
+- Remove `aria-live` from the transcript container. Keep its content navigable in
+  normal reading order. Do not replace it with `role="log"`, hide streaming text
+  from assistive technology, or make the entire transcript `aria-busy`.
+- Reuse the existing compact session status as the turn-level polite announcer.
+  Make that small status atomic, not the transcript. Token deltas, tool progress,
+  history loading, reconciliation, composer typing, and copy feedback must not
+  make it reread answer text or the conversation.
+- Announce observable working/ready/unavailable status changes only. Keep existing
+  error alerts and connection feedback. Do not add "Answer completed" based on a
+  stale streaming flag, Stop acknowledgement, error, or connection loss. Automatic
+  full-answer reading is out of scope; users can navigate the answer or use Read aloud.
+- Inactive/hidden chat must not produce background token announcements or leak
+  answer/copy text when another account/profile/session is selected. Check the
+  existing shell workspace visibility before adding any visibility machinery.
+- Name ordinary assistant articles for nonvisual navigation without adding visible
+  speaker captions. Code scroll areas and copy controls must have useful names in
+  that context. Keep toolbar controls stable as copy status changes.
+- Preserve collapsed activity and independent nested disclosure behavior. Do not
+  announce hidden reasoning or turn copy actions into execution-log expansion.
+- Manually verify streaming and copying with VoiceOver or another real screen
+  reader. DOM assertions and browser accessibility snapshots cannot establish what
+  a screen reader actually announces. Record unavailable checks as verification
+  limits, not passes. Native WebView clipboard behavior needs separate device checks.
+
+### Implementation sequence
+
+1. Add focused tests for exact answer/code copy payloads, restricted clipboard
+   behavior, pending guards, stale callbacks, and unchanged-message parse counts.
+   Build the copy module and integrate it with assistant answer actions.
+2. Add code-block controls through `MessageMarkdown`, then scoped code/table layout
+   and accessibility. Test fenced/indented/inline code and incomplete streamed fences.
+3. Remove transcript-wide announcements and verify the existing compact status,
+   error feedback, article navigation, and inactive-workspace behavior. Do not add
+   a new gateway reducer or completion state machine unless evidence requires it.
+4. Add deterministic local Markdown fixture cases and
+   `client/e2e/answer-usability.spec.ts`. Cover paced deltas, explicit finish/error,
+   long code/tables, and account/session switches without live service credentials.
+5. Run focused checks, then the broader affected regressions and both builds.
+   Inspect phone screenshots and perform available clipboard/screen-reader/device
+   checks. Update `CONTEXT.md`, the implementation record here, and `SECURITY.md`
+   if the clipboard/manual-fallback privacy description needs updating.
+
+### Verification matrix and completion criteria
+
+| Area | Required checks |
+| --- | --- |
+| Answer copy | Exact Markdown string and whitespace; one message only; cached/offline availability; partial-stream snapshot; no reasoning, tools, or UI labels; empty/system/user entries excluded. |
+| Code copy | Multiple fenced blocks and languages; indented code; inline code without toolbar; blank lines, indentation, Unicode, terminal newline; incomplete/open fences; escaped HTML-looking code copied literally. |
+| Clipboard failure | Missing API; insecure/restricted context; rejected and delayed writes; duplicate clicks; success only after resolution; exact selectable fallback; keyboard selection; source changes and retry without stale success. |
+| Context/privacy | Session/profile/account switch; logout/local clearing; hidden workspace; unmount/remount; history ID replacement; no old feedback/fallback in a new context; no storage or payload logging. |
+| Markdown safety | Preserve GFM, `skipHtml`, escaping, secure external links, and default URL filtering. Test raw HTML, dangerous URL schemes, hostile language labels, tables, images, and streamed partial Markdown. No new HTML interpretation or link policy. |
+| Layout | Long code/table scrolls internally at 320px/390px; document width does not exceed viewport; semantic tables; text enlargement; light/dark tokens; keyboard-focusable scrollers; no message/action/composer overlap. |
+| Streaming accessibility | No transcript live region or per-token live text; compact working/ready/unavailable status; errors stay visible; initial/reconciled/prepended history is not announced as a new answer; manual screen-reader observation recorded separately. |
+| Nearby behavior | Collapsed activity and disclosure state; read-aloud controls; composer typing and recovery; history prepend/follow/jump; group plain-text layout; no clipboard-triggered Markdown reparse. |
+
+From `client/`, start with the copy-module, Markdown, and chat-screen unit tests,
+then the new answer-usability browser tests in Chromium and WebKit. Verify at least
+one actual clipboard write/read path on a supported secure browser after explicit
+test permission. Use stubs to exercise denied/pending/stale cases, but do not report
+mock-only tests as proof of real system clipboard behavior. Record browser/platform
+clipboard limitations separately.
+
+Before completion, run:
+- `npm run test`
+- `npm run typecheck`
+- `npm run build:native`
+- `npm run build`
+- `npm run test:e2e -- e2e/answer-usability.spec.ts e2e/composer-feedback.spec.ts e2e/chat-drafts.spec.ts e2e/pwa-foundation.spec.ts e2e/reconnect.spec.ts e2e/local-privacy.spec.ts e2e/pwa-performance.spec.ts`
+- `git diff --check`
+
+Item 5 is complete only when copy payload/failure and rendering guarantees are
+verified, affected browser flows pass, and unavailable manual checks are documented.
+Do not infer physical-phone, native WebView, screen-reader, or production-gateway
+results from local browser fixtures. The user subsequently authorized the full
+implementation, local dev-container rebuild, and commit.
+
+### Implementation and verification record
+
+Implemented assistant answer copying, parsed fenced/indented code copying,
+per-control clipboard feedback, and exact selectable manual fallback. Streaming
+copies capture a snapshot; later deltas do not rewrite the clipboard. Context,
+owner-generation, and privacy-reset keys retire pending local feedback and fallback
+text. Copy remains available for cached/offline answers. Nothing new is persisted.
+
+Code and semantic tables have bounded, labelled keyboard scrollers. A reproduced
+WebKit failure showed native ArrowRight did not scroll a focused overflow region;
+a direct-region horizontal-key handler now handles that case without intercepting
+modified keys, child controls, or vertical scrolling. Markdown styling uses shared
+theme tokens. Copy labels and feedback use foreground text for dark-theme contrast.
+Safe Markdown, external links, default URL filtering, and memoization remain intact.
+
+The regular transcript no longer has a live region. Its existing compact session
+status is atomic and inactive-workspace announcements are disabled. Assistant
+articles have accessible names. Tool/reasoning disclosures and group plain-text
+rendering remain unchanged. No new dependency or shared UI package change.
+
+Verification:
+- Full unit suite: 1,365 tests across 103 files passed, with TypeScript checking.
+- Native and browser production builds passed, including the final contrast change.
+- Broad Chromium/WebKit run: 131 passed, 11 skipped across answer usability,
+  composer feedback, draft recovery, PWA foundation/performance, reconnect, and
+  local privacy. One new skip is real system-clipboard verification in WebKit,
+  whose Playwright permissions do not expose the required read/write capability.
+- Final answer/theme smoke after the contrast refinement: 11 browser checks passed,
+  with the one documented WebKit real-clipboard skip. Dark/light screenshots were
+  inspected again after waiting for theme transitions.
+- Actual Chromium system clipboard checks copied/read both Markdown answer text
+  and parsed code. Controlled browser writes cover denied, pending, stale-profile,
+  partial-stream, and offline cases in both engines. They are not substitutes for
+  real WebKit/native system-clipboard verification.
+- Focused tests cover exact whitespace, hostile Markdown/URLs/language labels,
+  no clipboard-triggered reparse, duplicate guards, manual selection, same-owner
+  privacy resets, hidden workspace, and stale operation retirement.
+- Inspected phone-sized manual-copy and 320px code/table screenshots. Explicit
+  theme-token checks distinguish dark and light; OS-media emulation alone does
+  not change an already-resolved app theme. Theme assertions wait for button color
+  transitions rather than treating an intermediate animation color as a failure.
+- A read-only review found no concrete high/medium issues in the scoped changes.
+  `git diff --check` passed.
+- Rebuilt the local mobile service with `compose.build.yaml`, `--no-deps` and
+  health waiting. The app and `/healthz` on port 8081 return HTTP 200. The push
+  relay and persistent volumes were not rebuilt or removed.
+
+Manual screen-reader, installed-phone PWA/keyboard, and native WebView clipboard
+checks remain unavailable. `xcrun simctl` is not available in this environment.
+DOM/live-region assertions do not establish actual screen-reader announcements,
+and a native production build is not a device test. No remote deployment or push.
 
 ## 6. Improve finding older conversations
 

@@ -101,13 +101,27 @@ const server = http.createServer(async (req, res) => {
       const state = stateFor(fixtureId)
       const update = await body(req)
       if (update.reset === true) state.controls = {}
-      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt']) {
+      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream']) {
         if (typeof update[key] === 'boolean') state.controls[key] = update[key]
       }
       if (typeof update.missingSession === 'string' || update.missingSession === null) state.controls.missingSession = update.missingSession
       if (typeof update.longHistorySession === 'string' && update.longHistorySession.length <= 256) {
         const stored = update.longHistorySession
         state.messages.set(stored, [...initialMessages(stored), ...Array.from({ length: 30 }, (_, i) => ({ row_id: i + 3, role: i % 2 ? 'assistant' : 'user', content: `Saved history ${i + 1}. ${'Readable fixture paragraph. '.repeat(40)}` }))])
+      }
+      if (['delta', 'complete', 'error'].includes(update.answerEvent?.type)) {
+        for (const ws of state.sockets) {
+          if (!ws.fixtureAnswer || ws.readyState !== 1) continue
+          const type = update.answerEvent.type
+          const delta = typeof update.answerEvent.delta === 'string' ? update.answerEvent.delta : ''
+          if (type === 'delta') ws.fixtureAnswer.content += delta
+          ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
+            type: type === 'delta' ? 'message.delta' : type === 'complete' ? 'message.complete' : 'error',
+            session_id: ws.fixtureRuntime,
+            payload: type === 'delta' ? { delta } : type === 'error' ? { message: 'Fixture stream failed' } : {}
+          } }))
+          if (type !== 'delta') ws.fixtureAnswer = null
+        }
       }
       if (update.closeSockets === true) for (const ws of state.sockets) ws.close(1012, 'fixture interruption')
       if (!state.controls.delayHistory) for (const release of state.histories.splice(0)) release()
@@ -311,6 +325,8 @@ sockets.on('connection', (ws, _req, id, profile) => {
       rpcError = { code: 'SESSION_NOT_FOUND', message: 'Session not found' }
     } else if (request.method === 'session.create' || request.method === 'session.resume') {
       currentStored = stored
+      ws.fixtureRuntime = runtime
+      ws.fixtureAnswer = null
       result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: stored === 'footer-fixture' ? 'fixture/a-very-long-model-name-that-must-not-hide-the-status' : 'fixture/test-model', reasoning_effort: 'high', title: stored, ...(stored === 'footer-fixture' ? { usage: { total: 25000, context_limit: 100000 } } : {}) } }
     } else if (request.method === 'session.history') {
       result = { messages: state.messages.get(stored) ?? initialMessages(stored) }
@@ -410,14 +426,18 @@ sockets.on('connection', (ws, _req, id, profile) => {
         setTimeout(() => ws.readyState === 1 && ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'Fixture submission rejected' } })), 800)
         return
       }
-      const messages = state.messages.get(currentStored) ?? []
+      const messages = state.messages.get(currentStored) ?? (state.controls.markdownStream ? initialMessages(currentStored) : [])
       messages.push({ row_id: messages.length + 1, role: 'user', content: params.text })
-      messages.push({ row_id: messages.length + 1, role: 'assistant', content: `Fixture answer: ${params.text}` })
+      const answer = { row_id: messages.length + 1, role: 'assistant', content: state.controls.markdownStream ? '' : `Fixture answer: ${params.text}` }
+      messages.push(answer)
+      if (state.controls.markdownStream) ws.fixtureAnswer = answer
       state.messages.set(currentStored, messages)
       result = params.text === 'draft uncertain response' ? {} : { accepted: true }
     } else result = {}
     ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
-    if (request.method === 'prompt.submit') {
+    if (request.method === 'prompt.submit' && state.controls.markdownStream) {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.start', session_id: params.session_id, payload: {} } }))
+    } else if (request.method === 'prompt.submit') {
       ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: params.session_id, payload: { delta: `Fixture answer: ${params.text}` } } }))
       if (!state.controls.holdTurn && !(currentStored === 'footer-fixture' && params.text === 'hold footer activity')) {
         ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.complete', session_id: params.session_id, payload: {} } }))

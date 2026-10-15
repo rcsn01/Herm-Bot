@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageMarkdown } from '~/components/message-markdown'
+import { CopyTextButton } from '~/components/copy-text-button'
+import { localPrivacy } from '~/state/local-privacy'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
 import { BrandMark } from '~/components/brand-mark'
@@ -38,6 +40,10 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const selecting = useStore($sessionSelecting)
   const profileSwitching = useStore($profileSwitching)
   const owner = useStore($draftOwner)
+  const preferences = useStore($preferences)
+  useStore(localPrivacy.$reset)
+  const copyContext = JSON.stringify([draftOwnerKey(owner), owner.generation, localPrivacy.revision(draftOwnerKey(owner)), preferences.profile, chat.storedSessionId, chat.runtimeSessionId])
+  const canCopy = active && !owner.locked && !selecting && !profileSwitching
   const ready = useStore($gatewayReady)
   const localReady = Boolean(chat.storedSessionId || chat.runtimeSessionId) && !selecting && !profileSwitching && !owner.locked
   const composerReady = ready && localReady && chat.availability === 'live'
@@ -94,7 +100,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
 
   return (
     <section className="chat-screen">
-      <div className="transcript" aria-live="polite" ref={viewport.transcriptRef}>
+      <div className="transcript" ref={viewport.transcriptRef}>
         {chat.historyHasMore && (
           <Button className="load-earlier" disabled={!composerReady || chat.historyLoadingOlder} onClick={() => void viewport.loadOlderMessages()} ref={viewport.olderMessagesRef} size="sm" variant="secondary">
             {chat.historyLoadingOlder ? 'Loading earlier messages…' : 'Load earlier messages'}
@@ -134,7 +140,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
               </details>
             </article>
           ) : (
-            <article className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
+            <article aria-label={entry.kind === 'message' && entry.author === 'assistant' ? 'Assistant answer' : undefined} className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
               {/* Bubbles identify their speaker by side, so no author caption —
                 the meta row only carries non-positional markers (Activity is an
                 event kind, Streaming is a delivery state). */}
@@ -145,7 +151,8 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
                 </div>
               )}
               {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
-              <div className="message-content"><MessageMarkdown content={entry.content || (entry.streaming ? '…' : '')} /></div>
+              <div className="message-content"><MessageMarkdown content={entry.content || (entry.streaming ? '…' : '')} copyContext={canCopy && entry.kind === 'message' && entry.author === 'assistant' ? copyContext : null} /></div>
+              {canCopy && entry.kind === 'message' && entry.author === 'assistant' && entry.content && <CopyTextButton contextIdentity={copyContext} label={entry.streaming ? 'Copy answer so far' : 'Copy answer'} text={entry.content} />}
               {entry.author === 'user' && (
                 <Button
                   disabled={!composerReady || chat.running || !entry.editTarget}
@@ -311,7 +318,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
               <span className="composer-model-effort" title={`Reasoning effort: ${chat.info.reasoningEffort ?? 'unavailable'}`}>{chat.info.reasoningEffort ?? 'Effort unavailable'}</span>
             </div>
           )}
-          <div className={`session-activity ${chat.running ? 'working' : 'idle'}`} role="status" aria-live="polite">
+          <div className={`session-activity ${chat.running ? 'working' : 'idle'}`} role={active ? 'status' : undefined} aria-live={active ? 'polite' : 'off'} aria-atomic="true">
             <span aria-hidden className="status-dot" />
             <span>{!composerReady ? 'Status unavailable' : chat.running ? 'Hermes is working' : 'Ready'}</span>
           </div>

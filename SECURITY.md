@@ -64,6 +64,20 @@ it does not silently evict older unfinished messages. Pending or unconfirmed
 submissions are never retried automatically. Check conversation history before
 sending a recovered message again.
 
+## Answer and code copying
+
+Answer and code copying writes plain text to the system clipboard only after an
+explicit click or keyboard action. Answer copying includes the source Markdown;
+code copying excludes prose, fence markers, and controls. Streaming copies capture
+the text at click time. No clipboard reads, HTML clipboard output, payload logging,
+or new persistence are used by these controls.
+
+Clipboard failures expose the captured text in a labelled, selectable field for
+manual copying. That fallback and copy feedback remain in memory and retire on
+workspace/context changes, logout, or local-data clearing. Clearing local app data
+does not clear the system clipboard, and an already-issued platform clipboard write
+cannot be recalled. Other apps or clipboard managers may retain copied text.
+
 ## Saved conversation history
 
 `hermes.transcript.v2:` records include the verified gateway and organization/user

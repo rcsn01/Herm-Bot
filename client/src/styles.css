@@ -640,3 +640,21 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .draft-recovery pre { max-height: min(30dvh, 180px); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .draft-feedback button, .draft-recovery button { min-height: 44px; }
+
+.message-markdown { min-width: 0; max-width: 100%; white-space: normal; }
+.markdown-code-block, .markdown-table-scroll { min-width: 0; max-width: 100%; margin-block: calc(var(--spacing) * 2); }
+.markdown-code-block { border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); }
+.markdown-code-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing); padding: var(--spacing) calc(var(--spacing) * 2); border-bottom: 1px solid var(--line); }
+.markdown-code-language { min-width: 0; overflow-wrap: anywhere; font: var(--font-caption)/1.5 var(--font-mono); }
+.message-content .message-markdown pre { max-width: 100%; margin: 0; overflow-x: auto; white-space: pre; word-break: normal; overflow-wrap: normal; background: var(--panel-2); color: var(--text); font-family: var(--font-mono); }
+.message-content .message-markdown table { display: table; width: max-content; min-width: 100%; max-width: none; }
+.markdown-table-scroll { overflow-x: auto; }
+.message-markdown :not(pre) > code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-code-block pre:focus-visible, .markdown-table-scroll:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.copy-text-control { min-width: 0; max-width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing); }
+.copy-text-control button { min-width: 44px; min-height: 44px; color: var(--text); }
+.copy-feedback { font-size: var(--font-caption); color: var(--text); overflow-wrap: anywhere; }
+.copy-feedback:empty { display: none; }
+.copy-fallback { flex-basis: 100%; min-width: 0; }
+.copy-fallback label { display: block; font-size: var(--font-caption); }
+.copy-fallback textarea { display: block; width: 100%; max-height: 30dvh; margin-block: var(--spacing); padding: calc(var(--spacing) * 2); border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel); color: var(--text); resize: vertical; white-space: pre; font-family: var(--font-mono); }

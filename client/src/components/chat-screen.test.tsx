@@ -13,7 +13,8 @@ vi.mock('~/compat/primitives', () => ({
   Textarea: (props: React.ComponentProps<'textarea'>) => <textarea {...props} />
 }))
 
-import { verifyDraftOwner } from '~/state/draft-owner'
+import { verifyDraftOwner, $draftOwner, draftOwnerKey } from '~/state/draft-owner'
+import { localPrivacy } from '~/state/local-privacy'
 import { chatDrafts } from '~/features/chat/chat-drafts'
 import { ChatScreen } from '~/components/chat-screen'
 import type { ChatMediaConnection } from '~/features/chat/chat-interaction'
@@ -86,6 +87,51 @@ afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+describe('answer usability wiring', () => {
+  it('offers offline assistant copy without including user or system text and retires it when inactive', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    $chat.set({ ...emptyChatState(), availability: 'cached', transcript: createTranscript({ source: null, storedSessionId: null }, [
+      { role: 'user', content: 'private question' },
+      { role: 'assistant', content: '**exact answer**\n' },
+      { role: 'system', content: 'system event' }
+    ]) })
+    const controller = controllerStub()
+    const conversation = conversationStub()
+    const { container, rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
+    expect(screen.getAllByRole('button', { name: 'Copy answer' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy answer' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith('**exact answer**\n'))
+    expect(screen.getByRole('article', { name: 'Assistant answer' })).not.toBeNull()
+    expect(container.querySelector('.transcript')?.hasAttribute('aria-live')).toBe(false)
+    expect(container.querySelector('.session-activity')?.getAttribute('aria-atomic')).toBe('true')
+    rerender(<ChatScreen active={false} controller={controller} conversation={conversation} />)
+    expect(screen.queryByRole('button', { name: 'Copy answer' })).toBeNull()
+    expect(container.querySelector('.session-activity')?.getAttribute('aria-live')).toBe('off')
+  })
+
+  it('retires manual-copy text on same-owner privacy reset without changing the session', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('Denied')) } })
+    $chat.set({ ...emptyChatState(), transcript: createTranscript({ source: null, storedSessionId: null }, [{ role: 'assistant', content: 'Private copy snapshot' }]) })
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy answer' }))
+    await screen.findByRole('textbox', { name: /text for manual copying/ })
+    vi.spyOn(localPrivacy, 'revision').mockReturnValue('new-reset')
+    act(() => localPrivacy.$reset.set({ owner: draftOwnerKey($draftOwner.get()), revision: 'new-reset', external: false }))
+    expect(screen.queryByRole('textbox', { name: /text for manual copying/ })).toBeNull()
+  })
+
+  it('copies a streaming snapshot without placing the answer in a live region', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    $chat.set(reduceGatewayEvent(emptyChatState(), { type: 'message.delta', payload: { delta: 'partial text' } }))
+    render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy answer so far' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('partial text'))
+    expect(screen.getByRole('article', { name: 'Assistant answer' }).closest('[aria-live]')).toBeNull()
+  })
 })
 
 describe('chat interaction wiring', () => {
