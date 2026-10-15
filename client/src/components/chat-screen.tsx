@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageMarkdown } from '~/components/message-markdown'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
@@ -45,8 +45,9 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
   const entries = chat.transcript.entries
   const displayItems = useMemo(() => groupAgentActivity(entries), [entries])
-  const { interaction, state: interactionState } = useChatInteraction({ conversation, mediaConnection })
-  const { attachmentRefs, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
+  const { interaction, state: interactionState } = useChatInteraction({ active, conversation, mediaConnection })
+  const { attachmentRefs, attachments, uploading, transcribing, pendingTranscript, playback, submissionFeedback, stopping, stopFeedback, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
+  const messageRef = useRef<HTMLTextAreaElement>(null)
   const draftRecord = interaction.record()
   const otherDrafts = chatDrafts.list().filter(record => record.key !== draftRecord?.key)
   const editValid = !editTarget || chat.availability === 'live' && entries.some(entry => entry.rowId === editTarget.rowId && 'editTarget' in entry && entry.editTarget)
@@ -159,7 +160,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
                 </Button>
               )}
               {entry.author === 'assistant' && entry.content && (
-                <Button disabled={!composerReady} onClick={() => void interaction.speak(entry.content)} size="icon-xs" variant="ghost" aria-label="Read aloud">
+                <Button disabled={!composerReady || playback.messageId === entry.id && ['generating', 'playing', 'paused'].includes(playback.status)} onClick={() => void interaction.speak(entry.content, entry.id)} size="icon-xs" variant="ghost" aria-label="Read aloud">
                   <IconVolume size={16} />
                 </Button>
               )}
@@ -201,6 +202,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
       {renameSession && chat.storedSessionId && <TextDialog disabled={!composerReady} initialValue={chat.info?.title || ''} label="Session title" onCancel={() => setRenameSession(false)} onSubmit={title => { const id = chat.storedSessionId!; setRenameSession(false); setShowSessionActions(false); reportSessionAction(() => controller.renameSession(id, title)) }} title="Edit session name" />}
       {archiveSession && chat.storedSessionId && <ConfirmDialog disabled={!composerReady} confirmLabel="Archive" description="Archive this session? It will be removed from the active Sessions list." onCancel={() => setArchiveSession(false)} onConfirm={() => { const id = chat.storedSessionId!; setArchiveSession(false); setShowSessionActions(false); reportSessionAction(() => controller.archiveSession(id)) }} title="Archive session" />}
       {chat.pendingPrompt && <PromptCard conversation={conversation} />}
+      <div className="composer-wrap" ref={viewport.composerRef}>
       {(sessionActionError || interactionError || chat.error) && <div className="error-banner" role="alert">{sessionActionError || interactionError || chat.error}</div>}
       {editTarget && (
         <div className="queue-banner">
@@ -215,12 +217,33 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </Button>
         </div>
       )}
-      <div className="composer-wrap" ref={viewport.composerRef}>
-      {attachmentRefs.length > 0 && (
-        <div className="attachment-chips">
-          {attachmentRefs.map((ref, index) => <button aria-label={`Remove attachment ${draftRecord?.content.attachments[index]?.name ?? ref}`} key={`${ref}-${index}`} onClick={() => interaction.removeAttachment(index)}>{draftRecord?.content.attachments[index]?.name ?? ref}{draftRecord?.content.attachments[index]?.runtimeId !== chat.runtimeSessionId ? ' · Select again' : ''}</button>)}
-        </div>
-      )}
+      {attachments.length > 0 && <div className="composer-attachments" aria-label="Attachments">
+        {attachments.map(file => <div className="composer-file" key={file.id}>
+          {file.preview && <img alt={`Preview of ${file.name}`} src={file.preview} onError={() => interaction.previewFailed(file.id)} />}
+          <div className="composer-file-info"><span className="composer-file-name" title={file.name}>{file.name}</span>
+            <span>{Math.ceil(file.size / 1024)} KB · {({ waiting: 'Waiting', uploading: 'Uploading…', ready: 'Ready', failed: 'Failed. Select again or remove.', reattach: 'Select again' })[file.status]}</span>
+            {file.error && <span className="error-text">{file.error}</span>}
+          </div>
+          <Button aria-label={`Remove attachment ${file.name}`} onClick={() => { interaction.removeAttachment(file.id); messageRef.current?.focus() }} size="sm" variant="ghost">Remove</Button>
+        </div>)}
+      </div>}
+      <div className="composer-activity">
+        {uploading && <p role="status">Uploading attachments… {attachments.filter(file => file.status === 'ready').length} of {attachments.length} ready.</p>}
+        {transcribing && <div><span role="status">Transcribing audio…</span> <Button onClick={() => { interaction.cancelTranscription(); messageRef.current?.focus() }} size="sm" variant="text">Cancel transcription</Button></div>}
+        {pendingTranscript && <div className="pending-transcript"><p role="status">Your draft changed. The transcript was not inserted.</p><pre>{pendingTranscript}</pre>
+          <Button onClick={() => interaction.useTranscript()} size="sm" variant="text">Insert transcript</Button>
+          <Button onClick={() => void copyDraft(pendingTranscript)} size="sm" variant="text">Copy transcript</Button>
+          <Button onClick={() => interaction.dismissTranscript()} size="sm" variant="text">Discard transcript</Button>
+        </div>}
+        {submissionFeedback && <p role="status">{submissionFeedback}</p>}
+        {stopFeedback && <p role="status">{stopFeedback}</p>}
+        {playback.messageId && <div className="composer-playback" role="group" aria-label="Read-aloud controls">
+          <span role="status">{({ idle: 'Audio stopped.', generating: 'Generating speech…', playing: 'Reading message aloud.', paused: 'Audio paused.', ended: 'Audio finished.', error: 'Audio unavailable.' })[playback.status]}</span>
+          {['playing', 'paused'].includes(playback.status) && <Button onClick={() => { if (playback.status === 'playing') interaction.playback.pause(); else void interaction.playback.resume() }} size="sm" variant="text">{playback.status === 'playing' ? 'Pause audio' : 'Resume audio'}</Button>}
+          <Button onClick={() => { interaction.playback.stop(); messageRef.current?.focus() }} size="sm" variant="text">Stop audio</Button>
+          {playback.error && <p role="alert">{playback.error}</p>}
+        </div>}
+      </div>
         {slashItems.length > 0 && (
           <div className="slash-popover">
             {slashItems.slice(0, 8).map((item, index) => (
@@ -237,7 +260,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           {!localReady ? <p role="status">Selecting the conversation…</p> : !composerReady ? <p role="status">{chat.availability === 'synchronizing' ? 'Updating this conversation. You can prepare your draft.' : 'Local conversation. You can prepare a draft while Hermes is unavailable.'}</p> : draft ? <p role="status">Connected. Your draft has not been sent.</p> : null}
       {(!owner.principal && !owner.locked) && <p className="composer-meta">Restart recovery unavailable. This gateway has not provided an account identity.</p>}
       {(draft || attachmentRefs.length > 0 || interaction.unsaved()) && <p className="composer-meta" role="status">{interaction.saved() ? 'Saved on this device.' : 'Not saved on this device. Copy your text before closing.'}</p>}
-      {interaction.needsReattachment() && <p role="alert">Select the attached files again or remove them before sending. Files are not stored on this device.</p>}
+      {interaction.needsReattachment() && !uploading && <p role="alert">Select the attached files again or remove them before sending. Files are not stored on this device.</p>}
       {!editValid && <p role="alert">{chat.availability !== 'live' ? 'Reconnect to validate the edited message before retrying. Your text is preserved.' : 'The edited message is not available for retry. Your text is preserved. Copy it or cancel the edit.'}</p>}
       {recoveryError && <p role="status">{recoveryError}</p>}
       {(draft || attachmentRefs.length > 0) && <div className="composer-meta">
@@ -249,14 +272,15 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         <div className="composer">
           <label className="icon-input" aria-label="Attach photo, PDF, or file">
             <IconPaperclip size={21} />
-            <input accept="image/*,application/pdf,audio/*,*/*" disabled={!composerReady} multiple onChange={event => { void interaction.attach(event.target.files); event.target.value = '' }} type="file" />
+            <input accept="image/*,application/pdf,audio/*,*/*" disabled={!composerReady || uploading} multiple onChange={event => { void interaction.attach(event.target.files); event.target.value = '' }} type="file" />
           </label>
           <label className="icon-input" aria-label="Record audio">
             <IconMicrophone size={21} />
-            <input accept="audio/*" capture="user" disabled={!composerReady} onChange={event => { void interaction.transcribe(event.target.files?.[0]); event.target.value = '' }} type="file" />
+            <input accept="audio/*" capture="user" disabled={!composerReady || transcribing} onChange={event => { void interaction.transcribe(event.target.files?.[0]); event.target.value = '' }} type="file" />
           </label>
           <Textarea
             aria-label="Message Hermes"
+            ref={messageRef}
             disabled={!localReady}
             autoCapitalize="sentences"
             autoComplete="off"
@@ -264,7 +288,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             spellCheck
             onChange={event => interaction.updateDraft(event.target.value)}
             onKeyDown={event => {
-              if (composerReady && event.key === 'Enter' && !event.shiftKey) {
+              if (composerReady && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault()
                 void interaction.submit()
               }
@@ -273,11 +297,10 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             rows={1}
             value={draft}
           />
-          {chat.running ? (
-            <Button disabled={!composerReady} aria-label="Interrupt" onClick={() => void conversation.interrupt()} size="icon" variant="destructive"><IconPlayerStop size={19} /></Button>
-          ) : (
-            <Button aria-label="Send" disabled={!composerReady || submitting || !editValid || interaction.needsReattachment() || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="icon"><IconSend size={19} /></Button>
-          )}
+          <div className="composer-send-actions">
+            <Button aria-label={chat.running ? 'Queue' : 'Send'} disabled={!composerReady || submitting || transcribing || !editValid || Boolean(editTarget && chat.running) || interaction.needsReattachment() || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="sm"><IconSend size={19} />{chat.running ? 'Queue' : 'Send'}</Button>
+            {chat.running && <Button disabled={!composerReady || stopping} aria-label="Stop Hermes" onClick={() => void interaction.interrupt()} size="sm" variant="destructive"><IconPlayerStop size={19} />Stop</Button>}
+          </div>
         </div>
         <div className="composer-meta">
           {chat.info?.usage && <ContextUsage usage={chat.info.usage} />}

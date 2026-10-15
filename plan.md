@@ -1,6 +1,6 @@
 # Herm PWA improvement plan
 
-Status: Items 1, 2, and 3 have application implementations. Items 4 through 7 remain proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
+Status: Items 1 through 4 have application implementations. Items 5 through 7 remain proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
 
 ## Goal and scope
 
@@ -366,32 +366,309 @@ not claims established by browser fixtures.
 
 Priority: Second implementation batch.
 
-### Current evidence
+Status: Implemented following the user's authorization to implement and commit.
+Items 1 through 3 provide the draft, reconnect, and privacy safeguards retained
+by this work. Deployment remains outside this work.
 
-Attachments appear as reference strings. Uploading and transcription have no dedicated progress state. While Hermes is running, the send button becomes an interrupt button even though the input says "Queue another prompt." Read aloud starts playback without dedicated playback controls.
+### Scope and completion criteria
 
-Relevant files:
-- `client/src/components/chat-screen.tsx`
-- `client/src/features/chat/chat-interaction.ts`
-- `client/src/state/conversation.ts`
+Improve the regular-chat composer and its existing Read aloud action. Keep this
+work inside standalone Herm, using shared UI controls and tokens. Do not change
+shared packages unless a concrete control deficiency requires it. Any shared
+change must also be verified in integrated and standalone contexts.
 
-### Planned improvements
+Item 4 is complete when users can:
+- Identify each selected file by name, see whether it is uploading, ready,
+  failed, or needs reattachment, preview a newly selected image where supported,
+  and remove it without sending it.
+- See upload and transcription activity and recover from failure without losing
+  text or successful attachments.
+- Intentionally Send while idle or Queue during a turn, with a separate Stop
+  action. See submission acceptance, rejection, or delivery uncertainty without
+  confusing acceptance with execution.
+- Start, pause, resume, and stop read-aloud playback, including stopping speech
+  generation locally before a response arrives.
+- Use these controls by keyboard and on a narrow phone viewport with the software
+  keyboard open, without duplicate requests or cross-conversation media leaks.
 
-- Show filename chips, image previews where practical, and explicit remove buttons.
-- Show uploading and transcribing states, including failures. Use indeterminate feedback unless actual progress is available.
-- Provide a visible Queue action alongside Stop while Hermes is working.
-- Confirm queued-prompt submission using the gateway's actual acknowledgement semantics. Do not imply execution has begun merely because submission was accepted.
-- Add audio playback controls instead of a one-shot Read aloud action.
-- Prevent repeated actions from accidentally starting duplicate uploads, submissions, or overlapping playback.
+Not included: group-room composer redesign, a client-side prompt queue, queue
+position/reordering/deletion, automatic retries, background uploads, a new
+recorder, persistent raw files/previews/audio, streamed TTS, or item 5's transcript
+and Markdown redesign. Do not make Moirasia launch or control Herm.
 
-### Verification
+### Evidence at planning time and contract limits
 
-- Attach, remove, upload failure, and conversation-switch flows behave correctly.
-- Queue and Stop remain distinct and usable on a narrow phone viewport.
-- Queue acknowledgement and errors accurately describe the gateway state.
-- Transcription does not overwrite newer user edits.
-- Audio can be stopped and does not continue unexpectedly after leaving the conversation.
-- Exercise the composer with the software keyboard open in a browser.
+The original notes predate items 1 and 3. The following records the starting point
+before item 4 implementation:
+- `client/src/components/chat-screen.tsx` already renders filename chips and
+  remove actions, plus recovered-file guidance. Uploads and transcription still
+  have no dedicated visible activity state. Chip identity and removal use array
+  indexes; metadata is read indirectly from the draft record.
+- `client/src/features/chat/chat-interaction.ts` owns draft mutations, sequential
+  upload batches, transcription, and speech. Submission already rejects rapid
+  duplicates and preserves failed/uncertain snapshots. Media activity is tracked
+  for draft/PWA safety, but not projected into the interaction state. Upload and
+  transcription entry points can still overlap on repeated calls.
+- Transcription already checks the conversation epoch and draft revision before
+  replacing text. Speech reuses that draft revision, so unrelated typing can
+  invalidate speech generation. Item 3 added playback cleanup on context changes,
+  gateway unavailability, and disposal, but there is no reactive playback state.
+- `client/src/features/chat/use-chat-interaction.ts` owns interaction lifetime and
+  current-context checks. `ChatScreen` receives `active`, but currently passes it
+  only to viewport handling. Switching workspace tabs can leave the same chat
+  mounted, so disposal alone is not a sufficient playback stop rule.
+- `client/src/state/conversation.ts` sends `prompt.submit` with `queued: true`
+  when running. Only `accepted === true` confirms acceptance. A successful RPC
+  without that flag is already treated as uncertain. No consumed contract gives
+  queue position, execution start, or queue durability. The browser fixture can
+  return an uncertain acknowledgement after recording the message.
+- `Conversation.interrupt()` awaits `session.interrupt`; it does not prove the
+  turn ended or the queue was cleared. The fixture currently has no dedicated
+  interrupt behavior. Production gateway handlers are absent from this checkout.
+- Attachments use whole-data-URL RPCs, with 20 MiB image and 50 MiB other-file
+  limits. Transcription has a 25 MiB limit. Audio endpoints return whole responses.
+  `GatewayPort` supports request signals, but exposes no measured upload progress
+  or server-side per-file cancellation contract.
+- Attachment response handling currently permits synthesized filename references
+  and empty strings. Existing tests encode this behavior; those expectations must
+  be revisited before a chip can honestly claim the file is ready.
+- `client/src/styles.css` has a four-column composer grid and shared selectors
+  used by the group composer. `useChatViewport` measures composer occlusion;
+  extra feedback and a second action must not obscure the transcript or prompts.
+
+### Interaction ownership and state
+
+Keep the existing module responsibilities:
+- `Conversation` owns gateway commands, live-context validation, acknowledgement
+  interpretation, and interrupt request safety. It must not acquire UI timers,
+  file previews, or HTML audio elements.
+- `ChatInteraction` owns transient attachment, transcription, submission-feedback,
+  and playback state. Expose a small reactive projection and guarded actions so
+  React renders state rather than reconstructing operation lifecycles.
+- `ChatDrafts` remains the only draft/recovery persistence owner. Preserve account,
+  profile, provisional promotion, privacy-revision, and logout guards. Do not
+  serialize transient operation state, raw files, object URLs, audio, or errors.
+- `ChatScreen` renders controls, messages, and accessible status. The hook forwards
+  visibility/lifetime changes. Extract Herm-local render modules only if needed
+  to keep the screen readable; do not add a general media framework.
+
+Use stable attachment and operation identities rather than array positions or
+filename equality. Each deferred callback must verify its operation, owner,
+conversation/runtime epoch, and relevant draft revision before changing state.
+Give speech its own generation identity rather than incrementing the text revision.
+
+Busy flags and draft/PWA task leases must describe the same lifecycle and settle
+on success, failure, removal, local cancellation, context retirement, and disposal.
+Use transport abort signals where supported, while retaining stale-result guards.
+A local abort or removed chip does not promise server rollback or remote deletion.
+
+### Attachment feedback and previews
+
+- Project validated filename, media type, size, stable identity, and state directly
+  from interaction state. Render a separate, labelled Remove button per file.
+  Long names must truncate or wrap without hiding status or removal controls.
+- Represent files waiting in the sequential batch separately from the file being
+  uploaded. Keep successful files usable after another fails. Report per-file
+  failure and leave an explicit select-again/remove path; do not retry silently.
+- Guard repeated picker/action calls while a batch is active. Keep text entry
+  available. Removing an in-flight file retires that file's result; its eventual
+  response must never resurrect the chip or become part of a submitted prompt.
+- Validate upload acknowledgements at the gateway-command interface. Require a
+  nonempty supported reference before marking a file ready. Preserve a synthesized
+  reference only if a verified gateway contract establishes that it is valid;
+  otherwise show an unconfirmed result and require reselection/removal. Update the
+  legacy empty-reference/fallback tests deliberately, not by weakening assertions.
+- Show indeterminate progress and file counts, not invented percentages. Preserve
+  existing pre-read size limits and surface rejected/oversized files by filename.
+- Create small previews only from locally selected supported raster images. Do not
+  fetch arbitrary reference strings or render uploaded HTML/SVG. Handle decode
+  failures with the filename fallback. Revoke object URLs on removal, replacement,
+  submission, context change, privacy reset, and disposal. Do not persist previews
+  or recreate them from remote URLs after reload.
+- Restored references remain subject to item 1's runtime-validity rules. A preview
+  or matching filename is not proof that a reference is usable after reconnect.
+  Pending, failed, unconfirmed, and stale references block submission until resolved
+  or explicitly removed. Ready attachment-only messages remain sendable.
+
+### Transcription feedback
+
+- Show Transcribing audio with an explicit local Cancel action. Permit only one
+  transcription request at a time, including direct method calls. Empty/cancelled
+  file pickers make no request. Keep the existing size check before file reading.
+- Preserve current successful replacement behavior only when the originating draft
+  revision is unchanged. A later edit, slash choice, edit-mode change, restore,
+  discard, or submission must prevent automatic insertion into the newer draft.
+- If a valid result arrives after same-conversation text changes, keep one temporary
+  transcript in memory with explicit use/copy/discard controls. Using it must not
+  silently replace current text; insert into the current draft through its normal
+  mutation method. Drop the temporary result on context/owner change or disposal.
+- Failure and local cancellation preserve the current draft. Explain missing or
+  malformed response data. No stale failure may replace a newer operation's status.
+  Successful insertion uses normal draft persistence, never a separate audio store.
+
+### Send, Queue, and Stop
+
+- Keep Send available while idle. While running, show a labelled Queue action and
+  a separate Stop action. Buttons and Enter must use the same guarded submission
+  path. Shift+Enter inserts a newline; IME composition must not submit.
+- Queue must remain disabled for an empty prompt, pending dispatch, invalid edit,
+  unavailable/unverified conversation, or unresolved media. Do not queue an
+  edit-and-retry operation into an active turn. Recheck these rules in command
+  methods, not only through disabled controls.
+- Capture whether dispatch used the queue path with the request outcome. A turn
+  can finish during the RPC; feedback must describe the dispatched request, not
+  infer its meaning from the latest `chat.running`. Return a structured internal
+  outcome if needed, retaining the existing recovery semantics for all callers.
+- While waiting, say Sending or Submitting queued prompt. After confirmed queue
+  acceptance, say Gateway accepted your queued prompt, with no claim that execution
+  has started. Do not optimistically add a queued message as an executed transcript
+  turn or maintain a second local queue. Let gateway events/history show execution.
+- Known rejection uses existing failed-message recovery without overwriting newer
+  typing. Missing acknowledgement, timeout, or connection loss uses Delivery not
+  confirmed and preserves the uncertain snapshot. Never auto-resend or label an
+  uncertain submission as rejected. Acceptance feedback is transient and must not
+  erase the status of a later request or survive a conversation/owner reset.
+- Give Stop its own in-flight guard and error/status handling. Queue dispatch and
+  interrupt are independent operations, so waiting for one must not hide the other.
+  Say Stop requested after acknowledgement; keep actual running state driven by
+  gateway events. Do not promise that Stop clears queued prompts. Guard stale
+  completions and repeated clicks, including at the `Conversation` interface.
+- Verify any stronger gateway semantics against an authoritative contract before
+  using stronger wording. Lack of a queue inventory must not block these honest
+  controls or be papered over by a browser fixture.
+
+### Read-aloud controls
+
+- Identify speech by the originating assistant message and expose generating,
+  playing, paused, stopped/idle, ended, and error states. Only one speech request
+  or playback may own the player at a time.
+- Repeating Read aloud for the same active message must not create another request.
+  Selecting another message retires the previous request/player before starting
+  the new one. Pause/resume reuse the loaded audio; Stop also retires generation.
+- Observe media play/pause/ended/error events and rejected `play()` promises so the
+  UI reflects actual playback, including mobile autoplay restrictions. Validate
+  the returned audio data before constructing a player. Do not persist it.
+- Keep controls attached to the relevant message or a clearly labelled compact
+  player. Pause, resume, and Stop audio are distinct from Stop Hermes. Stopping
+  local audio remains available while offline; it must not require a gateway RPC.
+- Stop and release local media on conversation/profile/account change, privacy
+  reset, leaving the active chat workspace, document hiding, and disposal. Forward
+  visibility explicitly through the hook; do not rely only on unmount. StrictMode
+  rehearsals must not leave listeners, players, or late requests behind.
+
+### Layout and accessibility
+
+Use shared Button and feedback conventions with Herm-local layout rules. Keep the
+message field useful at 320 CSS pixels, moving actions into a second row if needed
+rather than shrinking touch targets. Bound attachment/previews and media feedback
+height so users can still see the draft, active prompt, and latest response.
+
+Label each icon action and file control. Use polite, concise live status for state
+changes and alerts for actionable failures, not per-tick announcements. Keep focus
+predictable after file removal and cancellation. Verify text zoom, long filenames,
+keyboard traversal, visible focus, light/dark themes, and distinguishable disabled
+states. Scope composer CSS changes so the group composer keeps working. Preserve
+viewport measurement, safe areas, transcript anchoring, and prompt-card visibility.
+Item 5 still owns redesigning the transcript-wide live region.
+
+### Implementation sequence
+
+1. Confirm acknowledgement/reference contracts and record supported outcomes.
+   Extend deterministic browser fixtures for deferred upload/transcription/speech,
+   rejection, uncertainty, and interruption without inventing production guarantees.
+2. Add guarded transient operation state and stable attachment identity through
+   `ChatInteraction`. Add unit tests for transitions and stale work. Preserve draft
+   persistence, privacy/reset guards, task safety, and provisional promotion.
+3. Implement attachment states, removal, local previews, and transcription feedback.
+   Wire cleanup and explicit use of late transcripts through the existing hook.
+4. Implement Send/Queue/Stop and typed acknowledgement feedback through Conversation
+   and interaction ownership. Preserve recovery records and verify every caller
+   affected by an outcome-interface change.
+5. Implement single-owner playback state, controls, media events, visibility rules,
+   and resource cleanup. Separate speech identity from text editing.
+6. Finish narrow/mobile layout and accessible feedback. Add browser flow coverage,
+   run regressions, and update `CONTEXT.md` plus this item's implementation record.
+   Update `SECURITY.md` only if the documented handling of local media changes.
+
+### Verification matrix
+
+| Area | Required checks |
+| --- | --- |
+| Attachments | Multiple files and stable order; repeated picker/action guard; removal before/during/after upload; one failure among successes; oversized and malformed/unconfirmed responses; ready attachment-only send; no stale chip resurrection. |
+| Previews | Supported images and decode failure; non-images/SVG fallback; long names; no reference URL fetching; object URLs released after every retirement path; reload shows metadata/reattachment guidance without preview persistence. |
+| Transcription | Success; pending feedback; duplicate guard; size/malformed/network errors; Cancel; newer edits and submit; explicit late-result insertion/copy/discard; no draft overwrite; no result crossing contexts. |
+| Submission | Idle Send and running Queue; simultaneous visible Stop; keyboard/IME behavior; duplicate dispatch; turn ends during queue acknowledgement; accepted vs uncertain vs rejected; newer typing and edit recovery preserved; offline controls do not dispatch. |
+| Interruption | One in-flight interrupt; request success/failure/uncertainty; Queue still usable under its own guards; running changes only from events; no assertion that queued prompts were cancelled; destination state unaffected by stale results. |
+| Speech | Generating/playing/paused/ended/error; pause/resume without another synthesis; duplicate and cross-message clicks; Stop during generation/playback; out-of-order responses; playback rejection; typing does not invalidate speech; offline Stop audio. |
+| Lifecycle | A-to-B-to-A switches, profiles/accounts, reconnect/new runtime, provisional stored-ID promotion, privacy reset and other-tab reset, hidden workspace/document, unmount and StrictMode; task leases and resources retire exactly once. |
+| Integration | Existing draft/recovery, reconnect, privacy, PWA update guards, history anchoring, prompt responses, shared group-composer styles, and keyboard-reduced viewport remain usable. |
+
+Extend existing interaction, hook, conversation, and chat-screen tests, with a new
+`client/e2e/composer-feedback.spec.ts` for user-visible flows. Use controlled deferred
+responses, not timing-dependent sleeps. Mock audio events deterministically for
+state coverage, then exercise actual browser playback where the environment permits.
+Do not treat DOM-only tests as proof of playback or software-keyboard behavior.
+
+Run from `client/`, starting with focused tests, then broader verification:
+
+```sh
+npm run test -- src/features/chat/chat-interaction.test.ts src/features/chat/use-chat-interaction.test.tsx src/state/conversation.test.ts src/components/chat-screen.test.tsx
+npm run test
+npm run build:native
+npm run build
+npm run test:e2e -- e2e/composer-feedback.spec.ts e2e/chat-drafts.spec.ts e2e/reconnect.spec.ts e2e/local-privacy.spec.ts e2e/pwa-foundation.spec.ts
+```
+
+Exercise Chromium and WebKit at phone and desktop sizes. Inspect screenshots with
+Queue and Stop, attachment failures, transcription, playback, and the keyboard-reduced
+viewport. Verify an installed phone PWA and native WebView when available, including
+real keyboard/file capture, playback permissions, background/foreground, and safe
+areas. Check screen-reader names and status announcements manually. Report unavailable
+device/audio checks separately, and do not claim real gateway queue behavior from
+fixtures. Review the final diff and keep commits/deployment subject to authorization.
+
+### Implementation record
+
+Implemented regular-chat per-file feedback and local raster previews, cancellable
+transcription with explicit late-result insertion/copy/discard, separate Send/Queue
+and Stop actions, typed gateway-acceptance feedback, and message-owned read-aloud
+controls. No shared UI package or group-engine behavior changed. Group composer
+layout retains its existing override.
+
+Transient file identities, preview URLs, operation state, audio, and late transcripts
+stay out of persistent drafts. Removing an in-flight file aborts its signal and
+retires local waiting independently of remote cancellation, so later files can
+proceed. Nonempty references are required before files become ready. Attachment
+selection/removal also advances the draft revision so edited-message acknowledgements
+cannot overwrite newer attachment-only work.
+
+Playback owns independent request and play-attempt identities. A late rejected
+`play()` promise after an intentional Pause cannot turn that pause into an error.
+Visibility/context retirement stops speech and releases local media. Edit feedback
+and errors live inside the measured composer; prompt cards and the latest-message
+button use dynamic composer occlusion instead of a fixed bottom offset.
+
+Verification passed:
+- 1,349 unit tests across 102 files and TypeScript checking.
+- Native and browser production builds.
+- Chromium/WebKit regression checks for composer feedback, chat drafts, reconnect,
+  local privacy, and PWA foundation: 117 passed, 9 existing browser-specific skips.
+- After the final touch-target and focus refinements, a fresh native/browser build,
+  all 16 composer browser checks, and 8 keyboard/viewport browser checks passed.
+  Speech coverage exercised actual browser audio playback and keyboard Pause/Resume
+  without additional synthesis requests, not only mocked media events.
+- Unit regressions cover removed/stalled files, preview cleanup and decode failure,
+  transcription cancellation/late insertion, duplicate operations, acknowledgement
+  identity, next-message attachments during edited retry, and late play rejection.
+- Read-only reviews identified two lifecycle issues, both fixed with regressions.
+  Inspected phone-sized attachment-failure, Queue/Stop, and narrow-layout screenshots.
+  `git diff --check` passed.
+
+Physical installed-PWA, real phone keyboard/capture, native simulator/WebView, and
+manual screen-reader checks remain unavailable in this environment. `xcrun simctl` is unavailable.
+Native production builds are separate from native device verification. Gateway
+fixtures establish UI behavior, not production queue ordering/durability or remote
+cancellation guarantees.
 
 ## 5. Make answers easier to use
 

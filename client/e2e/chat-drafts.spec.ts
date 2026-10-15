@@ -104,13 +104,13 @@ test('does not resend an uncertain message after refresh', async ({ page }) => {
 test('requires attachments to be reselected after refresh', async ({ page }) => {
   await login(page)
   await page.locator('input[type="file"][multiple]').setInputFiles({ name: 'draft-note.txt', mimeType: 'text/plain', buffer: Buffer.from('note') })
-  await expect(page.locator('.attachment-chips')).toContainText('draft-note.txt')
+  await expect(page.locator('.composer-attachments')).toContainText('draft-note.txt')
   await reopen(page)
   await expect(page.getByText('Select the attached files again or remove them before sending. Files are not stored on this device.', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
   await page.locator('input[type="file"][multiple]').setInputFiles({ name: 'draft-note.txt', mimeType: 'text/plain', buffer: Buffer.from('note') })
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
-  await expect(page.locator('.attachment-chips button')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Remove attachment draft-note.txt', exact: true })).toHaveCount(1)
 })
 
 test('reports storage failure while keeping the composer usable', async ({ page }) => {
@@ -148,7 +148,7 @@ test('updates saved text safely and blocks an update with attached files', async
     await (await navigator.serviceWorker.getRegistration())!.update()
   })
   await expect(page.getByRole('button', { name: 'Update when safe', exact: true })).toBeDisabled()
-  await page.locator('.attachment-chips button').click()
+  await page.getByRole('button', { name: 'Remove attachment update-note.txt', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Update', exact: true })).toBeEnabled()
 })
 

@@ -12,6 +12,7 @@ const emptyChatState = () => ({ ...emptyState(), availability: 'live' as const }
 
 function conversationStub() {
   return {
+    interrupt: vi.fn(),
     attach: vi.fn(),
     completeSlash: vi.fn(),
     retryFrom: vi.fn(),
@@ -77,6 +78,29 @@ describe('useChatInteraction lifecycle', () => {
 
     act(() => hook.result.current.interaction.updateDraft('ignored'))
     expect(hook.result.current.interaction.$state.get()).toMatchObject({ draft: '', submitting: true })
+  })
+
+  it('retires speech when the mounted workspace becomes inactive or the document is hidden', async () => {
+    const conversation = conversationStub()
+    const mediaConnection = mediaStub()
+    const pending = deferred<{ body: { data_url: string }; headers: {}; status: number }>()
+    vi.mocked(mediaConnection.request).mockReturnValue(pending.promise)
+    const hook = renderHook(({ active }) => useChatInteraction({ active, conversation, mediaConnection }), { initialProps: { active: true } })
+    let speech!: Promise<void>
+    act(() => { speech = hook.result.current.interaction.speak('answer', 'message') })
+    expect(hook.result.current.state.playback.status).toBe('generating')
+    hook.rerender({ active: false })
+    expect(hook.result.current.state.playback.status).toBe('idle')
+    await act(async () => { pending.resolve({ body: { data_url: 'data:audio/wav;base64,AA==' }, headers: {}, status: 200 }); await speech })
+    expect(hook.result.current.state.playback.status).toBe('idle')
+    hook.rerender({ active: true })
+    vi.mocked(mediaConnection.request).mockReturnValue(new Promise(() => undefined))
+    act(() => { void hook.result.current.interaction.speak('another answer', 'next') })
+    expect(hook.result.current.state.playback.status).toBe('generating')
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    expect(hook.result.current.state.playback.status).toBe('idle')
+    visibility.mockRestore()
   })
 
   it('feeds session identity from $chat into the interaction', async () => {

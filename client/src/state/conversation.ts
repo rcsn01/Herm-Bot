@@ -2,7 +2,7 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics'
 import type { GatewayEvent } from '~/compat/hermes-shared'
 import { atom } from 'nanostores'
 
-import type { ChatSuggestion, SlashCompletionPayload } from '~/features/chat/chat-interaction'
+import type { ChatSuggestion, SlashCompletionPayload, SubmissionResult } from '~/features/chat/chat-interaction'
 import { classifyGatewayError, errorMessage, GatewayError } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
@@ -170,6 +170,18 @@ function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): Sess
 }
 
 export class Conversation {
+  private submissions = new Set<string>()
+  private interruptions = new Set<string>()
+
+  private operationKey() { return JSON.stringify([currentGatewayScope(), $chat.get().runtimeSessionId]) }
+
+  private async submitting<T>(perform: () => Promise<T>): Promise<T> {
+    const key = this.operationKey()
+    if (this.submissions.has(key)) throw new GatewayError('A message submission is already pending.', { kind: 'validation' })
+    this.submissions.add(key)
+    try { return await perform() } finally { this.submissions.delete(key) }
+  }
+
   private historyLoadRequest = 0
   private reconciliationRequest = 0
   private historyDirty = false
@@ -291,7 +303,11 @@ export class Conversation {
     }
   }
 
-  async send(text: string): Promise<void | 'accepted' | 'uncertain'> {
+  async send(text: string): Promise<void | SubmissionResult> {
+    return this.submitting(() => this.submitPrompt(text))
+  }
+
+  private async submitPrompt(text: string): Promise<void | SubmissionResult> {
     this.requireLive()
     const content = text.trim()
     if (!content) return
@@ -304,7 +320,7 @@ export class Conversation {
         session_id: current.runtimeSessionId,
         text: content
       }, { timeoutMs: 1_800_000 })
-      return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
+      return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'queue' }
     }
     $chat.set({
       ...current,
@@ -319,7 +335,7 @@ export class Conversation {
       }
       this.requireLive()
       const acknowledgement = await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
-      return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
+      return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'send' }
     } catch (error) {
       if (!isCurrentGatewayScope(scope)) throw error
       const latest = $chat.get()
@@ -333,7 +349,11 @@ export class Conversation {
   async interrupt(): Promise<void> {
     this.requireLive()
     const sessionId = $chat.get().runtimeSessionId
-    if (sessionId) await this.runtime.rpc('session.interrupt', { session_id: sessionId })
+    const key = this.operationKey()
+    if (!sessionId || this.interruptions.has(key)) return
+    this.interruptions.add(key)
+    try { await this.runtime.rpc('session.interrupt', { session_id: sessionId }) }
+    finally { this.interruptions.delete(key) }
   }
 
   async steer(text: string): Promise<void> {
@@ -350,8 +370,13 @@ export class Conversation {
     if (sessionId && content) await this.runtime.rpc('session.redirect', { session_id: sessionId, text: content })
   }
 
-  async retryFrom(rowId: number, text: string): Promise<void | 'accepted' | 'uncertain'> {
+  async retryFrom(rowId: number, text: string): Promise<void | SubmissionResult> {
+    return this.submitting(() => this.retryPrompt(rowId, text))
+  }
+
+  private async retryPrompt(rowId: number, text: string): Promise<void | SubmissionResult> {
     this.requireLive()
+    if ($chat.get().running) throw new GatewayError('Wait for this turn to finish before retrying an edited message.', { kind: 'validation' })
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
     if (!sessionId) throw new GatewayError('No active session.', { kind: 'validation' })
@@ -369,7 +394,7 @@ export class Conversation {
       truncate_before_row_id: rowId,
       truncate_before_user_ordinal: userOrdinal
     }, { timeoutMs: 1_800_000 })
-    return record(acknowledgement).accepted === true ? 'accepted' : 'uncertain'
+    return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'retry' }
   }
 
   /** Resolve slash-command suggestions for the composer's current draft. */
@@ -384,7 +409,7 @@ export class Conversation {
     }
   }
 
-  async attach(file: File): Promise<string | undefined> {
+  async attach(file: File, signal?: AbortSignal): Promise<string | undefined> {
     this.requireLive()
     const scope = currentGatewayScope()
     const limit = file.type.startsWith('image/') ? 20 * 1_024 * 1_024 : 50 * 1_024 * 1_024
@@ -392,15 +417,15 @@ export class Conversation {
     const sessionId = $chat.get().runtimeSessionId
     if (!sessionId) throw new Error('No active session.')
     const dataUrl = await fileToDataURL(file)
-    if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
+    if (signal?.aborted || !isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
     this.requireLive()
     const result = file.type.startsWith('image/')
-      ? await this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId })
-      : await this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId })
-    const response = result as { ref_text?: string; text?: string } | undefined
-    if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
-    if (!response) return undefined
-    return response.ref_text ?? response.text ?? `@file:${file.name}`
+      ? await this.runtime.rpc('image.attach_bytes', { data_url: dataUrl, name: file.name, session_id: sessionId }, { signal })
+      : await this.runtime.rpc('file.attach', { data_url: dataUrl, name: file.name, path: file.name, session_id: sessionId }, { signal })
+    if (signal?.aborted || !isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return undefined
+    const response = record(result)
+    const reference = response.ref_text ?? response.text
+    return typeof reference === 'string' && reference.trim() ? reference : undefined
   }
 
   async respond(value: string, choice?: string): Promise<void> {

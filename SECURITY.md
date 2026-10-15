@@ -49,6 +49,15 @@ stored, but require file selection again after a page restart or runtime change.
 Normal message text can itself contain sensitive information; draft storage does
 not detect or redact secrets users paste into the ordinary composer.
 
+Newly selected supported raster images can have local object-URL previews. These
+URLs are not saved, fetched from gateway reference strings, or restored after a
+reload. Removal and context retirement release them. Speech audio and late
+transcription results remain in memory. A late result enters ordinary draft
+storage only when explicitly inserted. Read-aloud audio stops when the chat workspace or
+document is hidden. Local cancellation retires callbacks and requests but does not
+promise server rollback, uploaded-file deletion, or cancellation of queued prompts.
+An attachment becomes ready only after a nonempty gateway reference is returned.
+
 Draft storage is limited to 50 conversation records and 1 MiB of serialized UTF-8
 data per account. Exceeding a limit keeps new work in memory and warns the user;
 it does not silently evict older unfinished messages. Pending or unconfirmed

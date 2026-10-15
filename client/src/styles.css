@@ -263,13 +263,31 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .file-content { max-height: 52dvh; overflow: auto; padding: calc(var(--spacing) * 3); border-radius: var(--radius-control); background: #080a0f; color: #d9dbea; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .context-usage { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: calc(var(--spacing) * 2); color: var(--muted-foreground); font-size: var(--font-caption); }
 .context-usage progress { width: 100%; accent-color: var(--primary); }
-.new-messages-button { position: fixed; z-index: 24; left: 50%; bottom: calc(var(--composer-safe-lift) + 104px); transform: translateX(-50%); box-shadow: 0 8px 24px #0004; }
-.prompt-card { position: fixed; z-index: 26; inset: auto 12px calc(var(--composer-safe-lift) + 100px); padding: calc(var(--spacing) * 3.5); display: grid; gap: calc(var(--spacing) * 2.5); border: 1px solid var(--primary); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 16px 45px #0004; }
+.new-messages-button { position: fixed; z-index: 24; left: 50%; bottom: calc(var(--composer-occlusion, 94px) + 12px); transform: translateX(-50%); box-shadow: 0 8px 24px #0004; }
+.prompt-card { position: fixed; z-index: 26; inset: auto 12px calc(var(--composer-occlusion, 94px) + 8px); max-height: max(96px, calc(100dvh - var(--composer-occlusion, 94px) - 76px)); overflow: auto; padding: calc(var(--spacing) * 3.5); display: grid; gap: calc(var(--spacing) * 2.5); border: 1px solid var(--primary); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 16px 45px #0004; }
 .prompt-card p { margin: 0; color: var(--muted-foreground); }
 .prompt-card input { min-height: 44px; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5); border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--panel-2); }
 .prompt-actions { display: flex; justify-content: flex-end; gap: calc(var(--spacing) * 2); }
-.attachment-chips { min-width: 0; padding: calc(var(--spacing) * 1.75) calc(var(--spacing) * 3.5); display: flex; gap: calc(var(--spacing) * 1.5); overflow-x: auto; }
-.attachment-chips button { border: 1px solid var(--line); border-radius: 999px; padding: calc(var(--spacing) * 1.25) calc(var(--spacing) * 2.25); background: var(--panel); color: var(--muted-foreground); font-size: var(--font-caption); white-space: nowrap; }
+.composer-attachments { max-height: 136px; overflow: auto; display: grid; gap: calc(var(--spacing) * 1.5); }
+.composer-file { min-width: 0; display: flex; align-items: center; gap: calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2); border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.composer-file img { width: 44px; height: 44px; flex: none; object-fit: contain; border-radius: var(--radius-card); }
+.composer-file-info { display: grid; min-width: 0; flex: 1; font-size: var(--font-caption); }
+.composer-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.composer-file-info .error-text { overflow-wrap: anywhere; }
+.composer-activity { max-height: 160px; overflow: auto; font-size: var(--font-caption); background: var(--panel); border-radius: var(--radius-card); }
+.composer-activity > * { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2); }
+.composer-activity:empty { display: none; }
+.composer-wrap > .error-banner { max-height: 88px; overflow: auto; margin: 0 0 calc(var(--spacing) * 1.5); }
+.composer-wrap > .queue-banner { margin: 0 0 calc(var(--spacing) * 1.5); }
+.pending-transcript pre { max-height: 70px; overflow: auto; white-space: pre-wrap; }
+.composer-playback { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing); }
+.composer-playback p { flex-basis: 100%; }
+.composer-send-actions { display: flex; flex-wrap: wrap; gap: var(--spacing); }
+.composer-send-actions > button, .composer-file > button, .composer-activity button { min-width: 44px; min-height: 44px; }
+@media (max-width: 520px) {
+  .composer:not(.group-composer) { grid-template-columns: auto auto minmax(0, 1fr); }
+  .composer-send-actions { grid-column: 1 / -1; justify-content: flex-end; }
+}
 .composer-wrap { position: fixed; z-index: 25; inset: auto 0 0; padding: calc(var(--spacing) * 2) calc(var(--spacing) * 2.5) 0; background: linear-gradient(transparent, var(--bg) 28%); }
 .composer { min-height: 54px; padding: calc(var(--spacing) * 1.75); display: grid; grid-template-columns: auto auto 1fr auto; align-items: end; gap: calc(var(--spacing) * .75); border: 1px solid var(--line); border-radius: var(--radius-bubble); background: var(--panel); box-shadow: 0 8px 25px #0002; }
 .composer textarea { max-height: 130px; min-height: 38px; resize: none; border: 0; background: transparent; color: var(--text); box-shadow: none; font-size: 16px; }

@@ -73,7 +73,7 @@ describe('session state', () => {
 
     subject.setSession('session-2')
 
-    expect(subject.$state.get()).toEqual({
+    expect(subject.$state.get()).toMatchObject({
       attachmentRefs: [],
       draft: '',
       editTarget: null,
@@ -265,7 +265,7 @@ describe('attachments', () => {
     expect(commands.attach).toHaveBeenCalledTimes(3)
     expect(subject.$state.get()).toMatchObject({
       attachmentRefs: ['@file:first', '', '@file:third'],
-      error: 'second failed'
+      error: 'two.txt: second failed'
     })
   })
 
@@ -285,15 +285,16 @@ describe('attachments', () => {
     expect(subject.$state.get()).toMatchObject({ attachmentRefs: ['', ''], error: null })
   })
 
-  it('retains filenames for an unconfirmed upload and stops the batch', async () => {
+  it('retains filenames for unconfirmed uploads and attempts the rest of the batch', async () => {
     const { commands, interaction: subject } = interaction()
     vi.mocked(commands.attach).mockResolvedValue(undefined)
     await subject.attach([new File(['1'], 'one.txt'), new File(['2'], 'two.txt')])
-    expect(commands.attach).toHaveBeenCalledTimes(1)
+    expect(commands.attach).toHaveBeenCalledTimes(2)
     expect(subject.$state.get()).toMatchObject({ attachmentRefs: ['', ''], error: expect.stringContaining('not confirmed') })
+    expect(subject.$state.get().attachments.every(file => file.status === 'failed')).toBe(true)
   })
 
-  it('appends an empty-string reference and continues to the next file', async () => {
+  it('marks an empty-string reference unconfirmed and continues to the next file', async () => {
     const { commands, interaction: subject } = interaction()
     vi.mocked(commands.attach)
       .mockResolvedValueOnce('')
@@ -329,7 +330,7 @@ describe('transcription', () => {
     expect(subject.$state.get().error).toBe('transcription unavailable')
   })
 
-  it('lets typed text and newer transcription invalidate pending transcription', async () => {
+  it('preserves typed text and guards overlapping transcription requests', async () => {
     const { interaction: subject, media } = interaction()
     const old = deferred<ReturnType<typeof response<{ transcript: string }>>>()
     vi.mocked(media.upload)
@@ -352,9 +353,10 @@ describe('transcription', () => {
     const older = subject.transcribe(file)
     await vi.waitFor(() => expect(media.upload).toHaveBeenCalledTimes(1))
     await subject.transcribe(file)
+    expect(media.upload).toHaveBeenCalledTimes(1)
     stale.resolve(response({ transcript: 'older' }))
     await older
-    expect(subject.$state.get().draft).toBe('latest')
+    expect(subject.$state.get().draft).toBe('older')
   })
 
   it.each(['resolve', 'reject'] as const)('ignores stale transcription %s across a session epoch', async outcome => {
@@ -397,10 +399,10 @@ describe('speech', () => {
       .mockResolvedValueOnce(response({}))
 
     await subject.speak('read this')
-    expect(media.request).toHaveBeenCalledWith({ body: { text: 'read this' }, method: 'POST', path: '/api/audio/speak' })
+    expect(media.request).toHaveBeenCalledWith(expect.objectContaining({ body: { text: 'read this' }, method: 'POST', path: '/api/audio/speak', signal: expect.any(AbortSignal) }))
     expect(play).toHaveBeenCalled()
     await subject.speak('missing')
-    expect(subject.$state.get().error).toContain('did not include audio')
+    expect(subject.$state.get().playback.error).toContain('did not include audio')
   })
 
   it.each(['response success', 'response failure', 'playback failure'] as const)('ignores stale %s in a successor session', async outcome => {
@@ -460,7 +462,7 @@ describe('draft recovery', () => {
 
   it('preserves an uncertain acknowledgement for explicit recovery', async () => {
     const { commands, interaction: subject } = interaction()
-    vi.mocked(commands.send).mockResolvedValue('uncertain')
+    vi.mocked(commands.send).mockResolvedValue({ status: 'uncertain', mode: 'send' })
     subject.updateDraft('possibly submitted')
     await subject.submit()
     expect(subject.record()?.recoveries[0].status).toBe('uncertain')

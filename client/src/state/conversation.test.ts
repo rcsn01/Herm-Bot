@@ -223,6 +223,35 @@ describe('prompt submission safety', () => {
     dispose()
   })
 
+  it('retains queue dispatch identity across turn completion and guards direct duplicate submissions', async () => {
+    $chat.set({ ...emptyChatState(), running: true, runtimeSessionId: 'runtime-1' })
+    let accept!: (value: unknown) => void
+    const gateway = new MemoryGateway().handle('prompt.submit', () => new Promise(resolve => { accept = resolve }))
+    const { conversation, dispose } = subject(gateway)
+    const first = conversation.send('next task')
+    await expect(conversation.send('duplicate')).rejects.toThrow('already pending')
+    $chat.set({ ...$chat.get(), running: false })
+    accept({ accepted: true })
+    await expect(first).resolves.toEqual({ status: 'accepted', mode: 'queue' })
+    expect(gateway.calls.filter(call => call.method === 'prompt.submit')).toHaveLength(1)
+    dispose()
+  })
+
+  it('guards repeated interrupt calls without inventing completion or blocking Queue', async () => {
+    $chat.set({ ...emptyChatState(), running: true, runtimeSessionId: 'runtime-1' })
+    let finish!: (value: unknown) => void
+    const gateway = new MemoryGateway().handle('session.interrupt', () => new Promise(resolve => { finish = resolve })).handle('prompt.submit', () => ({ accepted: true }))
+    const { conversation, dispose } = subject(gateway)
+    const first = conversation.interrupt()
+    await conversation.interrupt()
+    await expect(conversation.send('queued separately')).resolves.toEqual({ status: 'accepted', mode: 'queue' })
+    expect(gateway.calls.filter(call => call.method === 'session.interrupt')).toHaveLength(1)
+    finish({})
+    await first
+    expect($chat.get().running).toBe(true)
+    dispose()
+  })
+
   it('confirms a durable first-turn rewind by both ordinal and row id', async () => {
     $chat.set({
       ...emptyChatState(),
@@ -469,7 +498,7 @@ describe('attachments', () => {
     dispose()
   })
 
-  it('resolves the attachment reference from the response fields, verbatim', async () => {
+  it('does not invent ready references for empty or missing attachment acknowledgements', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
     stubCompletedRead()
     const gateway = new MemoryGateway()
@@ -477,8 +506,8 @@ describe('attachments', () => {
       .handle('image.attach_bytes', () => ({ ref_text: '' }))
     const { conversation, dispose } = subject(gateway)
 
-    expect(await conversation.attach(new File(['x'], 'doc.txt'))).toBe('@file:doc.txt')
-    expect(await conversation.attach(new File(['x'], 'pic.png', { type: 'image/png' }))).toBe('')
+    expect(await conversation.attach(new File(['x'], 'doc.txt'))).toBeUndefined()
+    expect(await conversation.attach(new File(['x'], 'pic.png', { type: 'image/png' }))).toBeUndefined()
     dispose()
   })
 

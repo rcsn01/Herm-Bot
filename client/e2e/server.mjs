@@ -49,6 +49,7 @@ const stateFor = id => {
     sockets: new Set(),
     controls: {},
     histories: [],
+    deferred: [],
     mcpOAuth: null,
     profiles: initialProfiles()
   })
@@ -64,6 +65,16 @@ const body = req => new Promise((resolve, reject) => {
   req.on('end', () => { try { resolve(value ? JSON.parse(value) : {}) } catch (error) { reject(error) } })
   req.on('error', reject)
 })
+const waitForControl = (state, control) => state.controls[control] ? new Promise(resolve => state.deferred.push({ control, resolve })) : Promise.resolve()
+// Eight seconds of PCM silence, decoded by real browser media elements.
+const speechFixture = () => {
+  const buffer = Buffer.alloc(44 + 8000 * 8)
+  buffer.write('RIFF'); buffer.writeUInt32LE(buffer.length - 8, 4); buffer.write('WAVEfmt ', 8)
+  buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(8000, 24); buffer.writeUInt32LE(8000, 28); buffer.writeUInt16LE(1, 32); buffer.writeUInt16LE(8, 34)
+  buffer.write('data', 36); buffer.writeUInt32LE(buffer.length - 44, 40); buffer.fill(128, 44)
+  return `data:audio/wav;base64,${buffer.toString('base64')}`
+}
 const initialMessages = id => id.startsWith('created-') ? [] : id === 'activity-fixture' ? [
   { row_id: 1, role: 'user', content: 'Inspect the project' },
   ...Array.from({ length: 12 }, (_, index) => [
@@ -90,7 +101,7 @@ const server = http.createServer(async (req, res) => {
       const state = stateFor(fixtureId)
       const update = await body(req)
       if (update.reset === true) state.controls = {}
-      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory']) {
+      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt']) {
         if (typeof update[key] === 'boolean') state.controls[key] = update[key]
       }
       if (typeof update.missingSession === 'string' || update.missingSession === null) state.controls.missingSession = update.missingSession
@@ -100,6 +111,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (update.closeSockets === true) for (const ws of state.sockets) ws.close(1012, 'fixture interruption')
       if (!state.controls.delayHistory) for (const release of state.histories.splice(0)) release()
+      state.deferred = state.deferred.filter(waiter => { if (state.controls[waiter.control]) return true; waiter.resolve(); return false })
       return json(res, 200, { ok: true })
     }
     if (url.pathname === '/api/fixture-calls' && fixtureId) return json(res, 200, { calls: stateFor(fixtureId).calls })
@@ -133,6 +145,14 @@ const server = http.createServer(async (req, res) => {
       state.calls.push({ kind: 'http', method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams) })
       if (url.pathname === '/auth/logout') return json(res, 200, { ok: true }, { 'set-cookie': 'fixture_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0' })
       if (url.pathname === '/api/fixture-update') { state.swVersion = (state.swVersion ?? 0) + 1; return json(res, 200, { ok: true }) }
+      if (url.pathname === '/api/audio/transcribe') {
+        await waitForControl(state, 'delayTranscription')
+        return json(res, 200, { transcript: 'Fixture spoken words' })
+      }
+      if (url.pathname === '/api/audio/speak') {
+        await waitForControl(state, 'delaySpeech')
+        return json(res, 200, { data_url: speechFixture() })
+      }
       if (url.pathname === '/api/auth/me') return json(res, 200, { user_id: state.userId ?? 'fixture-user', provider: 'password', org_id: '', expires_at: 4_102_444_800 })
       if (url.pathname === '/api/auth/ws-ticket' && req.method === 'POST') {
         const ticket = `ticket-${++sequence}`
@@ -276,10 +296,13 @@ sockets.on('connection', (ws, _req, id, profile) => {
   let currentStored = `created-${profile}`
   state.calls.push({ kind: 'ws-connect', profile })
   ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
-  ws.on('message', raw => {
+  ws.on('message', async raw => {
     const request = JSON.parse(raw.toString())
     const params = request.params || {}
     state.calls.push({ kind: 'rpc', method: request.method, params, profile })
+    const gate = ({ 'file.attach': 'delayAttachments', 'image.attach_bytes': 'delayAttachments', 'prompt.submit': 'delaySubmission', 'session.interrupt': 'delayInterrupt' })[request.method]
+    if (gate) await waitForControl(state, gate)
+    if (ws.readyState !== 1) return
     const stored = params.session_id || `created-${profile}`
     const runtime = `runtime-${profile}-${stored}`
     let result
@@ -374,7 +397,14 @@ sockets.on('connection', (ws, _req, id, profile) => {
     } else if (request.method === 'commands.catalog') result = { commands: [] }
     else if (request.method === 'model.info') result = { model: 'fixture/test-model' }
     else if (request.method === 'session.events.since') result = { events: [] }
-    else if (request.method === 'file.attach' || request.method === 'image.attach_bytes') result = { ref_text: `@file:${params.name}` }
+    else if (request.method === 'session.interrupt') {
+      if (state.controls.rejectInterrupt) rpcError = { code: -32602, message: 'Fixture stop rejected' }
+      else result = {}
+    }
+    else if (request.method === 'file.attach' || request.method === 'image.attach_bytes') {
+      if (params.name === 'rejected.txt') rpcError = { code: -32602, message: 'Fixture file rejected' }
+      else result = params.name === 'unconfirmed.txt' ? {} : { ref_text: `@file:${params.name}` }
+    }
     else if (request.method === 'prompt.submit') {
       if (params.text === 'draft delayed failure') {
         setTimeout(() => ws.readyState === 1 && ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'Fixture submission rejected' } })), 800)
@@ -389,7 +419,7 @@ sockets.on('connection', (ws, _req, id, profile) => {
     ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
     if (request.method === 'prompt.submit') {
       ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: params.session_id, payload: { delta: `Fixture answer: ${params.text}` } } }))
-      if (!(currentStored === 'footer-fixture' && params.text === 'hold footer activity')) {
+      if (!state.controls.holdTurn && !(currentStored === 'footer-fixture' && params.text === 'hold footer activity')) {
         ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.complete', session_id: params.session_id, payload: {} } }))
       }
     }

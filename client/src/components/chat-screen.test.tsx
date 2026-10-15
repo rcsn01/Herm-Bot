@@ -147,7 +147,7 @@ describe('chat interaction wiring', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }))
 
     await waitFor(() => expect(connection.request).toHaveBeenCalledWith({
-      body: { text: 'Read this' }, method: 'POST', path: '/api/audio/speak'
+      body: { text: 'Read this' }, method: 'POST', path: '/api/audio/speak', signal: expect.any(AbortSignal)
     }))
     await waitFor(() => expect(play).toHaveBeenCalled())
   })
@@ -283,7 +283,7 @@ describe('transcript rendering and durable edits', () => {
     rerender(<ChatScreen controller={controller} conversation={conversation} />)
 
     expect(screen.getByRole('status').textContent).toBe('Hermes is working')
-    expect(screen.getByRole('button', { name: 'Interrupt' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop Hermes' })).not.toBeNull()
   })
 
   it('collapses stored tool output until requested', () => {

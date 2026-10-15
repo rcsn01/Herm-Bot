@@ -12,7 +12,8 @@ export interface UseChatInteractionResult {
   state: ChatInteractionState
 }
 
-export function useChatInteraction({ conversation, mediaConnection }: {
+export function useChatInteraction({ active = true, conversation, mediaConnection }: {
+  active?: boolean
   conversation: Conversation
   mediaConnection: ChatMediaConnection
 }): UseChatInteractionResult {
@@ -32,6 +33,8 @@ export function useChatInteraction({ conversation, mediaConnection }: {
         && $preferences.get().profile === context.profile && runtimeId === chat.runtimeSessionId
         && (context.provisional || context.conversation === chat.storedSessionId)
     },
+    isRunning: () => $chat.get().running,
+    interrupt: conversation.interrupt.bind(conversation),
     attach: conversation.attach.bind(conversation),
     completeSlash: conversation.completeSlash.bind(conversation),
     retryFrom: conversation.retryFrom.bind(conversation),
@@ -61,6 +64,13 @@ export function useChatInteraction({ conversation, mediaConnection }: {
   useLayoutEffect(() => { interaction.setGatewayAvailable(ready && chat.availability === 'live') }, [ready, chat.availability, interaction])
 
   useLayoutEffect(() => { interaction.sync() }, [draftVersion, interaction])
+
+  useLayoutEffect(() => {
+    const update = () => interaction.setActive(active && document.visibilityState !== 'hidden')
+    update()
+    document.addEventListener('visibilitychange', update)
+    return () => document.removeEventListener('visibilitychange', update)
+  }, [active, interaction])
 
   const state = useStore(interaction.$state)
   return { interaction, state }

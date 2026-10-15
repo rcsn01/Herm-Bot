@@ -1,4 +1,5 @@
 import { atom } from 'nanostores'
+import { ChatPlayback, type PlaybackState } from './chat-playback'
 
 import { classifyGatewayError, errorMessage } from '~/gateway/gateway-error'
 import type { GatewayPort } from '~/gateway/gateway-port'
@@ -18,7 +19,27 @@ export interface EditTarget {
   rowId: number
 }
 
+export interface SubmissionResult {
+  status: 'accepted' | 'uncertain'
+  mode: 'send' | 'queue' | 'retry'
+}
+export interface AttachmentView {
+  id: string
+  name: string
+  size: number
+  status: 'waiting' | 'uploading' | 'ready' | 'failed' | 'reattach'
+  preview?: string
+  error?: string
+}
 export interface ChatInteractionState {
+  attachments: AttachmentView[]
+  uploading: boolean
+  transcribing: boolean
+  pendingTranscript: string | null
+  playback: PlaybackState
+  submissionFeedback: string | null
+  stopping: boolean
+  stopFeedback: string | null
   attachmentRefs: string[]
   draft: string
   editTarget: EditTarget | null
@@ -35,15 +56,20 @@ export interface SlashCompletionPayload {
 export interface ChatInteractionCommands {
   isAvailable?(): boolean
   isCurrent?(context: DraftContext, runtimeId: string | null): boolean
-  attach(file: File): Promise<string | undefined>
+  isRunning?(): boolean
+  interrupt?(): Promise<void>
+  attach(file: File, signal?: AbortSignal): Promise<string | undefined>
   completeSlash(draft: string): Promise<SlashCompletionPayload>
-  retryFrom(rowId: number, text: string): Promise<void | 'accepted' | 'uncertain'>
-  send(text: string): Promise<void | 'accepted' | 'uncertain'>
+  retryFrom(rowId: number, text: string): Promise<void | SubmissionResult>
+  send(text: string): Promise<void | SubmissionResult>
 }
 /** Chat audio rides the GatewayPort directly (installation-wide /api/audio routes, no profile param). */
 export type ChatMediaConnection = Pick<GatewayPort, 'request' | 'upload'>
 
 const initialState = (): ChatInteractionState => ({
+  attachments: [], uploading: false, transcribing: false, pendingTranscript: null,
+  playback: { messageId: null, status: 'idle', error: null },
+  submissionFeedback: null, stopping: false, stopFeedback: null,
   attachmentRefs: [],
   draft: '',
   editTarget: null,
@@ -57,19 +83,46 @@ export class ChatInteraction {
 
   private gatewayAvailable = true
   private disposed = false
-  private audio: HTMLAudioElement | null = null
-  private stopAudio() { this.audio?.pause(); this.audio = null }
+  readonly playback: ChatPlayback
+  private unsubscribePlayback: () => void
+  private active = true
+  private attachmentViews = new WeakMap<DraftAttachment, AttachmentView>()
+  private previews = new Set<string>()
+  private uploadTask: { controller: AbortController; end: () => void; current?: DraftAttachment; cancelCurrent?: () => void } | null = null
+  private transcription: { controller: AbortController; end: () => void } | null = null
+  private speechTask: (() => void) | null = null
+
+  setActive(active: boolean) {
+    this.active = active
+    if (!active) this.playback.stop()
+  }
+
+  private retireUploads() {
+    this.uploadTask?.controller.abort()
+    this.uploadTask?.end()
+    this.uploadTask = null
+    for (const url of this.previews) URL.revokeObjectURL(url)
+    this.previews.clear()
+    this.attachmentViews = new WeakMap()
+    this.patch({ uploading: false })
+  }
+
+  private retireMedia() {
+    this.playback.stop()
+    this.retireUploads()
+    this.cancelTranscription()
+  }
 
   setGatewayAvailable(available: boolean) {
     if (this.gatewayAvailable === available) return
     this.gatewayAvailable = available
     if (!available) {
-      this.stopAudio()
+      this.retireMedia()
       ++this.sessionEpoch
       ++this.draftRevision
       for (const release of this.tasks) release()
       this.tasks.clear()
-      this.patch({ slashItems: [] })
+      this.patch({ slashItems: [], pendingTranscript: null, submissionFeedback: null, stopping: false, stopFeedback: null, attachments: this.projectAttachments() })
     }
   }
 
@@ -87,7 +140,14 @@ export class ChatInteraction {
     private readonly commands: ChatInteractionCommands,
     private readonly media: ChatMediaConnection,
     readonly drafts = new ChatDrafts(null)
-  ) {}
+  ) {
+    this.playback = new ChatPlayback(media)
+    this.unsubscribePlayback = this.playback.$state.listen(playback => {
+      if (playback.status === 'generating') this.speechTask ??= this.task()
+      else { this.speechTask?.(); this.speechTask = null }
+      this.patch({ playback })
+    })
+  }
 
   setSession(sessionId: null | string) {
     const owner: DraftOwner = { gateway: '', principal: null, generation: 0, locked: false }
@@ -107,7 +167,8 @@ export class ChatInteraction {
     } else this.key = next.key
     this.context = context
     if (promoted && JSON.stringify(this.record()?.content) === JSON.stringify(this.content())) return
-    this.stopAudio()
+    this.retireMedia()
+    this.$state.set(initialState())
     this.sessionId = runtimeId
     this.sessionEpoch += 1
     this.draftRevision += 1
@@ -148,11 +209,13 @@ export class ChatInteraction {
   }
 
   private load() {
+    this.retireUploads()
     const record = this.record()
     const value = record?.content ?? emptyDraft()
     this.attachments = value.attachments
     this.normal = value.normal
-    this.$state.set({ ...initialState(), draft: value.text, attachmentRefs: value.attachments.map(item => item.ref), editTarget: value.edit,
+    this.$state.set({ ...this.$state.get(), error: null, slashItems: [], draft: value.text,
+      attachmentRefs: value.attachments.map(item => item.ref), attachments: this.projectAttachments(), editTarget: value.edit,
       submitting: Boolean(record?.recoveries.some(item => item.status === 'pending')) })
   }
 
@@ -165,7 +228,8 @@ export class ChatInteraction {
 
   private task() {
     const release = this.key ? this.drafts.task(this.key) : () => undefined
-    const end = () => { release(); this.tasks.delete(end) }
+    let ended = false
+    const end = () => { if (ended) return; ended = true; release(); this.tasks.delete(end) }
     this.tasks.add(end)
     return end
   }
@@ -204,7 +268,8 @@ export class ChatInteraction {
   }
 
   beginEdit(target: EditTarget) {
-    if (this.disposed) return
+    if (this.disposed || this.commands.isRunning?.()) return
+    this.retireUploads()
     this.draftRevision += 1
     if (!this.$state.get().editTarget) {
       const { normal: _normal, ...payload } = this.content()
@@ -222,6 +287,7 @@ export class ChatInteraction {
 
   cancelEdit() {
     if (this.disposed) return
+    this.retireUploads()
     this.draftRevision += 1
     const value = this.normal
     this.normal = null
@@ -229,16 +295,51 @@ export class ChatInteraction {
     this.patch({ draft: value?.text ?? '', attachmentRefs: this.attachments.map(item => item.ref), editTarget: null, error: null, slashItems: [] })
   }
 
-  removeAttachment(index: number) {
+  removeAttachment(id: string | number) {
     if (this.disposed) return
+    const index = typeof id === 'number' ? id : this.attachments.findIndex(item => this.attachmentViews.get(item)?.id === id)
+    const removed = this.attachments[index]
+    if (!removed) return
+    this.draftRevision += 1
+    const view = removed && this.attachmentViews.get(removed)
+    if (removed && this.uploadTask?.current === removed) this.uploadTask.cancelCurrent?.()
+    if (view?.preview) { URL.revokeObjectURL(view.preview); this.previews.delete(view.preview) }
     this.attachments = this.attachments.filter((_, itemIndex) => itemIndex !== index)
+    if (this.uploadTask && !this.attachments.some(item => ['waiting', 'uploading'].includes(this.attachmentViews.get(item)?.status ?? ''))) {
+      this.uploadTask.controller.abort()
+      this.uploadTask.end()
+      this.uploadTask = null
+      this.patch({ uploading: false })
+    }
     this.patch({ attachmentRefs: this.attachments.map(item => item.ref) })
+  }
+
+  private projectAttachments(): AttachmentView[] {
+    return this.attachments.map(item => {
+      let view = this.attachmentViews.get(item)
+      if (!view) {
+        view = { id: crypto.randomUUID(), name: item.name, size: item.size,
+          status: item.ref && item.runtimeId === this.sessionId ? 'ready' : 'reattach' }
+        this.attachmentViews.set(item, view)
+      }
+      return view
+    })
+  }
+
+  previewFailed(id: string) {
+    const view = this.$state.get().attachments.find(item => item.id === id)
+    if (!view?.preview) return
+    URL.revokeObjectURL(view.preview); this.previews.delete(view.preview)
+    delete view.preview
+    this.patch({ attachments: this.projectAttachments() })
   }
 
   async submit() {
     if (this.disposed || this.$state.get().submitting) return
     if (!this.remoteAvailable()) { this.patch({ error: 'Reconnect and update this conversation before sending. Your draft has not been sent.' }); return }
     if (!this.contextCurrent()) { this.patch({ error: 'The conversation changed. Review your draft before sending.' }); return }
+    if (this.$state.get().transcribing) { this.patch({ error: 'Wait for transcription or cancel it before sending.' }); return }
+    if (this.$state.get().editTarget && this.commands.isRunning?.()) { this.patch({ error: 'Wait for this turn to finish before retrying an edited message.' }); return }
     if (this.needsReattachment()) { this.patch({ error: 'Select the attached files again or remove them before sending.' }); return }
     const snapshot = this.$state.get()
     const combined = [snapshot.draft.trim(), ...snapshot.attachmentRefs].filter(Boolean).join('\n')
@@ -248,17 +349,19 @@ export class ChatInteraction {
     if (key && !recoveryId) { this.patch({ error: 'Draft recovery is locked. Reconnect before sending.' }); return }
     const epoch = this.sessionEpoch
     const revision = ++this.draftRevision
+    this.retireUploads()
     this.attachments = []
     const normal = this.normal
     this.normal = null
-    this.$state.set({ ...snapshot, attachmentRefs: [], draft: '', error: null, slashItems: [], editTarget: null, submitting: true })
+    this.$state.set({ ...snapshot, uploading: false, attachments: [], attachmentRefs: [], draft: '', error: null, slashItems: [], editTarget: null, submitting: true,
+      submissionFeedback: this.commands.isRunning?.() ? 'Submitting queued prompt…' : 'Sending…' })
     try {
       const outcome = snapshot.editTarget
         ? await this.commands.retryFrom(snapshot.editTarget.rowId, combined)
         : await this.commands.send(combined)
-      if (outcome === 'uncertain') {
+      if (outcome?.status === 'uncertain') {
         if (key && recoveryId) this.drafts.settleSubmission(key, recoveryId, 'uncertain')
-        if (this.isCurrent(epoch)) this.patch({ submitting: false, error: 'Delivery not confirmed. Check the conversation before sending again.' })
+        if (this.isCurrent(epoch)) this.patch({ submitting: false, submissionFeedback: null, error: 'Delivery not confirmed. Check the conversation before sending again.' })
         return
       }
       if (key && recoveryId) this.drafts.settleSubmission(key, recoveryId, 'success')
@@ -270,7 +373,7 @@ export class ChatInteraction {
         this.normal = normal
         this.cancelEdit()
       }
-      this.patch({ submitting: false })
+      this.patch({ submitting: false, submissionFeedback: outcome?.mode === 'queue' ? 'Gateway accepted your queued prompt. Execution has not been confirmed.' : 'Gateway accepted your message.' })
     } catch (caught) {
       const kind = classifyGatewayError(caught).kind
       const uncertain = kind === 'network' || kind === 'aborted'
@@ -283,94 +386,151 @@ export class ChatInteraction {
         this.drafts.restore(key, recoveryId)
         this.load()
       }
-      this.patch({ error: uncertain ? 'Delivery not confirmed. Check the conversation before sending again.' : errorMessage(caught), submitting: false })
+      this.patch({ error: uncertain ? 'Delivery not confirmed. Check the conversation before sending again.' : errorMessage(caught), submitting: false, submissionFeedback: null })
     }
   }
 
   async attach(files: FileList | readonly File[] | null) {
-    if (this.disposed || !files || !this.remoteAvailable()) return
+    if (this.disposed || !files?.length || this.uploadTask || !this.remoteAvailable()) return
     if (!this.contextCurrent()) { this.patch({ error: 'The conversation changed. Select the files again.' }); return }
     const epoch = this.sessionEpoch
     const selected = Array.from(files)
+    this.draftRevision += 1
     this.attachments = this.attachments.filter(item => !(item.runtimeId !== this.sessionId || !item.ref)
       || !selected.some(file => file.name === item.name && file.type === item.type && file.size === item.size))
+    // Reselection replaces only unresolved placeholders, never a ready file.
+    for (const url of this.previews) {
+      if (!this.attachments.some(item => this.attachmentViews.get(item)?.preview === url)) { URL.revokeObjectURL(url); this.previews.delete(url) }
+    }
     const pending = selected.map(file => ({ ref: '', name: file.name, type: file.type, size: file.size, runtimeId: null } as DraftAttachment))
+    pending.forEach((item, index) => {
+      const file = selected[index]
+      const view: AttachmentView = { id: crypto.randomUUID(), name: file.name, size: file.size, status: 'waiting' }
+      if (/^image\/(png|jpeg|gif|webp|avif|bmp)$/i.test(file.type) && file.size <= 20 * 1_024 * 1_024) {
+        view.preview = URL.createObjectURL(file)
+        this.previews.add(view.preview)
+      }
+      this.attachmentViews.set(item, view)
+    })
     this.attachments = [...this.attachments, ...pending]
-    this.patch({ error: null, attachmentRefs: this.attachments.map(item => item.ref) })
-    const end = this.task()
+    const task: NonNullable<ChatInteraction['uploadTask']> = { controller: new AbortController(), end: this.task() }
+    this.uploadTask = task
+    this.patch({ error: null, uploading: true, attachmentRefs: this.attachments.map(item => item.ref) })
     try {
       for (const [index, file] of selected.entries()) {
-        if (!this.isCurrent(epoch)) return
+        if (!this.isCurrent(epoch) || this.uploadTask !== task) return
+        const item = pending[index]
+        if (!this.attachments.includes(item)) continue
+        const view = this.attachmentViews.get(item)!
+        this.attachmentViews.set(item, { ...view, status: 'uploading' })
+        this.patch({ attachments: this.projectAttachments() })
+        const controller = new AbortController()
+        let retire!: (value: undefined) => void
+        const retired = new Promise<undefined>(resolve => { retire = resolve })
+        // Removing a file retires local waiting even if a native adapter cannot cancel remote work.
+        const cancel = () => { controller.abort(); retire(undefined) }
+        task.current = item
+        task.cancelCurrent = cancel
+        task.controller.signal.addEventListener('abort', cancel, { once: true })
         try {
-          const reference = await this.commands.attach(file)
-          if (!this.isCurrent(epoch)) return
-          if (reference === undefined) { this.patch({ error: 'Upload was not confirmed. Select this file again or remove it.' }); return }
-          const position = this.attachments.indexOf(pending[index])
-          if (position < 0) continue
-          this.attachments = this.attachments.map((item, itemIndex) => itemIndex === position ? { ...item, ref: reference, runtimeId: this.sessionId } : item)
+          const reference = await Promise.race([this.commands.attach(file, controller.signal), retired])
+          if (!this.isCurrent(epoch) || this.uploadTask !== task) return
+          if (!this.attachments.includes(item)) continue
+          if (typeof reference !== 'string' || !reference.trim()) throw new Error('Upload was not confirmed. Select this file again or remove it.')
+          const completed = { ...item, ref: reference, runtimeId: this.sessionId }
+          this.attachmentViews.set(completed, { ...this.attachmentViews.get(item)!, status: 'ready' })
+          this.attachments = this.attachments.map(value => value === item ? completed : value)
           this.patch({ attachmentRefs: this.attachments.map(item => item.ref) })
         } catch (caught) {
-          if (!this.isCurrent(epoch)) return
-          this.patch({ error: errorMessage(caught) })
+          if (!this.isCurrent(epoch) || this.uploadTask !== task) return
+          if (!this.attachments.includes(item)) continue
+          const error = errorMessage(caught)
+          this.attachmentViews.set(item, { ...this.attachmentViews.get(item)!, status: 'failed', error })
+          this.patch({ attachments: this.projectAttachments(), error: `${file.name}: ${error}` })
+        } finally {
+          task.controller.signal.removeEventListener('abort', cancel)
+          if (task.current === item) { task.current = undefined; task.cancelCurrent = undefined }
         }
       }
-    } finally { end() }
+    } finally {
+      task.end()
+      if (this.uploadTask === task) { this.uploadTask = null; this.patch({ uploading: false }) }
+    }
   }
 
   async transcribe(file: File | undefined) {
-    if (this.disposed || !file || !this.remoteAvailable()) return
+    if (this.disposed || !file || this.transcription || !this.remoteAvailable()) return
     if (!this.contextCurrent()) { this.patch({ error: 'The conversation changed. Select the recording again.' }); return }
     const epoch = this.sessionEpoch
     const revision = ++this.draftRevision
-    const end = this.task()
-    this.patch({ error: null })
+    const task = { controller: new AbortController(), end: this.task() }
+    this.transcription = task
+    const current = () => this.isCurrent(epoch) && this.transcription === task
+    this.patch({ error: null, transcribing: true, pendingTranscript: null, slashItems: [] })
     try {
       if (file.size > 25 * 1_024 * 1_024) {
         throw new Error('Audio attachments are limited to 25 MB on mobile.')
       }
       const dataBase64 = await fileToBase64(file)
-      if (!this.isRevisionCurrent(epoch, revision)) return
-      const response = await this.media.upload<{ transcript?: string }>({
+      if (!current()) return
+      const response = await this.media.upload<{ transcript?: unknown }>({
         contentType: file.type,
         dataBase64,
         field: 'file',
         filename: file.name,
-        path: '/api/audio/transcribe'
+        path: '/api/audio/transcribe', signal: task.controller.signal
       })
-      if (!this.isRevisionCurrent(epoch, revision)) return
-      const transcript = response.body.transcript
-      if (!transcript) throw new Error('The transcription response did not include a transcript.')
-      this.patch({ draft: transcript })
+      if (!current()) return
+      const transcript = response.body?.transcript
+      if (typeof transcript !== 'string' || !transcript.trim()) throw new Error('The transcription response did not include a transcript.')
+      if (this.draftRevision === revision) this.updateDraft(transcript)
+      else this.patch({ pendingTranscript: transcript })
     } catch (caught) {
-      if (this.isRevisionCurrent(epoch, revision)) this.patch({ error: errorMessage(caught) })
-    } finally { end() }
+      if (current()) this.patch({ error: errorMessage(caught) })
+    } finally {
+      task.end()
+      if (this.transcription === task) { this.transcription = null; this.patch({ transcribing: false }) }
+    }
   }
 
-  async speak(text: string) {
-    if (this.disposed || !this.remoteAvailable()) return
+  cancelTranscription() {
+    this.transcription?.controller.abort()
+    this.transcription?.end()
+    this.transcription = null
+    this.patch({ transcribing: false })
+  }
+
+  useTranscript() {
+    const transcript = this.$state.get().pendingTranscript
+    if (!transcript || this.disposed || !this.contextCurrent()) return
+    const draft = this.$state.get().draft
+    this.updateDraft(draft ? `${draft}\n${transcript}` : transcript)
+    this.dismissTranscript()
+  }
+  dismissTranscript() { this.patch({ pendingTranscript: null }) }
+
+  async interrupt() {
+    if (this.disposed || this.$state.get().stopping || !this.remoteAvailable() || !this.contextCurrent() || !this.commands.interrupt) return
     const epoch = this.sessionEpoch
-    const revision = ++this.draftRevision
-    this.patch({ error: null })
+    this.patch({ stopping: true, stopFeedback: 'Requesting stop…' })
     try {
-      const response = await this.media.request<{ data_url?: string }>({
-        body: { text },
-        method: 'POST',
-        path: '/api/audio/speak'
-      })
-      if (!this.isRevisionCurrent(epoch, revision)) return
-      const audioURL = response.body.data_url
-      if (!audioURL) throw new Error('The speech response did not include audio.')
-      this.stopAudio()
-      this.audio = new Audio(audioURL)
-      await this.audio.play()
-    } catch (caught) {
-      if (this.isRevisionCurrent(epoch, revision)) this.patch({ error: errorMessage(caught) })
-    }
+      await this.commands.interrupt()
+      if (this.isCurrent(epoch)) this.patch({ stopFeedback: 'Stop requested. Queued prompts may still run.' })
+    } catch (error) {
+      if (this.isCurrent(epoch)) this.patch({ stopFeedback: null, error: `Stop was not confirmed: ${errorMessage(error)}` })
+    } finally { if (this.isCurrent(epoch)) this.patch({ stopping: false }) }
+  }
+
+  async speak(text: string, messageId = text) {
+    if (this.disposed || !this.active || !this.remoteAvailable() || !this.contextCurrent()) return
+    const epoch = this.sessionEpoch
+    await this.playback.speak(messageId, text, () => this.isCurrent(epoch) && this.active)
   }
 
   dispose() {
     if (this.disposed) return
-    this.stopAudio()
+    this.retireMedia()
+    this.unsubscribePlayback()
     this.drafts.flush()
     for (const release of this.tasks) release()
     this.tasks.clear()
@@ -393,7 +553,7 @@ export class ChatInteraction {
 
   private patch(patch: Partial<ChatInteractionState>) {
     if (!this.disposed) {
-      this.$state.set({ ...this.$state.get(), ...patch })
+      this.$state.set({ ...this.$state.get(), ...patch, ...('attachmentRefs' in patch ? { attachments: this.projectAttachments() } : {}) })
       if ('draft' in patch || 'attachmentRefs' in patch || 'editTarget' in patch) this.save()
     }
   }
