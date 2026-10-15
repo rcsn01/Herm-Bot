@@ -1,9 +1,12 @@
+import { $chat } from '~/state/conversation'
+import { $preferences, $sessionSelecting } from '~/state/store'
 import { openChatSurface } from '~/navigation/workspace-navigation'
 
 export interface HermesDeepLink {
   kind: 'session'
   profile?: null | string
   sessionId: string
+  notificationOwner?: string
 }
 
 export interface DeepLinkController {
@@ -35,7 +38,8 @@ export function parseHermesDeepLink(raw: string): HermesDeepLink | null {
     return {
       kind: 'session',
       ...(profile === undefined ? {} : { profile }),
-      sessionId
+      sessionId,
+      ...(url.searchParams.get('push') === '1' ? { notificationOwner: url.searchParams.get('push_owner') ?? '' } : {})
     }
   } catch {
     return null
@@ -51,7 +55,14 @@ export class DeepLinkCoordinator {
   private ready = false
   private running = false
 
-  constructor(private readonly controller: DeepLinkController) {}
+  constructor(private readonly controller: DeepLinkController, private readonly verifyNotificationOwner: (owner: string) => Promise<boolean> = async () => false) {}
+
+  reset(): void {
+    this.generation += 1
+    this.pendingIntent = null
+    this.activeIntent = null
+    if (!this.running) this.finishBusy()
+  }
 
   accept(raw: string): boolean {
     const intent = parseHermesDeepLink(raw)
@@ -90,15 +101,19 @@ export class DeepLinkCoordinator {
 
   private async apply(intent: HermesDeepLink, generation: number): Promise<void> {
     try {
+      if (intent.notificationOwner !== undefined && (!/^[a-f0-9]{64}$/.test(intent.notificationOwner) || !await this.verifyNotificationOwner(intent.notificationOwner))) return
+      if (!this.isCurrent(generation)) return
       if (intent.profile !== undefined) {
         await this.controller.switchProfile(intent.profile)
         if (!this.isCurrent(generation)) return
       }
-      await this.controller.resumeSession(intent.sessionId)
-      if (!this.isCurrent(generation)) return
+      const outcome = await this.controller.resumeSession(intent.sessionId)
+      const selected = outcome as { session?: { storedSessionId?: string } } | undefined
+      if (intent.notificationOwner !== undefined && intent.profile !== undefined && $preferences.get().profile !== intent.profile) return
+      if (!this.isCurrent(generation) || $sessionSelecting.get() || selected?.session?.storedSessionId !== intent.sessionId || $chat.get().storedSessionId !== intent.sessionId) return
       openChatSurface()
     } catch {
-      if (this.isCurrent(generation)) openChatSurface()
+      // Failed or superseded selection must not navigate over the current surface.
     } finally {
       this.running = false
       this.activeIntent = null

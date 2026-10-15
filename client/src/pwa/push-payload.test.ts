@@ -7,11 +7,11 @@ describe('Web Push payload policy', () => {
     expect(parsePushPayload({
       body: 'Finished',
       title: 'Hermes',
-      url: 'https://mobile.example/session/a%2Fb?profile=work'
+      url: `https://mobile.example/session/a%2Fb?profile=work&push=1&push_owner=${'a'.repeat(64)}`
     }, 'https://mobile.example')).toMatchObject({
       body: 'Finished',
       title: 'Hermes',
-      url: '/session/a%2Fb?profile=work'
+      url: `/session/a%2Fb?profile=work&push=1&push_owner=${'a'.repeat(64)}`
     })
   })
 
@@ -22,6 +22,10 @@ describe('Web Push payload policy', () => {
 
   it('does not open a cross-origin URL supplied by a notification', () => {
     expect(parsePushPayload({ url: 'https://attacker.example/login' }, 'https://mobile.example').url).toBe('/')
+  })
+
+  it('does not navigate legacy unowned notifications or arbitrary same-origin routes', () => {
+    for (const url of ['/session/abc?profile=work', '/auth/logout', '/settings']) expect(parsePushPayload({ url }, 'https://mobile.example').url).toBe('/')
   })
 
   it('uses bounded safe defaults for malformed payloads', () => {

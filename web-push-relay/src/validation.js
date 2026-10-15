@@ -1,6 +1,15 @@
 const MAX_ENDPOINT_LENGTH = 4096;
 const MAX_TEXT_LENGTH = 4096;
 
+// Vendor-owned HTTPS destinations only. Never allow user-configured send URLs.
+export function validateDestination(endpoint) {
+  const url = new URL(endpoint);
+  if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443") || url.hash || !/^(?:fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|(?:[a-z0-9-]+\.)?push\.apple\.com|(?:[a-z0-9-]+\.)?notify\.windows\.com)$/.test(url.hostname)) {
+    throw new Error("invalid subscription destination");
+  }
+  return url.href;
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -50,7 +59,7 @@ export function validateSubscription(value) {
   }
 
   return {
-    endpoint: endpoint.href,
+    endpoint: validateDestination(endpoint.href),
     expirationTime,
     keys: {
       p256dh: value.keys.p256dh,
@@ -77,7 +86,7 @@ export function validateEndpoint(value) {
   ) {
     throw new Error("invalid subscription endpoint");
   }
-  return endpoint.href;
+  return validateDestination(endpoint.href);
 }
 
 export function validateNotification(value) {

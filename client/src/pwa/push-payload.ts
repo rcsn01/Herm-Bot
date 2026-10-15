@@ -14,7 +14,7 @@ export function parsePushPayload(value: unknown, origin: string): HermesPushPayl
   if (typeof payload.url === 'string') {
     try {
       const candidate = new URL(payload.url, origin)
-      if (candidate.origin === origin) url = `${candidate.pathname}${candidate.search}${candidate.hash}`
+      if (candidate.origin === origin && !candidate.username && !candidate.password && /^\/session\/[^/]+$/.test(candidate.pathname) && candidate.searchParams.get('push') === '1' && /^[a-f0-9]{64}$/.test(candidate.searchParams.get('push_owner') ?? '')) url = `${candidate.pathname}${candidate.search}`
     } catch {
       // Keep the safe app root fallback.
     }

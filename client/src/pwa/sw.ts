@@ -5,6 +5,7 @@ import { registerRoute } from 'workbox-routing'
 
 import { isAppShellNavigation } from './policy'
 import { parsePushPayload } from './push-payload'
+import { openNotificationTarget } from './notification-click'
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ revision?: string; url: string }>
@@ -55,12 +56,5 @@ self.addEventListener('notificationclick', event => {
   event.notification.close()
   const payload = parsePushPayload({ url: event.notification.data?.url }, self.location.origin)
   const target = new URL(payload.url, self.location.origin).href
-  event.waitUntil((async () => {
-    const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
-    const existing = windows.find(client => new URL(client.url).origin === self.location.origin)
-    if (existing) existing.postMessage({ type: 'HERMES_DEEP_LINK', url: target })
-    const opened = await self.clients.openWindow(target)
-    if (opened) return opened.focus()
-    return existing?.focus()
-  })())
+  event.waitUntil(openNotificationTarget(self.clients, target, self.location.origin))
 })

@@ -357,6 +357,10 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .session-row { touch-action: pan-y; }
 .session-main { touch-action: pan-y; }
 .empty-panel, .unsupported-card { padding: calc(var(--spacing) * 7) calc(var(--spacing) * 4); text-align: center; border: 1px dashed var(--line); border-radius: var(--radius-card); color: var(--muted-foreground); }
+.notification-facts { display: grid; gap: var(--spacing); overflow-wrap: anywhere; }
+.notification-facts dt { font-weight: 600; }
+.notification-facts dd { margin: 0 0 calc(var(--spacing) * 3); color: var(--muted-foreground); }
+.notification-actions { display: flex; flex-wrap: wrap; gap: calc(var(--spacing) * 2); }
 .remote-group { margin-bottom: calc(var(--spacing) * 5.75); }
 .settings-list, .page-list { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
 .settings-list > button, .settings-list.static > div, .settings-list.static > label, .page-list-button { width: 100%; min-height: 64px; padding: calc(var(--spacing) * 2.75) calc(var(--spacing) * 3.25); display: flex; align-items: center; justify-content: space-between; gap: calc(var(--spacing) * 3); border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; }

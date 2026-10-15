@@ -46,6 +46,35 @@ Terms used across the mobile repository. Add new concepts here when a refactor n
 
 - **Archived chats** — `features/sessions/archived-chats-screen.tsx` is shared by the Settings entry and sessions-menu archive intent. It searches only titles returned by the existing profile-bound, 100-row HTTP request. It revalidates on entry and distinguishes failures from an empty response. Restore-only never opens; explicit Restore and open uses the normal exact-ID resume path and only lands on a current published outcome. A failed open can retry without restoring again. Issued remote mutations can complete after leaving the page, invalidating only their captured current-scope cache, but stale UI work cannot navigate. Offline entry explains the limits without rendering inert remote controls or an indefinitely disabled loading query. No archive index or new history persistence.
 
+## Notification setup
+
+`features/settings/notifications-settings.tsx` presents separate permission, local
+subscription and current-account relay registration facts with Refresh, Enable/
+Repair, Disable and explicit device-only test. `pwa/push.ts` owns bounded requests,
+worker readiness, partial failures, operation generations, and unknown versus
+accepted test outcomes. Permission prompts remain direct-gesture-only. Focus and
+visibility refresh do not subscribe or send. Unsupported/native/iOS installation
+and blocked-permission states give instructions outside gateway inert controls.
+
+The relay verifies browser and bridge identity against fixed-gateway `/api/auth/me`.
+Stable identity is required; unsupported identity modes fail closed. State v2 binds
+subscriptions to owner and random binding ID, quarantines legacy ownerless rows,
+and preserves VAPID keys. Completion fanout is owner-scoped, currently through the
+existing default-profile bridge. `/push/v1/status` and `/push/v1/test` are protected
+POST routes alongside subscription PUT/DELETE. Tests target one stored binding,
+use fixed nonsensitive content and root navigation, and enforce account cooldown,
+bounded concurrency and short-lived retry deduplication. No real push is sent by
+automated tests. Provider acceptance is not delivery confirmation or bridge health.
+
+Completion links include explicit default/named profile and opaque relay-owner
+provenance. The app verifies ownership before selection; coordinator outcomes must
+match current session/profile and cannot be pending/superseded. Worker click
+handling focuses/messages one controlled app window or opens one cold window,
+without reloading an existing draft. Legacy ownerless notification links land at
+root. OS subscriptions persist beyond logout unless explicitly disabled. Device
+receipt, actual gateway identity support and physical screen-reader/native flows
+remain deployment/device verification, not properties proven by browser fixtures.
+
 ## Interruption and saved-conversation behavior
 
 `$networkStatus` is browser evidence with online, offline, or unknown status.

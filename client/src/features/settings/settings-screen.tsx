@@ -1,12 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { IconAdjustments, IconArchive, IconBell, IconBrain, IconBrowser, IconChevronLeft, IconChevronRight, IconCloud, IconCode, IconCoin, IconDeviceDesktop, IconInfoCircle, IconKey, IconLock, IconMessage, IconMoodSmile, IconNetwork, IconPalette, IconPlug, IconRobot, IconServer, IconSettings, IconShield, IconSpeakerphone, IconTools, IconUser, IconUsers, IconWorld } from '@tabler/icons-react'
 
 import { Badge, Button } from '~/compat/primitives'
 import { PageList, PageListButton } from '~/components/page-list'
 import { ConfirmDialog } from '~/components/ui/confirm-dialog'
 import type { GatewayController } from '~/state/gateway-controller'
-import { $networkStatus } from '~/state/network-status'
 import { transcriptCache } from '~/state/transcript-cache'
 import { $draftOwner } from '~/state/draft-owner'
 import { GatewayActionRegion } from '~/components/gateway-action-region'
@@ -23,7 +22,7 @@ import { MemorySettings } from './memory-settings'
 import { PrivacySettings } from './privacy-settings'
 import { isNativeIOS } from '~/native/hermes-connection'
 import { PwaInstallHelp } from '~/pwa/PwaStatus'
-import { $webPush, disableWebPush, enableWebPush, refreshWebPushState } from '~/pwa/push'
+import { NotificationsSettings } from './notifications-settings'
 
 const ICONS: Record<string, typeof IconSettings> = {
   about: IconInfoCircle,
@@ -96,15 +95,6 @@ function SettingsRow({ entry, onClick }: { entry: SettingsEntry; onClick(): void
 function AppearanceSettings({ onBack }: { onBack(): void }) {
   const preferences = useStore($preferences)
   return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Appearance"><div className="settings-list static"><label><span><strong>Theme</strong><small>System follows your device appearance.</small></span><select onChange={event => savePreferences({ theme: event.target.value as typeof preferences.theme })} value={preferences.theme}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></SettingsPageShell>
-}
-
-function NotificationsSettings({ onBack }: { onBack(): void }) {
-  const push = useStore($webPush)
-  const network = useStore($networkStatus)
-  const ready = useStore($gatewayReady)
-  useEffect(() => { if (!isNativeIOS() && ready && network.status !== 'offline') void refreshWebPushState() }, [ready, network.status])
-
-  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Notifications"><div className="data-card"><h3>Background notifications</h3>{isNativeIOS() ? <p className="muted">Web Push is available in the installed PWA. Native app notifications require APNs support.</p> : <><p className="muted">{push.enabled ? 'This device can receive messages delivered to the Hermes Web Push channel.' : 'Enable Web Push so cron jobs and explicit deliveries can notify this device while Hermes Mobile is closed.'}</p><Button className="touch-button" disabled={!ready || network.status === 'offline' || push.busy || push.permission === 'unsupported' || push.permission === 'denied'} onClick={() => { if ($gatewayReady.get() && $networkStatus.get().status !== 'offline') void (push.enabled ? disableWebPush() : enableWebPush()) }}>{push.busy ? 'Updating…' : push.enabled ? 'Disable notifications' : 'Enable notifications'}</Button>{push.permission === 'denied' && <p className="error-text">Notifications are blocked. Allow them in this site’s browser settings, then try again.</p>}{push.error && <p className="error-text">{push.error}</p>}</>}</div></SettingsPageShell>
 }
 
 function KeyboardShortcutsSettings({ onBack }: { onBack(): void }) {

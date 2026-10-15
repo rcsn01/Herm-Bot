@@ -1,157 +1,84 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
-import { $activeRoute, $navigation, pushRoute, resetNavigation, setTab } from '~/navigation/navigation-store'
-import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from '~/navigation/workspace-navigation'
-
-beforeEach(() => {
-  resetNavigation()
-  resetWorkspacePolicy()
-})
-
+import { DeepLinkCoordinator, parseHermesDeepLink } from './deep-links'
+import { $activeRoute, $navigation, pushRoute, resetNavigation, setTab } from './navigation-store'
+import { $workspacePolicy, dismissMenu, openMenu, resetWorkspacePolicy } from './workspace-navigation'
+import { $chat } from '~/state/conversation'
+import { $sessionSelecting } from '~/state/store'
+function selected(id: string) {
+  $chat.set({ ...$chat.get(), storedSessionId: id })
+  return { session: { storedSessionId: id } }
+}
+beforeEach(() => { resetNavigation(); resetWorkspacePolicy(); $sessionSelecting.set(false) })
 describe('parseHermesDeepLink', () => {
-  it('parses legacy session links without forcing a profile change', () => {
-    expect(parseHermesDeepLink('hermes://session/abc-123')).toEqual({ kind: 'session', sessionId: 'abc-123' })
-  })
-
-  it('preserves a named or explicit default profile', () => {
-    expect(parseHermesDeepLink('hermes://session/abc?profile=client%20work%2Fios')).toEqual({
-      kind: 'session', profile: 'client work/ios', sessionId: 'abc'
-    })
+  it('parses legacy and same-origin session links without inventing a profile', () => {
+    expect(parseHermesDeepLink('hermes://session/abc')).toEqual({ kind: 'session', sessionId: 'abc' })
+    expect(parseHermesDeepLink('hermes:/session/abc')).toEqual({ kind: 'session', sessionId: 'abc' })
+    expect(parseHermesDeepLink(`${window.location.origin}/session/a%2Fb?profile=work`)).toEqual({ kind: 'session', profile: 'work', sessionId: 'a/b' })
     expect(parseHermesDeepLink('hermes://session/abc?profile=')).toEqual({ kind: 'session', profile: null, sessionId: 'abc' })
   })
-
-  it('tolerates the single-slash spelling', () => {
-    expect(parseHermesDeepLink('hermes:/session/abc')).toEqual({ kind: 'session', sessionId: 'abc' })
-  })
-
-  it('accepts same-origin HTTPS session links', () => {
-    expect(parseHermesDeepLink(`${window.location.origin}/session/a%2Fb?profile=work`)).toEqual({
-      kind: 'session', profile: 'work', sessionId: 'a/b'
-    })
-  })
-
-  it('ignores foreign, credentialed, malformed, and unhandled links', () => {
-    expect(parseHermesDeepLink('https://example.com/session/abc')).toBeNull()
-    expect(parseHermesDeepLink(`${window.location.protocol}//user:pass@${window.location.host}/session/abc`)).toBeNull()
-    expect(parseHermesDeepLink(`${window.location.origin}/settings/abc`)).toBeNull()
-    expect(parseHermesDeepLink(`${window.location.origin}/session/%E0%A4%A`)).toBeNull()
-    expect(parseHermesDeepLink('hermes://unknown/abc')).toBeNull()
-    expect(parseHermesDeepLink('hermes://session')).toBeNull()
-    expect(parseHermesDeepLink('not a url')).toBeNull()
+  it('rejects foreign, credentialed, malformed and unhandled links', () => {
+    for (const raw of ['https://example.com/session/abc', `${window.location.protocol}//user:pass@${window.location.host}/session/abc`, `${window.location.origin}/settings/a`, `${window.location.origin}/session/%E0%A4%A`, 'hermes://session', 'hermes://unknown/abc', 'not a url']) expect(parseHermesDeepLink(raw)).toBeNull()
   })
 })
-
 describe('deep link coordinator', () => {
-  it('keeps only the latest intent until the gateway is ready', async () => {
-    const resumeSession = vi.fn().mockResolvedValue(undefined)
+  it('keeps only the latest intent until ready', async () => {
+    const resumeSession = vi.fn(async (id: string) => selected(id))
     const coordinator = new DeepLinkCoordinator({ resumeSession, switchProfile: vi.fn() })
-
-    expect(coordinator.accept('hermes://session/first')).toBe(true)
-    expect(coordinator.accept('hermes://session/second')).toBe(true)
-    coordinator.setReady(true)
-    await coordinator.settled()
-
+    coordinator.accept('hermes://session/first'); coordinator.accept('hermes://session/second')
+    coordinator.setReady(true); await coordinator.settled()
     expect(resumeSession).toHaveBeenCalledExactlyOnceWith('second')
     expect($navigation.get().activeTab).toBe('sessions')
     expect($activeRoute.get().type).toBe('sessions-root')
   })
-
-  it('switches profile before resuming a profile-aware intent', async () => {
+  it('switches profile before exact-ID resume', async () => {
     const order: string[] = []
-    const coordinator = new DeepLinkCoordinator({
-      resumeSession: async sessionId => { order.push(`resume:${sessionId}`) },
-      switchProfile: async profile => { order.push(`profile:${profile ?? 'default'}`) }
-    })
-    coordinator.setReady(true)
-
-    coordinator.accept('hermes://session/s-1?profile=client%20work')
-    await coordinator.settled()
-
-    expect(order).toEqual(['profile:client work', 'resume:s-1'])
+    const coordinator = new DeepLinkCoordinator({ resumeSession: async id => { order.push(`resume:${id}`); return selected(id) }, switchProfile: async profile => { order.push(`profile:${profile}`) } })
+    coordinator.setReady(true); coordinator.accept('hermes://session/s-1?profile=work'); await coordinator.settled()
+    expect(order).toEqual(['profile:work', 'resume:s-1'])
     expect($navigation.get().activeTab).toBe('sessions')
-    expect($activeRoute.get().type).toBe('sessions-root')
   })
-
-  it('does not lose the latest intent when a profile switch drops readiness', async () => {
-    let finishSwitch: (() => void) | undefined
-    const switchGate = new Promise<void>(resolve => { finishSwitch = resolve })
-    const resumeSession = vi.fn().mockResolvedValue(undefined)
+  it('does not lose the latest intent when switching drops readiness', async () => {
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => { finish = resolve })
+    const resumeSession = vi.fn(async (id: string) => selected(id))
     let coordinator: DeepLinkCoordinator
-    const switchProfile = vi.fn(async () => {
-      coordinator.setReady(false)
-      await switchGate
-    })
-    coordinator = new DeepLinkCoordinator({ resumeSession, switchProfile })
-    coordinator.setReady(true)
-
-    coordinator.accept('hermes://session/first?profile=work')
-    coordinator.accept('hermes://session/second')
-    finishSwitch?.()
-    await Promise.resolve()
-    coordinator.setReady(true)
-    await coordinator.settled()
-
+    coordinator = new DeepLinkCoordinator({ resumeSession, switchProfile: async () => { coordinator.setReady(false); await gate } })
+    coordinator.setReady(true); coordinator.accept('hermes://session/first?profile=work'); coordinator.accept('hermes://session/second')
+    finish(); await Promise.resolve(); coordinator.setReady(true); await coordinator.settled()
     expect(resumeSession).toHaveBeenCalledExactlyOnceWith('second')
   })
-
-  it('does not let a stale completion choose the final tab', async () => {
-    let failFirst: ((error: Error) => void) | undefined
-    const first = new Promise<void>((_resolve, reject) => { failFirst = reject })
-    const resumeSession = vi.fn((sessionId: string) => sessionId === 'first' ? first : Promise.resolve())
-    const coordinator = new DeepLinkCoordinator({ resumeSession, switchProfile: vi.fn() })
-    coordinator.setReady(true)
-
-    coordinator.accept('hermes://session/first')
-    coordinator.accept('hermes://session/second')
-    failFirst?.(new Error('gone'))
-    await coordinator.settled()
-
-    expect(resumeSession.mock.calls).toEqual([['first'], ['second']])
-    expect($navigation.get().activeTab).toBe('sessions')
-    expect($activeRoute.get().type).toBe('sessions-root')
+  it.each(['failed', 'superseded', 'wrong-id', 'pending'])('does not navigate on %s resume', async mode => {
+    pushRoute('settings', { category: 'about', tab: 'settings', type: 'settings-category' }); setTab('settings')
+    const coordinator = new DeepLinkCoordinator({ resumeSession: async () => {
+      if (mode === 'failed') throw new Error('gone')
+      if (mode === 'superseded') return undefined
+      if (mode === 'pending') $sessionSelecting.set(true)
+      return selected(mode === 'wrong-id' ? 'other' : 'target')
+    }, switchProfile: vi.fn() })
+    coordinator.setReady(true); coordinator.accept('hermes://session/target'); await coordinator.settled()
+    expect($navigation.get().activeTab).toBe('settings')
   })
-
-  it('keeps the loaded chat and selects Sessions when the current intent cannot resume', async () => {
-    pushRoute('settings', { category: 'about', tab: 'settings', type: 'settings-category' })
-    setTab('settings')
-    const coordinator = new DeepLinkCoordinator({
-      resumeSession: vi.fn().mockRejectedValue(new Error('gone')),
-      switchProfile: vi.fn()
-    })
-    coordinator.setReady(true)
-
-    coordinator.accept('hermes://session/missing')
-    await coordinator.settled()
-
-    expect($navigation.get().activeTab).toBe('sessions')
-    expect($activeRoute.get().type).toBe('sessions-root')
-  })
-
-  it('landing clears an open sessions menu (Δ1: openChatSurface owns the latch)', async () => {
-    const coordinator = new DeepLinkCoordinator({ resumeSession: vi.fn().mockResolvedValue(undefined), switchProfile: vi.fn() })
-    coordinator.setReady(true)
-    openMenu()
-
-    coordinator.accept('hermes://session/abc')
-    await coordinator.settled()
-
-    expect($workspacePolicy.get().menuOpen).toBe(false)
+  it('successful landing clears menu and stashed return policy', async () => {
+    const coordinator = new DeepLinkCoordinator({ resumeSession: async id => selected(id), switchProfile: vi.fn() })
+    coordinator.setReady(true); openMenu(); dismissMenu({ type: 'tab', tab: 'cron' })
+    coordinator.accept('hermes://session/abc'); await coordinator.settled()
+    expect($workspacePolicy.get()).toMatchObject({ menuOpen: false, returnOrigin: null, returnStack: null })
     expect($navigation.get().activeTab).toBe('sessions')
   })
-
-  it('landing clears a stashed return pair (Δ1: openChatSurface owns the policy)', async () => {
-    const coordinator = new DeepLinkCoordinator({ resumeSession: vi.fn().mockResolvedValue(undefined), switchProfile: vi.fn() })
-    coordinator.setReady(true)
-    openMenu()
-    dismissMenu({ type: 'tab', tab: 'cron' })
-    expect($workspacePolicy.get().returnOrigin).toBe('roster')
-
-    coordinator.accept('hermes://session/abc')
-    await coordinator.settled()
-
-    expect($workspacePolicy.get().returnOrigin).toBeNull()
-    expect($workspacePolicy.get().returnStack).toBeNull()
-    expect($navigation.get().activeTab).toBe('sessions')
+  it.each([true, false])('verifies notification ownership before profile/resume, match=%s', async allowed => {
+    const resumeSession = vi.fn(async (id: string) => selected(id))
+    const switchProfile = vi.fn()
+    const verify = vi.fn(async () => allowed)
+    const coordinator = new DeepLinkCoordinator({ resumeSession, switchProfile }, verify)
+    coordinator.setReady(true); coordinator.accept(`${window.location.origin}/session/a?profile=work&push=1&push_owner=${'a'.repeat(64)}`); await coordinator.settled()
+    expect(verify).toHaveBeenCalledOnce()
+    expect(resumeSession).toHaveBeenCalledTimes(Number(allowed))
+    expect(switchProfile).toHaveBeenCalledTimes(Number(allowed))
+  })
+  it('retires queued notification intents on reset', async () => {
+    const resumeSession = vi.fn()
+    const coordinator = new DeepLinkCoordinator({ resumeSession, switchProfile: vi.fn() }, async () => true)
+    coordinator.accept('hermes://session/a'); coordinator.reset(); coordinator.setReady(true); await coordinator.settled()
+    expect(resumeSession).not.toHaveBeenCalled()
   })
 })

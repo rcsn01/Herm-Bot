@@ -6,6 +6,7 @@ import { createHandler, notifyAll } from "./app.js";
 import { CompletionBridgeState, HermesCompletionBridge } from "./completion-bridge.js";
 import { HermesAuthenticator } from "./hermes-auth.js";
 import { RelayState } from "./state.js";
+import { browserAuthenticator, ownedNotification } from "./ownership.js";
 
 const port = Number(process.env.PORT ?? "8080");
 const dataDirectory = process.env.DATA_DIR ?? "/data";
@@ -51,7 +52,8 @@ if (bridgeEnabled) {
     authenticator,
     state: bridgeState,
     deliver: async (notification) => {
-      const result = await notifyAll({ state, push: webPush, notification });
+      const owner = await authenticator.verifiedOwner();
+      const result = await notifyAll({ state, push: webPush, notification: ownedNotification(notification, appUrl, owner), owner });
       if (result.failed > 0) {
         throw new Error(`Web Push failed for ${result.failed} subscription(s)`);
       }
@@ -60,11 +62,11 @@ if (bridgeEnabled) {
     pollIntervalMs: integerSetting("HERMES_BRIDGE_POLL_INTERVAL_MS", "1000", 250),
     reconnectMinMs: integerSetting("HERMES_BRIDGE_RECONNECT_MIN_MS", "1000", 250),
     reconnectMaxMs: integerSetting("HERMES_BRIDGE_RECONNECT_MAX_MS", "30000", 250),
-    onError: (error) => console.error(`Hermes completion bridge: ${error.message}`),
+    onError: () => console.error("Hermes completion bridge unavailable; check credentials, identity support and connectivity."),
   });
 }
 
-const server = http.createServer(createHandler({ state, push: webPush }));
+const server = http.createServer(createHandler({ state, push: webPush, authenticate: browserAuthenticator({ gateway }), appOrigin: new URL(appUrl).origin }));
 server.headersTimeout = 10_000;
 server.requestTimeout = 15_000;
 server.keepAliveTimeout = 5_000;

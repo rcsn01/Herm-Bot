@@ -78,6 +78,40 @@ workspace/context changes, logout, or local-data clearing. Clearing local app da
 does not clear the system clipboard, and an already-issued platform clipboard write
 cannot be recalled. Other apps or clipboard managers may retain copied text.
 
+## Notification setup and ownership
+
+Relay registrations are versioned and bound to an opaque hash of a server-verified
+gateway/account identity. Browser-provided owner headers are not trusted. Cookie
+or session-token credentials are forwarded only to the configured fixed gateway's
+`/api/auth/me`; unavailable or malformed identity fails closed. The completion
+bridge verifies its own owner before fanout. Legacy ownerless subscriptions remain
+inactive until explicitly re-enabled, without changing VAPID keys.
+
+Registration status, replacement, binding-specific deletion and test sends enforce
+owner isolation inside the relay as well as proxy authentication. Tests target one
+stored binding, never an arbitrary submitted URL, and contain fixed nonsensitive
+text with app-root navigation. Provider acceptance is not a delivery receipt.
+Vendor-owned push HTTPS destinations are allowlisted; arbitrary/local targets and
+custom ports are rejected. The Web Push transport does not follow redirects. Raw
+provider diagnostics are not returned to clients. Mutation routes require exact
+configured app Origin and JSON content type, bounded bodies and no-store responses.
+Tests have bounded concurrency, per-account cooldown and short-lived idempotency
+records. Restart/crash uncertainty means exactly-once delivery is not guaranteed.
+
+Client operations capture owner/gateway/privacy generation and retire stale
+publication and cleanup. Subscription state is browser-wide, not per bot.
+Logout does not revoke an already registered OS subscription; users can explicitly
+disable it. Normal completion content may still include response previews, unlike
+the fixed test payload. OS notifications already shown cannot be recalled by logout.
+Session notification links require authenticated relay-owner verification before
+profile/exact-ID resume. Missing provenance falls back to root; failed, stale or
+superseded selection cannot authorize navigation. Worker messages must come from
+the controlling same-origin worker, and clicks use one existing or cold window.
+
+No test receipt telemetry, native APNs, persistent client discovery index, new
+credentials, or automatic notification sends are added. Container health does not
+establish gateway identity, bridge readiness or real device delivery.
+
 ## Conversation discovery
 
 Session search matches loaded titles only, not message bodies or a verified

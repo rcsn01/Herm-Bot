@@ -117,9 +117,54 @@ This never deletes gateway sessions.
 ## Web Push notifications
 
 Compose includes a private Web Push relay with persistent VAPID keys,
-subscriptions, and completion-event state. nginx exposes only registration and
-the public VAPID key under `/push`. The relay has no published host port and
-needs no shared Web Push token.
+subscriptions, and completion-event state. nginx exposes the public VAPID key and
+protected registration, status, and device-test routes under `/push/v1`. The relay
+has no published host port and needs no shared Web Push token.
+
+Registration/status/test/delete independently verify the browser's cookie or
+session token against the fixed gateway's `/api/auth/me`. It must return a stable
+`org_id` string and nonempty `user_id`; gateway-local accounts also require a
+nonempty `provider`. Unsupported/token/anonymous identity modes fail closed with
+an account-identity limitation. The bridge verifies its own identity with the same
+contract before delivery. A public status response or healthy container is not
+proof that this identity contract works on your gateway. Completion fanout is
+restricted to that bridge account, not every signed-in user's subscriptions. The
+current bridge observes the default profile; tests do not establish every-bot
+completion coverage.
+
+Upgrade both mobile and relay together. Relay state version 2 preserves VAPID keys
+and completion state but quarantines legacy ownerless subscriptions. Users must
+re-enable their device for their verified account. Do not delete the data volume
+or silently assign legacy subscriptions to an account. A device endpoint owned by
+another account must be unsubscribed locally before enabling for the new account.
+Signing out retires client operations, but does not itself revoke an existing OS
+subscription; use Disable notifications to stop it.
+
+Status separates permission, local subscription and account registration. Send
+test notification targets only one owned binding with fixed nonsensitive text and
+opens the app root. It does not execute a gateway task or verify the completion
+bridge. Provider acceptance is not confirmed OS delivery. Tests are limited to one
+per account per 30 seconds with at most four concurrent sends. In-memory retry IDs
+are retained for ten minutes; a relay restart can lose that deduplication, so
+exactly-once delivery is not guaranteed. Unknown HTTP results can be retried using
+the same ID, while a terminal unknown provider result allows a new explicit test
+after cooldown. No tests are sent automatically.
+
+Only vendor-owned FCM, Mozilla, Apple Push and Windows notification HTTPS hosts
+are accepted. Private/arbitrary endpoints, custom ports and redirect destinations
+are not supported. Push keys/endpoints and raw provider error bodies are never
+included in diagnostics. Browser requests require the exact `WEBPUSH_PWA_URL`
+origin and JSON content type. Configure that URL to the external app origin.
+
+Local verification without real pushes:
+```sh
+(cd web-push-relay && npm test)
+# Requires Docker and the local hermes-mobile-pwa:local image; uses local stubs.
+(cd web-push-relay && npm run test:proxy)
+```
+Physical installed-PWA receipt and notification taps must still be checked on
+supported devices through the real HTTPS deployment. Automated fixtures and native
+builds do not prove background delivery. No APNs support is added to the native app.
 
 The relay's completion bridge connects to the existing `HERMES_GATEWAY`. Give
 it one existing Hermes credential in `.env`:

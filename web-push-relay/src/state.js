@@ -62,11 +62,16 @@ export class RelayState {
       this.value = validateStoredState(
         JSON.parse(await readFile(this.filePath, "utf8")),
       );
+      if (this.value.version !== 2) {
+        this.value = { ...this.value, version: 2, subscriptions: this.value.subscriptions.map(subscription => ({ ...subscription, owner: null, id: randomUUID() })) };
+        await durableWrite(this.filePath, this.value);
+      }
     } catch (error) {
       if (error.code !== "ENOENT") {
         throw error;
       }
       this.value = {
+        version: 2,
         vapid: this.generateVapidKeys(),
         subscriptions: [],
       };
@@ -82,8 +87,8 @@ export class RelayState {
     return { ...this.value.vapid };
   }
 
-  listSubscriptions() {
-    return this.value.subscriptions.map((subscription) => ({
+  listSubscriptions(owner) {
+    return this.value.subscriptions.filter(subscription => owner && subscription.owner === owner).map((subscription) => ({
       ...subscription,
       keys: { ...subscription.keys },
     }));
@@ -99,22 +104,28 @@ export class RelayState {
     return operation;
   }
 
-  async upsert(subscription) {
+  async upsert(subscription, owner) {
+    if (!owner) throw Object.assign(new Error("identity_unavailable"), { statusCode: 503 });
+    const id = randomUUID();
     await this.mutate((current) => {
+      if (current.subscriptions.some(candidate => candidate.endpoint === subscription.endpoint && candidate.owner && candidate.owner !== owner)) {
+        throw Object.assign(new Error("subscription_belongs_to_another_account"), { statusCode: 409 });
+      }
       const subscriptions = current.subscriptions.filter(
         (candidate) => candidate.endpoint !== subscription.endpoint,
       );
-      subscriptions.push(subscription);
+      subscriptions.push({ ...subscription, owner, id });
       return { ...current, subscriptions };
     });
+    return id;
   }
 
-  async removeEndpoints(endpoints) {
+  async removeEndpoints(endpoints, owner, bindingId) {
     const removals = new Set(endpoints);
     let removed = 0;
     await this.mutate((current) => {
       const subscriptions = current.subscriptions.filter((subscription) => {
-        if (removals.has(subscription.endpoint)) {
+        if (owner && subscription.owner === owner && (bindingId === undefined || subscription.id === bindingId) && removals.has(subscription.endpoint)) {
           removed += 1;
           return false;
         }

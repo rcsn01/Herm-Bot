@@ -21,6 +21,7 @@ export function observeHermesDeepLinks(handler: (rawURL: string) => void): () =>
       history.replaceState(null, '', '/')
     }
     const forwardServiceWorkerURL = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || !navigator.serviceWorker.controller || event.source !== navigator.serviceWorker.controller) return
       if (event.data?.type !== 'HERMES_DEEP_LINK' || typeof event.data.url !== 'string') return
       if (!active || !parseHermesDeepLink(event.data.url)) return
       handler(event.data.url)

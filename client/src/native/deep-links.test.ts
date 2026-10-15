@@ -49,13 +49,17 @@ describe('observeHermesDeepLinks', () => {
 
   it('forwards notification clicks without changing the in-memory router URL', () => {
     mocks.state.native = false
-    const serviceWorker = new EventTarget()
+    const controller = new MessageChannel().port1
+    const serviceWorker = Object.assign(new EventTarget(), { controller })
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: serviceWorker })
     const handler = vi.fn()
     const unsubscribe = observeHermesDeepLinks(handler)
     const target = `${window.location.origin}/session/from-push?profile=work`
 
+    serviceWorker.dispatchEvent(new MessageEvent('message', { origin: window.location.origin, source: null, data: { type: 'HERMES_DEEP_LINK', url: target } }))
+    expect(handler).not.toHaveBeenCalled()
     serviceWorker.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin, source: controller,
       data: { type: 'HERMES_DEEP_LINK', url: target }
     }))
 

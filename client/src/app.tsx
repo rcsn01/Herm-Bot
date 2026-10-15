@@ -28,6 +28,7 @@ import { applyTheme } from '~/features/settings/theme'
 import { CreateProfileDialog } from '~/features/agents/create-profile-dialog'
 import { RosterScreen } from '~/features/agents/roster-screen'
 import { GatewayProvider } from '~/gateway/gateway-context'
+import { verifyNotificationOwner } from '~/pwa/push'
 import { DeepLinkCoordinator, parseHermesDeepLink } from '~/navigation/deep-links'
 import { $activeRoute, $navigation } from '~/navigation/navigation-store'
 import { useWorkspaceNavigation } from '~/navigation/use-workspace-navigation'
@@ -44,7 +45,7 @@ const CronScreen = lazy(() => import('~/features/cron/cron-screen').then(module 
 const MobileSettingsScreen = lazy(() => import('~/features/settings/settings-screen').then(module => ({ default: module.SettingsScreen })))
 
 const controller = new GatewayController()
-const deepLinks = new DeepLinkCoordinator(controller)
+const deepLinks = new DeepLinkCoordinator(controller, verifyNotificationOwner)
 // Streamed content belongs to ChatScreen, not the surrounding workspace shell.
 const $conversationAvailability = computed($chat, chat => chat.availability)
 const $headerSubtitle = computed($chat, chat => chat.info?.title || 'New conversation')
@@ -108,7 +109,15 @@ export function App() {
     return () => controller.dispose()
   }, [])
 
-  useEffect(() => observeHermesDeepLinks(rawURL => deepLinks.accept(rawURL)), [])
+  useEffect(() => {
+    let previous = $draftOwner.get()
+    const stop = $draftOwner.listen(next => {
+      if (previous.gateway && (next.locked || next.gateway !== previous.gateway || next.principal !== previous.principal)) deepLinks.reset()
+      previous = next
+    })
+    const stopLinks = observeHermesDeepLinks(rawURL => deepLinks.accept(rawURL))
+    return () => { stop(); stopLinks(); deepLinks.reset() }
+  }, [])
   useEffect(() => {
     deepLinks.setReady(connection.phase === 'connected')
     return () => deepLinks.setReady(false)

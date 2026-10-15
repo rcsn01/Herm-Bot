@@ -104,7 +104,7 @@ const server = http.createServer(async (req, res) => {
       const state = stateFor(fixtureId)
       const update = await body(req)
       if (update.reset === true) state.controls = {}
-      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream', 'discovery', 'failSessionList', 'failRestore', 'failArchiveList', 'delayRestore', 'delaySessionList']) {
+      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream', 'discovery', 'failSessionList', 'failRestore', 'failArchiveList', 'delayRestore', 'delaySessionList', 'pushFailure', 'pushExpired', 'pushUnknown', 'delayPushTest']) {
         if (typeof update[key] === 'boolean') state.controls[key] = update[key]
       }
       if (typeof update.missingSession === 'string' || update.missingSession === null) state.controls.missingSession = update.missingSession
@@ -157,6 +157,27 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true }, { 'set-cookie': `fixture_session=${id}; Path=/; HttpOnly; SameSite=Lax` })
     }
     const id = cookie(req)
+    if (url.pathname.startsWith('/push/v1/')) {
+      if (!id || controls.authExpired) return json(res, 401, { error: 'sign_in_required' })
+      const state = stateFor(id)
+      const call = { kind: 'http', method: req.method, path: url.pathname }
+      state.calls.push(call)
+      if (controls.pushFailure) return json(res, 503, { error: 'relay_unavailable' })
+      if (url.pathname.endsWith('/public-key')) return json(res, 200, { version: 2, publicKey: Buffer.from([4, ...Array(64).fill(0)]).toString('base64url') })
+      const value = await body(req)
+      call.body = value
+      if (url.pathname.endsWith('/status')) return json(res, 200, { version: 2, owner: 'a'.repeat(64), registered: Boolean(state.pushBinding && value.endpoint), binding: value.endpoint ? state.pushBinding ?? null : null })
+      if (url.pathname.endsWith('/subscriptions')) {
+        const removed = state.pushBinding === value.binding ? 1 : 0
+        state.pushBinding = req.method === 'PUT' ? 'fixture-binding' : null
+        return json(res, 200, { ok: true, binding: state.pushBinding, removed })
+      }
+      if (url.pathname.endsWith('/test')) {
+        await waitForControl(state, 'delayPushTest')
+        return json(res, 200, { outcome: controls.pushExpired ? 'expired' : controls.pushUnknown ? 'unknown' : 'accepted', retryAfter: 30 })
+      }
+      return json(res, 404, { error: 'not_found' })
+    }
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/')) {
       if (!id) return json(res, 401, { detail: 'Authentication required' })
       const state = stateFor(id)

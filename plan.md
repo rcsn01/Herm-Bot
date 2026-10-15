@@ -1,6 +1,6 @@
 # Herm PWA improvement plan
 
-Status: Items 1 through 6 have application implementations. Item 7 remains proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
+Status: Items 1 through 7 have application implementations. Item 7's real gateway identity and physical-device delivery acceptance remain deployment/device verification limits. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
 
 ## Goal and scope
 
@@ -1298,32 +1298,383 @@ push. The pre-existing unrelated `untitled.md` remains untouched.
 
 ## 7. Make notification setup testable
 
-Priority: After the core reliability and composer work.
+Priority: Completed after items 1 through 6.
+Status: Implemented following explicit user authorization for implementation,
+local dev-container rebuild and commit. No remote deployment/publication or real
+manual test-notification sends were performed. Physical-device acceptance remains
+unverified as recorded below.
+
+### Required outcome
+
+Let a user determine whether this device is configured for Web Push and explicitly
+send one nonsensitive test to this device. Separate observable setup facts from
+unobservable OS delivery. Explain what to do when setup is unavailable, blocked,
+missing, expired, disconnected, or only partially complete.
+
+Use the existing same-origin PWA, relay, authentication, and navigation model.
+Herm remains standalone. Do not add native APNs, a notification inbox, arbitrary
+message composition, broadcasts, a new gateway job, or a new push provider.
 
 ### Current evidence
 
-Notification settings offer an enable/disable control, but users need a direct way to verify background delivery without waiting for a real job.
+Repository inspection establishes the following client and local relay behavior;
+it does not establish the capabilities of a deployed gateway or installed device.
 
-Relevant files:
-- `client/src/features/settings/settings-screen.tsx`
-- `client/src/pwa/push.ts`
-- `client/src/pwa/sw.ts`
-- `web-push-relay/`
+- `client/src/features/settings/settings-screen.tsx` owns an inline notifications
+  screen with one enable/disable control. Native iOS displays an APNs limitation.
+  The screen refreshes on gateway readiness/network changes, not on permission
+  changes when returning from OS settings.
+- `client/src/pwa/push.ts` uses secure-context/API detection, browser permission,
+  `serviceWorker.ready`, local `getSubscription()`, and relay public-key reachability.
+  Its `enabled` flag is not proof of server registration. Public-key success is
+  not proof of authenticated access, bridge readiness, or delivery.
+- Client operations patch a global store without captured owner/scope or operation
+  generations. `serviceWorker.ready` has no deadline. Existing enable rollback
+  removes a newly created local subscription if registration fails; disable removes
+  remote registration before local unsubscribe. These partial outcomes need explicit
+  representation rather than another overloaded enabled/disabled flag.
+- `web-push-relay/src/app.js` exposes health, public key, and subscription PUT/DELETE.
+  There is no registration-status or test-send route. `notifyAll` broadcasts to all
+  stored subscriptions, removes expired 404/410 endpoints, and reports aggregate
+  provider outcomes. It must not implement a browser's device-only test.
+- `web-push-relay/src/state.js` stores subscriptions globally by endpoint, without
+  account or profile ownership. `deploy/nginx.conf` authenticates subscription
+  mutations through protected `/api/config`, but that boolean auth check does not
+  bind a subscription to a principal. Relay handlers themselves do not authenticate.
+- `web-push-relay/src/server.js` supplies separate operator credentials to the
+  completion bridge. The bridge currently connects to the default profile, and its
+  normal completion notifications can contain response previews and session links.
+  Neither global fanout nor profile metadata proves subscriber account ownership.
+- `client/src/pwa/sw.ts` displays pushes and, on a click, both messages an existing
+  window and attempts to open another. `push-payload.ts` restricts URLs to the same
+  origin, but same-origin alone is not an account check. The deep-link coordinator
+  currently navigates after resume without validating its guarded selection result,
+  and also opens the chat surface on errors. Notification entry needs stronger
+  target, lifetime, and outcome checks.
+- Existing coverage includes three push-client tests, payload URL validation,
+  relay validation/state/send failures, bridge replay, and ordinary deep links.
+  It does not prove test delivery, registration ownership, or notification-click
+  behavior across account changes.
 
-### Planned improvements
+Platform reference: WebKit's "Web Push for Web Apps on iOS and iPadOS"
+(https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)
+documents iOS/iPadOS 16.4 Home Screen support and a permission request made directly
+from user interaction. Use capability detection for functionality; platform hints
+only select instructions. Do not require installation on browsers that support
+Web Push without it.
 
-- Add a "Send test notification" flow after checking the relay and gateway capabilities needed to support it.
-- Show clearer device status, distinguishing permission, local subscription, and server registration where observable.
-- Provide platform-specific instructions when installation or permission is missing.
-- Explain unsupported and blocked-permission states with actionable guidance.
-- Report test submission separately from confirmed delivery. Do not claim delivery when only the send request succeeded.
+### Capability and ownership gate
 
-### Verification
+Resolve this before exposing test sends or claiming registered-for-this-account.
+This is required security work, not an optional diagnostics improvement.
 
-- Test supported, unsupported, denied-permission, expired-subscription, and relay-failure states.
-- Verify a real notification arrives while the installed PWA is backgrounded or closed on supported devices.
-- Tapping a notification opens the intended conversation without bypassing authentication or crossing account/profile boundaries.
-- Test notification content does not include sensitive conversation data.
+1. Establish a server-verified principal for browser registration/status/test/delete
+   using credentials forwarded only to the fixed configured Hermes gateway. The
+   client already consumes `/api/auth/me` and validates organization/user/provider
+   identity in `draft-owner.ts`; verify equivalent server-side response semantics
+   for supported deployments. Never trust a browser-supplied owner, display name,
+   profile, endpoint, or opaque registration ID as proof of account ownership.
+2. Make the relay itself enforce that identity, or use an equivalently authenticated
+   internal handoff that cannot be forged by browser headers or direct relay access.
+   Preserve the proxy's fixed upstream, credential restrictions, no-store responses,
+   and protected mutation policy. Do not treat `/healthz` or `/api/status` as auth.
+3. Store server-owned subscription bindings against the verified gateway/account.
+   Device registration is account/device scoped; switching bots must not silently
+   subscribe/unsubscribe the same device or claim all-profile completion coverage.
+4. Require the same verified identity for status, replacement, deletion, and test.
+   Resolve only a stored current-device binding. Other-account lookup must not
+   disclose existence, keys, endpoint, or provider diagnostics.
+5. Version relay state and migrate legacy ownerless subscriptions to an explicitly
+   unverified/inactive state. Preserve VAPID keys and unrelated state. Do not silently
+   attach all legacy endpoints to the next user or continue unsafe global fanout.
+   Explain when re-enabling is required. Test migration, restart, and atomic writes.
+6. Bind completion fanout to the bridge's verified owner, and to any established
+   profile policy. Do not route a bridge account's completions to other accounts.
+   If owner provenance is unavailable, fail closed for affected delivery instead of
+   inferring a single-user deployment. Do not invent gateway endpoints or identity
+   semantics to make this gate pass. Record unsupported identity modes explicitly.
+
+If the deployed gateway cannot provide verifiable identity, show that limitation
+and disable account-bound registration/test features there. A working local relay
+fixture is not proof that this deployment gate passed. Supporting anonymous/shared
+identity modes would require a separately reviewed ownership contract.
+
+### Device diagnostics and state model
+
+Extract `NotificationsSettings` into an app-owned settings module. Keep platform,
+subscription, relay, and operation policy in the push module rather than JSX.
+Use existing shared controls/tokens; no new shared package or dependency is planned.
+
+Represent independent facts with explicit checking/unknown/error states:
+- Browser capability and secure context; native shell versus browser/PWA.
+- Installation context where observable, without treating ordinary desktop browser
+  use as unsupported or presenting a native shell as a browser installation.
+- Permission: not requested, granted, or blocked. A dismissed prompt is not a
+  permanently denied permission.
+- Service-worker availability and local subscription: absent, present, expired,
+  incompatible key, checking, or inspection failed.
+- Current-account relay registration: confirmed, missing, identity unavailable,
+  unsupported relay version, checking, or could not verify.
+- Latest explicit operation: registering, disabling, sending, accepted, rejected,
+  expired, or outcome unknown. Test acceptance is not an enabled/delivered flag.
+
+Do not erase a known local subscription merely because relay lookup fails. Do not
+show registered when only local subscription or public key exists. Label status
+as observed, not a guarantee about the OS, Focus settings, battery policy, or future
+background delivery. A direct relay test does not verify the automatic completion
+bridge or delivery from every bot/profile. Do not claim bridge health from HTTP
+health/public-key success; show unknown unless actual bridge state is exposed.
+
+Actions:
+- Refresh status explicitly and on visible return/focus/reconnect, with deduplicated
+  requests. Passive checks never prompt for permission, subscribe, or send a test.
+- Enable from a direct user gesture. Request permission before unrelated awaits
+  that could consume activation; then validate key, obtain a bounded worker-ready
+  result, subscribe/register, and reconcile the actual resulting state.
+- Offer repair/re-register when a local subscription exists but the current-account
+  registration is missing. Handle VAPID rotation/expiry without claiming repair
+  succeeded until both local and remote facts agree. Do not silently take ownership
+  from another account or bulk-remove that account's other devices.
+- Disable with truthful partial-failure feedback. Distinguish removal at the relay
+  from local unsubscribe failure, and local state from remote cleanup failure.
+  Permission remains granted after unsubscribe; say so. Provide retry for the
+  unfinished step without accidentally re-enabling or deleting a newer binding.
+- Show Send test notification only when the current device has a usable local
+  subscription and a confirmed current-owner registration. Block duplicates and
+  provide bounded pending feedback, Retry where safe, and an explicit cooldown.
+
+All operations capture authenticated owner/gateway generation and credentials at
+start. Retire stale publication after logout, account/gateway changes, privacy
+retirement, disposal, or a newer operation. Separate page feedback lifetime from
+subscription lifetime. A page closing cannot recall an issued server mutation.
+Never perform stale rollback or cleanup against a replacement subscription or a
+new owner's binding. Do not queue a test to run automatically after reconnect.
+Bound network and worker readiness waits; a timeout after dispatch means outcome
+unknown, not definitely unsent. Reconcile status before retrying destructive steps.
+
+### Targeted relay contract and test flow
+
+These are proposed local additions, not claims about existing gateway routes.
+Keep the current registration transport where compatible and add versioned,
+non-cacheable authenticated operations under the same `/push/v1/` proxy prefix.
+
+- A read-only registration lookup, preferably POST to avoid placing subscription
+  endpoints in URLs/logs, resolves the browser's local endpoint to an owner-bound
+  opaque binding. Return only minimal capability/registration state. No global
+  subscription list, raw key material, or raw endpoint in feedback.
+- A POST test operation accepts only that binding and a bounded idempotency key.
+  The relay rechecks ownership and current registration and selects exactly one
+  stored recipient. It does not accept arbitrary endpoint URLs, notification text,
+  session IDs, profiles, or navigation destinations from the caller.
+- Use fixed text such as "Hermes notification test" / "This device received a test
+  notification." The click destination is the safe app root. Include no transcript,
+  title, account name, profile, token, endpoint, or other conversation information.
+- Send through the existing Web Push adapter, with bounded request/provider waits.
+  Report accepted-by-provider, expired-registration, throttled, or failed/unknown
+  outcomes separately. Do not return "delivered" from a successful provider request.
+  Reuse the same request key for an uncertain retry; bound retention and document
+  that idempotency cannot guarantee exactly-once delivery across every crash.
+- Enforce server-side per-owner/device rate limits and a bounded concurrency limit,
+  not just a disabled button. Handle 429 with a safe retry delay. On provider 404/410,
+  retire only the matching binding/version and ask the user to enable again.
+- Keep provider errors/credentials/endpoints out of client responses and logs. Return
+  stable, redacted error categories, not the existing truncated raw provider body.
+- Validate registered endpoints at the shared registration boundary before they can
+  become send targets. HTTPS alone is insufficient. Restrict to approved push-provider
+  destinations, reject local/private/literal-address targets, and ensure redirect/DNS
+  behavior cannot bypass that policy. Do not add a general-purpose outbound sender.
+- Preserve no-store, body-size limits, strict input validation, same-origin/CSRF
+  protections, fixed upstream routing, and authentication in both proxy and relay
+  tests. An unsupported older relay must produce actionable upgrade guidance,
+  not a generic empty state or a falsely working test control.
+
+After acceptance, show "Test accepted by the push service. Check this device's
+notifications; delivery is not confirmed." Explain checking Focus/Do Not Disturb,
+OS notification settings, connectivity, and trying while the app is backgrounded.
+Do not fabricate receipt telemetry or a delivery acknowledgement protocol. A user
+can report seeing the test, but that is not an automatic delivery measurement.
+
+### Platform guidance and notification entry
+
+- On iPhone/iPad outside the Home Screen app, explain Add to Home Screen and opening
+  the installed app before enabling. Use available installation/capability signals,
+  account for iPad desktop-style user agents, and avoid brittle OS-version parsing.
+- For supported desktop/Android browsers, provide the available browser install
+  action or browser-menu instructions without falsely making installation mandatory.
+- For denied permission, explain changing this app/site's browser or OS notification
+  setting and then returning to Refresh status. Do not repeatedly call the prompt.
+- For insecure context or missing APIs, explain the actual HTTPS/browser limitation.
+  For native iOS retain the explicit APNs limitation; no Web Push/native entitlement
+  changes, fake enable button, or new native push dependency.
+- For offline/reconnecting/auth-expired states, keep Back and explanations usable.
+  Show local facts where available, remote registration as unverified, and remote
+  actions disabled with a reason. Do not put the entire screen under an inert
+  gateway wrapper or leave a disabled query announcing Loading forever.
+- Test notifications open the app root through normal authentication. Existing
+  conversation notifications may open a session only after matching authenticated
+  gateway/account provenance and an authorized exact-ID/profile resume. Missing or
+  stale provenance must fall back to safe app entry, not another account's session
+  with the same ID. No credentials in notification URLs or payloads.
+- Harden the service-worker/app click handoff so one tap does not both navigate an
+  existing window and open a duplicate. Prefer a verified same-app window and one
+  focus/navigation path; use a cold window only when needed. Validate worker message
+  origin/source and target schema. Existing HTML-shell fallback is not authorization.
+- Retire queued notification intents on account/logout changes. Validate guarded
+  selection outcomes before navigation, including supersession after publication,
+  missing/unauthorized sessions, profile-switch races, and transport errors. Preserve
+  drafts and never navigate merely because a resume Promise resolved or rejected.
+
+### Implementation sequence and edit map
+
+1. Lock down verified owner/identity semantics and supported deployment modes.
+   Specify relay request/result schemas and safe migration before UI implementation.
+2. Extend `web-push-relay/src/state.js`, validation, handler, authenticator/server,
+   and completion bridge for owner-bound registration/fanout, status, targeted test,
+   redacted outcomes, throttling, and migration. Add `deploy/nginx.conf` routes and
+   proxy/auth coverage. Preserve current VAPID keys and data volumes.
+3. Refactor `client/src/pwa/push.ts` into the owner-scoped diagnostics/operation
+   module described above. Add pure presentation helpers only where they remove
+   proven duplication or improve testing. Keep credentials and endpoints private.
+4. Extract a notification settings module under `client/src/features/settings/`,
+   wire it through `settings-screen.tsx`, and add platform guidance, status rows,
+   explicit repair/disable/refresh/test actions and accessible result feedback.
+5. Update `sw.ts`, `push-payload.ts`, browser message forwarding, and deep-link
+   coordination for validated notification entry, single-window handling and guarded
+   navigation. Preserve ordinary deep-link behavior with regression tests.
+6. Add relay, client, UI, service-worker and browser integration coverage. Extend
+   `client/e2e/server.mjs` with scoped controllable fixtures rather than real sends.
+7. Update `CONTEXT.md`, `SECURITY.md`, and deployment guidance with actual capabilities,
+   identity prerequisites, migration/re-enable effects, delivery limits and verification
+   results. Rebuild/commit/deploy only if separately requested.
+
+### Verification matrix
+
+Start narrow, then test the changed integration boundaries and nearby regressions.
+
+- Client unit tests: independent status combinations, absent/expired/mismatched local
+  subscription, denied/dismissed permission, unsupported/insecure/native context,
+  missing worker and readiness timeout, malformed/old relay responses, auth/offline
+  failures, key rotation, repair, enable rollback, partial disable/unsubscribe failure,
+  deduplicated refresh, stale callbacks and account/gateway/privacy retirement.
+- Relay tests: valid/invalid identity and auth expiry; forged owner/internal headers;
+  cross-account lookup/send/delete and duplicate endpoint ownership; exactly one
+  recipient; expired-binding cleanup with concurrent replacement; fixed nonsensitive
+  payload/root target; invalid body; provider failures/timeouts; redacted responses;
+  destination restrictions; cooldown/concurrency/idempotency; state migration/restart.
+  Verify completion fanout never reaches another owner's or legacy unverified device.
+- Proxy integration: real nginx configuration with stub gateway/relay upstreams,
+  not only fixture HTTP routes. Verify method restrictions, cookie/token forwarding,
+  auth rejection, identity provenance, no-store, CSRF/origin handling, body limits,
+  and that missing new relay routes do not become successful HTML-shell responses.
+- Settings tests: actionable support/install/permission states, local versus remote
+  registration, unknown versus false, explicit gesture-only permission/test, separate
+  accepted/expired/failed/unknown results, duplicate prevention, retry and cooldown,
+  usable Back offline, focus retention and bounded live announcements.
+- Worker/navigation tests: nonsensitive test notification/root click, malformed and
+  cross-origin payloads, valid owner/profile exact-ID resume, wrong-account or stale
+  intents, locked/signed-out startup, failed or superseded selection, message source
+  validation, existing-window focus versus cold open, duplicate-tap behavior and
+  draft preservation. No navigation on an undefined/stale resume outcome.
+- Playwright Chromium/WebKit: phone widths, light/dark and enlarged text, keyboard
+  access, reduced motion, status refresh after simulated permission changes,
+  enable/repair/disable/test happy and error paths, offline/reconnect, auth/account
+  switching and delayed completions. Test real service-worker handlers where the
+  engine supports them; label injected API/push events as fixtures, not real delivery.
+- Run client full unit suite, typecheck, browser and native production builds, relay
+  tests, and relevant existing PWA/privacy/reconnect/draft/deep-link browser checks.
+  Inspect phone screenshots and exercise primary and failure flows in a browser.
+- Physical-device acceptance: on supported installed iOS/iPadOS and Android/PWA
+  devices, enable from a gesture, receive an actual test while backgrounded and while
+  the app is not open, tap it through normal authentication, recheck permission after
+  OS changes, and verify expiry/re-registration, account switching and Focus guidance.
+  Exercise real conversation notifications separately for authorized profile/ID
+  routing. Record OS/browser/deployment and observed outcomes without secrets.
+
+### Completion criteria and verification limits
+
+The implementation is complete only when setup facts are distinguishable, a user
+can explicitly test only the current owned device with nonsensitive content, normal
+notifications cannot cross account ownership, partial failures have safe recovery,
+and click navigation uses current authenticated/selection state. No automatic test
+send, broad broadcast fallback, fabricated delivery confirmation, or new gateway
+contract is acceptable.
+
+Automated checks can establish client/relay/proxy behavior, not actual installed-PWA
+background delivery or OS presentation. If trusted gateway identity or physical-device
+verification is unavailable, record exactly what is blocked/unverified and do not
+claim end-to-end delivery is verified. Do not silently weaken ownership to make a
+button work. Manual screen-reader and native-device limitations remain explicit.
+Preserve the pre-existing unrelated `untitled.md` and all unrelated user changes.
+
+### Implementation and verification record
+
+Implemented account-bound relay registration, authenticated status and one-device
+test routes, owner-isolated completion delivery and state-v2 legacy quarantine.
+VAPID keys and completion state are preserved. Browser and bridge identity use the
+fixed gateway's `/api/auth/me`; unsupported identity modes fail closed. Default
+profile provenance is explicit in notification links. Vendor destinations are
+allowlisted; tests reject arbitrary/private targets and forged owner headers.
+
+Extracted notification Settings from the general screen. Permission, local
+subscription, current-account registration and test outcome are separate facts.
+Refresh is passive; enable prompts only on a gesture. Repair, partial disable,
+expired-subscription recovery, offline/unsupported/blocked instructions and explicit
+provider-acceptance feedback are covered. Service-worker/network waits are bounded.
+Captured owner/privacy generations retire stale publication and cleanup. Device
+subscriptions are not bot-specific and OS permission is not reset by Disable.
+
+Tests use fixed content/root targets, one stored binding, per-account cooldown,
+bounded send concurrency and ten-minute in-memory idempotency. A completed unknown
+provider result permits a new explicit test after cooldown; unresolved HTTP retries
+retain their request ID. No test notification was sent through a real provider.
+Normal completion messages retain existing response previews, unlike test content.
+Logout retires client work but does not recall OS notifications or automatically
+revoke a previously enabled subscription. This limitation is explicit in deployment
+and security guidance.
+
+Notification clicks choose one controlled app window or one cold window, rather
+than messaging and opening simultaneously. The app verifies relay-owner provenance
+before profile/exact-ID resume and requires a current guarded outcome. Worker
+messages must originate from the controlling same-origin worker. Legacy unowned
+notification targets fall back to root. Ordinary deep links retain their parsing,
+but failed/superseded resume no longer navigates to unrelated loaded chat.
+
+Verification:
+- 1,428 client unit tests across 106 files passed; TypeScript checking passed.
+- Native and browser production builds passed. Native build is not a device test.
+- Broad Chromium/WebKit verification: 107 passed, 9 existing documented skips
+  across notifications, PWA foundation, reconnect, local privacy and drafts.
+- Final notification-only run: all 10 checks passed in Chromium/WebKit, including
+  setup/registration distinction, authenticated request targeting, relay failure,
+  accepted-not-delivered feedback, disable, blocked permission, unsupported APIs,
+  offline usable Back, and expired subscription disable/re-enable recovery.
+- Inspected 320px light and enlarged-text dark notification screenshots; horizontal
+  page bounds checked in both theme states. OS permission/subscription APIs in these
+  browser checks are injected fixtures, not proof of real push transport/receipt.
+- 25 relay tests passed covering owner isolation, targeted sends, provider errors,
+  expiry, throttling/retry, empty binding rejection, identity, destination restrictions,
+  VAPID preservation, legacy migration and existing completion replay.
+- Real nginx integration with local stub upstreams passed authentication rejection,
+  exact status/test routing, method restrictions, cookie/token forwarding,
+  Authorization stripping, no-store and body-size checks. Run with
+  `cd web-push-relay && npm run test:proxy`; no external push service is used.
+- Rebuilt local `mobile` and `web-push-relay` using `compose.build.yaml` with
+  health waiting and persistent volumes intact. Both containers are healthy. `/`
+  and `/healthz` on port 8081 return HTTP 200; unauthenticated push status returns
+  HTTP 401. Served lazy Settings JavaScript contains the test UI and public-key
+  metadata advertises relay version 2. No remote deployment or push.
+- Read-only reviews found and verified fixes for default-profile targeting, replaced
+  binding deletion, empty binding wildcard and unknown-result retry. Follow-up expiry
+  guidance/recovery was fixed and browser-tested.
+
+The deployed gateway identity contract and real installed-PWA delivery while
+backgrounded/closed are not verified. Physical screen-reader, device OS permission,
+Focus, native APNs and real conversation-notification tap acceptance are unavailable.
+Do not claim automatic bridge readiness or end-to-end delivery from these tests.
+Unsupported identity deployments must update/provide the verified identity contract,
+not bypass ownership. No dependency or shared UI package change. The unrelated
+`untitled.md` was not modified by any task command; it disappeared externally during
+implementation and was not recreated or staged.
 
 ## Implementation order
 

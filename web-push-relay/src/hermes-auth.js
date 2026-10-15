@@ -1,3 +1,5 @@
+import { ownerFromIdentity } from "./ownership.js";
+
 function gatewayURL(value) {
   const raw = value.trim();
   const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
@@ -50,6 +52,18 @@ export class HermesAuthenticator {
     if (!this.token && !hasPasswordCredentials) {
       throw new Error("Set HERMES_BRIDGE_TOKEN or both HERMES_BRIDGE_USERNAME and HERMES_BRIDGE_PASSWORD");
     }
+  }
+
+  async verifiedOwner() {
+    if (!this.token) await this.#login();
+    const response = await this.fetchImpl(new URL("/api/auth/me", this.baseUrl), {
+      headers: this.token ? { "X-Hermes-Session-Token": this.token } : { Cookie: this.cookie },
+      redirect: "error", signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error("Bridge identity verification failed");
+    const owner = ownerFromIdentity(await response.json(), this.baseUrl.origin);
+    if (!owner) throw new Error("Bridge identity unavailable");
+    return owner;
   }
 
   async webSocketURL(profile = "default") {
