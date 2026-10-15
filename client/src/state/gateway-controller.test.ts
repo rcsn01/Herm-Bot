@@ -633,7 +633,7 @@ describe('connection restoration', () => {
 
     await vi.waitFor(() => expect($connection.get().phase).toBe('connected'))
     expect(gateway.calls.filter(call => call.kind === 'connect')).toHaveLength(2)
-    await expect(controller.newSession()).resolves.toBeUndefined()
+    await expect(controller.newSession()).resolves.toMatchObject({ session: { runtimeSessionId: 'runtime-new' } })
     controller.dispose()
   })
 
@@ -1081,7 +1081,7 @@ describe('backend compatibility', () => {
     expect($chat.get().runtimeSessionId).toBeNull()
     await expect(controller.newSession()).rejects.toMatchObject({ code: 'GATEWAY_UNAVAILABLE' })
     $connection.set({ ...$connection.get(), phase: 'connected' })
-    await expect(controller.newSession()).resolves.toBeUndefined()
+    await expect(controller.newSession()).resolves.toMatchObject({ session: { runtimeSessionId: 'runtime-current' } })
     expect($chat.get()).toMatchObject({ contractVersion: MINIMUM_CONTRACT, runtimeSessionId: 'runtime-current' })
     controller.dispose()
   })

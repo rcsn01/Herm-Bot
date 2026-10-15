@@ -1,6 +1,6 @@
 # Herm PWA improvement plan
 
-Status: Items 1 through 5 have application implementations. Items 6 and 7 remain proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
+Status: Items 1 through 6 have application implementations. Item 7 remains proposed. Item 3 adds local Privacy settings, installation-wide regular-chat history opt-out, and account-scoped conversation-data cleanup. Legacy shared group-room logs are explicitly excluded.
 
 ## Goal and scope
 
@@ -937,32 +937,364 @@ and a native production build is not a device test. No remote deployment or push
 
 ## 6. Improve finding older conversations
 
-Priority: After the core reliability and composer work.
+Priority: Completed after items 1 through 5.
+Status: Implemented following explicit user authorization for implementation,
+local dev-container rebuild, and commit. No remote deployment or push authorized.
 
-### Current evidence
+### Required outcome
 
-Session search filters the titles of loaded sessions, not the complete remote history.
+Help users find and reopen an older conversation without pretending that the app
+has searched history it has not loaded. Keep the current bot/profile navigation,
+remote session ownership, offline history limits, and swipe behavior.
 
-Relevant files:
-- `client/src/components/sessions-menu.tsx`
-- `client/src/features/sessions/api.ts`
+The complete supported scope is explicit title-search coverage, reliable manual
+expansion while searching, date groups, available preview metadata, and an
+accessible path to the existing archived-chats screen. Add an explicit
+restore-then-open action rather than assuming archived sessions can be resumed.
+Remote full-history search and archive pagination require a verified gateway
+contract. They are not prerequisites for the honest loaded-list improvements.
 
-### Planned improvements
+### Evidence at planning time
 
-- Make the current search limitation explicit.
-- Inspect gateway support before adding remote search. Use gateway-backed search only if the API supports it; do not simulate complete search over a partial local list.
-- Group sessions by recent date where that improves scanning.
-- Add richer session previews where gateway data supports them.
-- Provide an accessible archive view if the gateway supports listing and opening archived sessions.
-- Avoid elaborate folders until there is evidence users need them.
+- `client/src/components/sessions-menu.tsx` owns search, row rendering, focus,
+  refresh-on-open, an IntersectionObserver for automatic expansion, and row/page
+  swipes. Search trims and lowercases the query and matches loaded titles only.
+  Rows show title and start date, not the provided preview or message count.
+  The generic empty state currently conflates an empty list with no matches.
+- `client/src/features/sessions/api.ts` calls `session.list` with `profile`,
+  `include_hidden: true`, and `limit`. Keep `include_hidden`: desktop-created bot
+  conversations can otherwise disappear. `humanSessions` removes automation and
+  bot-plumbing rows while preserving unknown/custom sources.
+- `client/src/state/session-selection.ts` starts at 30 rows. Expansion increases
+  the cumulative limit by 30 and refetches/replaces the list, not an offset page.
+  `$sessionsHasMore` is inferred from raw response length being at least the
+  requested limit. The adapter consumes no cursor, total, or server `hasMore`.
+  Scope guards reject old-profile responses, but same-scope overlapping refreshes
+  have no list-publication generation guard.
+- `client/src/lib/types.ts` declares `StoredSession` fields for ID, title,
+  `started_at`, preview, source, and message count. Do not assume richer fields
+  in `compat/hermes-types.ts` also arrive through this RPC. In particular,
+  last activity, archived state, and lineage are not established here.
+- Offline rows come from `transcriptCache.list(owner, profile)`. Saved excerpts
+  are bounded and may include activity rows. Their entry count is not the total
+  conversation message count; save time is not last remote activity.
+- `client/src/features/settings/settings-api.ts` already requests
+  `/api/sessions?archived=only&limit=100&order=recent` through the profile-bound
+  gateway adapter. `ArchivedChatsSettings` in `settings-administration-screen.tsx`
+  already displays preview/count, restore, and confirmed permanent deletion.
+  It has no search, pagination, or open action. Restore invalidates its own query,
+  not the live session list. This is an existing view to improve, not duplicate.
+- `workspace-navigation.ts` owns typed menu dismiss intents, in-memory route
+  stacks, and return-to-menu policy. `app.tsx` already wires a resume-and-land
+  callback for cron sessions. Reuse these ownership rules for archive entry/open.
+- The matching Python gateway handlers are not in this repository. Existing
+  adapter tests establish outgoing requests, not real server support. A public
+  upstream snapshot acquisition was blocked during planning. Remote search,
+  server limits/order, archived pagination, and direct archived resume remain
+  unverified, not proven unsupported. No authenticated history was fetched.
 
-### Verification
+### Settled behavior
 
-- Search results and empty states accurately describe the searched data.
-- Pagination does not conceal matches while implying the search is complete.
-- Date grouping works across time zones and date boundaries.
-- Archived-session behavior matches the gateway contract.
-- Preserve existing session opening, branching, deletion confirmation, focus handling, and swipe behavior.
+#### Search scope and pagination
+
+- Label the field "Search loaded titles" with associated help text. Online help
+  says it searches loaded conversations for this bot, not message contents or
+  archived chats. Offline help says it searches titles saved on this device.
+  Previews are displayed for recognition but are not searched in this batch.
+- Match case-insensitively after trimming the query. Use the same displayed-title
+  fallback for rendering and matching an untitled session. Do not add fuzzy search,
+  tokenization, a search index, or a new dependency.
+- Show matching count and loaded human-session count, not a fabricated remote
+  total. Base paging availability on raw gateway rows before human filtering.
+  A page full of excluded automation rows does not establish an empty history.
+- Preserve automatic expansion for the unfiltered browse list. While a nonblank
+  query is active, disable observer-driven expansion and offer an explicit
+  "Load more sessions" button whenever the current paging model permits it.
+  Keep the query and existing matches during loading. Do not drain all remote
+  history merely because filtering brings the sentinel into view.
+- After a manual expansion, search the expanded list with the same query. A page
+  with no additional matches is not a search failure. Announce a compact result
+  summary after settling; never make the row list a live region.
+- Distinguish initial loading, no loaded conversations, no loaded-title matches,
+  offline with no saved conversations, refresh failure, and expansion failure.
+  For no matches with possible more rows, say "No matching loaded titles. Load
+  more sessions to look further." Offline never offers remote expansion.
+- Keep old rows on refresh/expansion failure and provide a manual retry. Avoid
+  observer-triggered retry loops. Pending guards must prevent duplicate expansion
+  requests. Reset the observer's retry eligibility only after explicit retry or
+  a fresh menu opening, not every error render.
+- Never say "all conversations searched" merely because fewer than the requested
+  limit arrived. A gateway cap may be indistinguishable from exhaustion. If an
+  expansion makes no progress, stop repeated automatic requests and retain honest
+  loaded-count language. Do not invent a cursor or claim completeness.
+- Preserve a query when closing/reopening the same workspace. Clear query,
+  errors, revealed delete, confirmations, and request-local state on account,
+  gateway, owner-generation, profile, or privacy-reset changes. Online/offline
+  transitions alone retain the query but update its scope label and result set.
+
+#### Date groups and previews
+
+- Sort displayed human rows by known start time descending, with a deterministic
+  ID tie-breaker. This is "started", not "last active". Do not reorder or filter
+  the underlying `$sessions` store to implement presentation.
+- Group as Today, Yesterday, Earlier this month, then localized month/year
+  headings. Put future-dated rows in a separate Future dates group and invalid
+  or missing timestamps under Date unavailable. Omit empty headings. Group after
+  filtering so counts and headings describe visible results.
+- Compare local calendar dates. Construct yesterday and the next local midnight
+  from calendar parts, not by adding/subtracting 24 hours. Avoid UTC date-string
+  buckets and fixed day-length assumptions across daylight-saving transitions.
+- Recompute on menu open, return to a visible/focused app, and local midnight
+  while open. Use one menu-level clock, not a timer per row. Keep group IDs
+  independent of localized heading text. Formatting must not throw for malformed
+  external dates, and unknown dates must not silently become today's date.
+- Use semantic headings associated with each group. Each row retains a stable
+  session identity, accessible title, active-session indication, and explicit
+  start-date text where known. Do not make group headers selectable sessions.
+  Provide a non-gesture, keyboard-accessible delete action alongside each row;
+  the existing swipe reveal remains a shortcut to the same confirmation flow.
+- Show the gateway's existing nonempty preview as plain text, capped visually to
+  two lines, and a valid nonnegative message count. Omit unavailable metadata.
+  Do not fetch transcript bodies for every row, parse previews as Markdown,
+  autolink them, or include reasoning/tool content extracted by the client.
+- Offline rows keep the existing saved-time and persistent/temporary labels.
+  Omit remote preview/count if unavailable; do not present saved excerpt length
+  as full history length or save time as conversation start time. Keep actual
+  known start time separate from missing-date presentation.
+
+#### Archive access and reopening
+
+- Add an "Archived chats" action to the sessions menu using shared controls.
+  Route to the existing settings administration page through a typed workspace
+  dismiss intent. Do not add a second archive browser or change browser URLs.
+  Back from a menu-entered archive page returns to the originating menu; entry
+  through Settings retains its existing Settings back behavior.
+- Extract the archive view into a dedicated module if needed to keep session
+  list/query/actions together. Retain the Settings registry entry. Centralize
+  archived listing vocabulary in the sessions adapter, with Settings delegating
+  to it, rather than duplicating the same wire request in two feature adapters.
+- Add explicit loaded-title search and bounded-result copy to the archive view.
+  The known request asks for up to 100 rows. State that bound, especially when
+  100 arrive; never describe that response as the entire archive. Add archive
+  pagination only after validating actual route parameters and limits.
+- Preserve plain-text previews, restore-only, and confirmed permanent deletion.
+  Give icon-only destructive controls session-specific accessible names. Disable
+  conflicting actions while a mutation is pending and keep focus/feedback local
+  to the selected row. No new bulk actions or swipe-to-permanently-delete.
+- Add a separately labelled "Restore and open" action using the existing restore
+  request followed by the normal stored-session resume path. This explicitly
+  changes archive state. Do not label it simply "Open" or assume direct resume
+  of an archived ID works. Do not automatically open after restore-only.
+- After restore succeeds, invalidate the archive query and refresh/invalidate
+  the live session list in the captured scope. Opening must not depend on the
+  restored row appearing in the first 30 live results. Resume by its exact ID.
+  A list-refresh failure after a successful restore is a distinct warning, not
+  a claim that restoration failed.
+- If resume fails after restore, report "Restored, but could not open" and offer
+  an open retry without repeating the mutation. A failed restore must not start
+  resume. Do not navigate until resume has published the requested session.
+  An undefined/superseded selection outcome is not successful opening.
+- Scope guards and a local operation lifetime must prevent old callbacks from
+  updating feedback or navigating after account/profile/privacy changes, leaving
+  the page, or a newer selection. Issued remote mutations cannot be retracted.
+  Reuse controller selection, ownership checks, and draft persistence; never
+  write `$chat`, bookmarks, or navigation stores directly from the archive view.
+- Offline archive access shows an explanation/back path and no remote actions.
+  Do not expose cached ordinary conversations as an archive or persist a new
+  archive index. Unsupported routes and auth failures get accurate errors, not
+  an empty-state success message or silent fallback to another profile.
+
+### Gateway capability gate
+
+Before introducing any new remote discovery request, inspect the matching deployed
+version's `tui_gateway/methods_session.py` and session HTTP handlers, or an
+authoritative versioned contract. Record the version and evidence in this section.
+Check search semantics, profile isolation, inclusion of hidden bot sessions,
+archive filtering, order, paging, caps, response metadata, and resume behavior.
+
+The default implementation uses only the already-established client operations
+above. Do not probe guessed query parameters and treat HTTP 200 as proof that a
+server honored them. Do not switch the live list to an HTTP route merely because
+compatibility types mention offset/total. An upstream version alone does not prove
+what the installed gateway supports.
+
+If matching evidence establishes remote search or archive paging, document the
+exact contract and amend the plan before adding it. Remote search would need
+separate query/result state, cancellation, debouncing, scope guards, explicit
+coverage, and real gateway verification. It must not overwrite the live session
+roster or claim full-text matching if the server searches titles only. If evidence
+is unavailable, ship the honest loaded-list scope and record those limits rather
+than adding speculative transport behavior.
+
+### Module ownership and edit map
+
+- Add a small pure presentation module under `client/src/features/sessions/`,
+  for example `session-discovery.ts`. A single list-building interface accepts
+  supplied rows, query, and current date and returns visible groups and counts.
+  Keep title fallback, ordering, and calendar grouping here. Tests cross this
+  interface with fixed dates. No storage, requests, or global store writes.
+- `sessions-menu.tsx` remains responsible for interaction, browse/search loading
+  policy, focus, row swipes, scoped local state, and dismissal intents. Reuse
+  `humanSessions` and the current controller instead of adding another list store.
+- `session-selection.ts` retains remote list publication and cumulative paging.
+  Add a latest-request/limit generation guard so a slower earlier 30-row refresh
+  cannot replace a newer expanded list. Retire publication on reset. Preserve
+  retry rollback, raw-row paging inference, source propagation, and scope guards.
+  Keep the controller interface small; add restore coordination only if needed
+  for the archive flow, not a general-purpose search framework.
+- `features/sessions/api.ts` owns wire operations and any archived-list type.
+  Validate newly consumed optional metadata at the external-data seam. Missing
+  optional preview/count/date should not prevent a valid ID/title from opening.
+  Never expand unrelated response normalization during this item.
+- Archive UI, settings adapter/administration entry, `app.tsx`, and typed workspace
+  navigation provide one archive view and the restore/resume/landing callback.
+  Preserve the DOM-free navigation module and service-worker import guard.
+- Keep styles scoped to Herm's session/archive views in `client/src/styles.css`,
+  using existing controls, typography, theme tokens, and 44px action targets.
+  No shared package changes or dependencies are expected. If shared UI changes
+  prove necessary, verify integrated and standalone contexts separately.
+
+### Implementation sequence
+
+1. Record capability evidence and limits. Add pure title/date/group tests first,
+   plus same-scope list-refresh ordering and expansion-failure regressions.
+2. Implement the presentation module and narrow list-publication guard. Preserve
+   the existing selection/new/branch/rename/archive/delete behavior and filters.
+3. Update the menu with search coverage, grouped rows, previews, accurate empty
+   states, bounded announcements, manual search expansion, and scope resets.
+   Keep one scroll region and the existing new-session and bottom-navigation
+   positions. Do not auto-focus search or unexpectedly summon the phone keyboard.
+4. Improve the existing archive view and add the typed menu entry, return policy,
+   mutation feedback, and explicit restore-and-open flow. Guard success navigation
+   separately from a mutation acknowledgement and a stale selection result.
+5. Extend the browser fixture with deterministic multi-page human/automation
+   sessions, metadata, archive state, restore/delete/resume failures, delayed
+   replies, and request recording. Respect actual cumulative-limit requests;
+   fixture support must not be presented as gateway capability evidence.
+6. Run focused and broader checks, exercise browser workflows, inspect phone-sized
+   screenshots, and update `CONTEXT.md`, `SECURITY.md` if behavior warrants it,
+   and this implementation record. Rebuild/commit only if separately authorized.
+
+### Verification matrix
+
+- Pure tests: title-only matching, trimming/case, fallback titles, hostile preview
+  text, unavailable metadata, count correctness, stable tie ordering, invalid and
+  future dates, month/year boundaries, local midnight, daylight-saving transitions,
+  and multiple time zones. Verify returned dates are start dates, not recency.
+- Menu tests: correct online/offline scope labels, distinct empty/error/loading
+  states, automation-only pages, query persistence on close, reset on ownership/
+  profile/privacy changes, no observer expansion during search, explicit expansion
+  revealing an older match, failure/retry without losing matches, and no retry loop.
+- List tests: 30 then 60 then 90 cumulative requests, exact-limit ambiguity,
+  server-capped/no-progress results, expansion rollback, stale scope discard,
+  overlapping same-scope refresh ordering, and list reset during a pending request.
+- Archive tests: profile-bound request and declared limit, loaded-title search,
+  bounded-result copy, missing/unsupported route versus true empty results,
+  duplicate action guards, confirmed delete, restore-only without opening,
+  restore-and-open success, restore failure, restore success plus refresh/resume
+  failure, open retry, superseded selection, page unmount, and stale callbacks.
+- Navigation tests: menu-to-archive/back reopens the original menu; Settings entry
+  returns normally; successful open lands on the exact restored ID; failure keeps
+  the archive page; no browser URL change. Preserve cron/model/capabilities routes,
+  group boundaries, session branching, draft handoff, and update-recovery policy.
+- Chromium and WebKit flows: find a match beyond the initial page, clear search,
+  browse grouped rows, reopen an old session, browse/restore/open an archive row,
+  recover from failures, switch accounts/profiles during requests, and reconnect.
+  Assert request scope and lack of unintended transcript-per-row fetches.
+- Accessibility and layout: semantic group headings, labelled search/help, compact
+  result announcements, useful row/action names, visible focus, keyboard deletion
+  access and confirmation, Escape/focus trapping and opener restoration. Preserve
+  focus on search while results change. If a focused paging control disappears,
+  restore focus predictably without stealing it from another control. Check group
+  changes at midnight do not strand focus on a removed row.
+- Exercise 320px and 390px layouts, keyboard-reduced height, long/unbroken titles
+  and previews, light/dark themes after transitions, reduced motion, vertical scroll,
+  left-edge dismissal, and row swipe reveal/conceal without page dismissal.
+- Run relevant unit tests, typecheck, native/browser production builds, then broad
+  session/navigation/draft/privacy/reconnect/PWA browser regressions. Review the
+  final diff. Do not equate fixture tests with actual server contract verification.
+  Record missing real-gateway, screen-reader, installed-phone, or native checks.
+
+### Completion criteria and exclusions
+
+Item 6 is complete when the supported behavior above is implemented, verified,
+and documented with explicit search/archive limits. Unverified server-dependent
+extensions must remain labelled unavailable, not silently counted as implemented.
+No full-text local index, folder/tag system, transcript prefetch, new persistence,
+server modification, new shared UI, group-chat redesign, or item 7 notification
+work belongs in this batch. Herm remains a standalone app.
+
+### Implementation and verification record
+
+Implemented the supported scope above. The menu now searches displayed loaded
+human-session titles, shows coverage/counts, groups known start dates, and renders
+available plain-text previews and validated message counts. Search expansion is
+explicit, retains the query, and does not automatically drain remote history.
+Offline rows retain saved-history labels without inventing total message counts
+or replacing unknown start dates with save time. Local discovery state retires on
+owner/gateway/profile/authentication-generation/privacy changes.
+
+List publication now rejects older overlapping requests, resets retire pending
+publication, paging failures preserve rows and roll back their limit, and
+no-progress expansion stops. Selection results are rechecked after history/list
+follow-up; a superseding selection can retire completion even after an earlier
+publication. The earlier publication is not rolled back. Menu dismissal requires
+a current operation lifetime and outcome. Controller creation returns that guarded
+outcome so UI callers do not equate a stale void completion with success.
+
+The existing archive view is now a dedicated module used by both Settings and a
+typed menu intent. It searches only returned titles and discloses the existing
+100-row bound. Restore-only, confirmed permanent deletion, and explicit Restore
+and open use the established profile-bound adapter. Resume targets the exact
+restored ID independently of the first live page. Failed opening can retry without
+restoring again. A completed remote mutation invalidates its captured current-scope
+cache even after leaving the page, but cannot trigger stale navigation. Archive
+queries revalidate on entry. Offline entry removes remote controls and explains
+that archived chats are not saved locally, outside the inert gateway wrapper.
+
+Keyboard deletion and swipe deletion share confirmation. The visible delete
+control has a separate fixed 44px hit area; the 104px swipe rail needs only 60px
+additional travel. An existing Chromium touch regression caught the initial hit
+area overlap. The corrected layout keeps open/delete hit areas separate even with
+enlarged text. An unrevealed rail cannot receive pointer actions or activate via
+its handler. Escape from confirmation no longer also dismisses the menu.
+
+Verification:
+- Full unit suite: 1,413 tests across 105 files passed. TypeScript checking passed.
+- Native and browser production builds passed, including fresh builds after the
+  final action-size refinement.
+- Broad Chromium/WebKit run: 149 passed and 11 existing documented skips across
+  discovery, answer usability, composer feedback, drafts, PWA foundation/performance,
+  reconnect, and local privacy. All 18 new discovery browser checks passed.
+- Final smoke after fixing the 44px enlarged-text geometry: all 18 discovery checks
+  passed again, plus the real Chromium row reveal/conceal touch check. Its WebKit
+  counterpart remains skipped because that test uses Chromium CDP input.
+- Calendar tests passed separately in America/New_York and Asia/Tokyo, including
+  local midnight, daylight-saving, month/year, unknown-date, and future-date cases.
+- Browser flows exercised older matches beyond the first page, scope labels,
+  request limits/profiles, exact-ID opening, ordinary draft handoff, archive return
+  navigation without URL changes, literal previews, restore-only, separate restore/
+  resume failures, open retry, leaving a pending restore, offline archive entry,
+  unsupported-route recovery, and expansion retry without an observer loop.
+- Inspected 320px browsing, 390px archive, and enlarged-text dark-theme screenshots.
+  Both theme token modes, reduced motion, bounded previews, separate action hit
+  areas, keyboard deletion/confirmation, focus, and existing swipe behavior have
+  automated browser coverage. No new dependency or shared UI package change.
+- Read-only review found selection-completion and offline-presentation issues;
+  regression tests were added and follow-up review confirmed those fixes with no
+  remaining concrete high/medium findings in the inspected lifetimes.
+- Rebuilt only local `mobile` with `compose.build.yaml`, `--no-deps`, and health
+  waiting. App and `/healthz` on port 8081 return HTTP 200, and the served JavaScript
+  contains the new loaded-title control. The relay remains healthy and untouched;
+  persistent volumes were not removed. `git diff --check` passed.
+
+The gateway capability gate remains unchanged. No matching deployed handler source
+was available, so no remote-search parameters, total/cursor semantics, archive
+pagination, or direct archived-resume behavior were invented. Browser fixtures
+verify the client integration, not actual remote gateway behavior. Manual
+screen-reader, physical installed-phone PWA/keyboard, and native WebView checks
+remain unavailable. Native builds are not device tests. No remote deployment or
+push. The pre-existing unrelated `untitled.md` remains untouched.
 
 ## 7. Make notification setup testable
 

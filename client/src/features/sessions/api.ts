@@ -25,19 +25,31 @@ const AUTOMATION_SOURCES = new Set(['cron', 'kanban', 'tool'])
  */
 const BOT_MODE_SWEEP_TITLES = new Set(['Bot Chat', 'Agent Inbox'])
 
-function isBotModePlumbing(session: StoredSession): boolean {
+function isBotModePlumbing(session: Pick<StoredSession, 'title'>): boolean {
   const title = String(session.title ?? '').trim()
   return BOT_MODE_SWEEP_TITLES.has(title) || title.startsWith('Group: ')
 }
 
-export function humanSessions(sessions: StoredSession[]): StoredSession[] {
+export function humanSessions<T extends Pick<StoredSession, 'title' | 'source'>>(sessions: T[]): T[] {
   return sessions.filter(session =>
     !AUTOMATION_SOURCES.has((session.source ?? '').trim().toLowerCase()) && !isBotModePlumbing(session))
 }
 
+export interface ArchivedSession {
+  id: string
+  title?: string
+  preview?: string
+  message_count?: number
+  last_active?: number
+  archived?: boolean
+}
+
+export const ARCHIVED_SESSION_LIMIT = 100
+
 export interface SessionsApi {
   /** JSON-RPC session.list — profile in RPC params (RPCs are unscoped by wire, scoped by params). */
   list(limit: number, signal?: AbortSignal): Promise<{ sessions: StoredSession[] }>
+  listArchived(signal?: AbortSignal, timeoutMs?: number): Promise<{ sessions: ArchivedSession[] }>
   rename(id: string, title: string, signal?: AbortSignal, timeoutMs?: number): Promise<void>
   archive(id: string, signal?: AbortSignal, timeoutMs?: number): Promise<void>
   restore(id: string, signal?: AbortSignal, timeoutMs?: number): Promise<void>
@@ -57,6 +69,7 @@ export function createSessionsApi(api: GatewayApi): SessionsApi {
       // desktop-created conversation is invisible to the recents list and
       // opening a profile always mints a fresh session instead of resuming.
       api.rpc<{ sessions: StoredSession[] }>('session.list', { include_hidden: true, limit, profile: api.profileKey }, { signal }),
+    listArchived: (signal, timeoutMs) => api.request(`/api/sessions?archived=only&limit=${ARCHIVED_SESSION_LIMIT}&order=recent`, { signal, timeoutMs }),
     rename: (id, title, signal, timeoutMs) =>
       api.request(`/api/sessions/${encodeURIComponent(id)}`, {
         body: { profile: api.profileKey, title }, method: 'PATCH', signal, timeoutMs

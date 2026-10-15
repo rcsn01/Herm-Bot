@@ -23,6 +23,7 @@ export type BotConfigurationDestination = 'capabilities' | 'cron' | 'model'
 export type WorkspaceMenuIntent =
   | { type: 'close' }
   | { type: 'model' }
+  | { type: 'archived-chats' }
   | { type: 'tab'; tab: MobileTab }
 
 // ── Policy state + dispatch verbs ────────────────────────────────────────────
@@ -140,8 +141,8 @@ export function openMenu(): void {
 
 /** Resolve a sessions-menu dismiss intent (default {type:'close'}). Closed →
  *  no-op. close → close only. tab t → origin===t ? close only : stash pair +
- *  resetTabRoutes(t) + setTab(t). model → origin already on settings-model ?
- *  close only : stash + openModelSettings(). The menu-origin capture clears
+ *  resetTabRoutes(t) + setTab(t). model/archive → close only when already on
+ *  that route, otherwise stash the origin and open it. The menu-origin capture clears
  *  as a pair with the latch. */
 export function dismissMenu(intent: WorkspaceMenuIntent = { type: 'close' }): void {
   const policy = $workspacePolicy.get()
@@ -158,6 +159,13 @@ export function dismissMenu(intent: WorkspaceMenuIntent = { type: 'close' }): vo
     if (origin === 'settings' && originRoute?.type === 'settings-category' && originRoute.category === 'model') return
     $workspacePolicy.set({ ...$workspacePolicy.get(), returnOrigin: origin, returnStack: originStack })
     openModelSettings()
+  } else if (intent.type === 'archived-chats') {
+    const originRoute = originStack?.at(-1)
+    if (origin === 'settings' && originRoute?.type === 'settings-administration' && originRoute.page === 'archived-chats') return
+    $workspacePolicy.set({ ...$workspacePolicy.get(), returnOrigin: origin, returnStack: originStack })
+    resetTabRoutes('settings')
+    pushRoute('settings', { page: 'archived-chats', tab: 'settings', type: 'settings-administration' })
+    setTab('settings')
   }
 }
 
@@ -210,7 +218,7 @@ export function dismissForeground(): void {
  *  ① group-room route → popRoute('roster'); at root → close-to-roster (clear
  *     pair + setTab('roster'))
  *  ② tab sessions → close-to-roster
- *  ③ settings ∧ settings-category ∧ 'model' ∧ returnOrigin → consume the pair
+ *  ③ settings ∧ menu-entered model/archive ∧ returnOrigin → consume the pair
  *     (applyPathState(origin, returnStack) else setTab(origin)) and reopen the
  *     menu — the reopen recaptures the restored surface as the menu origin
  *  ④ else popRoute(activeTab); at root → exitToReturnOrigin(fallback) where
@@ -230,8 +238,8 @@ export function back(source: 'header' | 'screen'): void {
   }
   if (
     navigation.activeTab === 'settings' &&
-    active?.type === 'settings-category' &&
-    active.category === 'model' &&
+    ((active?.type === 'settings-category' && active.category === 'model') ||
+      (active?.type === 'settings-administration' && active.page === 'archived-chats')) &&
     $workspacePolicy.get().returnOrigin
   ) {
     exitToReturnOrigin()

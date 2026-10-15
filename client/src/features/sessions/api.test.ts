@@ -55,6 +55,14 @@ describe('humanSessions', () => {
 })
 
 describe('sessionsApi', () => {
+  it('lists the bounded archive through the existing profile-scoped HTTP contract', async () => {
+    const path = '/api/sessions?archived=only&limit=100&order=recent&profile=client+work%2Fios'
+    const gateway = new MemoryGateway().handle(path, () => ({ sessions: [] }))
+    const sessions = createSessionsApi(createGatewayApi(gateway, 'client work/ios'))
+    const signal = new AbortController().signal
+    await expect(sessions.listArchived(signal, 5000)).resolves.toEqual({ sessions: [] })
+    expect(gateway.calls[0].value).toMatchObject({ path, signal, timeoutMs: 5000 })
+  })
   it('renames with the profile in the PATCH body and the query', async () => {
     const gateway = new MemoryGateway().handle('/api/sessions/s1?profile=client+work%2Fios', value => value)
     const sessions = createSessionsApi(createGatewayApi(gateway, 'client work/ios'))

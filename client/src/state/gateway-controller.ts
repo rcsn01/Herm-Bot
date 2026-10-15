@@ -268,8 +268,7 @@ export class GatewayController {
 
   async newSession() {
     requireGatewayReady()
-    const outcome = await this.selectRemote({ kind: 'create' })
-    if (!outcome) return
+    return this.selectRemote({ kind: 'create' })
   }
 
   async resumeSession(storedSessionId: string) {

@@ -207,6 +207,24 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .navigation-session-list .session-row, .navigation-session-list .session-main { min-height: 46px; }
 .navigation-session-list .session-main { padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2.75); gap: calc(var(--spacing) * 1.75); }
 .navigation-session-list .session-main time { font-size: var(--font-caption); }
+.session-search-help, .session-search-summary { margin: 0; font-size: var(--font-caption); overflow-wrap: anywhere; }
+.session-group { min-width: 0; display: grid; gap: calc(var(--spacing) * .5); }
+.session-group h3 { margin: calc(var(--spacing) * 2) calc(var(--spacing) * 2.75) var(--spacing); font-size: var(--font-caption); color: var(--text); }
+/* Keep the open button's hit area separate from its sibling delete control. */
+.navigation-session-list .session-main { width: calc(100% - 44px); grid-template-columns: minmax(0, 1fr); gap: var(--spacing); transform: translate3d(calc(var(--swipe-progress, 0) * -60px), 0, 0); }
+.navigation-session-list .session-main time, .navigation-session-list .session-main small { white-space: normal; overflow-wrap: anywhere; }
+.session-preview { min-width: 0; max-width: 100%; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; font-size: var(--font-caption); }
+.session-quick-delete { position: absolute; z-index: 2; inset-block-start: 0; inset-inline-end: 0; width: 44px; height: 44px; min-width: 44px; min-height: 44px; color: var(--text); }
+.delete-revealed .session-quick-delete { visibility: hidden; }
+.session-delete-action { pointer-events: none; }
+.delete-revealed .session-delete-action { pointer-events: auto; }
+.archive-browser { min-width: 0; display: grid; gap: calc(var(--spacing) * 3); }
+.archive-browser .archive-row { min-width: 0; flex-wrap: wrap; }
+.archive-row > span { min-width: 0; flex: 1 1 100%; overflow-wrap: anywhere; }
+.archive-row .button-row { flex-wrap: wrap; }
+.archive-browser button { min-width: 44px; min-height: 44px; }
+.archive-browser button[aria-disabled="true"], .navigation-session-list button[aria-disabled="true"] { opacity: .5; cursor: wait; }
+.archive-open-retry { min-width: 0; overflow-wrap: anywhere; }
 .navigation-session-list .load-more-sessions { width: 100%; margin-top: calc(var(--spacing) * 1.75); }
 .session-row.active-session { border-color: color-mix(in srgb, var(--primary) 65%, var(--line)); }
 .session-main[aria-current="page"] { background: var(--accent); }

@@ -130,6 +130,7 @@ export interface ScopedQueryOptions<TData> {
   queryFn: (signal: AbortSignal) => Promise<TData>
   enabled?: boolean
   retry?: boolean | number
+  staleTime?: number
 }
 
 export type ScopedQueryResult<TData> = UseQueryResult<TData, GatewayError>
@@ -151,7 +152,8 @@ export function useScopedQuery<TData>(
         throw classifyGatewayError(caught)
       }
     },
-    ...(options.retry === undefined ? {} : { retry: options.retry })
+    ...(options.retry === undefined ? {} : { retry: options.retry }),
+    ...(options.staleTime === undefined ? {} : { staleTime: options.staleTime })
   })
 }
 

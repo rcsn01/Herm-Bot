@@ -35,11 +35,8 @@ export type WorkspaceScreenTab = 'capabilities' | 'cron' | 'settings'
 export interface WorkspaceScreenApi<Tab extends WorkspaceScreenTab> {
   /** The tab's active route, narrowed; the tab root is the total fallback. */
   route: RouteForTab<Tab>
-  /** Core back('screen'): popRoute; at root → exitToReturnOrigin(WORKSPACE_BACK_FALLBACKS[tab]).
-   *  Tree branches ①–③ are unreachable here — no group-room or sessions route can be active
-   *  under a capabilities/cron/settings api, and ③'s trigger (the model surface with a return
-   *  origin) hides ModelsScreen's in-page back — so this description holds for every reachable
-   *  state. */
+  /** Core back('screen'): a menu-entered model/archive route returns to the
+   *  originating menu. Otherwise popRoute; at root use the tab's back fallback. */
   back(): void
   /** pushRoute(route.tab, route) — a cron screen cannot push a settings route. */
   navigate(route: RouteForTab<Tab>): void

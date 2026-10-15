@@ -46,6 +46,9 @@ const stateFor = id => {
     calls: [],
     config: { display: { personality: 'default' } },
     messages: new Map(),
+    archives: new Map(),
+    restoredSessions: new Map(),
+    deletedSessions: new Set(),
     sockets: new Set(),
     controls: {},
     histories: [],
@@ -101,10 +104,11 @@ const server = http.createServer(async (req, res) => {
       const state = stateFor(fixtureId)
       const update = await body(req)
       if (update.reset === true) state.controls = {}
-      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream']) {
+      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream', 'discovery', 'failSessionList', 'failRestore', 'failArchiveList', 'delayRestore', 'delaySessionList']) {
         if (typeof update[key] === 'boolean') state.controls[key] = update[key]
       }
       if (typeof update.missingSession === 'string' || update.missingSession === null) state.controls.missingSession = update.missingSession
+      if (typeof update.failResumeSession === 'string' || update.failResumeSession === null) state.controls.failResumeSession = update.failResumeSession
       if (typeof update.longHistorySession === 'string' && update.longHistorySession.length <= 256) {
         const stored = update.longHistorySession
         state.messages.set(stored, [...initialMessages(stored), ...Array.from({ length: 30 }, (_, i) => ({ row_id: i + 3, role: i % 2 ? 'assistant' : 'user', content: `Saved history ${i + 1}. ${'Readable fixture paragraph. '.repeat(40)}` }))])
@@ -172,6 +176,33 @@ const server = http.createServer(async (req, res) => {
         const ticket = `ticket-${++sequence}`
         tickets.set(ticket, { id, used: false })
         return json(res, 200, { ticket })
+      }
+      if (url.pathname === '/api/sessions' && url.searchParams.get('archived') === 'only') {
+        if (state.controls.failArchiveList) return json(res, 404, { detail: 'Archive route unavailable' })
+        const profile = url.searchParams.get('profile') || 'default'
+        if (!state.archives.has(profile)) state.archives.set(profile, [{ id: `archived-${profile}`, title: `Archived ${profile} notes`, preview: '<script>Literal archived preview</script>', message_count: 8 }])
+        return json(res, 200, { sessions: state.archives.get(profile).slice(0, Number(url.searchParams.get('limit') || 100)) })
+      }
+      const sessionItem = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname)
+      if (sessionItem && ['PATCH', 'DELETE'].includes(req.method)) {
+        const profile = url.searchParams.get('profile') || 'default'
+        const stored = decodeURIComponent(sessionItem[1])
+        const recorded = state.calls.at(-1)
+        const payload = req.method === 'PATCH' ? await body(req) : null
+        recorded.body = payload
+        if (payload?.archived === false) {
+          await waitForControl(state, 'delayRestore')
+          if (state.controls.failRestore) return json(res, 503, { detail: 'Restore failed' })
+          const restored = state.archives.get(profile)?.find(row => row.id === stored)
+          if (restored) state.restoredSessions.set(`${profile}:${stored}`, { ...restored, source: 'mobile', started_at: 1_500_000_000 })
+          state.archives.set(profile, (state.archives.get(profile) || []).filter(row => row.id !== stored))
+          state.calls.push({ kind: 'fixture', method: 'restore.complete', profile })
+        }
+        if (req.method === 'DELETE') {
+          state.deletedSessions.add(`${profile}:${stored}`)
+          state.archives.set(profile, (state.archives.get(profile) || []).filter(row => row.id !== stored))
+        }
+        return json(res, 200, { ok: true })
       }
       const match = /^\/api\/sessions\/([^/]+)\/messages$/.exec(url.pathname)
       if (match && req.method === 'GET') {
@@ -321,7 +352,9 @@ sockets.on('connection', (ws, _req, id, profile) => {
     const runtime = `runtime-${profile}-${stored}`
     let result
     let rpcError
-    if (request.method === 'session.resume' && state.controls.missingSession === stored) {
+    if (request.method === 'session.resume' && state.controls.failResumeSession === stored) {
+      rpcError = { code: 'FIXTURE_RESUME_FAILED', message: 'Fixture resume failed' }
+    } else if (request.method === 'session.resume' && state.controls.missingSession === stored) {
       rpcError = { code: 'SESSION_NOT_FOUND', message: 'Session not found' }
     } else if (request.method === 'session.create' || request.method === 'session.resume') {
       currentStored = stored
@@ -331,12 +364,20 @@ sockets.on('connection', (ws, _req, id, profile) => {
     } else if (request.method === 'session.history') {
       result = { messages: state.messages.get(stored) ?? initialMessages(stored) }
     } else if (request.method === 'session.list') {
+      await waitForControl(state, 'delaySessionList')
+      if (state.controls.failSessionList) rpcError = { code: 'FIXTURE_LIST_FAILED', message: 'Fixture list failed' }
       // The 'Group: ' row is newer on purpose: opening a bot must skip the
       // desktop's group-plumbing sessions and land on the human conversation.
       result = { sessions: [
         { id: `saved-${params.profile || profile}`, title: `Saved ${params.profile || profile}`, preview: 'Fixture transcript', source: 'mobile', started_at: 1_700_000_000, message_count: 2 },
         { id: 'plumb-group', title: 'Group: r-crew', preview: '[Group chat: "Research crew"]', source: 'ios', started_at: 1_700_000_500, message_count: 9 }
       ] }
+      if (state.controls.discovery) {
+        const currentProfile = params.profile || profile
+        const rows = Array.from({ length: 70 }, (_, index) => ({ id: `discovery-${currentProfile}-${index}`, title: index === 55 ? 'Older needle notes' : index === 1 ? 'LongUnbrokenTitle'.repeat(20) : `Conversation ${index}`, preview: index === 0 ? 'LongUnbrokenPreview'.repeat(40) : `Preview ${index}`, source: index % 10 === 9 ? 'cron' : 'mobile', started_at: Math.floor(Date.now() / 1000) - index * 86400, message_count: index + 1 }))
+        const restored = [...state.restoredSessions.entries()].filter(([key]) => key.startsWith(`${currentProfile}:`)).map(([, row]) => row)
+        result = { sessions: [...rows, ...result.sessions, ...restored].filter(row => !state.deletedSessions.has(`${currentProfile}:${row.id}`)).slice(0, Number(params.limit || 30)) }
+      }
     } else if (request.method === 'profiles.list') {
       result = { profiles: state.profiles }
     } else if (request.method === 'profiles.create') {

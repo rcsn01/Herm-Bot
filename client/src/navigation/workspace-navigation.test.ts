@@ -257,6 +257,26 @@ describe('openWorkspaceDestination', () => {
   })
 })
 
+describe('archive navigation', () => {
+  it('opens the existing archive route from the menu and returns to that menu', () => {
+    applyPathState('sessions', [ROOT_ROUTES.sessions])
+    openMenu()
+    dismissMenu({ type: 'archived-chats' })
+    expect($navigation.get().activeTab).toBe('settings')
+    expect($navigation.get().stacks.settings.at(-1)).toEqual({ tab: 'settings', type: 'settings-administration', page: 'archived-chats' })
+    back('screen')
+    expect($navigation.get().activeTab).toBe('sessions')
+    expect($workspacePolicy.get().menuOpen).toBe(true)
+  })
+
+  it('keeps normal Settings back behavior without a menu return origin', () => {
+    applyPathState('settings', [ROOT_ROUTES.settings, { tab: 'settings', type: 'settings-administration', page: 'archived-chats' }])
+    back('screen')
+    expect($navigation.get().stacks.settings).toEqual([ROOT_ROUTES.settings])
+    expect($workspacePolicy.get().menuOpen).toBe(false)
+  })
+})
+
 describe('back(source)', () => {
   it('① pops a group-room route, staying on the roster', () => {
     openGroupRoom('g1')

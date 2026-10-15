@@ -149,7 +149,7 @@ export function createSettingsApi(api: GatewayApi): SettingsApi {
     validateCustomEndpoint: (body: CustomEndpointUpdate, signal?: AbortSignal) =>
       api.request('/api/providers/custom-endpoints/validate', { body, method: 'POST', signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
     sessions: (signal?: AbortSignal) =>
-      api.request('/api/sessions?archived=only&limit=100&order=recent', { signal, timeoutMs: SETTINGS_TIMEOUT_MS }),
+      sessionsApi.listArchived(signal, SETTINGS_TIMEOUT_MS),
     restoreSession: (id: string, signal?: AbortSignal) => sessionsApi.restore(id, signal, SETTINGS_TIMEOUT_MS),
     deleteSession: (id: string, signal?: AbortSignal) => sessionsApi.remove(id, signal, SETTINGS_TIMEOUT_MS),
     pluginsHub: (signal?: AbortSignal) =>

@@ -121,6 +121,7 @@ function createSelection(overrides: {
     ...overrides.conversation
   }
   const api: SessionsApi = {
+    listArchived: vi.fn(async () => ({ sessions: [] })),
     archive: vi.fn(async () => undefined),
     list: vi.fn(async () => ({ sessions: $sessions.get() })),
     remove: vi.fn(async () => undefined),
@@ -176,6 +177,28 @@ describe('privacy bookmark resets', () => {
     expect(localStorage.getItem(other)).toBe('keep')
     localStorage.setItem('hermes.mobile.session.v2:invalid', 'unknown')
     expect(clearOwnerBookmarks(owner)).toBe(false)
+  })
+})
+
+describe('selection completion lifetimes', () => {
+  it.each(['resume', 'create', 'branch'] as const)('retires a %s outcome when a newer selection starts during history reconciliation', async kind => {
+    let finishHistory!: () => void
+    let finishNewer!: (session: RuntimeSession) => void
+    const history = new Promise<void>(resolve => { finishHistory = resolve })
+    const newer = new Promise<RuntimeSession>(resolve => { finishNewer = resolve })
+    $chat.set({ ...emptyChatState(), storedSessionId: 'active', runtimeSessionId: 'runtime-active' })
+    const reconcileHistory = vi.fn().mockImplementationOnce(() => history).mockResolvedValue(undefined)
+    const { selection } = createSelection({
+      runtime: { resumeSession: vi.fn(async (_profile: null | string, id: string) => id === 'newer' ? newer : makeSession(id)) },
+      conversation: { reconcileHistory, setSessionSource: vi.fn() }
+    })
+    const first = selection.select(kind === 'resume' ? { kind, storedSessionId: 'first' } : { kind })
+    await vi.waitFor(() => expect(reconcileHistory).toHaveBeenCalledOnce())
+    const second = selection.select({ kind: 'resume', storedSessionId: 'newer' })
+    finishHistory()
+    await expect(first).resolves.toBeUndefined()
+    finishNewer(makeSession('newer'))
+    await expect(second).resolves.toMatchObject({ session: { storedSessionId: 'newer' } })
   })
 })
 
@@ -327,6 +350,42 @@ describe('session roster list', () => {
     expect($sessionsLoadingMore.get()).toBe(false)
     await selection.refreshSessions()
     expect(api.list.mock.calls.map(([limit]) => limit)).toEqual([60, 30])
+  })
+
+  it('does not let an older smaller refresh replace a newer expanded list', async () => {
+    let release!: (value: { sessions: StoredSession[] }) => void
+    const old = new Promise<{ sessions: StoredSession[] }>(resolve => { release = resolve })
+    const first = Array.from({ length: 30 }, (_, index) => makeStoredSession(`row-${index}`))
+    const expanded = [...first, makeStoredSession('older-match')]
+    const { selection } = createRosterSelection({ api: { list: vi.fn(limit => limit === 30 ? old : Promise.resolve({ sessions: expanded })) } })
+    $sessions.set(first)
+    $sessionsHasMore.set(true)
+    const refresh = selection.refreshSessions()
+    await selection.loadMoreSessions()
+    release({ sessions: first })
+    await refresh
+    expect($sessions.get()).toEqual(expanded)
+    expect($sessionsHasMore.get()).toBe(false)
+  })
+
+  it('retires list publication during a same-scope reset', async () => {
+    let release!: (value: { sessions: StoredSession[] }) => void
+    const { selection } = createRosterSelection({ api: { list: vi.fn(() => new Promise<{ sessions: StoredSession[] }>(resolve => { release = resolve })) } })
+    const pending = selection.refreshSessions()
+    selection.resetSessionList()
+    release({ sessions: [makeStoredSession('stale')] })
+    await pending
+    expect($sessions.get()).toEqual([])
+    expect($sessionsHasMore.get()).toBe(false)
+  })
+
+  it('stops expansion when a gateway ignores the growing limit and returns no new IDs', async () => {
+    const rows = Array.from({ length: 60 }, (_, index) => makeStoredSession(`row-${index}`))
+    const { selection } = createRosterSelection({ api: { list: vi.fn(async () => ({ sessions: rows })) } })
+    await selection.refreshSessions()
+    expect($sessionsHasMore.get()).toBe(true)
+    await selection.loadMoreSessions()
+    expect($sessionsHasMore.get()).toBe(false)
   })
 
   it('resets list state and the private page limit', async () => {

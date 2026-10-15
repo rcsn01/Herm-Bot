@@ -7,18 +7,27 @@ vi.mock('~/compat/primitives', () => ({
 }))
 
 import { SessionsMenu } from '~/components/sessions-menu'
+import { $draftOwner, draftOwnerKey } from '~/state/draft-owner'
+import { localPrivacy } from '~/state/local-privacy'
 import { $chat, emptyChatState } from '~/state/conversation'
 import type { GatewayController } from '~/state/gateway-controller'
 import type { SelectionOutcome } from '~/state/session-selection'
-import { $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+import { $connection, $preferences, $sessions, $sessionsHasMore, $sessionsLoadingMore } from '~/state/store'
+
+function selected(id: string): SelectionOutcome {
+  return { resumed: true, session: { storedSessionId: id, runtimeSessionId: `runtime-${id}`, rows: [], info: {}, contractVersion: 6 } }
+}
 
 function controllerStub() {
   return {
     deleteSession: vi.fn().mockResolvedValue(undefined),
     loadMoreSessions: vi.fn().mockResolvedValue(undefined),
-    newSession: vi.fn().mockResolvedValue(undefined),
+    newSession: vi.fn().mockResolvedValue(selected('created')),
     refreshSessions: vi.fn().mockResolvedValue(undefined),
-    resumeSession: vi.fn().mockResolvedValue(undefined)
+    resumeSession: vi.fn(async (id: string) => {
+      $chat.set({ ...emptyChatState(), storedSessionId: id, runtimeSessionId: `runtime-${id}` })
+      return selected(id)
+    })
   } as unknown as GatewayController
 }
 
@@ -53,7 +62,7 @@ async function settle() {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 250)) })
 }
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -75,7 +84,7 @@ describe('SessionsMenu', () => {
     expect(identity.querySelector('strong')?.textContent).toBe('Work')
     expect(identity.querySelector('small')?.textContent).toBe('Sessions')
     expect(container.querySelector('.sessions-menu-header .header-bot-button .brand-mark')).toBeNull()
-    expect(screen.getByRole('textbox', { name: 'Search sessions' })).not.toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Search loaded titles' })).not.toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull()
     expect(screen.queryByText('Recent sessions')).toBeNull()
@@ -106,7 +115,7 @@ describe('SessionsMenu', () => {
     pointer(surface, 'pointerMove', { clientX: 180, clientY: 224 })
     expect(Number(page.style.getPropertyValue('--swipe-progress'))).toBeGreaterThan(0)
     pointer(surface, 'pointerUp', { clientX: 180, clientY: 224 })
-    act(() => { vi.runAllTimers() })
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(onDismissRequest).toHaveBeenCalledExactlyOnceWith({ type: 'close' })
     expect(container.querySelector('.session-row')?.classList.contains('delete-revealed')).toBe(false)
     vi.useRealTimers()
@@ -119,7 +128,7 @@ describe('SessionsMenu', () => {
     pointer(page, 'pointerDown', { clientX: 60, clientY: 220 })
     pointer(page, 'pointerMove', { clientX: 240, clientY: 224 })
     pointer(page, 'pointerUp', { clientX: 240, clientY: 224 })
-    act(() => { vi.runAllTimers() })
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(onDismissRequest).not.toHaveBeenCalled()
     expect(page.style.getPropertyValue('--swipe-progress')).toBe('0')
     vi.useRealTimers()
@@ -133,7 +142,7 @@ describe('SessionsMenu', () => {
     pointer(surface, 'pointerDown', { clientX: 300, clientY: 200 })
     pointer(surface, 'pointerMove', { clientX: 180, clientY: 200 })
     pointer(surface, 'pointerUp', { clientX: 180, clientY: 200 })
-    act(() => { vi.runAllTimers() })
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(row.classList.contains('delete-revealed')).toBe(true)
     expect(onClose).not.toHaveBeenCalled()
     vi.useRealTimers()
@@ -147,7 +156,7 @@ describe('SessionsMenu', () => {
     const { container } = renderNavigationPage()
 
     expect(container.querySelector('.session-list')?.textContent).not.toContain('Nightly digest')
-    expect(screen.getByRole('button', { name: /Planning session/ })).not.toBeNull()
+    expect(screen.getByRole('button', { name: /^Planning session/ })).not.toBeNull()
   })
 
   it('shows Sessions first in bottom navigation, followed by Automations, Capabilities, and Models', () => {
@@ -179,9 +188,9 @@ describe('SessionsMenu', () => {
 
     const sessionList = screen.getByRole('region', { name: 'Sessions' })
     expect(sessionList.contains(screen.getByRole('button', { name: 'New session' }))).toBe(true)
-    expect(sessionList.contains(screen.getByRole('button', { name: /Planning session/ }))).toBe(true)
+    expect(sessionList.contains(screen.getByRole('button', { name: /^Planning session/ }))).toBe(true)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Load more sessions' }))).toBe(true)
-    expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search sessions' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search loaded titles' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot chat' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Automations' }))).toBe(false)
@@ -190,16 +199,19 @@ describe('SessionsMenu', () => {
   it('filters session titles only and keeps the query while closed', () => {
     const controller = controllerStub()
     const { rerender } = renderNavigationPage(controller)
-    const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' })
+    const search = screen.getByRole<HTMLInputElement>('textbox', { name: 'Search loaded titles' })
     fireEvent.change(search, { target: { value: 'release' } })
 
     expect(screen.queryByText('Planning session')).toBeNull()
     expect(screen.getByText('Release notes')).not.toBeNull()
-    expect(screen.queryByText('Other hidden body')).toBeNull()
+    expect(screen.getByText('Other hidden body')).not.toBeNull()
+    fireEvent.change(search, { target: { value: 'Other hidden body' } })
+    expect(screen.queryByText('Release notes')).toBeNull()
+    fireEvent.change(search, { target: { value: 'release' } })
 
     rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open={false} />)
     rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
-    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search sessions' }).value).toBe('release')
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search loaded titles' }).value).toBe('release')
   })
 
   it('loads more sessions only when the bounded page reports more', () => {
@@ -212,12 +224,12 @@ describe('SessionsMenu', () => {
 
     $sessionsLoadingMore.set(true)
     rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Loading more…' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Loading more…' }).getAttribute('aria-disabled')).toBe('true')
   })
 
   it('marks and opens the active durable session without resuming it', () => {
     const { controller, onClose, onNavigate } = renderNavigationPage()
-    const active = screen.getByRole('button', { name: /Planning session/ })
+    const active = screen.getByRole('button', { name: /^Planning session/ })
     expect(active.getAttribute('aria-current')).toBe('page')
 
     fireEvent.click(active)
@@ -232,35 +244,36 @@ describe('SessionsMenu', () => {
     vi.mocked(controller.resumeSession).mockReturnValue(resume.promise)
     const { onClose, onNavigate } = renderNavigationPage(controller)
 
-    fireEvent.click(screen.getByRole('button', { name: /Release notes/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Release notes/ }))
     expect(controller.resumeSession).toHaveBeenCalledWith('session-2')
     expect(onNavigate).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
 
-    resume.resolve()
+    act(() => $chat.set({ ...emptyChatState(), storedSessionId: 'session-2' }))
+    resume.resolve(selected('session-2'))
     await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('sessions'))
     expect(onClose).toHaveBeenCalledOnce()
   })
 
   it('waits for new-session creation and disables competing session actions', async () => {
     const controller = controllerStub()
-    const creation = deferred()
+    const creation = deferred<SelectionOutcome | undefined>()
     vi.mocked(controller.newSession).mockReturnValue(creation.promise)
     const { onClose, onNavigate } = renderNavigationPage(controller)
 
     fireEvent.click(screen.getByRole('button', { name: 'New session' }))
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: /Release notes/ }).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: /Release notes/ }))
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: /^Release notes/ }).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: /^Release notes/ }))
     expect(controller.resumeSession).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
 
-    creation.resolve()
+    creation.resolve(selected('created'))
     await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('sessions'))
     expect(onClose).toHaveBeenCalledOnce()
   })
 
   it.each([
-    ['resume', 'resumeSession', /Release notes/, 'resume failed'],
+    ['resume', 'resumeSession', /^Release notes/, 'resume failed'],
     ['creation', 'newSession', 'New session', 'creation failed']
   ] as const)('keeps the navigation page open when %s fails', async (_label, method, control, message) => {
     const controller = controllerStub()
@@ -271,6 +284,28 @@ describe('SessionsMenu', () => {
     expect((await screen.findByRole('alert')).textContent).toContain(message)
     expect(onClose).not.toHaveBeenCalled()
     expect(onNavigate).not.toHaveBeenCalled()
+  })
+
+  it('does not dismiss a reopened menu for an old action completion', async () => {
+    const controller = controllerStub()
+    const resume = deferred<SelectionOutcome | undefined>()
+    vi.mocked(controller.resumeSession).mockReturnValue(resume.promise)
+    const { rerender, onDismissRequest } = renderNavigationPage(controller)
+    fireEvent.click(screen.getByRole('button', { name: /^Release notes/ }))
+    rerender(<SessionsMenu controller={controller} onDismissRequest={onDismissRequest} open={false} />)
+    rerender(<SessionsMenu controller={controller} onDismissRequest={onDismissRequest} open />)
+    act(() => $chat.set({ ...emptyChatState(), storedSessionId: 'session-2' }))
+    await act(async () => resume.resolve(selected('session-2')))
+    expect(onDismissRequest).not.toHaveBeenCalled()
+  })
+
+  it('does not dismiss after a superseded remote resume', async () => {
+    const controller = controllerStub()
+    vi.mocked(controller.resumeSession).mockResolvedValue(undefined)
+    const { onDismissRequest } = renderNavigationPage(controller)
+    fireEvent.click(screen.getByRole('button', { name: /^Release notes/ }))
+    await act(async () => { await Promise.resolve() })
+    expect(onDismissRequest).not.toHaveBeenCalled()
   })
 
   it('keeps loaded rows and the navigation page open when refresh fails', async () => {
@@ -304,6 +339,119 @@ describe('SessionsMenu', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
+  it('offers explicit search expansion and never uses preview text as a match', async () => {
+    $sessionsHasMore.set(true)
+    const controller = controllerStub()
+    const page = deferred()
+    vi.mocked(controller.loadMoreSessions).mockReturnValue(page.promise)
+    renderNavigationPage(controller)
+    const search = screen.getByRole('textbox', { name: 'Search loaded titles' })
+    fireEvent.change(search, { target: { value: 'older' } })
+    expect(await screen.findByText('No matching loaded titles. Load more sessions to look further.')).not.toBeNull()
+    expect(screen.getByText(/not message contents or archived chats/)).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Load more sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load more sessions' }))
+    expect(controller.loadMoreSessions).toHaveBeenCalledOnce()
+    act(() => $sessions.set([...$sessions.get(), { id: 'old', title: 'Older match', started_at: 1, source: 'mobile', preview: '<script>literal</script>', message_count: 9 }]))
+    page.resolve()
+    await screen.findByText('Older match')
+    expect((search as HTMLInputElement).value).toBe('older')
+    expect(screen.getByText('<script>literal</script>')).not.toBeNull()
+  })
+
+  it('clears the query and stale local feedback when the profile changes', async () => {
+    const controller = controllerStub()
+    const delayed = deferred()
+    vi.mocked(controller.loadMoreSessions).mockReturnValue(delayed.promise)
+    $sessionsHasMore.set(true)
+    renderNavigationPage(controller)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search loaded titles' }), { target: { value: 'secret title' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Load more sessions' }))
+    act(() => $preferences.set({ ...$preferences.get(), profile: 'other' }))
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Search loaded titles' }).value).toBe('')
+    delayed.reject(new Error('old scope failure'))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByText('old scope failure')).toBeNull()
+  })
+
+  it('retires an observer when search begins, including an already queued callback', async () => {
+    const observers: Array<{ notify(): void; disconnect: ReturnType<typeof vi.fn> }> = []
+    vi.stubGlobal('IntersectionObserver', class {
+      disconnect = vi.fn()
+      observe() {}
+      constructor(callback: IntersectionObserverCallback) {
+        observers.push({ notify: () => callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver), disconnect: this.disconnect })
+      }
+    })
+    $sessionsHasMore.set(true)
+    const { controller } = renderNavigationPage()
+    await waitFor(() => expect(observers.length).toBeGreaterThan(0))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search loaded titles' }), { target: { value: 'missing' } })
+    expect(observers[0].disconnect).toHaveBeenCalled()
+    act(() => observers[0].notify())
+    expect(controller.loadMoreSessions).not.toHaveBeenCalled()
+  })
+
+  it('clears local search and confirmations on a same-owner privacy reset', () => {
+    renderNavigationPage()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Planning' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Planning session' }))
+    vi.spyOn(localPrivacy, 'revision').mockReturnValue('reset-discovery')
+    act(() => localPrivacy.$reset.set({ owner: draftOwnerKey($draftOwner.get()), revision: 'reset-discovery', external: false }))
+    expect(screen.getByRole<HTMLInputElement>('textbox').value).toBe('')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('retires loading feedback when connection drops during a menu refresh', async () => {
+    const refresh = deferred()
+    const controller = controllerStub()
+    vi.mocked(controller.refreshSessions).mockReturnValue(refresh.promise)
+    renderNavigationPage(controller)
+    expect(screen.getByText('Loading sessions…')).not.toBeNull()
+    act(() => $connection.set({ ...$connection.get(), phase: 'reconnecting' }))
+    expect(screen.queryByText('Loading sessions…')).toBeNull()
+    refresh.reject(new Error('retired refresh'))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByText('retired refresh')).toBeNull()
+  })
+
+  it('changes to saved-title coverage offline without searching remote rows or clearing the query', () => {
+    $sessionsHasMore.set(true)
+    renderNavigationPage()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Planning' } })
+    act(() => $connection.set({ ...$connection.get(), phase: 'reconnecting' }))
+    expect(screen.getByRole<HTMLInputElement>('textbox').value).toBe('Planning')
+    expect(screen.getByText(/Searches titles saved on this device/)).not.toBeNull()
+    expect(screen.queryByRole('button', { name: /^Planning session/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Load more sessions' })).toBeNull()
+  })
+
+  it('regroups at local midnight and restores focus to the same session', () => {
+    vi.useFakeTimers()
+    const date = new Date(2026, 6, 3, 23, 59, 59)
+    vi.setSystemTime(date)
+    $sessions.set([{ id: 'midnight', title: 'Midnight notes', started_at: date.getTime() / 1000, message_count: 1, source: 'mobile', preview: '' }])
+    renderNavigationPage()
+    screen.getByRole('button', { name: /^Midnight notes/ }).focus()
+    act(() => vi.advanceTimersByTime(1100))
+    expect(screen.getByRole('heading', { name: 'Yesterday' })).not.toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Midnight notes/ }))
+  })
+
+  it('provides non-gesture delete and archive entry actions', () => {
+    const { onDismissRequest } = renderNavigationPage()
+    const rail = screen.getByText('Planning session').closest('article')!.querySelector('.session-delete-action button')!
+    fireEvent.click(rail)
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Planning session' }))
+    expect(screen.getByRole('alertdialog')).not.toBeNull()
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Escape' })
+    expect(onDismissRequest).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Archived chats' }))
+    expect(onDismissRequest).toHaveBeenCalledWith({ type: 'archived-chats' })
+  })
+
   it('closes with Escape', () => {
     const escape = renderNavigationPage()
     fireEvent.keyDown(screen.getByRole('main'), { key: 'Escape' })
@@ -322,7 +470,7 @@ describe('SessionsMenu', () => {
 
     rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open />)
     expect(document.activeElement).toBe(screen.getByRole('main', { name: 'Sessions menu' }))
-    expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search sessions' }))
+    expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Search loaded titles' }))
     rerender(<SessionsMenu controller={controller} onDismissRequest={() => undefined} open={false} />)
     expect(document.activeElement).toBe(opener)
     opener.remove()

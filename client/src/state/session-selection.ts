@@ -42,9 +42,10 @@ export interface SessionSelection {
    * `branch` precondition check — a no-op branch must not retire in-flight work).
    * Publish order: source lookup → conversation.adopt → bookmark write → follow-up.
    * Resolves `undefined` when the epoch or captured Scope went stale, or when the
-   * request is a no-op (branch without an open durable conversation): nothing is
-   * adopted, nothing bookmarked, nothing thrown. Transport failures reject with the
-   * classified GatewayError.
+   * request is a no-op (branch without an open durable conversation). Supersession
+   * before publication adopts/bookmarks nothing; supersession during follow-up
+   * retires completion but does not undo an earlier publication. Transport failures
+   * reject with the classified GatewayError.
    * Follow-up policy per kind: create ⇒ best-effort list refresh (failure swallowed);
    * branch ⇒ awaited list refresh (failure rethrows); resume ⇒ awaited reconcileHistory
    * on the captured scope (failure rethrows); latest ⇒ see the implementation.
@@ -170,6 +171,8 @@ export function createSessionSelection(deps: {
   let selectionEpoch = 0
   let lastPublishedSelectionEpoch = 0
   let sessionListLimit = SESSION_LIST_PAGE_SIZE
+  let listPublication = 0
+  let pagingGeneration = 0
 
   /** Install the session as the open conversation and remember it for reconnects. */
   function publish(session: RuntimeSession, selectionPublicationEpoch?: number): void {
@@ -189,12 +192,13 @@ export function createSessionSelection(deps: {
 
   async function refreshSessions(scope: CurrentGatewayScope = currentGatewayScope()): Promise<void> {
     const limit = sessionListLimit
+    const publication = ++listPublication
     const response = await queryClient.fetchQuery({
       queryFn: ({ signal }) => sessionsApi(scope).list(limit, signal),
       queryKey: gatewayScopeKey(scope, 'sessions', 'list', limit),
       staleTime: 0
     })
-    if (!isCurrentGatewayScope(scope)) return
+    if (!isCurrentGatewayScope(scope) || publication !== listPublication) return
     const sessions = response.sessions ?? []
     $sessions.set(sessions)
     $sessionsHasMore.set(sessions.length >= limit)
@@ -208,20 +212,27 @@ export function createSessionSelection(deps: {
   async function loadMoreSessions(): Promise<void> {
     if ($sessionsLoadingMore.get() || !$sessionsHasMore.get()) return
     const scope = currentGatewayScope()
+    const operation = ++pagingGeneration
+    const publication = listPublication + 1
     const previousLimit = sessionListLimit
+    const previousIds = new Set($sessions.get().map(session => session.id))
     sessionListLimit += SESSION_LIST_PAGE_SIZE
     $sessionsLoadingMore.set(true)
     try {
       await refreshSessions(scope)
+      if (isCurrentGatewayScope(scope) && operation === pagingGeneration && publication === listPublication
+        && !$sessions.get().some(session => !previousIds.has(session.id))) $sessionsHasMore.set(false)
     } catch (error) {
-      if (isCurrentGatewayScope(scope)) sessionListLimit = previousLimit
+      if (isCurrentGatewayScope(scope) && operation === pagingGeneration && publication === listPublication) sessionListLimit = previousLimit
       throw error
     } finally {
-      if (isCurrentGatewayScope(scope)) $sessionsLoadingMore.set(false)
+      if (isCurrentGatewayScope(scope) && operation === pagingGeneration) $sessionsLoadingMore.set(false)
     }
   }
 
   function resetSessionList(): void {
+    ++listPublication
+    ++pagingGeneration
     pendingSelection += 1
     $sessionSelecting.set(false)
     sessionListLimit = SESSION_LIST_PAGE_SIZE
@@ -274,8 +285,9 @@ export function createSessionSelection(deps: {
       if (!stillCurrent(epoch, task)) return undefined
       publish(session, epoch)
       await conversation.reconcileHistory(scope)
+      if (!stillCurrent(epoch, task)) return undefined
       await refreshSessions(scope)
-      return { session, resumed: false }
+      return stillCurrent(epoch, task) ? { session, resumed: false } : undefined
     }
 
     const epoch = ++selectionEpoch
@@ -285,6 +297,7 @@ export function createSessionSelection(deps: {
       if (!stillCurrent(epoch, task)) return undefined
       publish(session, epoch)
       await conversation.reconcileHistory(scope)
+      if (!stillCurrent(epoch, task)) return undefined
       // Every other session mutation (branch/rename/archive/delete) refreshes
       // the list; a create must too — the roster tap picks the newest session
       // from this store, so a stale list sends the next tap into an older
@@ -295,7 +308,7 @@ export function createSessionSelection(deps: {
       } catch {
         /* store stays stale; the next connect/tap re-lists */
       }
-      return { session, resumed: false }
+      return stillCurrent(epoch, task) ? { session, resumed: false } : undefined
     }
 
     if (request.kind === 'resume') {
@@ -303,7 +316,7 @@ export function createSessionSelection(deps: {
       if (!stillCurrent(epoch, task)) return undefined
       publish(session, epoch)
       await conversation.reconcileHistory(scope)
-      return { session, resumed: true }
+      return stillCurrent(epoch, task) ? { session, resumed: true } : undefined
     }
 
     // Roster tap: enter a profile's latest conversation. Resumes the newest
@@ -319,7 +332,7 @@ export function createSessionSelection(deps: {
       // Already inside the target conversation; a switch reconciled it in
       // passing, a warm tap only needs a freshen.
       if (request.freshen) await conversation.reconcileHistory(scope)
-      return { session: null, resumed: false }
+      return stillCurrent(epoch, task) ? { session: null, resumed: false } : undefined
     }
     if (latest) {
       try {
@@ -327,7 +340,7 @@ export function createSessionSelection(deps: {
         if (!stillCurrent(epoch, task)) return undefined
         publish(session, epoch)
         await conversation.reconcileHistory(scope)
-        return { session, resumed: true }
+        return stillCurrent(epoch, task) ? { session, resumed: true } : undefined
       } catch (error) {
         if (!stillCurrent(epoch, task)) return undefined
         if (!isConfirmedMissingSession(classifyGatewayError(error))) throw error
@@ -341,12 +354,13 @@ export function createSessionSelection(deps: {
     if (!stillCurrent(epoch, task)) return undefined
     publish(session, epoch)
     await conversation.reconcileHistory(scope)
+    if (!stillCurrent(epoch, task)) return undefined
     try {
       await refreshSessions(scope)
     } catch {
       /* store stays stale; the next connect/tap re-lists */
     }
-    return { session, resumed: false }
+    return stillCurrent(epoch, task) ? { session, resumed: false } : undefined
   }
 
   async function restore<TOpen extends { resumed: boolean; session: RuntimeSession }>(

@@ -69,7 +69,11 @@ export function SettingsScreen({ controller, workspace }: { controller: GatewayC
     if (route.category === 'about') return <AboutSettings onBack={back} />
     return <RemoteSettings onBack={back}><ConfigSectionScreen category={route.category} onBack={back} /></RemoteSettings>
   }
-  if (route.type === 'settings-administration') return <RemoteSettings onBack={back}><SettingsAdministrationScreen controller={controller} onBack={back} page={route.page} /></RemoteSettings>
+  if (route.type === 'settings-administration') {
+    const screen = <SettingsAdministrationScreen controller={controller} onBack={back} page={route.page} />
+    // Archive discovery owns its offline explanation and removes remote controls.
+    return route.page === 'archived-chats' ? screen : <RemoteSettings onBack={back}>{screen}</RemoteSettings>
+  }
 
   return <SettingsPageShell heading={false} subtitle="Profile defaults, mobile preferences, and gateway administration." title="Settings"><section className="settings-section"><h3>Connection</h3><div className="settings-list static"><div><span><strong>Gateway</strong><small>{preferences.remoteURL}</small></span><Badge>{connection.phase}</Badge></div><label><span><strong>Profile</strong><small>All remote settings and capability requests use this profile.</small></span><select onChange={event => void controller.switchProfile(event.target.value || null).catch(() => undefined)} value={preferences.profile ?? ''}><option disabled={!ready && !cachedProfiles.has(null)} value="">Default</option>{[...new Set([...profiles, ...[...cachedProfiles].filter((profile): profile is string => profile !== null)])].filter(name => name !== 'default').map(name => <option disabled={!ready && !cachedProfiles.has(name)} key={name} value={name}>{name}</option>)}</select></label></div></section><PageList className="capability-list">{SETTINGS_ENTRIES.map(entry => <SettingsRow entry={entry} key={`${entry.kind}:${entry.id}`} onClick={() => navigateEntry(entry, navigate)} />)}</PageList><Button className="touch-button" onClick={() => setConfirmSignOut(true)} variant="destructive">Sign out</Button>{confirmSignOut && <ConfirmDialog confirmLabel="Sign out" description="Sign out of this gateway? The remote agent keeps running, but this device will clear its active session." onCancel={() => setConfirmSignOut(false)} onConfirm={() => { setConfirmSignOut(false); void controller.logout().catch(() => undefined) }} title="Sign out" />}</SettingsPageShell>
 }

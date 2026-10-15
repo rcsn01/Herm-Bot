@@ -25,6 +25,8 @@ import type { CustomEndpoint, EnvVarInfo, OAuthProvider } from '~/lib/types'
 import { createProviderOAuthAdapter } from './oauth-sources'
 import { createSettingsApi } from './settings-api'
 import { SettingsPageShell } from './settings-page-shell'
+import { ArchivedChatsScreen } from '~/features/sessions/archived-chats-screen'
+import { openChatSurface } from '~/navigation/workspace-navigation'
 
 const platformActions = new PlatformActions()
 
@@ -47,7 +49,7 @@ export function SettingsAdministrationScreen({ controller, onBack, page }: { con
   if (page === 'billing') return <BillingSettings onBack={onBack} />
   if (page === 'providers') return <ProvidersSettings onBack={onBack} />
   if (page === 'tools-keys') return <ToolsKeysSettings onBack={onBack} />
-  if (page === 'archived-chats') return <ArchivedChatsSettings onBack={onBack} />
+  if (page === 'archived-chats') return <ArchivedChatsScreen controller={controller} onBack={onBack} onOpened={openChatSurface} />
   if (page === 'plugins') return <PluginsSettings onBack={onBack} />
   if (page === 'gateway') return <GatewaySettings controller={controller} onBack={onBack} />
   if (page === 'projects') return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} title="Projects and files"><FilesScreen embedded /></SettingsPageShell>
@@ -455,33 +457,6 @@ function CredentialRow({ name, onDelete, onDraft, onReveal, onSave, onValidate, 
   return <div className="credential-row"><span><strong>{name}</strong><small>{revealed ?? variable.redacted_value ?? (variable.is_set ? 'Configured' : 'Not set')}</small></span><Input aria-label={`${name} secret`} autoComplete="off" onChange={event => onDraft(event.target.value)} placeholder={variable.is_set ? 'Replace value' : 'Enter value'} type="password" value={value} /><div className="button-row"><Button disabled={!value} onClick={onSave} size="sm">Save</Button>{onValidate && <Button disabled={!value} onClick={onValidate} size="sm" variant="secondary">Validate</Button>}{variable.is_set && <Button onClick={onReveal} size="sm" variant="secondary">Reveal</Button>}{variable.is_set && <Button onClick={onDelete} size="sm" variant="destructive"><IconTrash size={14} /></Button>}</div></div>
 }
 
-
-function ArchivedChatsSettings({ onBack }: { onBack(): void }) {
-  const settings = useApi(createSettingsApi)
-  const queryClient = useQueryClient()
-  const key = useScopeKey('settings', ['archived-chats'])
-  const sessions = useScopedQuery(key, { queryFn: signal => settings.sessions(signal) })
-  const [remove, setRemove] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const action = useScopedTask()
-  useScopeReset(() => { setRemove(null); setError(null) })
-  const restore = async (id: string) => {
-    await action.run(async task => {
-      await settings.restoreSession(id)
-      if (task.isCurrent()) void queryClient.invalidateQueries({ queryKey: key })
-    }, { onError: error => setError(error.message) })
-  }
-  const destroy = async () => {
-    if (!remove) return
-    await action.run(async task => {
-      await settings.deleteSession(remove)
-      if (!task.isCurrent()) return
-      setRemove(null)
-      void queryClient.invalidateQueries({ queryKey: key })
-    }, { onError: error => setError(error.message) })
-  }
-  return <SettingsPageShell leading={<Button onClick={onBack} variant="text"><IconChevronLeft size={18} /> Back</Button>} subtitle="Only archived sessions from the selected profile are listed." title="Archived chats">{error && <div className="error-banner" role="alert">{error}</div>}{sessions.error && <GatewayErrorBanner error={sessions.error} />}{sessions.isPending && <Skeleton className="h-20 w-full" />}<div className="settings-list static">{sessions.data?.sessions.map(session => <div key={session.id}><span><strong>{session.title || 'Untitled chat'}</strong><small>{session.preview || 'No preview'} · {session.message_count ?? 0} messages</small></span><div className="button-row"><Button onClick={() => void restore(session.id)} size="sm">Restore</Button><Button onClick={() => setRemove(session.id)} size="sm" variant="destructive"><IconTrash size={14} /></Button></div></div>)}</div>{sessions.data?.sessions.length === 0 && <div className="empty-panel">No archived chats.</div>}{remove && <ConfirmDialog confirmLabel="Delete permanently" description="Permanently delete this archived chat? This cannot be undone." onCancel={() => setRemove(null)} onConfirm={() => void destroy()} title="Delete archived chat" />}</SettingsPageShell>
-}
 
 function PluginsSettings({ onBack }: { onBack(): void }) {
   const settings = useApi(createSettingsApi)

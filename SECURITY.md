@@ -78,6 +78,25 @@ workspace/context changes, logout, or local-data clearing. Clearing local app da
 does not clear the system clipboard, and an already-issued platform clipboard write
 cannot be recalled. Other apps or clipboard managers may retain copied text.
 
+## Conversation discovery
+
+Session search matches loaded titles only, not message bodies or a verified
+complete remote history. Row previews are gateway-provided plain text, never
+Markdown or executable HTML. The list does not prefetch transcript bodies for
+previews. Search terms and new discovery feedback stay in memory and reset on
+owner, gateway, profile, authentication-generation, and local privacy changes.
+Offline discovery uses only the existing owner/profile-scoped saved snapshots;
+excerpt length and save time are not represented as full remote history metadata.
+
+Archive discovery uses the existing profile-bound HTTP request for up to 100
+rows. Remote search, complete archive pagination, and direct archived resume are
+not established by the repository's client contracts. Restore and open explicitly
+restores before using the normal selection path; restore acknowledgement alone
+does not authorize navigation. Pending operations cannot navigate after page or
+scope retirement, or over a superseding selection. A remote mutation already
+issued may still finish after departure; it cannot be recalled by hiding the UI.
+No new discovery index, query persistence, or offline archive cache is added.
+
 ## Saved conversation history
 
 `hermes.transcript.v2:` records include the verified gateway and organization/user
