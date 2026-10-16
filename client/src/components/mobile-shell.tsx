@@ -98,16 +98,16 @@ export function MobileShell({
           role="status"
           style={{
             '--refresh-travel': `${64 * (1 - Math.exp(-(refreshHeld ? 90 : refresh.distance) / 100)) - 24}px`,
-            '--refresh-scale': refresh.phase === 'idle' ? .85 : .85 + .15 * (refreshHeld ? 1 : refresh.progress),
-            opacity: refresh.phase === 'idle' ? 0 : refreshHeld ? 1 : Math.min(refresh.distance / 36, 1)
+            '--refresh-scale': refresh.phase === 'idle' ? .9 : .9 + .1 * (refreshHeld ? 1 : refresh.progress),
+            opacity: refresh.phase === 'idle' ? 0 : refreshHeld ? 1 : Math.min(refresh.distance / 18, 1)
           } as CSSProperties}
         >
           <svg aria-hidden="true" className="pull-refresh-glyph" viewBox="0 0 24 24">
-            <circle className="pull-refresh-track" cx="12" cy="12" r="10" />
-            <circle className="pull-refresh-ring" cx="12" cy="12" r="10" style={{ strokeDasharray: '62.83', strokeDashoffset: refresh.phase === 'refreshing' ? 44 : 62.83 * (1 - refresh.progress) }} />
-            <path className="pull-refresh-arrow" d="M12 7v10m-4-4 4 4 4-4" />
+            <path className="pull-refresh-track" d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" />
+            <path className="pull-refresh-progress" d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5" pathLength="1" style={{ strokeDasharray: `${refresh.progress} 1` }} />
+            <path className="pull-refresh-progress" d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" pathLength="1" style={{ strokeDasharray: `${refresh.progress} 1` }} />
           </svg>
-          <span>{refresh.phase === 'refreshing' ? 'Refreshing…' : refresh.phase === 'error' ? 'Could not refresh' : refresh.phase === 'armed' ? 'Release to refresh' : 'Pull to refresh'}</span>
+          <span className="sr-only">{refresh.phase === 'refreshing' ? 'Refreshing…' : refresh.phase === 'error' ? 'Could not refresh' : refresh.phase === 'armed' ? 'Release to refresh' : 'Pull to refresh'}</span>
         </div>
       </div>
     </>

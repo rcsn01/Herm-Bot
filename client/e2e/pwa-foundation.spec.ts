@@ -89,10 +89,13 @@ test('animates a real roster pull with one haptic tick without opening the dragg
     await expect(indicator).toBeVisible()
     expect((await row.boundingBox())!.y - box.y).toBeCloseTo(128 * (1 - Math.exp(-move * 35 / 180)), 0)
     expect((await header.boundingBox())!.y).toBe(headerBox.y)
-    const track = (await indicator.locator('.pull-refresh-track').boundingBox())!
-    const ring = (await indicator.locator('.pull-refresh-ring').boundingBox())!
-    expect(ring.x + ring.width / 2).toBeCloseTo(track.x + track.width / 2, 0)
-    expect(ring.y + ring.height / 2).toBeCloseTo(track.y + track.height / 2, 0)
+    const indicatorBox = (await indicator.boundingBox())!
+    expect(indicatorBox.width).toBeGreaterThan(30)
+    expect(indicatorBox.width).toBeLessThan(40)
+    expect(indicatorBox.height).toBeGreaterThan(30)
+    expect(indicatorBox.height).toBeLessThan(40)
+    await expect(indicator.locator('span:not(.sr-only)')).toHaveCount(0)
+    expect(await indicator.locator('.pull-refresh-progress').first().evaluate(element => (element as SVGPathElement).style.strokeDasharray)).not.toBe('0 1')
     if (move === 3) await page.screenshot({ path: testInfo.outputPath('refresh-armed.png') })
   })
   await expect(indicator).toHaveAttribute('data-phase', 'refreshing')
@@ -162,7 +165,7 @@ test('shows shared pull feedback on a workspace screen and respects reduced moti
   await expect(indicator).toContainText('Release to refresh')
   await dispatchTouch('touchend', 210)
   await expect(indicator).toHaveAttribute('data-phase', 'refreshing')
-  expect(await indicator.locator('.pull-refresh-ring').evaluate(element => getComputedStyle(element).animationName)).toBe('none')
+  expect(await indicator.locator('.pull-refresh-glyph').evaluate(element => getComputedStyle(element).animationName)).toBe('none')
   await expect(indicator).toHaveAttribute('data-phase', 'idle')
   await expect(page.getByRole('heading', { name: 'Main model' })).toBeVisible()
 })

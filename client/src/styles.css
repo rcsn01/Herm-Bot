@@ -171,19 +171,15 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .view-container[data-refresh-phase="pulling"] > *, .view-container[data-refresh-phase="armed"] > * { transition: none; }
 .mobile-shell.navigation-open .view-container { overflow-y: hidden; overscroll-behavior: none; touch-action: none; }
 /* Rubber-band feedback is an overlay, so fixed composers and scroll anchors stay put. */
-.pull-refresh { position: absolute; z-index: 40; top: calc(var(--safe-top) + 64px); left: 50%; display: flex; align-items: center; justify-content: center; gap: 10px; width: 196px; min-height: 40px; padding: 8px 12px; max-width: calc(100% - 32px); border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted-foreground); box-shadow: 0 6px 20px #0002; font-size: var(--font-caption); white-space: nowrap; pointer-events: none; transform: translate3d(-50%, var(--refresh-travel), 0) scale(var(--refresh-scale)); transform-origin: top center; transition: transform 260ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, color 160ms ease, border-color 160ms ease; }
-.pull-refresh[data-phase="pulling"], .pull-refresh[data-phase="armed"] { transition: color 160ms ease, border-color 160ms ease; }
-.pull-refresh[data-phase="armed"], .pull-refresh[data-phase="refreshing"] { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, var(--line)); }
+.pull-refresh { position: absolute; z-index: 40; top: calc(var(--safe-top) + 64px); left: 50%; width: 36px; height: 36px; display: grid; place-items: center; color: var(--muted-foreground); pointer-events: none; transform: translate3d(-50%, var(--refresh-travel), 0) scale(var(--refresh-scale)); transform-origin: center; transition: transform 260ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, color 160ms ease; }
+.pull-refresh[data-phase="armed"], .pull-refresh[data-phase="refreshing"] { color: var(--primary); }
 .pull-refresh[data-phase="error"] { color: var(--danger); }
-.pull-refresh-glyph { width: 24px; height: 24px; flex: none; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.pull-refresh-track { opacity: .15; }
-.pull-refresh-ring { transform-box: fill-box; transform-origin: center; transform: rotate(-90deg); }
-.pull-refresh-arrow { transform-origin: center; transition: transform 180ms cubic-bezier(.22, 1, .36, 1), opacity 120ms ease; }
-.pull-refresh[data-phase="armed"] .pull-refresh-arrow { transform: rotate(180deg); }
-.pull-refresh[data-phase="refreshing"] .pull-refresh-arrow { opacity: 0; }
-.pull-refresh[data-phase="refreshing"] .pull-refresh-ring { animation: refresh-turn 850ms linear infinite; }
-@keyframes refresh-turn { to { transform: rotate(270deg); } }
-@media (prefers-reduced-motion: reduce) { .pull-refresh-ring { animation: none !important; } }
+.pull-refresh-glyph { width: 28px; height: 28px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transform-box: fill-box; transform-origin: center; }
+.pull-refresh-track { opacity: .16; }
+.pull-refresh-progress { stroke-dashoffset: 0; }
+.pull-refresh[data-phase="refreshing"] .pull-refresh-glyph { animation: refresh-turn 850ms linear infinite; }
+@keyframes refresh-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pull-refresh-glyph { animation: none !important; } }
 
 /* This is a full-screen navigation page. The chat layer stays inert while
    the page is open. */
