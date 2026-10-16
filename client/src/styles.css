@@ -172,6 +172,8 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .mobile-shell.navigation-open .view-container { overflow-y: hidden; overscroll-behavior: none; touch-action: none; }
 /* Rubber-band feedback is an overlay, so fixed composers and scroll anchors stay put. */
 .pull-refresh { position: absolute; z-index: 40; top: calc(var(--safe-top) + 64px); left: 50%; width: 36px; height: 36px; display: grid; place-items: center; color: var(--muted-foreground); pointer-events: none; transform: translate3d(-50%, var(--refresh-travel), 0) scale(var(--refresh-scale)); transform-origin: center; transition: transform 260ms cubic-bezier(.22, 1, .36, 1), opacity 180ms ease, color 160ms ease; }
+/* Follow touch positions directly; animate travel only after release. */
+.pull-refresh[data-phase="pulling"], .pull-refresh[data-phase="armed"] { transition: color 160ms ease; }
 .pull-refresh[data-phase="armed"], .pull-refresh[data-phase="refreshing"] { color: var(--primary); }
 .pull-refresh[data-phase="error"] { color: var(--danger); }
 .pull-refresh-glyph { width: 28px; height: 28px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transform-box: fill-box; transform-origin: center; }

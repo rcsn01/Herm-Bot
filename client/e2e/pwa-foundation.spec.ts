@@ -137,6 +137,42 @@ test('pulls chat content and bounces home without moving its composer or refresh
   await expect.poll(async () => (await fixtureCalls(page)).calls.filter(call => call.kind === 'http' && call.path === '/api/sessions/saved-default/messages').length).toBeGreaterThan(before)
 })
 
+test('keeps the reload icon attached to the pull without animated position lag', async ({ page }) => {
+  await login(page)
+  const scroller = page.locator('.foreground-layer.active .view-container')
+  const indicator = page.locator('.pull-refresh')
+  await scroller.evaluate(element => { element.scrollTop = 0 })
+  const dispatchTouch = async (type: string, y: number) => {
+    await scroller.evaluate((element, { type, y }) => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      const touch = { identifier: 1, clientX: 180, clientY: y }
+      Object.defineProperties(event, {
+        touches: { value: type === 'touchcancel' ? [] : [touch] },
+        changedTouches: { value: [touch] }
+      })
+      element.dispatchEvent(event)
+    }, { type, y })
+  }
+  await dispatchTouch('touchstart', 100)
+  // Cross the threshold in both directions and reverse a partial pull. Each
+  // position must follow the finger immediately, not chase a previous target.
+  for (const distance of [20, 60, 110, 140, 100, 60, 30, 70]) {
+    await dispatchTouch('touchmove', 100 + distance)
+    await expect(indicator).toHaveAttribute('data-phase', distance >= 90 ? 'armed' : 'pulling')
+    const position = await indicator.evaluate(async element => {
+      await new Promise(requestAnimationFrame)
+      const style = getComputedStyle(element)
+      return {
+        actual: new DOMMatrixReadOnly(style.transform).m42,
+        target: parseFloat((element as HTMLElement).style.getPropertyValue('--refresh-travel'))
+      }
+    })
+    expect(position.actual).toBeCloseTo(position.target, 1)
+  }
+  await dispatchTouch('touchcancel', 170)
+  await expect(indicator).toHaveAttribute('data-phase', 'idle')
+})
+
 test('shows shared pull feedback on a workspace screen and respects reduced motion', async ({ page }) => {
   await login(page)
   await page.getByRole('button', { name: 'Open navigation' }).click()
