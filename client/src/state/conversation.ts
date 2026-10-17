@@ -48,6 +48,14 @@ const text = (value: unknown) => (typeof value === 'string' ? value : '')
 const record = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 
+// Admission acknowledgements, not evidence that a queued prompt has executed.
+function promptSubmissionStatus(acknowledgement: unknown): SubmissionResult['status'] {
+  const result = record(acknowledgement)
+  const accepted = result.accepted === true
+    || ['streaming', 'queued', 'steered', 'redirected'].includes(text(result.status))
+  return accepted ? 'accepted' : 'uncertain'
+}
+
 function upsertTool(tools: ToolActivity[], payload: Record<string, unknown>, status: ToolActivity['status']) {
   const id = text(payload.tool_call_id ?? payload.id) || `${text(payload.name)}-${tools.length}`
   const next: ToolActivity = {
@@ -319,7 +327,7 @@ export class Conversation {
         session_id: current.runtimeSessionId,
         text: content
       }, { timeoutMs: 1_800_000 })
-      return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'queue' }
+      return { status: promptSubmissionStatus(acknowledgement), mode: 'queue' }
     }
     $chat.set({
       ...current,
@@ -334,7 +342,7 @@ export class Conversation {
       }
       this.requireLive()
       const acknowledgement = await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
-      return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'send' }
+      return { status: promptSubmissionStatus(acknowledgement), mode: 'send' }
     } catch (error) {
       if (!isCurrentGatewayScope(scope)) throw error
       const latest = $chat.get()
@@ -393,7 +401,7 @@ export class Conversation {
       truncate_before_row_id: rowId,
       truncate_before_user_ordinal: userOrdinal
     }, { timeoutMs: 1_800_000 })
-    return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'retry' }
+    return { status: promptSubmissionStatus(acknowledgement), mode: 'retry' }
   }
 
   private assertSlashContext(scope: CurrentGatewayScope, sessionId: string | null) {

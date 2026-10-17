@@ -197,6 +197,36 @@ describe('reduceGatewayEvent', () => {
 })
 
 describe('prompt submission safety', () => {
+  describe.each(['send', 'queue', 'retry'] as const)('%s acknowledgement', mode => {
+    it.each([
+      { label: 'streaming', acknowledgement: { status: 'streaming' }, expected: 'accepted' },
+      { label: 'queued', acknowledgement: { status: 'queued' }, expected: 'accepted' },
+      { label: 'steered', acknowledgement: { status: 'steered' }, expected: 'accepted' },
+      { label: 'redirected', acknowledgement: { status: 'redirected' }, expected: 'accepted' },
+      { label: 'isolated streaming', acknowledgement: { status: 'streaming', turn_isolation: true }, expected: 'accepted' },
+      { label: 'legacy explicit acceptance', acknowledgement: { accepted: true }, expected: 'accepted' },
+      { label: 'empty', acknowledgement: {}, expected: 'uncertain' },
+      { label: 'missing', acknowledgement: undefined, expected: 'uncertain' },
+      { label: 'null', acknowledgement: null, expected: 'uncertain' },
+      { label: 'array', acknowledgement: [{ status: 'streaming' }], expected: 'uncertain' },
+      { label: 'bare string', acknowledgement: 'streaming', expected: 'uncertain' },
+      { label: 'unknown status', acknowledgement: { status: 'ok' }, expected: 'uncertain' },
+      { label: 'rejected status', acknowledgement: { status: 'rejected' }, expected: 'uncertain' },
+      { label: 'malformed status', acknowledgement: { status: true }, expected: 'uncertain' },
+      { label: 'false acceptance', acknowledgement: { accepted: false }, expected: 'uncertain' },
+      { label: 'string acceptance', acknowledgement: { accepted: 'true' }, expected: 'uncertain' }
+    ])('classifies $label without inferring execution', async ({ acknowledgement, expected }) => {
+      $chat.set({ ...emptyChatState(), running: mode === 'queue', runtimeSessionId: 'runtime-1',
+        transcript: createTranscript({ source: null, storedSessionId: null }, [{ role: 'user', content: 'original', row_id: 41 }]) })
+      const gateway = new MemoryGateway().handle('prompt.submit', () => acknowledgement)
+      const { conversation, dispose } = subject(gateway)
+      try {
+        const submission = mode === 'retry' ? conversation.retryFrom(41, 'Ping') : conversation.send('Ping')
+        await expect(submission).resolves.toEqual({ status: expected, mode })
+      } finally { dispose() }
+    })
+  })
+
   it('submits ordinary prompts without truncation parameters', async () => {
     $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
     const gateway = new MemoryGateway().handle('prompt.submit', () => ({}))

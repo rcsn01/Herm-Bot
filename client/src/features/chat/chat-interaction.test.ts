@@ -556,6 +556,20 @@ describe('draft recovery', () => {
     expect(commands.send).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    { label: 'network failure', error: new Error('Network disconnected') },
+    { label: 'aborted request', error: new DOMException('Request aborted', 'AbortError') }
+  ])('preserves recovery without resending after $label', async ({ error }) => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.send).mockRejectedValue(error)
+    subject.updateDraft('possibly delivered before disconnect')
+    await subject.submit()
+    expect(subject.record()?.recoveries[0]).toMatchObject({ status: 'uncertain', content: { text: 'possibly delivered before disconnect' } })
+    expect(subject.$state.get()).toMatchObject({ draft: '', submitting: false })
+    expect(subject.$state.get().error).toContain('Delivery not confirmed')
+    expect(commands.send).toHaveBeenCalledTimes(1)
+  })
+
   it('restores the normal draft when cancelling an edit', () => {
     const { interaction: subject } = interaction()
     subject.updateDraft('next question')

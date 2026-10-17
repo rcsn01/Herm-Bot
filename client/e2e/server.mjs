@@ -525,7 +525,7 @@ sockets.on('connection', (ws, _req, id, profile) => {
       messages.push(answer)
       if (state.controls.markdownStream) ws.fixtureAnswer = answer
       state.messages.set(currentStored, messages)
-      result = params.text === 'draft uncertain response' ? {} : { accepted: true }
+      result = params.text === 'draft uncertain response' ? {} : { status: params.queued ? 'queued' : 'streaming' }
     } else result = {}
     ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
     if (request.method === 'slash.exec' && String(params.command).startsWith('model ') && !rpcError && !result?.confirm_required) {
