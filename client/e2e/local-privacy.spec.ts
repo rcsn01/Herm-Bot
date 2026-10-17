@@ -103,7 +103,10 @@ test('clearing another tab retires the old composer without logout, conflicts, o
   await other.getByRole('button', { name: 'Back to bots' }).click()
   await other.getByRole('button', { name: 'Hermes', exact: true }).click()
   await other.getByLabel('Message Hermes').fill('New work after clear')
-  await expect(other.getByText('Saved on this device.', { exact: true })).toBeVisible()
+  await expect.poll(() => other.evaluate(() => Object.keys(localStorage)
+    .filter(key => key.startsWith('hermes.drafts.v1:'))
+    .some(key => JSON.parse(localStorage.getItem(key)!).content.text === 'New work after clear'))).toBe(true)
+  await expect(other.getByText('Saved on this device.', { exact: true })).toHaveCount(0)
 })
 
 test('history policy changes reach a second tab without discarding its draft', async ({ page, context }) => {

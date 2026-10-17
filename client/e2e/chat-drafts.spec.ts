@@ -25,10 +25,13 @@ async function signOut(page: Page) {
   await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible()
 }
 
-test('recovers exact draft text after refresh and keeps sessions separate', async ({ page }, testInfo) => {
+test('silently saves and restores exact draft text while keeping sessions separate', async ({ page }, testInfo) => {
   await login(page)
   await page.getByLabel('Message Hermes').fill('  First unfinished question\nwith another line')
-  await expect(page.getByText('Saved on this device.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Saved on this device.', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Connected. Your draft has not been sent.', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Copy draft', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Discard draft', exact: true })).toHaveCount(0)
   await expect(page.getByText('Restart recovery unavailable.', { exact: false })).toHaveCount(0)
   const identity = await page.evaluate(async () => {
     const response = await fetch('/api/auth/me')
@@ -44,6 +47,7 @@ test('recovers exact draft text after refresh and keeps sessions separate', asyn
   await expect(page.getByRole('main', { name: 'Sessions menu' })).not.toBeVisible()
   await expect(page.locator('[data-testid="sessions-menu"]')).toHaveAttribute('data-swipe-phase', 'idle')
   await expect(page.getByLabel('Message Hermes')).toHaveValue('')
+  await expect(page.getByText(/^Other unfinished messages/)).toHaveCount(0)
   await page.getByLabel('Message Hermes').fill('Second unfinished question')
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await expect(page.locator('[data-testid="sessions-menu"]')).toHaveAttribute('data-swipe-phase', 'idle')
@@ -113,10 +117,11 @@ test('requires attachments to be reselected after refresh', async ({ page }) => 
   await expect(page.getByRole('button', { name: 'Remove attachment draft-note.txt', exact: true })).toHaveCount(1)
 })
 
-test('reports storage failure while keeping the composer usable', async ({ page }) => {
+test('shows draft controls only on storage failure and hides them after a successful retry', async ({ page }) => {
   await login(page)
   await page.evaluate(() => {
     const set = Storage.prototype.setItem
+    window.addEventListener('fixture-storage-recovered', () => { Storage.prototype.setItem = set }, { once: true })
     Storage.prototype.setItem = function(key, value) {
       if (key.startsWith('hermes.drafts.v1:')) throw new DOMException('Fixture quota exceeded', 'QuotaExceededError')
       return set.call(this, key, value)
@@ -124,6 +129,14 @@ test('reports storage failure while keeping the composer usable', async ({ page 
   })
   await page.getByLabel('Message Hermes').fill('Not lost in memory')
   await expect(page.getByText('Not saved on this device. Copy your text before closing.', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Not lost in memory')
+  await expect(page.getByRole('button', { name: 'Copy draft', exact: true })).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new Event('fixture-storage-recovered')))
+  await page.getByRole('button', { name: 'Try saving again', exact: true }).click()
+  await expect(page.getByText('Not saved on this device. Copy your text before closing.', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Copy draft', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Try saving again', exact: true })).toHaveCount(0)
+  await reopen(page)
   await expect(page.getByLabel('Message Hermes')).toHaveValue('Not lost in memory')
 })
 

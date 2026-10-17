@@ -95,6 +95,7 @@ test('Queue and Stop remain independent, acceptance is not execution, and uncert
   await expect(page.getByRole('button', { name: 'Stop Hermes' })).toBeDisabled()
   await expect.poll(() => count(page, 'prompt.submit')).toBe(2)
   await expect.poll(() => count(page, 'session.interrupt')).toBe(1)
+  await expect(page.getByText('Message submission pending', { exact: true })).toHaveCount(0)
   await page.getByLabel('Message Hermes').fill('following draft')
   await control(page, { delaySubmission: false })
   await expect(page.getByText('Gateway accepted your queued prompt. Execution has not been confirmed.')).toBeVisible()
@@ -126,6 +127,45 @@ test('a file selected for the next message survives successful edited-message ac
   await expect(page.getByText('Gateway accepted your message.', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Remove attachment next-message.txt', exact: true })).toBeVisible()
   await expect(page.getByLabel('Message Hermes')).toHaveValue('')
+})
+
+test('mobile composer starts as one row and keeps Send, Queue, and Stop beside the input', async ({ page }, testInfo) => {
+  await login(page)
+  const input = page.getByLabel('Message Hermes')
+  const composer = page.locator('.composer:not(.group-composer)')
+  const assertSingleRow = async (action: string) => {
+    const inputBox = (await input.boundingBox())!
+    const composerBox = (await composer.boundingBox())!
+    const buttonBox = (await page.getByRole('button', { name: action, exact: true }).boundingBox())!
+    expect(composerBox.height).toBeLessThanOrEqual(72)
+    expect(inputBox.height).toBeLessThanOrEqual(48)
+    expect(inputBox.width).toBeGreaterThanOrEqual(80)
+    expect(Math.abs(inputBox.y + inputBox.height / 2 - buttonBox.y - buttonBox.height / 2)).toBeLessThanOrEqual(4)
+    expect(buttonBox.width).toBeGreaterThanOrEqual(44)
+    expect(buttonBox.height).toBeGreaterThanOrEqual(44)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width)
+  }
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 460 })
+    await input.fill('')
+    await assertSingleRow('Send')
+    await input.fill('Hello')
+    await assertSingleRow('Send')
+  }
+  await page.screenshot({ path: testInfo.outputPath('single-row-composer.png') })
+  await control(page, { holdTurn: true })
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Stop Hermes' })).toBeVisible()
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 460 })
+    await input.fill('Next')
+    await assertSingleRow('Queue')
+    await assertSingleRow('Stop Hermes')
+  }
+  await input.fill('First line\nSecond line\nThird line')
+  await expect(input).toHaveValue('First line\nSecond line\nThird line')
+  await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeInViewport()
+  await expect(page.getByRole('button', { name: 'Stop Hermes' })).toBeInViewport()
 })
 
 test('320px keyboard-reduced layout keeps Queue/Stop reachable and Enter respects IME and Shift', async ({ page }, testInfo) => {

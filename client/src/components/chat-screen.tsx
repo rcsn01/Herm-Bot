@@ -72,7 +72,9 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
     })
   }
   const draftRecord = interaction.record()
-  const otherDrafts = chatDrafts.list().filter(record => record.key !== draftRecord?.key)
+  const otherDrafts = chatDrafts.list().filter(record => record.key !== draftRecord?.key
+    && (record.provisional || record.recoveries.some(item => item.status !== 'pending')))
+  const draftSaveFailed = Boolean(draft || attachmentRefs.length > 0 || interaction.unsaved()) && !interaction.saved()
   const editValid = !editTarget || chat.availability === 'live' && entries.some(entry => entry.rowId === editTarget.rowId && 'editTarget' in entry && entry.editTarget)
   const copyDraft = async (text: string) => {
     try { await navigator.clipboard.writeText(text); setRecoveryError('Copied draft text.') }
@@ -194,15 +196,13 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         {chat.tools.length > 0 && (
           <AgentActivity hasSessionError={Boolean(chat.error)} key={`tools:${chat.runtimeSessionId ?? chat.storedSessionId ?? 'current'}`} running={chat.running} tools={chat.tools} />
         )}
-      {draftRecord?.recoveries.map(item => <details className="data-card draft-recovery" key={item.id}>
-        <summary>{item.status === 'pending' ? 'Message submission pending' : item.status === 'uncertain' ? 'Delivery not confirmed. Check the conversation before sending again.' : item.status === 'conflict' ? 'Another draft was preserved' : 'Failed message preserved'}</summary>
+      {draftRecord?.recoveries.filter(item => item.status !== 'pending').map(item => <details className="data-card draft-recovery" key={item.id}>
+        <summary>{item.status === 'uncertain' ? 'Delivery not confirmed. Check the conversation before sending again.' : item.status === 'conflict' ? 'Another draft was preserved' : 'Failed message preserved'}</summary>
         <pre>{item.content.text}</pre>
         {item.content.attachments.map((file, index) => <p key={index}>{file.name}</p>)}
         <Button onClick={() => void copyDraft(item.content.text)} size="sm" variant="text">Copy recovered text</Button>
-        {item.status !== 'pending' && <>
-          <Button onClick={() => interaction.recover(item.id)} size="sm" variant="text">Restore draft</Button>
-          <Button onClick={() => interaction.discard(item.id)} size="sm" variant="text">Discard recovered message</Button>
-        </>}
+        <Button onClick={() => interaction.recover(item.id)} size="sm" variant="text">Restore draft</Button>
+        <Button onClick={() => interaction.discard(item.id)} size="sm" variant="text">Discard recovered message</Button>
       </details>)}
       {otherDrafts.length > 0 && <details className="data-card draft-recovery">
         <summary>Other unfinished messages ({otherDrafts.length})</summary>
@@ -293,17 +293,18 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </div>
         )}
         <div className="draft-feedback">
-          {!localReady ? <p role="status">Selecting the conversation…</p> : !composerReady ? <p role="status">{chat.availability === 'synchronizing' ? 'Updating this conversation. You can prepare your draft.' : 'Local conversation. You can prepare a draft while Hermes is unavailable.'}</p> : draft ? <p role="status">Connected. Your draft has not been sent.</p> : null}
-      {(!owner.principal && !owner.locked) && <p className="composer-meta">Restart recovery unavailable. This gateway has not provided an account identity.</p>}
-      {(draft || attachmentRefs.length > 0 || interaction.unsaved()) && <p className="composer-meta" role="status">{interaction.saved() ? 'Saved on this device.' : 'Not saved on this device. Copy your text before closing.'}</p>}
+          {!localReady ? <p role="status">Selecting the conversation…</p> : !composerReady ? <p role="status">{chat.availability === 'synchronizing' ? 'Updating this conversation. You can prepare your draft.' : 'Local conversation. You can prepare a draft while Hermes is unavailable.'}</p> : null}
+      {draftSaveFailed && <>
+        <p role="alert">Not saved on this device. Copy your text before closing.</p>
+        {!owner.principal && !owner.locked && <p>Restart recovery unavailable. This gateway has not provided an account identity.</p>}
+        <div className="composer-meta">
+          <Button onClick={() => void copyDraft(draft)} size="micro" variant="text">Copy draft</Button>
+          <Button onClick={() => chatDrafts.flush()} size="micro" variant="text">Try saving again</Button>
+        </div>
+      </>}
       {interaction.needsReattachment() && !uploading && <p role="alert">Select the attached files again or remove them before sending. Files are not stored on this device.</p>}
       {!editValid && <p role="alert">{chat.availability !== 'live' ? 'Reconnect to validate the edited message before retrying. Your text is preserved.' : 'The edited message is not available for retry. Your text is preserved. Copy it or cancel the edit.'}</p>}
       {recoveryError && <p role="status">{recoveryError}</p>}
-      {(draft || attachmentRefs.length > 0) && <div className="composer-meta">
-        <Button onClick={() => void copyDraft(draft)} size="micro" variant="text">Copy draft</Button>
-        <Button onClick={() => interaction.discard()} size="micro" variant="text">Discard draft</Button>
-        {!interaction.saved() && <Button onClick={() => chatDrafts.flush()} size="micro" variant="text">Try saving again</Button>}
-      </div>}
         </div>
         <div className="composer">
           <label className="icon-input" aria-label="Attach photo, PDF, or file">
@@ -349,8 +350,8 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             value={draft}
           />
           <div className="composer-send-actions">
-            <Button aria-label={chat.running ? 'Queue' : 'Send'} disabled={!composerReady || submitting || transcribing || !editValid || Boolean(editTarget && chat.running) || interaction.needsReattachment() || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="sm"><IconSend size={19} />{chat.running ? 'Queue' : 'Send'}</Button>
-            {chat.running && <Button disabled={!composerReady || stopping} aria-label="Stop Hermes" onClick={() => void interaction.interrupt()} size="sm" variant="destructive"><IconPlayerStop size={19} />Stop</Button>}
+            <Button aria-label={chat.running ? 'Queue' : 'Send'} disabled={!composerReady || submitting || transcribing || !editValid || Boolean(editTarget && chat.running) || interaction.needsReattachment() || (!draft.trim() && attachmentRefs.length === 0)} onClick={() => void interaction.submit()} size="sm"><IconSend size={19} /><span className="composer-action-label">{chat.running ? 'Queue' : 'Send'}</span></Button>
+            {chat.running && <Button disabled={!composerReady || stopping} aria-label="Stop Hermes" onClick={() => void interaction.interrupt()} size="sm" variant="destructive"><IconPlayerStop size={19} /><span className="composer-action-label">Stop</span></Button>}
           </div>
         </div>
         <div className="composer-meta">
