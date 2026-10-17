@@ -273,7 +273,7 @@ describe('App navigation', () => {
     expect(screen.getByRole('button', { name: 'Back' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Models' })).not.toBeNull()
     expect(screen.getByRole('button', { name: 'Capabilities' })).not.toBeNull()
-    expect(screen.getByRole('button', { name: 'Automations' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Automations' })).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
@@ -375,12 +375,22 @@ describe('App navigation', () => {
     expect(screen.getByTestId('chat-instance')).not.toBeNull()
   })
 
+  it('opens cron from the chat header and returns directly to the same chat', async () => {
+    render(<App />)
+    await enterAgent()
+    const chat = screen.getByTestId('chat-instance')
+    fireEvent.click(screen.getByRole('button', { name: 'Open cron jobs' }))
+    expect(await screen.findByText('Cron screen')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }))
+    expect(screen.getByTestId('chat-instance')).toBe(chat)
+    expect(screen.getByRole('button', { name: 'Open navigation' }).getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('resumes a cron run session and returns to chat', async () => {
     render(<App />)
 
     await enterAgent()
-    openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open cron jobs' }))
     await settleNavigation()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open run session' }))
@@ -432,8 +442,7 @@ describe('App navigation', () => {
     await settleNavigation()
     expect(screen.getByTestId('chat-instance')).toBe(chat)
 
-    openNavigationPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open cron jobs' }))
     await settleNavigation()
     expect(await screen.findByText('Cron screen')).not.toBeNull()
 

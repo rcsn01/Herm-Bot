@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { IconChevronLeft, IconMenu2, IconPlus, IconSearch, IconSettings } from '@tabler/icons-react'
+import { IconCalendarClock, IconChevronLeft, IconMenu2, IconPlus, IconSearch, IconSettings } from '@tabler/icons-react'
 import { computed } from 'nanostores'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 
@@ -240,7 +240,10 @@ export function App() {
               <div aria-level={1} className="header-title" role="heading"><div><strong>{workspace.header.title}</strong></div></div>
             ) : null}
             {inProfile && (
-              <Button aria-controls="sessions-menu" aria-expanded={workspace.menuOpen} aria-label="Open navigation" className="header-menu-button" onClick={workspace.openMenu} variant="ghost"><IconMenu2 className="size-6" /></Button>
+              <div className="header-actions">
+                {navigation.activeTab === 'sessions' && <Button aria-label="Open cron jobs" className="header-menu-button" onClick={workspace.openChatAutomations} variant="ghost"><IconCalendarClock aria-hidden="true" className="size-6" /></Button>}
+                <Button aria-controls="sessions-menu" aria-expanded={workspace.menuOpen} aria-label="Open navigation" className="header-menu-button" onClick={workspace.openMenu} variant="ghost"><IconMenu2 className="size-6" /></Button>
+              </div>
             )}
           </header>
         )

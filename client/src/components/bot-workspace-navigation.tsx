@@ -12,10 +12,10 @@ const ICONS = {
   model: IconRobot
 } as const satisfies Record<WorkspaceDestination, typeof IconMessages>
 
-export function BotWorkspaceNavigation({ active, onSelect }: { active: BotWorkspaceDestination; onSelect(destination: BotWorkspaceDestination): void }) {
+export function BotWorkspaceNavigation({ active, onSelect, showAutomations = true }: { active: BotWorkspaceDestination; onSelect(destination: BotWorkspaceDestination): void; showAutomations?: boolean }) {
   return (
     <nav aria-label="Bot workspace" className="bot-workspace-navigation">
-      {WORKSPACE_DESTINATIONS.map(destination => {
+      {WORKSPACE_DESTINATIONS.filter(destination => showAutomations || destination.id !== 'cron').map(destination => {
         const Icon = ICONS[destination.id]
         return (
           <Button

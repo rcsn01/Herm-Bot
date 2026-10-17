@@ -9,6 +9,7 @@ import {
   dismissMenu,
   groupIdFromRoute,
   narrowRoute,
+  openChatAutomations,
   openChatSurface,
   openGroupRoom,
   openMenu,
@@ -54,8 +55,8 @@ export interface WorkspaceHeaderModel {
   destination: BotConfigurationDestination | null
   /** workspaceRouteTitle for bot destinations, else workspaceTabTitle. */
   title: string
-  /** workspaceBackLabel(stackNested, destination, returnOrigin !== null). */
-  backLabel: 'Back' | 'Back to menu' | 'Back to bots'
+  /** Direct chat shortcuts return to chat; menu entries return to the menu. */
+  backLabel: 'Back' | 'Back to menu' | 'Back to bots' | 'Back to chat'
 }
 
 export interface WorkspaceNavigation {
@@ -76,6 +77,7 @@ export interface WorkspaceNavigation {
   openGroupRoom(roomId: string): void
   // app-root intents
   openChatSurface(): void
+  openChatAutomations(): void
   openSettings(): void
   dismissForeground(): void
   /** The header back: == core back('header'). */
@@ -134,12 +136,15 @@ export function useWorkspaceNavigation(): WorkspaceNavigation {
     header: {
       destination,
       title: destination ? workspaceRouteTitle(destination, activeRoute) : workspaceTabTitle(activeTab),
-      backLabel: workspaceBackLabel(stackNested, destination, policy.returnOrigin !== null)
+      backLabel: !stackNested && policy.returnOrigin === 'sessions' && policy.returnStack === null
+        ? 'Back to chat'
+        : workspaceBackLabel(stackNested, destination, policy.returnOrigin !== null)
     },
     openMenu,
     dismissMenu,
     openWorkspaceDestination,
     openGroupRoom,
+    openChatAutomations,
     openChatSurface,
     openSettings,
     dismissForeground,

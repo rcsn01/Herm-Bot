@@ -386,7 +386,7 @@ function SessionsMenuContent({ controller, onDismissRequest, open }: SessionsMen
           </div>
           </section>
         </div>
-        <BotWorkspaceNavigation active="sessions" onSelect={destination => {
+        <BotWorkspaceNavigation active="sessions" showAutomations={false} onSelect={destination => {
           if (destination === 'sessions' || actionPendingRef.current) return
           onDismissRequest(workspaceMenuIntent(destination))
         }} />

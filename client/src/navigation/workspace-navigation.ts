@@ -43,6 +43,7 @@ export interface WorkspacePolicyState {
   menuOrigin: MobileTab | null
   menuOriginStack: MobileRoute[] | null
   returnOrigin: MobileTab | null
+  /** A captured stack returns through the menu; null returns directly to the tab. */
   returnStack: MobileRoute[] | null
 }
 
@@ -179,6 +180,12 @@ export function openWorkspaceDestination(destination: WorkspaceDestination): voi
   }
   if (destination === 'model') openModelSettings()
   else openDestination(destination)
+}
+
+/** Chat-header shortcut: return directly to chat, without reopening its menu. */
+export function openChatAutomations(): void {
+  $workspacePolicy.set({ ...$workspacePolicy.get(), returnOrigin: 'sessions', returnStack: null })
+  openDestination('cron')
 }
 
 /** Push a group-room route onto the roster stack (roster tap + created-group). */

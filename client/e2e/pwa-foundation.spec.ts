@@ -527,6 +527,40 @@ test('runs the deterministic MCP OAuth flow through the browser adapter', async 
   expect(polls.every(call => Object.keys(call.query || {}).length === 0)).toBe(true)
 })
 
+test('chat header opens cron directly beside the menu and returns to the same draft', async ({ page }, testInfo) => {
+  await login(page)
+  const rootURL = page.url()
+  await page.getByLabel('Message Hermes').fill('Keep this unfinished question')
+  const shortcut = page.getByRole('button', { name: 'Open cron jobs', exact: true })
+  const menu = page.getByRole('button', { name: 'Open navigation', exact: true })
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 700 })
+    await expect(shortcut).toBeInViewport()
+    await expect(menu).toBeInViewport()
+    const shortcutBox = (await shortcut.boundingBox())!
+    const menuBox = (await menu.boundingBox())!
+    expect(shortcutBox.width).toBeGreaterThanOrEqual(44)
+    expect(shortcutBox.height).toBeGreaterThanOrEqual(44)
+    expect(shortcutBox.x + shortcutBox.width).toBeLessThanOrEqual(menuBox.x)
+    expect(shortcutBox.y).toBe(menuBox.y)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  }
+  await page.screenshot({ path: testInfo.outputPath('chat-cron-shortcut.png') })
+  await menu.click()
+  const navigation = page.getByTestId('sessions-menu').getByRole('navigation', { name: 'Bot workspace' })
+  await expect(navigation.getByRole('button', { name: 'Automations', exact: true })).toHaveCount(0)
+  await expect(navigation.getByRole('button')).toHaveCount(3)
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await shortcut.focus()
+  await shortcut.press('Enter')
+  await expect(page.getByRole('button', { name: 'New automations' })).toBeVisible()
+  await expect(page).toHaveURL(rootURL)
+  await expect(shortcut).toHaveCount(0)
+  await page.getByRole('button', { name: 'Back to chat', exact: true }).click()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('Keep this unfinished question')
+  await expect(menu).toHaveAttribute('aria-expanded', 'false')
+})
+
 test('runtime screen and navigation routes stay out of the browser URL', async ({ page }) => {
   await login(page)
   const rootURL = page.url()
@@ -561,7 +595,7 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
   await page.getByRole('button', { name: 'Open navigation' }).click()
 
   const menuNavigation = page.getByTestId('sessions-menu').getByRole('navigation', { name: 'Bot workspace' })
-  await expect(menuNavigation.locator('.bot-workspace-tab span')).toHaveCount(4)
+  await expect(menuNavigation.locator('.bot-workspace-tab span')).toHaveCount(3)
   await expect(menuNavigation.locator('.bot-workspace-tab span').first()).toBeHidden()
 
   const sessionsList = page.getByRole('region', { name: 'Sessions' })
@@ -579,7 +613,8 @@ test('workspace tabs share a stable header without redundant menu buttons', asyn
   const sessionIdentity = await sessionHeader.locator('.header-bot-button').boundingBox()
   expect(sessionIdentity).toBeTruthy()
 
-  await page.getByRole('button', { name: 'Automations' }).click()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await page.getByRole('button', { name: 'Open cron jobs' }).click()
   const foregroundNavigation = page.locator('.foreground-layer.active').getByRole('navigation', { name: 'Bot workspace' })
   await expect(foregroundNavigation.locator('.bot-workspace-tab span').first()).toBeHidden()
   for (const destination of [
@@ -640,8 +675,7 @@ test('bot configuration destinations return to the sessions menu', async ({ page
 
   for (const destination of [
     { button: 'Models', marker: 'Main model', markerRole: 'heading' as const },
-    { button: 'Capabilities', marker: /^Skills/, markerRole: 'button' as const },
-    { button: 'Automations', marker: 'New automations', markerRole: 'button' as const }
+    { button: 'Capabilities', marker: /^Skills/, markerRole: 'button' as const }
   ]) {
     await page.getByRole('button', { name: 'Open navigation' }).click()
     await page.getByRole('button', { name: destination.button, exact: true }).click()
@@ -760,8 +794,7 @@ test('session-row touch motion reveals and conceals without dismissing the navig
 
 test('reloading resets a runtime screen to the startup route', async ({ page }) => {
   await login(page)
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Automations' }).click()
+  await page.getByRole('button', { name: 'Open cron jobs' }).click()
   await expect(page.getByRole('button', { name: 'New automations' })).toBeVisible()
   await expect(page).toHaveURL(/\/$/)
 

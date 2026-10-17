@@ -159,13 +159,13 @@ describe('SessionsMenu', () => {
     expect(screen.getByRole('button', { name: /^Planning session/ })).not.toBeNull()
   })
 
-  it('shows Sessions first in bottom navigation, followed by Automations, Capabilities, and Models', () => {
+  it('shows Sessions, Capabilities, and Models without the relocated Automations entry', () => {
     const { onClose, onNavigate, onOpenModel } = renderNavigationPage()
     const navigation = screen.getByRole('navigation', { name: 'Bot workspace' })
     const tabs = Array.from(navigation.querySelectorAll('button'))
     const sessions = screen.getByRole('region', { name: 'Sessions' })
 
-    expect(tabs.map(tab => tab.getAttribute('aria-label'))).toEqual(['Sessions', 'Automations', 'Capabilities', 'Models'])
+    expect(tabs.map(tab => tab.getAttribute('aria-label'))).toEqual(['Sessions', 'Capabilities', 'Models'])
     expect(tabs[0]?.getAttribute('aria-current')).toBe('page')
     expect(sessions.compareDocumentPosition(navigation) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
 
@@ -173,13 +173,11 @@ describe('SessionsMenu', () => {
     expect(onNavigate).toHaveBeenCalledWith('capabilities')
     expect(onClose).toHaveBeenCalledOnce()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Automations' }))
-    expect(onNavigate).toHaveBeenCalledWith('cron')
-    expect(onClose).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('button', { name: 'Automations' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Models' }))
     expect(onOpenModel).toHaveBeenCalledOnce()
-    expect(onClose).toHaveBeenCalledTimes(3)
+    expect(onClose).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the new-session action, session rows, and pagination inside the session-list scroll region', () => {
@@ -193,7 +191,7 @@ describe('SessionsMenu', () => {
     expect(sessionList.contains(screen.getByRole('textbox', { name: 'Search loaded titles' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Open bot chat' }))).toBe(false)
     expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
-    expect(sessionList.contains(screen.getByRole('button', { name: 'Automations' }))).toBe(false)
+    expect(sessionList.contains(screen.getByRole('button', { name: 'Capabilities' }))).toBe(false)
   })
 
   it('filters session titles only and keeps the query while closed', () => {

@@ -13,8 +13,7 @@ async function login(page: Page) {
 
 test('cron blueprints render and edit cleanly on a mobile viewport', async ({ page }) => {
   await login(page)
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Automations' }).click()
+  await page.getByRole('button', { name: 'Open cron jobs' }).click()
   await page.getByRole('button', { name: 'New automations' }).click()
   await page.getByRole('dialog', { name: 'New automation' }).getByRole('button', { name: 'Use a blueprint' }).click()
 

@@ -13,8 +13,7 @@ async function login(page: Page) {
 
 test('the scratch automation editor uses mobile-safe dropdowns and popup pickers', async ({ page }) => {
   await login(page)
-  await page.getByRole('button', { name: 'Open navigation' }).click()
-  await page.getByRole('button', { name: 'Automations' }).click()
+  await page.getByRole('button', { name: 'Open cron jobs' }).click()
   await page.getByRole('button', { name: 'New automations' }).click()
   await page.getByRole('dialog', { name: 'New automation' }).getByRole('button', { name: 'Create from scratch' }).click()
 
