@@ -319,9 +319,15 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .session-activity.idle .status-dot { background: var(--success); }
 .icon-input { width: 38px; height: 38px; display: grid; place-items: center; color: var(--muted-foreground); }
 .icon-input input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.slash-popover { margin-bottom: calc(var(--spacing) * 1.75); max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 12px 35px #0003; }
-.slash-popover button { width: 100%; padding: calc(var(--spacing) * 2.5) calc(var(--spacing) * 3); display: grid; gap: calc(var(--spacing) * .5); text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); }
-.slash-popover span { color: var(--muted-foreground); font-size: var(--font-caption); }
+.slash-popover { position: absolute; bottom: 100%; left: calc(var(--spacing) * 2.5); right: calc(var(--spacing) * 2.5); margin-bottom: calc(var(--spacing) * 1.75); max-height: min(260px, max(80px, calc(var(--page-height, 100dvh) - var(--composer-occlusion, 180px) - 76px))); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 12px 35px #0003; }
+.slash-popover [role="listbox"] { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.slash-popover [role="option"] { width: 100%; min-height: 44px; padding: calc(var(--spacing) * 2.5) calc(var(--spacing) * 3); display: grid; gap: calc(var(--spacing) * .5); text-align: left; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); overflow-wrap: anywhere; }
+.slash-popover [aria-selected="true"] { background: var(--accent); }
+.slash-popover span, .slash-popover > p { color: var(--muted-foreground); font-size: var(--font-caption); }
+.slash-popover-heading { flex: none; background: var(--panel); display: flex; align-items: center; justify-content: space-between; gap: var(--spacing); padding: var(--spacing) calc(var(--spacing) * 3); }
+.slash-popover-heading button { min-height: 44px; }
+.slash-popover > p { padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3); }
+.submission-feedback { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .page-screen { width: 100%; padding: calc(var(--spacing) * 3.5) calc(var(--spacing) * 3.5) calc(var(--safe-bottom) + calc(var(--spacing) * 7.5)); }
 .foreground-layer.with-workspace-navigation .page-screen { padding-bottom: calc(var(--spacing) * 7.5); }

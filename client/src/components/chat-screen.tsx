@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { MessageMarkdown } from '~/components/message-markdown'
 import { CopyTextButton } from '~/components/copy-text-button'
 import { localPrivacy } from '~/state/local-privacy'
@@ -52,8 +52,25 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
   const entries = chat.transcript.entries
   const displayItems = useMemo(() => groupAgentActivity(entries), [entries])
   const { interaction, state: interactionState } = useChatInteraction({ active, conversation, mediaConnection })
-  const { attachmentRefs, attachments, uploading, transcribing, pendingTranscript, playback, submissionFeedback, stopping, stopFeedback, draft, editTarget, error: interactionError, slashItems, submitting } = interactionState
+  const { attachmentRefs, attachments, uploading, transcribing, pendingTranscript, playback, submissionFeedback, stopping, stopFeedback, draft, editTarget, error: interactionError, slashItems, slashStatus, submitting } = interactionState
   const messageRef = useRef<HTMLTextAreaElement>(null)
+  const slashListId = useId()
+  const [slashIndex, setSlashIndex] = useState(0)
+  useEffect(() => { setSlashIndex(0) }, [slashItems])
+  const selectedSlashIndex = Math.min(slashIndex, Math.max(0, slashItems.length - 1))
+  const slashListRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    slashListRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' })
+  }, [selectedSlashIndex, slashItems])
+  const chooseSlash = (index: number) => {
+    interaction.chooseCompletion(index)
+    messageRef.current?.focus({ preventScroll: true })
+    // The controlled value lands after this event. Restore the caret to the end.
+    requestAnimationFrame(() => {
+      const input = messageRef.current
+      if (input && document.activeElement === input) input.setSelectionRange(input.value.length, input.value.length)
+    })
+  }
   const draftRecord = interaction.record()
   const otherDrafts = chatDrafts.list().filter(record => record.key !== draftRecord?.key)
   const editValid = !editTarget || chat.availability === 'live' && entries.some(entry => entry.rowId === editTarget.rowId && 'editTarget' in entry && entry.editTarget)
@@ -242,7 +259,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           <Button onClick={() => void copyDraft(pendingTranscript)} size="sm" variant="text">Copy transcript</Button>
           <Button onClick={() => interaction.dismissTranscript()} size="sm" variant="text">Discard transcript</Button>
         </div>}
-        {submissionFeedback && <p role="status">{submissionFeedback}</p>}
+        {submissionFeedback && <p className="submission-feedback" role="status">{submissionFeedback}</p>}
         {stopFeedback && <p role="status">{stopFeedback}</p>}
         {playback.messageId && <div className="composer-playback" role="group" aria-label="Read-aloud controls">
           <span role="status">{({ idle: 'Audio stopped.', generating: 'Generating speech…', playing: 'Reading message aloud.', paused: 'Audio paused.', ended: 'Audio finished.', error: 'Audio unavailable.' })[playback.status]}</span>
@@ -251,16 +268,28 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           {playback.error && <p role="alert">{playback.error}</p>}
         </div>}
       </div>
-        {slashItems.length > 0 && (
+        {(slashItems.length > 0 || slashStatus) && (
           <div className="slash-popover">
-            {slashItems.slice(0, 8).map((item, index) => (
-              <button
-                key={`${item.text}-${index}`}
-                onClick={() => interaction.chooseCompletion(index)}
-              >
-                <strong>{item.display ?? item.text}</strong><span>{item.meta}</span>
-              </button>
-            ))}
+            <div className="slash-popover-heading"><span>{/^\/model(?:\s|$)/i.test(draft) ? 'Choose a model, then Send to apply' : 'Commands and options'}</span>
+              <Button aria-label="Dismiss suggestions" onMouseDown={event => event.preventDefault()} onClick={() => { interaction.dismissCompletions(); messageRef.current?.focus({ preventScroll: true }) }} size="micro" variant="text">Close</Button>
+            </div>
+            {slashStatus && <p role="status">{slashStatus}</p>}
+            {slashItems.length > 0 && <div aria-label="Command suggestions" id={slashListId} ref={slashListRef} role="listbox">
+              {slashItems.map((item, index) => (
+                <button
+                  aria-selected={index === selectedSlashIndex}
+                  id={`${slashListId}-${index}`}
+                  key={`${item.text}-${index}`}
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => chooseSlash(index)}
+                  role="option"
+                  tabIndex={-1}
+                  type="button"
+                >
+                  <strong>{item.display ?? item.text}</strong><span>{item.meta}</span>
+                </button>
+              ))}
+            </div>}
           </div>
         )}
         <div className="draft-feedback">
@@ -287,6 +316,10 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </label>
           <Textarea
             aria-label="Message Hermes"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-controls={slashItems.length ? slashListId : undefined}
+            aria-activedescendant={slashItems.length ? `${slashListId}-${selectedSlashIndex}` : undefined}
             ref={messageRef}
             disabled={!localReady}
             autoCapitalize="sentences"
@@ -295,6 +328,17 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
             spellCheck
             onChange={event => interaction.updateDraft(event.target.value)}
             onKeyDown={event => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
+              if (event.key === 'Escape' && (slashItems.length || slashStatus)) {
+                event.preventDefault(); interaction.dismissCompletions(); return
+              }
+              if (slashItems.length && !event.shiftKey && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
+                event.preventDefault()
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  setSlashIndex((selectedSlashIndex + (event.key === 'ArrowDown' ? 1 : -1) + slashItems.length) % slashItems.length)
+                } else chooseSlash(selectedSlashIndex)
+                return
+              }
               if (composerReady && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
                 event.preventDefault()
                 void interaction.submit()

@@ -2,7 +2,7 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics'
 import type { GatewayEvent } from '~/compat/hermes-shared'
 import { atom } from 'nanostores'
 
-import type { ChatSuggestion, SlashCompletionPayload, SubmissionResult } from '~/features/chat/chat-interaction'
+import type { SlashCompletionPayload, SubmissionResult } from '~/features/chat/chat-interaction'
 import { classifyGatewayError, errorMessage, GatewayError } from '~/gateway/gateway-error'
 import { currentGatewayScope, isCurrentGatewayScope, type CurrentGatewayScope } from '~/gateway/scope-guard'
 import { isConfirmedMissingSession, type RuntimeSession, type SessionHistoryPage, type SessionRuntime } from '~/gateway/session-runtime'
@@ -160,11 +160,6 @@ function fileToDataURL(file: File): Promise<string> {
   })
 }
 
-interface SlashCompletionResponse {
-  items?: Array<Omit<ChatSuggestion, 'insertText'>>
-  replace_from?: number
-}
-
 function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): SessionHistoryPage {
   return { hasMore: false, nextOffset: rows.length, offset: 0, rows }
 }
@@ -172,6 +167,8 @@ function historyPage(rows: Awaited<ReturnType<SessionRuntime['history']>>): Sess
 export class Conversation {
   private submissions = new Set<string>()
   private interruptions = new Set<string>()
+  private modelCompletions: { key: string; expires: number; request: Promise<unknown> } | null = null
+  private commandDisplays = new Map<string, string>()
 
   private operationKey() { return JSON.stringify([currentGatewayScope(), $chat.get().runtimeSessionId]) }
 
@@ -307,13 +304,15 @@ export class Conversation {
     return this.submitting(() => this.submitPrompt(text))
   }
 
-  private async submitPrompt(text: string): Promise<void | SubmissionResult> {
+  private async submitPrompt(text: string, expandedCommand = false, display?: string): Promise<void | SubmissionResult> {
     this.requireLive()
     const content = text.trim()
     if (!content) return
     const scope = currentGatewayScope()
     const current = $chat.get()
     if (!current.runtimeSessionId) throw new Error('No active session.')
+    if (!expandedCommand && content.startsWith('/')) return this.submitSlash(content, scope, current.runtimeSessionId)
+    if (display) this.commandDisplays.set(JSON.stringify([this.operationKey(), content]), display)
     if (current.running) {
       const acknowledgement = await this.runtime.rpc('prompt.submit', {
         queued: true,
@@ -326,7 +325,7 @@ export class Conversation {
       ...current,
       error: null,
       running: true,
-      transcript: updateTranscript(current.transcript, { kind: 'local-user', content, id: crypto.randomUUID() })
+      transcript: updateTranscript(current.transcript, { kind: 'local-user', content: display ?? content, id: crypto.randomUUID() })
     })
     await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
     try {
@@ -397,16 +396,117 @@ export class Conversation {
     return { status: record(acknowledgement).accepted === true ? 'accepted' : 'uncertain', mode: 'retry' }
   }
 
-  /** Resolve slash-command suggestions for the composer's current draft. */
+  private assertSlashContext(scope: CurrentGatewayScope, sessionId: string | null) {
+    if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) {
+      throw new DOMException('Gateway scope or conversation changed.', 'AbortError')
+    }
+    this.requireLive()
+  }
+
+  /** Commands execute separately from model turns. Never retry a failed exec as a prompt. */
+  private async submitSlash(content: string, scope: CurrentGatewayScope, sessionId: string, depth = 0): Promise<void | SubmissionResult> {
+    if (depth >= 5) throw new GatewayError('The slash-command alias is recursive.', { kind: 'validation' })
+    const parsed = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(content)
+    if (!parsed) throw new GatewayError('Choose a slash command before sending.', { kind: 'validation' })
+    const [, name, arg = ''] = parsed
+    const command = name.toLowerCase()
+    if (['new', 'reset', 'branch', 'fork', 'resume', 'sessions', 'switch'].includes(command)) {
+      throw new GatewayError('Use the conversation menu to create, branch, or switch conversations.', { kind: 'validation' })
+    }
+    const catalog = record(await this.runtime.rpc('commands.catalog', { session_id: sessionId }))
+    this.assertSlashContext(scope, sessionId)
+    const meta = record(record(catalog.commands)[`/${command}`])
+    if (meta.desktop === 'terminal') throw new GatewayError('This command requires the Hermes terminal.', { kind: 'validation' })
+    if (command === 'help') {
+      const pairs = Array.isArray(catalog.pairs) ? catalog.pairs : []
+      return { status: 'accepted', mode: 'command', output: pairs.filter(row => Array.isArray(row) && row.every(value => typeof value === 'string')).map(row => row.join(' · ')).join('\n') || 'No commands available.' }
+    }
+    this.modelCompletions = null
+    let response: unknown
+    try {
+      response = await this.runtime.rpc('slash.exec', { session_id: sessionId, command: content.slice(1) })
+    } catch (error) {
+      this.assertSlashContext(scope, sessionId)
+      const classified = classifyGatewayError(error)
+      // Legacy gateways explicitly redirect skills to dispatch. Other failures
+      // may follow side effects and must never trigger a second execution.
+      if (classified.code !== 4018 || !/use command\.dispatch/i.test(classified.message)) throw error
+      response = await this.runtime.rpc('command.dispatch', { session_id: sessionId, name, arg })
+    }
+    this.assertSlashContext(scope, sessionId)
+    const result = record(response)
+    if (result.confirm_required === true) {
+      throw new GatewayError('This model change requires confirmation. Review it in the Hermes desktop app or terminal.', { kind: 'validation' })
+    }
+    if (result.type === 'alias') {
+      if (typeof result.target !== 'string' || !result.target.trim()) throw new GatewayError('The command returned an invalid alias.', { kind: 'validation' })
+      return this.submitSlash(`/${result.target.replace(/^\/+/, '')}${arg ? ` ${arg}` : ''}`, scope, sessionId, depth + 1)
+    }
+    if (result.type === 'prefill') {
+      if (typeof result.message !== 'string') throw new GatewayError('The command returned invalid draft text.', { kind: 'validation' })
+      let output = text(result.notice) || 'Command text is ready to review. Press Send when ready.'
+      try { await this.reconcileHistory(scope) }
+      catch (error) { output += `\nCommand completed, but history could not be updated: ${errorMessage(error)}` }
+      this.assertSlashContext(scope, sessionId)
+      return { status: 'accepted', mode: 'command', prefill: result.message, output }
+    }
+    if (result.type === 'send' || result.type === 'skill') {
+      if (typeof result.message !== 'string' || !result.message.trim()) throw new GatewayError('The command returned an invalid prompt.', { kind: 'validation' })
+      const outcome = await this.submitPrompt(result.message, true, text(result.display) || content)
+      return outcome ? { ...outcome, output: text(result.notice) || undefined } : outcome
+    }
+    if (result.type && !['exec', 'plugin'].includes(String(result.type))) {
+      throw new GatewayError('This command needs an interaction not supported by the PWA. Use the Hermes terminal.', { kind: 'validation' })
+    }
+    if (typeof result.output !== 'string' && !(result.output == null && ['exec', 'plugin'].includes(String(result.type)))) {
+      throw new GatewayError('The gateway returned an invalid command result.', { kind: 'validation' })
+    }
+    return { status: 'accepted', mode: 'command', output: [text(result.warning), text(result.output)].filter(Boolean).join('\n') || 'Command completed.' }
+  }
+
+  /** Resolve command names and arguments in the current session's profile/workspace. */
   async completeSlash(draft: string): Promise<SlashCompletionPayload> {
     this.requireLive()
     const scope = currentGatewayScope()
-    const response = await this.runtime.rpc<SlashCompletionResponse>('complete.slash', { text: draft })
-    if (!isCurrentGatewayScope(scope)) throw new DOMException('Gateway scope changed.', 'AbortError')
-    return {
-      items: response.items ?? [],
-      replaceFrom: typeof response.replace_from === 'number' ? response.replace_from : undefined
+    const sessionId = $chat.get().runtimeSessionId
+    const context = sessionId ? { session_id: sessionId } : { profile: scope.profile ?? 'default' }
+    const modelQuery = /^\/model(?:\s+(.*))?$/i.exec(draft)
+    if (modelQuery) {
+      const query = (modelQuery[1] ?? '').toLowerCase()
+      if (query.includes('--')) return { items: [] }
+      const key = JSON.stringify([scope, sessionId, $chat.get().info?.model])
+      if (!this.modelCompletions || this.modelCompletions.key !== key || this.modelCompletions.expires < Date.now()) {
+        const request = this.runtime.rpc('model.options', { ...context, explicit_only: true })
+        const entry = { key, expires: Date.now() + 30_000, request }
+        this.modelCompletions = entry
+        void request.catch(() => { if (this.modelCompletions === entry) this.modelCompletions = null })
+      }
+      const options = record(await this.modelCompletions.request)
+      this.assertSlashContext(scope, sessionId)
+      const items: SlashCompletionPayload['items'] = []
+      for (const value of Array.isArray(options.providers) ? options.providers : []) {
+        const provider = record(value)
+        // The backend's model-argument parser splits on whitespace, not shell quoting.
+        if (typeof provider.slug !== 'string' || !provider.slug || /\s/.test(provider.slug) || provider.slug.startsWith('-') || provider.authenticated === false || !Array.isArray(provider.models)) continue
+        for (const model of provider.models) {
+          if (typeof model !== 'string' || !model || /\s/.test(model) || model.startsWith('-') || !`${provider.name} ${provider.slug} ${model}`.toLowerCase().includes(query)) continue
+          if (Array.isArray(provider.unavailable_models) && provider.unavailable_models.includes(model)) continue
+          items.push({ text: `${draft.includes(' ') ? '' : ' '}${model} --provider ${provider.slug} --session`, display: model,
+            meta: `${text(provider.name) || provider.slug}${options.model === model && options.provider === provider.slug ? ' · Current' : ''}`, kind: 'model' })
+        }
+      }
+      return { items, replaceFrom: draft.indexOf(' ') < 0 ? draft.length : draft.indexOf(' ') + 1 }
     }
+    const response = record(await this.runtime.rpc('complete.slash', { text: draft, ...context }))
+    this.assertSlashContext(scope, sessionId)
+    const items: SlashCompletionPayload['items'] = []
+    for (const value of Array.isArray(response.items) ? response.items : []) {
+      const item = record(value)
+      if (typeof item.text !== 'string') continue
+      items.push({ text: item.text, ...(typeof item.display === 'string' ? { display: item.display } : {}),
+        ...(typeof item.meta === 'string' ? { meta: item.meta } : {}), ...(typeof item.kind === 'string' ? { kind: item.kind } : {}) })
+    }
+    return { items, replaceFrom: Number.isInteger(response.replace_from) && Number(response.replace_from) >= 0 && Number(response.replace_from) <= draft.length ? Number(response.replace_from) : undefined }
   }
 
   async attach(file: File, signal?: AbortSignal): Promise<string | undefined> {
@@ -453,6 +553,15 @@ export class Conversation {
     }
   }
 
+  private commandHistoryRows(rows: Awaited<ReturnType<SessionRuntime['history']>>) {
+    const session = this.operationKey()
+    return rows.map(row => {
+      const display = row?.role === 'user' && typeof row.content === 'string'
+        ? this.commandDisplays.get(JSON.stringify([session, row.content.trim()])) : undefined
+      return display ? { ...row, display_content: display } : row
+    })
+  }
+
   async reconcileHistory(scope: CurrentGatewayScope = currentGatewayScope()): Promise<void> {
     const snapshot = $chat.get()
     const sessionId = snapshot.runtimeSessionId
@@ -475,9 +584,10 @@ export class Conversation {
       }
       if (request !== this.reconciliationRequest || !isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return
       const current = $chat.get()
+      const rows = this.commandHistoryRows(page.rows)
       const transcript = current.historyBackfilled
-        ? updateTranscript(current.transcript, { kind: 'reconcile-history', rows: page.rows })
-        : createTranscript(current.transcript.context, page.rows)
+        ? updateTranscript(current.transcript, { kind: 'reconcile-history', rows })
+        : createTranscript(current.transcript.context, rows)
       $chat.set({
         ...current,
         availability: 'live',
@@ -523,7 +633,7 @@ export class Conversation {
         transcript: updateTranscript(current.transcript, {
           kind: 'prepend-history',
           fallbackOffset: page.offset,
-          rows: page.rows
+          rows: this.commandHistoryRows(page.rows)
         })
       })
       return true

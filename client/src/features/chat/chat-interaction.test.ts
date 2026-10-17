@@ -26,7 +26,7 @@ function deferred<T>(): Deferred<T> {
 function commandAdapter() {
   return {
     attach: vi.fn(),
-    completeSlash: vi.fn(),
+    completeSlash: vi.fn().mockResolvedValue({ items: [] }),
     retryFrom: vi.fn(),
     send: vi.fn()
   } as unknown as ChatInteractionCommands
@@ -94,10 +94,48 @@ describe('session state', () => {
 })
 
 describe('slash completion', () => {
+  it('loads argument options after command selection without submitting', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.completeSlash)
+      .mockResolvedValueOnce({ items: [{ text: 'model' }], replaceFrom: 1 })
+      .mockResolvedValueOnce({ items: [{ text: 'demo --provider test --session', kind: 'model' }], replaceFrom: 7 })
+    subject.updateDraft('/mo')
+    await vi.waitFor(() => expect(subject.$state.get().slashItems).toHaveLength(1))
+    subject.chooseCompletion(0)
+    await vi.waitFor(() => expect(subject.$state.get().slashItems[0]?.kind).toBe('model'))
+    expect(commands.completeSlash).toHaveBeenLastCalledWith('/model ')
+    subject.chooseCompletion(0)
+    expect(subject.$state.get().draft).toBe('/model demo --provider test --session ')
+    expect(subject.$state.get().slashItems).toEqual([])
+    expect(commands.send).not.toHaveBeenCalled()
+  })
+
+  it('dismisses in-flight suggestions without changing the draft', async () => {
+    const { commands, interaction: subject } = interaction()
+    const pending = deferred<SlashCompletionPayload>()
+    vi.mocked(commands.completeSlash).mockReturnValueOnce(pending.promise)
+    subject.updateDraft('/mo')
+    expect(subject.$state.get().slashStatus).toBe('Loading suggestions…')
+    subject.dismissCompletions()
+    pending.resolve({ items: [{ text: '/model' }] })
+    await pending.promise
+    expect(subject.$state.get()).toMatchObject({ draft: '/mo', slashItems: [], slashStatus: null })
+  })
+
+  it('reports completion failures and clears their status on disconnect', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.completeSlash).mockRejectedValueOnce(new Error('offline'))
+    subject.updateDraft('/')
+    await vi.waitFor(() => expect(subject.$state.get().slashStatus).toContain('unavailable'))
+    subject.setGatewayAvailable(false)
+    expect(subject.$state.get().slashStatus).toBeNull()
+  })
+
   it('inserts slash and argument completions using replace_from', async () => {
     const { commands, interaction: subject } = interaction()
     vi.mocked(commands.completeSlash)
       .mockResolvedValueOnce({ items: [{ text: '/research' }], replaceFrom: 1 })
+      .mockResolvedValueOnce({ items: [] })
       .mockResolvedValueOnce({ items: [{ text: 'alice' }], replaceFrom: 13 })
 
     subject.updateDraft('/')
@@ -184,6 +222,54 @@ describe('slash completion', () => {
 })
 
 describe('submission', () => {
+  it('prefills returned command text without sending and preserves a newer draft', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.send).mockResolvedValueOnce({ status: 'accepted', mode: 'command', prefill: 'Previous prompt' })
+    subject.updateDraft('/undo')
+    await subject.submit()
+    expect(subject.$state.get().draft).toBe('Previous prompt')
+    const pending = deferred<import('~/features/chat/chat-interaction').SubmissionResult>()
+    vi.mocked(commands.send).mockReturnValueOnce(pending.promise)
+    subject.updateDraft('/undo')
+    const submitting = subject.submit()
+    subject.updateDraft('New text')
+    pending.resolve({ status: 'accepted', mode: 'command', prefill: 'Older prompt' })
+    await submitting
+    expect(subject.$state.get().draft).toBe('New text')
+    expect(subject.$state.get().submissionFeedback).toContain('Older prompt')
+    expect(commands.send).toHaveBeenCalledTimes(2)
+  })
+
+  it('opens model choices on bare /model instead of executing it', async () => {
+    const { commands, interaction: subject } = interaction()
+    subject.updateDraft('/model')
+    await subject.submit()
+    expect(subject.$state.get().draft).toBe('/model ')
+    expect(commands.send).not.toHaveBeenCalled()
+  })
+
+  it('displays command output and preserves a failed command for retry', async () => {
+    const { commands, interaction: subject } = interaction()
+    vi.mocked(commands.send).mockResolvedValueOnce({ status: 'accepted', mode: 'command', output: 'Model changed.' })
+    subject.updateDraft('/model demo')
+    await subject.submit()
+    expect(subject.$state.get()).toMatchObject({ draft: '', submitting: false, submissionFeedback: 'Model changed.' })
+    vi.mocked(commands.send).mockRejectedValueOnce(new Error('Unsupported command'))
+    subject.updateDraft('/missing')
+    await subject.submit()
+    expect(subject.$state.get()).toMatchObject({ draft: '/missing', error: 'Unsupported command', submitting: false })
+  })
+
+  it('does not run a slash command with attached files or an edited message', async () => {
+    const { commands, interaction: subject } = interaction()
+    subject.beginEdit({ content: 'hello', rowId: 1 })
+    subject.updateDraft('/status')
+    await subject.submit()
+    expect(subject.$state.get().error).toContain('without attachments or an edited message')
+    expect(commands.retryFrom).not.toHaveBeenCalled()
+    expect(commands.send).not.toHaveBeenCalled()
+  })
+
   it('submits edit-and-retry snapshots and blocks rapid duplicates', async () => {
     const { commands, interaction: subject } = interaction()
     const pending = deferred<void>()

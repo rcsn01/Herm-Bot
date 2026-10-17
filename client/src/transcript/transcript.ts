@@ -1,5 +1,6 @@
 import type { GatewayEvent } from '~/compat/hermes-shared'
 import type { SessionMessage } from '~/compat/hermes-types'
+import { skillInvocationText } from './skill-invocation'
 
 export interface TranscriptContext {
   source: null | string
@@ -81,7 +82,7 @@ export function updateTranscript(transcript: TranscriptSnapshot, change: Transcr
     case 'local-user':
       return withEntries(transcript, [
         ...transcript.entries,
-        { author: 'user', content: change.content, id: change.id, kind: 'message', streaming: false }
+        { author: 'user', content: skillInvocationText(change.content) ?? change.content, id: change.id, kind: 'message', streaming: false }
       ])
     case 'prepend-history': {
       const older = projectRows(change.rows, change.fallbackOffset)
@@ -162,7 +163,8 @@ function projectRows(rows: readonly SessionMessage[], fallbackOffset = 0): Trans
     const contentValue = projected.display_content !== undefined
       ? projected.display_content
       : projected.content ?? projected.text ?? (storedRole === 'tool' ? projected.context ?? projected.name : undefined)
-    const content = text(contentValue)
+    const rawContent = text(contentValue)
+    const content = storedRole === 'user' ? skillInvocationText(rawContent) ?? rawContent : rawContent
     const displayKind = typeof projected.display_kind === 'string'
       ? projected.display_kind
       : inferLegacyDisplayKind(storedRole, content)

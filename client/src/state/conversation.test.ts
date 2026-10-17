@@ -563,12 +563,55 @@ describe('attachments', () => {
 })
 
 describe('slash completion', () => {
+  it('scopes completions to the current session and ignores malformed rows', async () => {
+    const gateway = new MemoryGateway().handle('complete.slash', () => ({ items: [null, { text: 3 }, { text: 'status', meta: 7 }], replace_from: -1 }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.completeSlash('/st')).resolves.toEqual({ items: [{ text: 'status' }], replaceFrom: undefined })
+    expect(gateway.calls[0].value).toEqual({ text: '/st', session_id: 'runtime-1' })
+    dispose()
+  })
+
+  it('lists and filters session model options with provider identity and the current model', async () => {
+    const gateway = new MemoryGateway().handle('model.options', () => ({ model: 'demo', provider: 'test', providers: [
+      { name: 'Test', slug: 'test', models: ['demo', 'other', '--global', 'bad --provider evil', null] },
+      { name: 'Other provider', slug: 'other', models: ['demo'] },
+      { slug: 'locked', authenticated: false, models: ['demo'] },
+      { slug: 'paid', models: ['demo'], unavailable_models: ['demo'] }
+    ] }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    const choices = await conversation.completeSlash('/model')
+    expect(choices.replaceFrom).toBe(6)
+    expect(choices.items).toHaveLength(3)
+    expect(choices.items[0]).toMatchObject({ text: ' demo --provider test --session', display: 'demo', meta: 'Test · Current', kind: 'model' })
+    const filtered = await conversation.completeSlash('/model other')
+    expect(filtered.items.map(item => item.text)).toEqual(['other --provider test --session', 'demo --provider other --session'])
+    expect(filtered.replaceFrom).toBe(7)
+    expect(gateway.calls[0].value).toEqual({ session_id: 'runtime-1', explicit_only: true })
+    expect(gateway.calls).toHaveLength(1) // Filtering reuses the same inventory request.
+    dispose()
+  })
+
+  it('discards completions after switching conversations in the same profile', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const gateway = new MemoryGateway().handle('complete.slash', () => gate.then(() => ({ items: [{ text: 'status' }] })))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    const completing = conversation.completeSlash('/')
+    $chat.set({ ...$chat.get(), runtimeSessionId: 'runtime-2' })
+    release()
+    await expect(completing).rejects.toMatchObject({ name: 'AbortError' })
+    dispose()
+  })
+
   it('resolves the suggestion payload and sends the draft as text', async () => {
     const gateway = new MemoryGateway().handle('complete.slash', () => ({ items: [{ text: '/research' }], replace_from: 2 }))
     const { conversation, dispose } = subject(gateway)
 
     await expect(conversation.completeSlash('/re')).resolves.toEqual({ items: [{ text: '/research' }], replaceFrom: 2 })
-    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'complete.slash', value: { text: '/re' } })
+    expect(gateway.calls).toContainEqual({ kind: 'rpc', method: 'complete.slash', value: { text: '/re', profile: 'default' } })
     dispose()
   })
 
@@ -589,7 +632,104 @@ describe('slash completion', () => {
     const pending = conversation.completeSlash('/re')
     $preferences.set({ ...$preferences.get(), profile: 'work' })
     release()
-    await expect(pending).rejects.toMatchObject({ message: 'Gateway scope changed.', name: 'AbortError' })
+    await expect(pending).rejects.toMatchObject({ message: 'Gateway scope or conversation changed.', name: 'AbortError' })
+    dispose()
+  })
+})
+
+describe('slash execution', () => {
+  it('follows alias directives with their arguments and bounds recursive aliases', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({})).handle('slash.exec', value => {
+      const command = (value as { command: string }).command
+      return command === 'fast demo' ? { type: 'alias', target: 'model' } : command === 'model demo' ? { type: 'plugin', output: 'Plugin complete.' } : { type: 'alias', target: 'loop' }
+    })
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/fast demo')).resolves.toMatchObject({ mode: 'command', output: 'Plugin complete.' })
+    await expect(conversation.send('/loop')).rejects.toThrow('recursive')
+    expect(gateway.calls.some(call => call.method === 'prompt.submit')).toBe(false)
+    dispose()
+  })
+
+  it('returns prefill directives as editable draft text without starting a model turn', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({}))
+      .handle('slash.exec', () => ({ type: 'prefill', message: 'Previous prompt', notice: 'Turn undone.' }))
+      .handle('session.history', () => ({ messages: [] }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/undo')).resolves.toMatchObject({ status: 'accepted', mode: 'command', prefill: 'Previous prompt', output: 'Turn undone.' })
+    expect(gateway.calls.map(call => call.method)).toEqual(['commands.catalog', 'slash.exec', 'session.history'])
+    dispose()
+  })
+
+  it('executes a command without appending a user prompt or starting a model turn', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({})).handle('slash.exec', () => ({ output: 'Model changed.' }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/model demo --provider test --session')).resolves.toEqual({ status: 'accepted', mode: 'command', output: 'Model changed.' })
+    expect(gateway.calls.map(call => call.method)).toEqual(['commands.catalog', 'slash.exec'])
+    expect(gateway.calls[1].value).toEqual({ session_id: 'runtime-1', command: 'model demo --provider test --session' })
+    expect($chat.get().running).toBe(false)
+    expect($chat.get().transcript.entries).toEqual([])
+    dispose()
+  })
+
+  it('dispatches a skill only for an explicit legacy redirect, then submits its expanded prompt', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({}))
+      .handle('slash.exec', () => { throw { code: 4018, message: 'skill command: use command.dispatch for /research' } })
+      .handle('command.dispatch', () => ({ type: 'send', message: 'Research this topic', display: '/research topic', notice: 'Research skill loaded.' }))
+      .handle('prompt.submit', () => ({ accepted: true }))
+      .handle('session.history', () => ({ messages: [{ role: 'user', content: 'Research this topic', row_id: 1 }] }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/research topic')).resolves.toMatchObject({ status: 'accepted', mode: 'send', output: 'Research skill loaded.' })
+    expect($chat.get().transcript.entries[0]).toMatchObject({ author: 'user', content: '/research topic' })
+    await conversation.reconcileHistory()
+    expect($chat.get().transcript.entries[0]).toMatchObject({ author: 'user', content: '/research topic', rowId: 1 })
+    expect(gateway.calls.find(call => call.method === 'command.dispatch')?.value).toEqual({ session_id: 'runtime-1', name: 'research', arg: 'topic' })
+    expect(gateway.calls.find(call => call.method === 'prompt.submit')?.value).toMatchObject({ text: 'Research this topic' })
+    dispose()
+  })
+
+  it('does not retry a failed execution through another endpoint or prompt submission', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({})).handle('slash.exec', () => { throw new Error('worker failed') })
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/status')).rejects.toThrow('worker failed')
+    expect(gateway.calls.map(call => call.method)).toEqual(['commands.catalog', 'slash.exec'])
+    dispose()
+  })
+
+  it('rejects terminal-only and conversation-switching commands without execution', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({ commands: { '/clear': { desktop: 'terminal' } } }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/clear')).rejects.toThrow('terminal')
+    await expect(conversation.send('/new')).rejects.toThrow('conversation menu')
+    expect(gateway.calls.map(call => call.method)).toEqual(['commands.catalog'])
+    dispose()
+  })
+
+  it('does not execute after the conversation changes during catalog lookup', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const gateway = new MemoryGateway().handle('commands.catalog', () => gate.then(() => ({})))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    const sending = conversation.send('/status')
+    $chat.set({ ...$chat.get(), runtimeSessionId: 'runtime-2' })
+    release()
+    await expect(sending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(gateway.calls).toHaveLength(1)
+    dispose()
+  })
+
+  it('does not report a guarded model switch as successfully applied', async () => {
+    const gateway = new MemoryGateway().handle('commands.catalog', () => ({})).handle('slash.exec', () => ({ confirm_required: true, output: 'Not applied' }))
+    const { conversation, dispose } = subject(gateway)
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    await expect(conversation.send('/model costly')).rejects.toThrow('requires confirmation')
+    expect($chat.get().running).toBe(false)
     dispose()
   })
 })

@@ -104,7 +104,7 @@ const server = http.createServer(async (req, res) => {
       const state = stateFor(fixtureId)
       const update = await body(req)
       if (update.reset === true) state.controls = {}
-      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream', 'discovery', 'failSessionList', 'failRestore', 'failArchiveList', 'delayRestore', 'delaySessionList', 'pushFailure', 'pushExpired', 'pushUnknown', 'delayPushTest']) {
+      for (const key of ['rejectHandshake', 'serverFailure', 'authExpired', 'delayHistory', 'delayAttachments', 'delaySubmission', 'delayInterrupt', 'delayTranscription', 'delaySpeech', 'holdTurn', 'rejectInterrupt', 'markdownStream', 'discovery', 'failSessionList', 'failRestore', 'failArchiveList', 'delayRestore', 'delaySessionList', 'pushFailure', 'pushExpired', 'pushUnknown', 'delayPushTest', 'failSlashCompletion', 'delaySlashCompletion', 'manyModels', 'rejectSlash']) {
         if (typeof update[key] === 'boolean') state.controls[key] = update[key]
       }
       if (typeof update.missingSession === 'string' || update.missingSession === null) state.controls.missingSession = update.missingSession
@@ -365,8 +365,10 @@ sockets.on('connection', (ws, _req, id, profile) => {
   ws.on('message', async raw => {
     const request = JSON.parse(raw.toString())
     const params = request.params || {}
+    const replyText = String(params.text || '').startsWith('[IMPORTANT: The user has invoked the ')
+      ? 'Fixture research answer' : `Fixture answer: ${params.text}`
     state.calls.push({ kind: 'rpc', method: request.method, params, profile })
-    const gate = ({ 'file.attach': 'delayAttachments', 'image.attach_bytes': 'delayAttachments', 'prompt.submit': 'delaySubmission', 'session.interrupt': 'delayInterrupt' })[request.method]
+    const gate = ({ 'file.attach': 'delayAttachments', 'image.attach_bytes': 'delayAttachments', 'prompt.submit': 'delaySubmission', 'session.interrupt': 'delayInterrupt', 'complete.slash': 'delaySlashCompletion' })[request.method]
     if (gate) await waitForControl(state, gate)
     if (ws.readyState !== 1) return
     const stored = params.session_id || `created-${profile}`
@@ -435,7 +437,8 @@ sockets.on('connection', (ws, _req, id, profile) => {
     } else if (request.method === 'mcp.catalog') {
       result = { servers: [{ description: 'Fixture MCP server', name: 'fixture-mcp', transport: 'stdio' }, { description: 'Catalog-only server', name: 'catalog-mcp', transport: 'http' }] }
     } else if (request.method === 'model.options') {
-      result = { providers: [{ authenticated: true, models: ['fixture/fast', 'fixture/deep', 'fixture/expensive'], name: 'Fixture AI', slug: 'fixture' }, { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }] }
+      if (state.controls.failSlashCompletion) rpcError = { code: -32602, message: 'Fixture model options unavailable' }
+      result = { model: ws.fixtureModel || 'fixture/test-model', provider: 'fixture', providers: [{ authenticated: true, models: [...(params.session_id ? ['fixture/test-model'] : []), 'fixture/fast', 'fixture/deep', 'fixture/expensive', ...(state.controls.manyModels ? Array.from({ length: 12 }, (_, i) => `fixture/extra-${i}`) : [])], name: 'Fixture AI', slug: 'fixture' }, { authenticated: true, models: ['local/test'], name: 'Local', slug: 'local' }] }
     } else if (request.method === 'profiles.configure') {
       const profile = state.profiles.find(candidate => candidate.name === params.name)
       const appearanceTitle = params.ui_meta?.['hermes-bots']?.title
@@ -472,7 +475,35 @@ sockets.on('connection', (ws, _req, id, profile) => {
         state.assets.delete(argv[2])
       }
       result = { code: 0, ok: true }
-    } else if (request.method === 'commands.catalog') result = { commands: [] }
+    } else if (request.method === 'commands.catalog') {
+      result = { pairs: [['/model', 'Choose a session model'], ['/personality', 'Choose a personality'], ['/status', 'Session status'], ['/research', 'Research skill']], commands: { '/clear': { desktop: 'terminal' } } }
+    } else if (request.method === 'complete.slash') {
+      if (state.controls.failSlashCompletion) rpcError = { code: -32602, message: 'Fixture completions unavailable' }
+      const text = String(params.text || '')
+      const argument = text.startsWith('/personality ')
+      const choices = argument ? ['none', 'concise'] : ['model', 'personality', 'status', 'research', 'clear']
+      const prefix = argument ? text.slice('/personality '.length) : text.slice(1)
+      result = { items: choices.filter(name => name.startsWith(prefix)).map(name => ({ text: name, display: argument ? name : `/${name}`, meta: argument ? 'Personality option' : `${name} command`, kind: name === 'research' ? 'skill' : 'command' })), replace_from: argument ? 13 : 1 }
+    } else if (request.method === 'slash.exec') {
+      const command = String(params.command || '')
+      if (state.controls.rejectSlash) rpcError = { code: -32602, message: 'Fixture command rejected' }
+      else if (command.startsWith('research')) rpcError = { code: 4018, message: 'skill command: use command.dispatch for /research' }
+      else if (command === 'fast') result = { type: 'alias', target: 'model fixture/fast --provider fixture --session' }
+      else if (command === 'plugin') result = { type: 'plugin', output: 'Plugin completed.' }
+      else if (command === 'undo') {
+        state.messages.set(currentStored, [])
+        result = { type: 'prefill', message: 'Recovered prompt', notice: 'Turn undone.' }
+      }
+      else if (command.startsWith('model ')) {
+        const model = command.split(/\s+/)[1]
+        if (model === 'fixture/expensive') result = { confirm_required: true, output: 'Not applied.' }
+        else { ws.fixtureModel = model; result = { output: `Session model changed to ${model}.` } }
+      } else if (command === 'status') result = { output: 'Session ready.\nNo model turn started.' }
+      else if (command.startsWith('personality ')) result = { output: `Personality changed to ${command.slice(12)}.` }
+      else rpcError = { code: -32602, message: 'Unsupported slash command' }
+    } else if (request.method === 'command.dispatch') {
+      result = { type: 'send', message: `[IMPORTANT: The user has invoked the "research" skill. The full skill content is loaded below.]\n\nPrivate fixture skill instructions\n\nThe user has provided the following instruction alongside the skill invocation: ${params.arg}`, display: `/research ${params.arg}`, notice: 'Research skill loaded.' }
+    }
     else if (request.method === 'model.info') result = { model: 'fixture/test-model' }
     else if (request.method === 'session.events.since') result = { events: [] }
     else if (request.method === 'session.interrupt') {
@@ -490,17 +521,20 @@ sockets.on('connection', (ws, _req, id, profile) => {
       }
       const messages = state.messages.get(currentStored) ?? (state.controls.markdownStream ? initialMessages(currentStored) : [])
       messages.push({ row_id: messages.length + 1, role: 'user', content: params.text })
-      const answer = { row_id: messages.length + 1, role: 'assistant', content: state.controls.markdownStream ? '' : `Fixture answer: ${params.text}` }
+      const answer = { row_id: messages.length + 1, role: 'assistant', content: state.controls.markdownStream ? '' : replyText }
       messages.push(answer)
       if (state.controls.markdownStream) ws.fixtureAnswer = answer
       state.messages.set(currentStored, messages)
       result = params.text === 'draft uncertain response' ? {} : { accepted: true }
     } else result = {}
     ws.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(rpcError ? { error: rpcError } : { result }) }))
+    if (request.method === 'slash.exec' && String(params.command).startsWith('model ') && !rpcError && !result?.confirm_required) {
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', session_id: params.session_id, payload: { model: ws.fixtureModel } } }))
+    }
     if (request.method === 'prompt.submit' && state.controls.markdownStream) {
       ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.start', session_id: params.session_id, payload: {} } }))
     } else if (request.method === 'prompt.submit') {
-      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: params.session_id, payload: { delta: `Fixture answer: ${params.text}` } } }))
+      ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: params.session_id, payload: { delta: replyText } } }))
       if (!state.controls.holdTurn && !(currentStored === 'footer-fixture' && params.text === 'hold footer activity')) {
         ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.complete', session_id: params.session_id, payload: {} } }))
       }

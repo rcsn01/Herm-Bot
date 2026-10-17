@@ -21,7 +21,9 @@ export interface EditTarget {
 
 export interface SubmissionResult {
   status: 'accepted' | 'uncertain'
-  mode: 'send' | 'queue' | 'retry'
+  mode: 'send' | 'queue' | 'retry' | 'command'
+  output?: string
+  prefill?: string
 }
 export interface AttachmentView {
   id: string
@@ -45,6 +47,7 @@ export interface ChatInteractionState {
   editTarget: EditTarget | null
   error: string | null
   slashItems: ChatSuggestion[]
+  slashStatus: string | null
   submitting: boolean
 }
 
@@ -75,6 +78,7 @@ const initialState = (): ChatInteractionState => ({
   editTarget: null,
   error: null,
   slashItems: [],
+  slashStatus: null,
   submitting: false
 })
 
@@ -122,7 +126,7 @@ export class ChatInteraction {
       ++this.draftRevision
       for (const release of this.tasks) release()
       this.tasks.clear()
-      this.patch({ slashItems: [], pendingTranscript: null, submissionFeedback: null, stopping: false, stopFeedback: null, attachments: this.projectAttachments() })
+      this.patch({ slashItems: [], slashStatus: null, pendingTranscript: null, submissionFeedback: null, stopping: false, stopFeedback: null, attachments: this.projectAttachments() })
     }
   }
 
@@ -214,7 +218,7 @@ export class ChatInteraction {
     const value = record?.content ?? emptyDraft()
     this.attachments = value.attachments
     this.normal = value.normal
-    this.$state.set({ ...this.$state.get(), error: null, slashItems: [], draft: value.text,
+    this.$state.set({ ...this.$state.get(), error: null, slashItems: [], slashStatus: null, draft: value.text,
       attachmentRefs: value.attachments.map(item => item.ref), attachments: this.projectAttachments(), editTarget: value.edit,
       submitting: Boolean(record?.recoveries.some(item => item.status === 'pending')) })
   }
@@ -238,15 +242,13 @@ export class ChatInteraction {
     if (this.disposed) return
     const epoch = this.sessionEpoch
     const revision = ++this.draftRevision
-    this.patch({ draft: value })
-    if (!value.startsWith('/') || !this.remoteAvailable()) {
-      this.patch({ slashItems: [] })
-      return
-    }
-
+    this.patch({ draft: value, slashItems: [], slashStatus: null })
+    if (!value.startsWith('/') || !this.remoteAvailable()) return
+    this.patch({ slashStatus: 'Loading suggestions…' })
     void this.commands.completeSlash(value).then(payload => {
       if (!this.isRevisionCurrent(epoch, revision)) return
       this.patch({
+        slashStatus: payload.items.length ? null : 'No suggestions. You can continue typing.',
         slashItems: payload.items.map(item => ({
           ...item,
           insertText: completionInsertion(value, item.text, payload.replaceFrom)
@@ -254,17 +256,27 @@ export class ChatInteraction {
       })
     }).catch(() => {
       if (this.isRevisionCurrent(epoch, revision)) {
-        this.patch({ slashItems: [] })
+        this.patch({ slashItems: [], slashStatus: 'Suggestions unavailable. Check your connection or try typing again.' })
       }
     })
+  }
+
+  dismissCompletions() {
+    ++this.draftRevision
+    this.patch({ slashItems: [], slashStatus: null })
   }
 
   chooseCompletion(index: number) {
     if (this.disposed) return
     const item = this.$state.get().slashItems[index]
     if (!item) return
-    this.draftRevision += 1
-    this.patch({ draft: `${item.insertText} `, slashItems: [] })
+    if (item.kind === 'model') {
+      this.dismissCompletions()
+      this.patch({ draft: `${item.insertText.trimEnd()} ` })
+    } else {
+      // Selecting a command immediately discovers its arguments/subcommands.
+      this.updateDraft(`${item.insertText.trimEnd()} `)
+    }
   }
 
   beginEdit(target: EditTarget) {
@@ -281,7 +293,7 @@ export class ChatInteraction {
       draft: target.content,
       editTarget: target,
       error: null,
-      slashItems: []
+      slashItems: [], slashStatus: null
     })
   }
 
@@ -292,7 +304,7 @@ export class ChatInteraction {
     const value = this.normal
     this.normal = null
     this.attachments = value?.attachments ?? []
-    this.patch({ draft: value?.text ?? '', attachmentRefs: this.attachments.map(item => item.ref), editTarget: null, error: null, slashItems: [] })
+    this.patch({ draft: value?.text ?? '', attachmentRefs: this.attachments.map(item => item.ref), editTarget: null, error: null, slashItems: [], slashStatus: null })
   }
 
   removeAttachment(id: string | number) {
@@ -342,6 +354,10 @@ export class ChatInteraction {
     if (this.$state.get().editTarget && this.commands.isRunning?.()) { this.patch({ error: 'Wait for this turn to finish before retrying an edited message.' }); return }
     if (this.needsReattachment()) { this.patch({ error: 'Select the attached files again or remove them before sending.' }); return }
     const snapshot = this.$state.get()
+    if (/^\/model\s*$/i.test(snapshot.draft)) { this.updateDraft('/model '); return }
+    if (snapshot.draft.trimStart().startsWith('/') && (snapshot.attachmentRefs.length || snapshot.editTarget)) {
+      this.patch({ error: 'Run slash commands without attachments or an edited message.' }); return
+    }
     const combined = [snapshot.draft.trim(), ...snapshot.attachmentRefs].filter(Boolean).join('\n')
     if (!combined) return
     const key = this.key
@@ -353,7 +369,7 @@ export class ChatInteraction {
     this.attachments = []
     const normal = this.normal
     this.normal = null
-    this.$state.set({ ...snapshot, uploading: false, attachments: [], attachmentRefs: [], draft: '', error: null, slashItems: [], editTarget: null, submitting: true,
+    this.$state.set({ ...snapshot, uploading: false, attachments: [], attachmentRefs: [], draft: '', error: null, slashItems: [], slashStatus: null, editTarget: null, submitting: true,
       submissionFeedback: this.commands.isRunning?.() ? 'Submitting queued prompt…' : 'Sending…' })
     try {
       const outcome = snapshot.editTarget
@@ -373,7 +389,12 @@ export class ChatInteraction {
         this.normal = normal
         this.cancelEdit()
       }
-      this.patch({ submitting: false, submissionFeedback: outcome?.mode === 'queue' ? 'Gateway accepted your queued prompt. Execution has not been confirmed.' : 'Gateway accepted your message.' })
+      let feedback = outcome?.output || (outcome?.mode === 'command' ? 'Command completed.' : outcome?.mode === 'queue' ? 'Gateway accepted your queued prompt. Execution has not been confirmed.' : 'Gateway accepted your message.')
+      if (outcome?.prefill !== undefined) {
+        if (this.draftRevision === revision) this.patch({ draft: outcome.prefill })
+        else feedback += `\nYour draft changed. Command text to copy:\n${outcome.prefill}`
+      }
+      this.patch({ submitting: false, submissionFeedback: feedback })
     } catch (caught) {
       const kind = classifyGatewayError(caught).kind
       const uncertain = kind === 'network' || kind === 'aborted'
@@ -466,7 +487,7 @@ export class ChatInteraction {
     const task = { controller: new AbortController(), end: this.task() }
     this.transcription = task
     const current = () => this.isCurrent(epoch) && this.transcription === task
-    this.patch({ error: null, transcribing: true, pendingTranscript: null, slashItems: [] })
+    this.patch({ error: null, transcribing: true, pendingTranscript: null, slashItems: [], slashStatus: null })
     try {
       if (file.size > 25 * 1_024 * 1_024) {
         throw new Error('Audio attachments are limited to 25 MB on mobile.')
