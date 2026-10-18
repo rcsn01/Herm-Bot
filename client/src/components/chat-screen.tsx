@@ -1,8 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { IconArchive, IconArrowDown, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
+import { IconAlertCircle, IconArchive, IconArrowDown, IconClock, IconDots, IconGitBranch, IconMicrophone, IconPaperclip, IconPencil, IconPlayerStop, IconSend, IconVolume } from '@tabler/icons-react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { MessageMarkdown } from '~/components/message-markdown'
 import { CopyTextButton } from '~/components/copy-text-button'
+import { MessageBubble } from '~/components/message-bubble'
 import { localPrivacy } from '~/state/local-privacy'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
@@ -151,6 +152,8 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
         {displayItems.map(item => {
           if (item.kind === 'agent-activity') return <AgentActivity key={item.id} steps={item.steps} />
           const entry = item.entry
+          const delivery = entry.kind === 'message' && entry.author === 'user' ? entry.delivery ?? 'accepted' : null
+          const deliveryLabel = delivery ? { pending: 'Waiting for acceptance', accepted: 'Accepted', uncertain: 'Delivery not confirmed', failed: 'Not sent' }[delivery] : null
           return entry.kind === 'cron-instructions' ? (
             <article className="message collapsed-message cron-instructions-message" key={entry.id}>
               <details>
@@ -159,7 +162,16 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
               </details>
             </article>
           ) : (
-            <article aria-label={entry.kind === 'message' && entry.author === 'assistant' ? 'Assistant answer' : undefined} className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} key={entry.id}>
+            <MessageBubble aria-label={entry.kind === 'message' && entry.author === 'assistant' ? 'Assistant answer' : entry.author === 'user' ? 'Your message' : undefined}
+              className={`message ${entry.author}${entry.kind === 'activity' ? ' timeline-event' : ''}`} contextIdentity={copyContext} data-delivery={delivery ?? undefined} key={entry.id}
+              actions={canCopy && entry.kind === 'message' && (entry.author === 'user' || entry.author === 'assistant' && Boolean(entry.content)) ? close => entry.author === 'user' ? (
+                <Button disabled={!composerReady || chat.running || !entry.editTarget} onClick={() => {
+                  if (!entry.editTarget || chat.running) return
+                  close()
+                  interaction.beginEdit({ content: entry.content, rowId: entry.editTarget.rowId })
+                  requestAnimationFrame(() => messageRef.current?.focus())
+                }} variant="text">Edit & retry</Button>
+              ) : <CopyTextButton contextIdentity={copyContext} label={entry.streaming ? 'Copy answer so far' : 'Copy answer'} text={entry.content} /> : undefined}>
               {/* Bubbles identify their speaker by side, so no author caption —
                 the meta row only carries non-positional markers (Activity is an
                 event kind, Streaming is a delivery state). */}
@@ -171,26 +183,16 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
               )}
               {entry.reasoning && <details><summary>Reasoning</summary><pre>{entry.reasoning}</pre></details>}
               <div className="message-content"><MessageMarkdown content={entry.content || (entry.streaming ? '…' : '')} copyContext={canCopy && entry.kind === 'message' && entry.author === 'assistant' ? copyContext : null} /></div>
-              {canCopy && entry.kind === 'message' && entry.author === 'assistant' && entry.content && <CopyTextButton contextIdentity={copyContext} label={entry.streaming ? 'Copy answer so far' : 'Copy answer'} text={entry.content} />}
-              {entry.author === 'user' && (
-                <Button
-                  disabled={!composerReady || chat.running || !entry.editTarget}
-                  onClick={() => {
-                    if (!entry.editTarget || chat.running) return
-                    interaction.beginEdit({ content: entry.content, rowId: entry.editTarget.rowId })
-                  }}
-                  size="micro"
-                  variant="text"
-                >
-                  Edit & retry
-                </Button>
-              )}
+              {delivery && <span className={delivery === 'accepted' ? 'sr-only' : 'message-delivery'} title={deliveryLabel!}>
+                {delivery === 'pending' ? <IconClock aria-hidden="true" size={16} /> : delivery !== 'accepted' ? <IconAlertCircle aria-hidden="true" size={16} /> : null}
+                <span className="sr-only">{deliveryLabel}</span>
+              </span>}
               {entry.author === 'assistant' && entry.content && (
                 <Button disabled={!composerReady || playback.messageId === entry.id && ['generating', 'playing', 'paused'].includes(playback.status)} onClick={() => void interaction.speak(entry.content, entry.id)} size="icon-xs" variant="ghost" aria-label="Read aloud">
                   <IconVolume size={16} />
                 </Button>
               )}
-            </article>
+            </MessageBubble>
           )
         })}
         {chat.tools.length > 0 && (

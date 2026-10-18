@@ -239,6 +239,19 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .empty-chat p { color: var(--muted-foreground); font-size: var(--font-body); }
 .message { min-width: 0; max-width: min(88%, 720px); padding: calc(var(--spacing) * 3) calc(var(--spacing) * 3.5); border-radius: var(--radius-bubble); background: var(--panel); border: 1px solid var(--line); box-shadow: 0 3px 12px #00000008; }
 .message.user { justify-self: end; color: var(--primary-foreground); background: var(--primary); border-color: transparent; border-bottom-right-radius: 5px; }
+.message.user[data-delivery]:not([data-delivery="accepted"]) .message-content { color: color-mix(in srgb, var(--primary-foreground) 70%, var(--primary)); }
+.message-actionable { position: relative; }
+.message-actionable:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.message-options-trigger:focus-visible { right: calc(var(--spacing) * 2); bottom: calc(var(--spacing) * 2); z-index: 1; width: auto; height: auto; padding: calc(var(--spacing) * 2); margin: 0; overflow: visible; clip: auto; clip-path: none; white-space: normal; }
+.message-actionable .message-content { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.message-actionable .message-content :is(a, pre, code, table) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
+.message-options { position: fixed; inset: auto; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0; width: min(360px, calc(100vw - 32px)); max-height: 80dvh; overflow: auto; padding: calc(var(--spacing) * 4); border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); color: var(--text); box-shadow: 0 20px 60px #0006; }
+.message-options[open] { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
+.message-options::backdrop { background: #0006; }
+.message-options h3 { margin: 0 0 calc(var(--spacing) * 2); font-size: var(--font-body); }
+.message-options .copy-text-control { margin: 0; }
+.message-options [data-slot="button"] { min-height: 44px; width: 100%; }
+.message-delivery { width: 16px; display: inline-flex; align-items: center; flex: none; }
 .message.assistant { justify-self: start; border-bottom-left-radius: 5px; }
 .message.tool, .message.system { justify-self: center; max-width: 100%; color: var(--muted-foreground); background: var(--panel-2); }
 .message.timeline-event { width: fit-content; padding: calc(var(--spacing) * 1.75) calc(var(--spacing) * 2.5); border-color: transparent; background: transparent; box-shadow: none; text-align: center; }

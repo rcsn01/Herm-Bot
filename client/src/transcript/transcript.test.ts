@@ -232,6 +232,43 @@ describe('Transcript live updates', () => {
 })
 
 describe('Transcript identity and history transitions', () => {
+  it('updates delivery by exact client identity without altering authoritative history', () => {
+    let transcript = createTranscript(ordinary, [{ role: 'user', content: 'same text', row_id: 1 }])
+    transcript = updateTranscript(transcript, { kind: 'local-user', content: 'same text', id: 'local-1' })
+    transcript = updateTranscript(transcript, { kind: 'user-delivery', id: 'local-1', delivery: 'accepted' })
+    expect(transcript.entries[0]).not.toHaveProperty('delivery')
+    expect(transcript.entries[1]).toMatchObject({ delivery: 'accepted' })
+    transcript = updateTranscript(transcript, { kind: 'reconcile-history', rows: [{ role: 'user', content: 'same text', row_id: 2 }] })
+    const reconciled = updateTranscript(transcript, { kind: 'user-delivery', id: 'local-1', delivery: 'failed' })
+    expect(reconciled).toBe(transcript)
+    expect(reconciled.entries[0]).not.toHaveProperty('delivery')
+  })
+
+  it('keeps rejected edits retryable and drops the replaced durable identity only on acceptance', () => {
+    let transcript = createTranscript(ordinary, [{ role: 'user', content: 'original', row_id: 41 }])
+    transcript = updateTranscript(transcript, { kind: 'local-user', content: 'edited', id: 'edit-1', replaceId: 'history-row-41' })
+    transcript = updateTranscript(transcript, { kind: 'user-delivery', id: 'edit-1', delivery: 'failed' })
+    expect(transcript.entries[0]).toMatchObject({ id: 'edit-1', content: 'edited', delivery: 'failed', rowId: 41, editTarget: { rowId: 41 } })
+    transcript = updateTranscript(transcript, { kind: 'local-user', content: 'corrected', id: 'edit-2', replaceId: 'edit-1' })
+    transcript = updateTranscript(transcript, { kind: 'user-delivery', id: 'edit-2', delivery: 'accepted' })
+    expect(transcript.entries).toHaveLength(1)
+    expect(transcript.entries[0]).toMatchObject({ content: 'corrected', delivery: 'accepted' })
+    expect(transcript.entries[0]).not.toHaveProperty('rowId')
+    expect(transcript.entries[0]).not.toHaveProperty('editTarget')
+  })
+
+  it('keeps streaming content and reasoning on the active answer when a queued message is appended', () => {
+    let transcript = createTranscript(ordinary)
+    transcript = updateTranscript(transcript, { kind: 'gateway-event', createId: 'answer-1', event: { type: 'message.delta', payload: { delta: 'First' } } })
+    transcript = updateTranscript(transcript, { kind: 'local-user', id: 'queued-1', content: 'Next task' })
+    transcript = updateTranscript(transcript, { kind: 'gateway-event', createId: 'unused', event: { type: 'message.delta', payload: { delta: ' answer' } } })
+    transcript = updateTranscript(transcript, { kind: 'gateway-event', createId: 'unused', event: { type: 'reasoning.delta', payload: { delta: 'Still thinking' } } })
+    transcript = updateTranscript(transcript, { kind: 'gateway-event', createId: 'unused', event: { type: 'message.complete', payload: {} } })
+    expect(transcript.entries).toHaveLength(2)
+    expect(transcript.entries[0]).toMatchObject({ id: 'answer-1', content: 'First answer', reasoning: 'Still thinking', streaming: false })
+    expect(transcript.entries[1]).toMatchObject({ id: 'queued-1', content: 'Next task', delivery: 'pending' })
+  })
+
   it('adds optimistic users and recomputes loaded ordinals after prepend', () => {
     let transcript = createTranscript(ordinary, [{ role: 'user', content: 'recent', row_id: 81 }])
     transcript = updateTranscript(transcript, { kind: 'local-user', content: 'local', id: 'local-1' })

@@ -22,6 +22,12 @@ Object.defineProperty(window, 'matchMedia', {
   })
 })
 
+// JSDOM has no top layer. Browser tests cover native dialog focus and dismissal.
+Object.defineProperties(HTMLDialogElement.prototype, {
+  showModal: { configurable: true, value(this: HTMLDialogElement) { this.setAttribute('open', '') } },
+  close: { configurable: true, value(this: HTMLDialogElement) { this.removeAttribute('open') } }
+})
+
 let uuidCounter = 0
 Object.defineProperty(globalThis, 'crypto', {
   value: { ...globalThis.crypto, randomUUID: () => `test-uuid-${++uuidCounter}` }

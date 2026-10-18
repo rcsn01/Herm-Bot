@@ -19,10 +19,69 @@ async function count(page: Page, method: string) {
     return calls.filter((call: { method: string; path?: string }) => call.method === method || call.path === method).length as number
   }, method)
 }
+const userMessage = (page: Page, text: string) => page.getByRole('article', { name: 'Your message', exact: true }).filter({ has: page.getByText(text, { exact: true }) })
 const files = (page: Page) => page.locator('input[type="file"][multiple]')
 const recording = (page: Page) => page.locator('input[type="file"][capture]')
 const textFile = (name: string) => ({ name, mimeType: 'text/plain', buffer: Buffer.from('fixture file') })
 const audioFile = { name: 'voice.wav', mimeType: 'audio/wav', buffer: Buffer.from('fixture audio') }
+
+test('delivery is shown on each message instead of a composer banner in light and dark themes', async ({ page }, testInfo) => {
+  await login(page)
+  let previousBackground: string | undefined
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => {
+      document.documentElement.classList.remove(theme === 'dark' ? 'light' : 'dark')
+      document.documentElement.classList.add(theme)
+      document.documentElement.dataset.theme = theme
+      document.documentElement.style.colorScheme = theme
+    }, theme)
+    const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+    if (previousBackground) expect(background).not.toBe(previousBackground)
+    previousBackground = background
+    await control(page, { delaySubmission: true })
+    const text = `Inline delivery ${theme}`
+    await page.getByLabel('Message Hermes').fill(text)
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    const message = userMessage(page, text)
+    await expect(message).toHaveAttribute('data-delivery', 'pending')
+    await expect(message.getByTitle('Waiting for acceptance')).toBeVisible()
+    await expect(page.locator('.submission-feedback')).toHaveCount(0)
+    const pendingColor = await message.locator('.message-content').evaluate(node => getComputedStyle(node).color)
+    await page.screenshot({ path: testInfo.outputPath(`delivery-${theme}-pending.png`) })
+    await control(page, { delaySubmission: false })
+    await expect(message).toHaveAttribute('data-delivery', 'accepted')
+    await expect(message.getByTitle('Waiting for acceptance')).toHaveCount(0)
+    const acceptedColor = await message.locator('.message-content').evaluate(node => getComputedStyle(node).color)
+    expect(acceptedColor).not.toBe(pendingColor)
+    expect(acceptedColor).toBe(await message.evaluate(node => getComputedStyle(node).color))
+    await expect(page.locator('.submission-feedback')).toHaveCount(0)
+    await expect(page.getByText(/Gateway accepted your/)).toHaveCount(0)
+    await page.screenshot({ path: testInfo.outputPath(`delivery-${theme}-accepted.png`) })
+  }
+})
+
+test('rejected messages are marked inline and retain their text for correction', async ({ page }) => {
+  await login(page)
+  await page.getByLabel('Message Hermes').fill('draft delayed failure')
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  const message = userMessage(page, 'draft delayed failure')
+  await expect(message).toHaveAttribute('data-delivery', 'pending')
+  await expect(message).toHaveAttribute('data-delivery', 'failed')
+  await expect(message.getByTitle('Not sent')).toBeVisible()
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('draft delayed failure')
+})
+
+test('a rejected edit keeps its valid retry target and shows the failure on the edited message', async ({ page }) => {
+  await login(page)
+  await page.getByRole('article', { name: 'Your message', exact: true }).press('Enter')
+  await page.getByRole('button', { name: 'Edit & retry', exact: true }).click()
+  await page.getByLabel('Message Hermes').fill('draft delayed failure')
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(userMessage(page, 'draft delayed failure')).toHaveAttribute('data-delivery', 'failed')
+  await expect(page.getByLabel('Message Hermes')).toHaveValue('draft delayed failure')
+  await expect(page.getByRole('button', { name: 'Cancel edit', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
+})
 
 test('uploads have file states; removal retires a pending result and failures preserve successful files', async ({ page }, testInfo) => {
   await login(page)
@@ -87,10 +146,11 @@ test('Queue and Stop remain independent, acceptance is not execution, and uncert
   await page.getByLabel('Message Hermes').fill('start active turn')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Queue', exact: true })).toBeVisible()
-  await expect(page.getByText('Gateway accepted your message.', { exact: true })).toBeVisible()
+  await expect(userMessage(page, 'start active turn')).toHaveAttribute('data-delivery', 'accepted')
   await control(page, { delaySubmission: true, delayInterrupt: true })
   await page.getByLabel('Message Hermes').fill('next task')
   await page.getByRole('button', { name: 'Queue', exact: true }).click()
+  await expect(userMessage(page, 'next task')).toHaveAttribute('data-delivery', 'pending')
   await page.getByRole('button', { name: 'Stop Hermes' }).click()
   await expect(page.getByRole('button', { name: 'Stop Hermes' })).toBeDisabled()
   await expect.poll(() => count(page, 'prompt.submit')).toBe(2)
@@ -98,7 +158,7 @@ test('Queue and Stop remain independent, acceptance is not execution, and uncert
   await expect(page.getByText('Message submission pending', { exact: true })).toHaveCount(0)
   await page.getByLabel('Message Hermes').fill('following draft')
   await control(page, { delaySubmission: false })
-  await expect(page.getByText('Gateway accepted your queued prompt. Execution has not been confirmed.')).toBeVisible()
+  await expect(userMessage(page, 'next task')).toHaveAttribute('data-delivery', 'accepted')
   await expect(page.getByLabel('Message Hermes')).toHaveValue('following draft')
   await control(page, { delayInterrupt: false })
   await expect(page.getByText('Stop requested. Queued prompts may still run.')).toBeVisible()
@@ -116,15 +176,17 @@ test('Queue and Stop remain independent, acceptance is not execution, and uncert
 test('a file selected for the next message survives successful edited-message acknowledgement', async ({ page }) => {
   await login(page)
   await page.getByLabel('Message Hermes').fill('separate normal draft')
+  await page.getByRole('article', { name: 'Your message', exact: true }).press('Enter')
   await page.getByRole('button', { name: 'Edit & retry', exact: true }).click()
   await page.getByLabel('Message Hermes').fill('revised earlier question')
   await control(page, { delaySubmission: true })
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect.poll(() => count(page, 'prompt.submit')).toBe(1)
+  await expect(userMessage(page, 'revised earlier question')).toHaveAttribute('data-delivery', 'pending')
   await files(page).setInputFiles(textFile('next-message.txt'))
   await expect(page.locator('.composer-file')).toContainText('Ready')
   await control(page, { delaySubmission: false })
-  await expect(page.getByText('Gateway accepted your message.', { exact: true })).toBeVisible()
+  await expect(userMessage(page, 'revised earlier question')).toHaveAttribute('data-delivery', 'accepted')
   await expect(page.getByRole('button', { name: 'Remove attachment next-message.txt', exact: true })).toBeVisible()
   await expect(page.getByLabel('Message Hermes')).toHaveValue('')
 })
@@ -175,7 +237,7 @@ test('320px keyboard-reduced layout keeps Queue/Stop reachable and Enter respect
   const input = page.getByLabel('Message Hermes')
   await input.fill('start')
   await input.press('Enter')
-  await expect(page.getByText('Gateway accepted your message.', { exact: true })).toBeVisible()
+  await expect(userMessage(page, 'start')).toHaveAttribute('data-delivery', 'accepted')
   await input.fill('first line')
   await input.press('Shift+Enter')
   await input.press('End')
@@ -187,7 +249,7 @@ test('320px keyboard-reduced layout keeps Queue/Stop reachable and Enter respect
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: testInfo.outputPath('narrow-queue-stop.png') })
   await input.press('Enter')
-  await expect(page.getByText('Gateway accepted your queued prompt. Execution has not been confirmed.')).toBeVisible()
+  await expect(page.locator('.message.user[data-delivery="pending"]')).toHaveCount(0)
   expect(await count(page, 'prompt.submit')).toBe(2)
 })
 

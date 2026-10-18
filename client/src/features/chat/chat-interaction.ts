@@ -370,7 +370,7 @@ export class ChatInteraction {
     const normal = this.normal
     this.normal = null
     this.$state.set({ ...snapshot, uploading: false, attachments: [], attachmentRefs: [], draft: '', error: null, slashItems: [], slashStatus: null, editTarget: null, submitting: true,
-      submissionFeedback: this.commands.isRunning?.() ? 'Submitting queued prompt…' : 'Sending…' })
+      submissionFeedback: null })
     try {
       const outcome = snapshot.editTarget
         ? await this.commands.retryFrom(snapshot.editTarget.rowId, combined)
@@ -389,10 +389,10 @@ export class ChatInteraction {
         this.normal = normal
         this.cancelEdit()
       }
-      let feedback = outcome?.output || (outcome?.mode === 'command' ? 'Command completed.' : outcome?.mode === 'queue' ? 'Gateway accepted your queued prompt. Execution has not been confirmed.' : 'Gateway accepted your message.')
+      let feedback = outcome?.output || (outcome?.mode === 'command' ? 'Command completed.' : null)
       if (outcome?.prefill !== undefined) {
         if (this.draftRevision === revision) this.patch({ draft: outcome.prefill })
-        else feedback += `\nYour draft changed. Command text to copy:\n${outcome.prefill}`
+        else feedback = `${feedback ? `${feedback}\n` : ''}Your draft changed. Command text to copy:\n${outcome.prefill}`
       }
       this.patch({ submitting: false, submissionFeedback: feedback })
     } catch (caught) {

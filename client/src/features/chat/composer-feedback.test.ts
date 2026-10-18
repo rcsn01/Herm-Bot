@@ -135,7 +135,7 @@ it('local transcription Cancel releases work immediately and ignores late data',
   expect(interaction.$state.get()).toMatchObject({ draft: '', pendingTranscript: null, transcribing: false })
 })
 
-it('keeps queue acceptance tied to dispatch and Stop independently guarded', async () => {
+it('keeps accepted queues quiet and Stop independently guarded', async () => {
   const { interaction, commands } = subject()
   const sent = deferred<SubmissionResult>()
   const stopped = deferred<void>()
@@ -151,7 +151,7 @@ it('keeps queue acceptance tied to dispatch and Stop independently guarded', asy
   interaction.updateDraft('new typing')
   commands.isRunning.mockReturnValue(false)
   sent.resolve({ status: 'accepted', mode: 'queue' }); await submitting
-  expect(interaction.$state.get()).toMatchObject({ draft: 'new typing', submissionFeedback: expect.stringContaining('queued prompt'), stopping: true })
+  expect(interaction.$state.get()).toMatchObject({ draft: 'new typing', submissionFeedback: null, stopping: true })
   stopped.resolve(); await stopping
   expect(interaction.$state.get().stopFeedback).toContain('Queued prompts may still run')
 })

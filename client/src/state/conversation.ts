@@ -202,7 +202,10 @@ export class Conversation {
     ++this.reconciliationRequest
     const current = $chat.get()
     $chat.set({ ...current, availability: current.availability === 'empty' ? 'empty' : 'cached', pendingPrompt: null, running: false, tools: [], historyLoadingOlder: false,
-      transcript: { ...current.transcript, entries: current.transcript.entries.map(entry => 'streaming' in entry ? { ...entry, streaming: false } : entry) } })
+      transcript: { ...current.transcript, entries: current.transcript.entries.map(entry => 'streaming' in entry ? {
+        ...entry, streaming: false,
+        ...(entry.kind === 'message' && entry.author === 'user' && entry.delivery === 'pending' ? { delivery: 'uncertain' as const } : {})
+      } : entry) } })
   }
 
   adoptCached(snapshot: CachedConversation): void {
@@ -286,7 +289,7 @@ export class Conversation {
     const session = $sessions.get().find(session => session.id === current.storedSessionId)
     const startedAt = typeof session?.started_at === 'number' && Number.isFinite(session.started_at) ? session.started_at * 1000 : null
     transcriptCache.write({ owner: $draftOwner.get(), profile: currentGatewayScope().profile, storedSessionId: current.storedSessionId }, {
-      entries: current.transcript.entries, title: current.info?.title ?? '', source: current.transcript.context.source,
+      entries: current.transcript.entries.filter(entry => entry.kind !== 'message' || entry.delivery === undefined), title: current.info?.title ?? '', source: current.transcript.context.source,
       startedAt, lastSyncedAt: current.lastSyncedAt
     })
   }
@@ -321,33 +324,37 @@ export class Conversation {
     if (!current.runtimeSessionId) throw new Error('No active session.')
     if (!expandedCommand && content.startsWith('/')) return this.submitSlash(content, scope, current.runtimeSessionId)
     if (display) this.commandDisplays.set(JSON.stringify([this.operationKey(), content]), display)
-    if (current.running) {
-      const acknowledgement = await this.runtime.rpc('prompt.submit', {
-        queued: true,
-        session_id: current.runtimeSessionId,
-        text: content
-      }, { timeoutMs: 1_800_000 })
-      return { status: promptSubmissionStatus(acknowledgement), mode: 'queue' }
+    const status = await this.submitUserTurn(current.runtimeSessionId, content, current.running ? { queued: true } : {}, { display })
+    return { status, mode: current.running ? 'queue' : 'send' }
+  }
+
+  private async submitUserTurn(sessionId: string, content: string, parameters: Record<string, unknown>, presentation: { display?: string; replaceId?: string } = {}): Promise<SubmissionResult['status']> {
+    const scope = currentGatewayScope()
+    const current = $chat.get()
+    const id = crypto.randomUUID()
+    $chat.set({ ...current, error: null, running: true,
+      transcript: updateTranscript(current.transcript, { kind: 'local-user', id, content: presentation.display ?? content, replaceId: presentation.replaceId }) })
+    const updateDelivery = (delivery: 'accepted' | 'uncertain' | 'failed') => {
+      if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) return
+      const latest = $chat.get()
+      $chat.set({ ...latest, transcript: updateTranscript(latest.transcript, { kind: 'user-delivery', id, delivery }) })
     }
-    $chat.set({
-      ...current,
-      error: null,
-      running: true,
-      transcript: updateTranscript(current.transcript, { kind: 'local-user', content: display ?? content, id: crypto.randomUUID() })
-    })
-    await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
     try {
-      if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== current.runtimeSessionId) {
+      if (!parameters.queued) await Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)
+      if (!isCurrentGatewayScope(scope) || $chat.get().runtimeSessionId !== sessionId) {
         throw new GatewayError('The conversation changed before the message was sent.', { kind: 'validation' })
       }
       this.requireLive()
-      const acknowledgement = await this.runtime.rpc('prompt.submit', { session_id: current.runtimeSessionId, text: content }, { timeoutMs: 1_800_000 })
-      return { status: promptSubmissionStatus(acknowledgement), mode: 'send' }
+      const acknowledgement = await this.runtime.rpc('prompt.submit', { ...parameters, session_id: sessionId, text: content }, { timeoutMs: 1_800_000 })
+      const status = promptSubmissionStatus(acknowledgement)
+      updateDelivery(status)
+      return status
     } catch (error) {
-      if (!isCurrentGatewayScope(scope)) throw error
-      const latest = $chat.get()
-      if (latest.runtimeSessionId === current.runtimeSessionId) {
-        $chat.set({ ...latest, error: errorMessage(error), running: false })
+      const kind = classifyGatewayError(error).kind
+      updateDelivery(kind === 'network' || kind === 'aborted' ? 'uncertain' : 'failed')
+      if (isCurrentGatewayScope(scope) && $chat.get().runtimeSessionId === sessionId) {
+        const latest = $chat.get()
+        $chat.set({ ...latest, error: errorMessage(error), running: parameters.queued ? latest.running : false })
       }
       throw error
     }
@@ -390,18 +397,16 @@ export class Conversation {
     if (!Number.isInteger(rowId) || rowId <= 0) throw new Error('A durable message row is required to edit history safely.')
     const target = snapshot.transcript.entries.find(entry => entry.rowId === rowId && 'editTarget' in entry && entry.editTarget)
     const userOrdinal = target && 'editTarget' in target ? target.editTarget?.userOrdinal : undefined
-    if (userOrdinal === undefined) throw new Error('The selected message is no longer editable.')
+    if (!target || userOrdinal === undefined) throw new Error('The selected message is no longer editable.')
     const content = text.trim()
     if (!content) return
-    const acknowledgement = await this.runtime.rpc('prompt.submit', {
+    const status = await this.submitUserTurn(sessionId, content, {
       ...(userOrdinal === 0 ? { confirm_empty_truncate: true } : {}),
       confirm_truncate: true,
-      session_id: sessionId,
-      text: content,
       truncate_before_row_id: rowId,
       truncate_before_user_ordinal: userOrdinal
-    }, { timeoutMs: 1_800_000 })
-    return { status: promptSubmissionStatus(acknowledgement), mode: 'retry' }
+    }, { replaceId: target.id })
+    return { status, mode: 'retry' }
   }
 
   private assertSlashContext(scope: CurrentGatewayScope, sessionId: string | null) {

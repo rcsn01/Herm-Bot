@@ -12,7 +12,10 @@ interface TranscriptEntryBase {
   rowId?: number
 }
 
+export type MessageDelivery = 'pending' | 'accepted' | 'uncertain' | 'failed'
+
 export interface ConversationEntry extends TranscriptEntryBase {
+  delivery?: MessageDelivery
   kind: 'message'
   author: 'assistant' | 'system' | 'user'
   content: string
@@ -59,7 +62,8 @@ export interface TranscriptSnapshot {
 
 export type TranscriptChange =
   | { kind: 'gateway-event'; event: GatewayEvent; createId: string }
-  | { kind: 'local-user'; content: string; id: string }
+  | { kind: 'local-user'; content: string; id: string; replaceId?: string }
+  | { kind: 'user-delivery'; id: string; delivery: MessageDelivery }
   | { kind: 'prepend-history'; rows: readonly SessionMessage[]; fallbackOffset: number }
   | { kind: 'reconcile-history'; rows: readonly SessionMessage[] }
   | { kind: 'set-context'; context: TranscriptContext }
@@ -79,11 +83,24 @@ export function updateTranscript(transcript: TranscriptSnapshot, change: Transcr
   switch (change.kind) {
     case 'gateway-event':
       return applyGatewayEvent(transcript, change.event, change.createId)
-    case 'local-user':
-      return withEntries(transcript, [
-        ...transcript.entries,
-        { author: 'user', content: skillInvocationText(change.content) ?? change.content, id: change.id, kind: 'message', streaming: false }
-      ])
+    case 'local-user': {
+      const index = change.replaceId ? transcript.entries.findIndex(item => item.id === change.replaceId) : -1
+      const original = transcript.entries[index]
+      const entry: ConversationEntry = { author: 'user', content: skillInvocationText(change.content) ?? change.content, id: change.id, kind: 'message', streaming: false, delivery: 'pending',
+        ...(original?.kind === 'message' && original.author === 'user' ? { rowId: original.rowId, editTarget: original.editTarget } : {}) }
+      return withEntries(transcript, index < 0 ? [...transcript.entries, entry]
+        : transcript.entries.map((item, position) => position === index ? entry : item))
+    }
+    case 'user-delivery':
+      return withEntries(transcript, transcript.entries.map(entry => {
+        if (entry.id !== change.id || entry.kind !== 'message' || entry.author !== 'user') return entry
+        if (change.delivery === 'accepted' && entry.delivery !== undefined) {
+          // An accepted rewind replaces the old durable row. Wait for history for its new edit target.
+          const { rowId: _rowId, editTarget: _editTarget, ...local } = entry
+          return { ...local, delivery: change.delivery }
+        }
+        return { ...entry, delivery: change.delivery }
+      }))
     case 'prepend-history': {
       const older = projectRows(change.rows, change.fallbackOffset)
       const existing = new Set(transcript.entries.map(entryIdentity))
@@ -116,9 +133,10 @@ function applyGatewayEvent(transcript: TranscriptSnapshot, event: GatewayEvent, 
   if (event.type === 'thinking.delta' || event.type === 'reasoning.delta') {
     const withAssistant = updateAssistant(transcript, '', true, createId)
     const entries = [...withAssistant.entries]
-    const last = entries.at(-1)
+    const index = activeAssistantIndex(entries)
+    const last = entries[index]
     if (!isAssistant(last)) return transcript
-    entries[entries.length - 1] = { ...last, reasoning: `${last.reasoning ?? ''}${text(payload.delta ?? payload.text)}` }
+    entries[index] = { ...last, reasoning: `${last.reasoning ?? ''}${text(payload.delta ?? payload.text)}` }
     return withEntries(withAssistant, entries)
   }
   if (event.type === 'message.complete') {
@@ -134,14 +152,20 @@ function updateAssistant(
   createId: string
 ): TranscriptSnapshot {
   const entries = [...transcript.entries]
-  const last = entries.at(-1)
+  const index = activeAssistantIndex(entries)
+  const last = entries[index]
   if (isAssistant(last)) {
     if (!delta && last.streaming === streaming) return transcript
-    entries[entries.length - 1] = { ...last, content: `${last.content}${delta}`, streaming }
+    entries[index] = { ...last, content: `${last.content}${delta}`, streaming }
   } else {
     entries.push({ author: 'assistant', content: delta, id: createId, kind: 'message', streaming })
   }
   return withEntries(transcript, entries)
+}
+
+function activeAssistantIndex(entries: readonly TranscriptEntry[]): number {
+  const streaming = entries.findLastIndex(entry => isAssistant(entry) && entry.streaming)
+  return streaming >= 0 ? streaming : entries.length - 1
 }
 
 function isAssistant(entry: TranscriptEntry | undefined): entry is AuthoredEntry {

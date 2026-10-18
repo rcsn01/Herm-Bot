@@ -97,7 +97,8 @@ test('recognizes a gateway streaming acknowledgement without leaving delivery wa
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByText('Fixture answer: Ping', { exact: true })).toBeVisible()
   await expect(page.getByText('Delivery not confirmed. Check the conversation before sending again.', { exact: true })).toHaveCount(0)
-  await expect(page.getByText('Gateway accepted your message.', { exact: true })).toBeVisible()
+  await expect(page.locator('.message.user').filter({ has: page.getByText('Ping', { exact: true }) })).toHaveAttribute('data-delivery', 'accepted')
+  await expect(page.getByText(/Gateway accepted your/)).toHaveCount(0)
   await expect(page.locator('.draft-recovery')).toHaveCount(0)
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('hermes.drafts.v1:')))).toEqual([])
   await reopen(page)
@@ -195,6 +196,7 @@ test('opens a saved session with a normal pointer click', async ({ page }) => {
 test('recovers an edit after refresh and restores the separate normal draft on cancel', async ({ page }) => {
   await login(page)
   await page.getByLabel('Message Hermes').fill('My separate next question')
+  await page.getByRole('article', { name: 'Your message', exact: true }).press('Enter')
   await page.getByRole('button', { name: 'Edit & retry', exact: true }).click()
   await page.getByLabel('Message Hermes').fill('Revised earlier question')
   await reopen(page)

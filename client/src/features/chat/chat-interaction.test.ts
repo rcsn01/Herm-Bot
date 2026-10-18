@@ -533,6 +533,19 @@ describe('disposal', () => {
 
 
 describe('draft recovery', () => {
+  it.each(['send', 'queue'] as const)('keeps routine %s feedback out of the composer', async mode => {
+    const { commands, interaction: subject } = interaction()
+    const pending = deferred<{ status: 'accepted'; mode: 'send' | 'queue' }>()
+    vi.mocked(commands.send).mockReturnValue(pending.promise)
+    subject.updateDraft('new message')
+    const submitted = subject.submit()
+    expect(subject.$state.get().submissionFeedback).toBeNull()
+    pending.resolve({ status: 'accepted', mode })
+    await submitted
+    expect(subject.$state.get().submissionFeedback).toBeNull()
+    expect(subject.record()?.recoveries).toEqual([])
+  })
+
   it('keeps a newer draft when an older send fails', async () => {
     const { commands, interaction: subject } = interaction()
     const pending = deferred<void>()

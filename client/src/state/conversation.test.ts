@@ -197,6 +197,54 @@ describe('reduceGatewayEvent', () => {
 })
 
 describe('prompt submission safety', () => {
+  it.each(['send', 'queue', 'retry'] as const)('shows %s pending on the correct message until its acknowledgement', async mode => {
+    $chat.set({ ...emptyChatState(), running: mode === 'queue', runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ role: 'user', content: 'original', row_id: 41 }]) })
+    let accept!: (value: unknown) => void
+    const gateway = new MemoryGateway().handle('prompt.submit', () => new Promise(resolve => { accept = resolve }))
+    const { conversation, dispose } = subject(gateway)
+    try {
+      const submission = mode === 'retry' ? conversation.retryFrom(41, 'new message') : conversation.send('new message')
+      expect($chat.get().transcript.entries.at(-1)).toMatchObject({ content: 'new message', delivery: 'pending' })
+      await vi.waitFor(() => expect(accept).toBeTypeOf('function'))
+      accept({ status: mode === 'queue' ? 'queued' : 'streaming' })
+      await submission
+      expect($chat.get().transcript.entries.at(-1)).toMatchObject({ content: 'new message', delivery: 'accepted' })
+      expect($chat.get().transcript.entries).toHaveLength(mode === 'retry' ? 1 : 2)
+    } finally { dispose() }
+  })
+
+  it.each([
+    { error: new Error('Network disconnected'), delivery: 'uncertain' },
+    { error: new Error('Submission rejected'), delivery: 'failed' }
+  ])('marks a failed submission $delivery without confirming another message', async ({ error, delivery }) => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1',
+      transcript: createTranscript({ source: null, storedSessionId: null }, [{ role: 'user', content: 'earlier', row_id: 1 }]) })
+    const { conversation, dispose } = subject(new MemoryGateway().handle('prompt.submit', () => { throw error }))
+    try {
+      await expect(conversation.send('new message')).rejects.toThrow(error.message)
+      expect($chat.get().transcript.entries.at(-1)).toMatchObject({ content: 'new message', delivery })
+      expect($chat.get().transcript.entries[0]).not.toHaveProperty('delivery')
+    } finally { dispose() }
+  })
+
+  it('retires pending delivery on interruption and ignores an acknowledgement after switching conversations', async () => {
+    $chat.set({ ...emptyChatState(), runtimeSessionId: 'runtime-1' })
+    let accept!: (value: unknown) => void
+    const { conversation, dispose } = subject(new MemoryGateway().handle('prompt.submit', () => new Promise(resolve => { accept = resolve })))
+    try {
+      const submission = conversation.send('old conversation')
+      await vi.waitFor(() => expect(accept).toBeTypeOf('function'))
+      conversation.suspend()
+      expect($chat.get().transcript.entries.at(-1)).toMatchObject({ delivery: 'uncertain' })
+      const other = { ...emptyChatState(), runtimeSessionId: 'runtime-2' }
+      $chat.set(other)
+      accept({ status: 'streaming' })
+      await submission
+      expect($chat.get()).toBe(other)
+    } finally { dispose() }
+  })
+
   describe.each(['send', 'queue', 'retry'] as const)('%s acknowledgement', mode => {
     it.each([
       { label: 'streaming', acknowledgement: { status: 'streaming' }, expected: 'accepted' },
@@ -223,6 +271,7 @@ describe('prompt submission safety', () => {
       try {
         const submission = mode === 'retry' ? conversation.retryFrom(41, 'Ping') : conversation.send('Ping')
         await expect(submission).resolves.toEqual({ status: expected, mode })
+        expect($chat.get().transcript.entries.at(-1)).toMatchObject({ content: 'Ping', delivery: expected })
       } finally { dispose() }
     })
   })
@@ -1061,6 +1110,27 @@ describe('local transcript cache', () => {
 
     expect($chat.get().transcript.entries.map(entry => entry.content)).toEqual(['fresh answer'])
     dispose()
+  })
+
+  it('does not cache an optimistic edit preserved before an authoritative history anchor', async () => {
+    const gateway = new MemoryGateway()
+      .handle('session.resume', () => ({ session_id: 'runtime-1', stored_session_id: 'stored-1' }))
+      .handle('/api/sessions/stored-1/messages?include_compacted=true&limit=80&offset=0&order=latest&profile=default', () => ({
+        messages: [{ content: 'fresh answer', role: 'assistant', row_id: 2 }], pagination: { limit: 80, offset: 0, returned: 1 }
+      }))
+    const { conversation, dispose, runtime } = subject(gateway)
+    try {
+      conversation.adopt(await runtime.resumeSession(null, 'stored-1'))
+      const transcript = createTranscript({ source: null, storedSessionId: 'stored-1' }, [
+        { content: 'original', role: 'user', row_id: 1 }, { content: 'old answer', role: 'assistant', row_id: 2 }
+      ])
+      $chat.set({ ...$chat.get(), availability: 'live', historyBackfilled: true, transcript: updateTranscript(transcript, {
+        kind: 'local-user', id: 'edit-1', content: 'pending edit', replaceId: 'history-row-1'
+      }) })
+      await conversation.reconcileHistory()
+      expect($chat.get().transcript.entries[0]).toMatchObject({ content: 'pending edit', delivery: 'pending' })
+      expect(loadCachedTranscript(null)?.entries.map(entry => entry.content)).toEqual(['fresh answer'])
+    } finally { dispose() }
   })
 
   it('does not persist unconfirmed events when a turn completes', () => {

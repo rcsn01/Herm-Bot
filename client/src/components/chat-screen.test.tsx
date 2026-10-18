@@ -101,6 +101,8 @@ describe('answer usability wiring', () => {
     const controller = controllerStub()
     const conversation = conversationStub()
     const { container, rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
+    expect(screen.queryByRole('button', { name: 'Copy answer' })).toBeNull()
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Assistant answer' }))
     expect(screen.getAllByRole('button', { name: 'Copy answer' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Copy answer' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith('**exact answer**\n'))
@@ -116,6 +118,7 @@ describe('answer usability wiring', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('Denied')) } })
     $chat.set({ ...emptyChatState(), transcript: createTranscript({ source: null, storedSessionId: null }, [{ role: 'assistant', content: 'Private copy snapshot' }]) })
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Assistant answer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Copy answer' }))
     await screen.findByRole('textbox', { name: /text for manual copying/ })
     vi.spyOn(localPrivacy, 'revision').mockReturnValue('new-reset')
@@ -128,6 +131,7 @@ describe('answer usability wiring', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     $chat.set(reduceGatewayEvent(emptyChatState(), { type: 'message.delta', payload: { delta: 'partial text' } }))
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Assistant answer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Copy answer so far' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('partial text'))
     expect(screen.getByRole('article', { name: 'Assistant answer' }).closest('[aria-live]')).toBeNull()
@@ -472,6 +476,7 @@ describe('transcript rendering and durable edits', () => {
     const conversation = conversationStub()
     const { rerender } = render(<ChatScreen controller={controller} conversation={conversation} />)
 
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Your message' }))
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Edit & retry' }).disabled).toBe(true)
 
     $chat.set({
@@ -480,6 +485,7 @@ describe('transcript rendering and durable edits', () => {
       transcript: createTranscript({ source: null, storedSessionId: null }, [{ content: 'durable', role: 'user', row_id: 41 }])
     })
     rerender(<ChatScreen controller={controller} conversation={conversation} />)
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Your message' }))
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Edit & retry' }).disabled).toBe(true)
   })
 
@@ -491,6 +497,7 @@ describe('transcript rendering and durable edits', () => {
     })
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Your message' }))
     fireEvent.click(screen.getByRole('button', { name: 'Edit & retry' }))
     expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message Hermes' }).value).toBe('original')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel edit' }))
