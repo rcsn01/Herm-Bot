@@ -27,6 +27,7 @@ import { createTranscript, updateTranscript } from '~/transcript/transcript'
 export const emptyChatState = (): ChatState => ({
   availability: 'empty',
   lastSyncedAt: null,
+  lastResponseAt: null,
   contractVersion: null,
   error: null,
   historyBackfilled: false,
@@ -71,15 +72,22 @@ function upsertTool(tools: ToolActivity[], payload: Record<string, unknown>, sta
   return result
 }
 
+function sessionUsage(raw: unknown): SessionInfoSnapshot['usage'] {
+  const usage = record(raw)
+  const count = (value: unknown): number | null => {
+    const number = typeof value === 'string' && value.trim() ? Number(value) : value
+    return typeof number === 'number' && Number.isSafeInteger(number) && number >= 0 ? number : null
+  }
+  // total/prompt/input are cumulative API counters, not context occupancy.
+  const used = count(usage.context_used)
+  const capacity = count(usage.context_max)
+  const limit = capacity !== null && capacity > 0 ? capacity : null
+  return used === null && limit === null ? null : { used, limit, ...(usage.context_estimated === true ? { estimated: true } : {}) }
+}
+
 function sessionInfoSnapshot(raw: object): SessionInfoSnapshot {
   const info = record(raw)
-  let usage: SessionInfoSnapshot['usage'] = null
-  if (typeof info.usage === 'object' && info.usage !== null) {
-    const rawUsage = record(info.usage)
-    const used = Number(rawUsage.total ?? rawUsage.total_tokens ?? 0)
-    const limit = Number(rawUsage.context_limit ?? rawUsage.max_tokens ?? 0)
-    if (used || limit) usage = { used, limit }
-  }
+  const usage = sessionUsage(info.usage)
   const model = text(info.model).trim()
   const reasoningEffort = text(info.reasoning_effort).trim()
   return {
@@ -110,6 +118,8 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
         ? state.contractVersion
         : typeof marker === 'number' && Number.isFinite(marker) ? marker : state.contractVersion
       const storedSessionId = text(payload.stored_session_id) || state.storedSessionId
+      const info = sessionInfoSnapshot(payload)
+      const modelChanged = state.info?.model && info.model && state.info.model !== info.model
       const context = {
         source: storedSessionId === state.transcript.context.storedSessionId ? state.transcript.context.source : null,
         storedSessionId
@@ -117,27 +127,38 @@ export function reduceGatewayEvent(state: ChatState, event: GatewayEvent): ChatS
       return {
         ...state,
         contractVersion,
-        info: sessionInfoSnapshot(payload),
+        info,
+        lastResponseAt: modelChanged ? null : state.lastResponseAt,
         running: Boolean(payload.running),
         storedSessionId,
         transcript: updateTranscript(state.transcript, { kind: 'set-context', context })
       }
     }
+    case 'session.usage':
+      return { ...state, info: { ...(state.info ?? { title: '', running: state.running }), usage: sessionUsage(payload.usage) } }
     case 'message.start':
       return { ...state, error: null, running: true, info: state.info ? { ...state.info, running: true } : null }
     case 'message.delta':
     case 'thinking.delta':
     case 'reasoning.delta':
-    case 'message.complete':
       return {
         ...state,
         transcript: updateTranscript(state.transcript, {
           kind: 'gateway-event',
           createId: crypto.randomUUID(),
           event
-        }),
-        ...(event.type === 'message.complete' ? { running: false, info: state.info ? { ...state.info, running: false } : null } : {})
+        })
       }
+    case 'message.complete': {
+      const info = state.info ?? { title: '', running: false, usage: null }
+      return {
+        ...state,
+        running: false,
+        lastResponseAt: payload.status === undefined || payload.status === 'complete' ? Date.now() : state.lastResponseAt,
+        info: { ...info, running: false, usage: payload.usage === undefined ? info.usage : sessionUsage(payload.usage) },
+        transcript: updateTranscript(state.transcript, { kind: 'gateway-event', createId: crypto.randomUUID(), event })
+      }
+    }
     case 'tool.start':
       return { ...state, tools: upsertTool(state.tools, payload, 'running') }
     case 'tool.progress':
@@ -238,12 +259,14 @@ export class Conversation {
     const cached = session.storedSessionId ? transcriptCache.read({ owner: $draftOwner.get(), profile: currentGatewayScope().profile, storedSessionId: session.storedSessionId }) : null
     const transcript = same ? current.transcript : cached ? { context: { ...context, source: source ?? cached.source }, entries: cached.entries } : createTranscript(context, session.rows)
     this.selectedIdentity = this.identity(session.storedSessionId)
+    const info = sessionInfoSnapshot(session.info)
     $chat.set({
       ...emptyChatState(),
       availability: 'synchronizing',
       lastSyncedAt: same ? current.lastSyncedAt : cached?.lastSyncedAt ?? null,
+      lastResponseAt: same && current.info?.model === info.model ? current.lastResponseAt : null,
       contractVersion: session.contractVersion,
-      info: sessionInfoSnapshot(session.info),
+      info,
       runtimeSessionId: session.runtimeSessionId,
       storedSessionId: session.storedSessionId,
       transcript

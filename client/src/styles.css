@@ -290,8 +290,10 @@ pre { white-space: pre-wrap; word-break: break-word; }
 .agent-activity-step[open] > summary > svg { transform: rotate(180deg); }
 .agent-activity-step pre { max-height: min(40dvh, 240px); margin: 0 0 calc(var(--spacing) * 2); padding: calc(var(--spacing) * 2.5); overflow: auto; border-radius: var(--radius-control); background: var(--bg); color: var(--text); font: var(--font-caption)/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .file-content { max-height: 52dvh; overflow: auto; padding: calc(var(--spacing) * 3); border-radius: var(--radius-control); background: #080a0f; color: #d9dbea; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.context-usage { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: calc(var(--spacing) * 2); color: var(--muted-foreground); font-size: var(--font-caption); }
-.context-usage progress { width: 100%; accent-color: var(--primary); }
+.context-usage { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--spacing) calc(var(--spacing) * 2); color: var(--muted-foreground); font-size: var(--font-caption); }
+.context-usage progress { min-width: 0; width: 100%; accent-color: var(--primary); }
+.context-token-count { text-align: right; }
+.context-cache-estimate { grid-column: 1 / -1; font-variant-numeric: tabular-nums; }
 .new-messages-button { position: fixed; z-index: 24; left: 50%; bottom: calc(var(--composer-occlusion, 94px) + 12px); transform: translateX(-50%); box-shadow: 0 8px 24px #0004; }
 .prompt-card { position: fixed; z-index: 26; inset: auto 12px calc(var(--composer-occlusion, 94px) + 8px); max-height: max(96px, calc(100dvh - var(--composer-occlusion, 94px) - 76px)); overflow: auto; padding: calc(var(--spacing) * 3.5); display: grid; gap: calc(var(--spacing) * 2.5); border: 1px solid var(--primary); border-radius: var(--radius-card); background: var(--panel); box-shadow: 0 16px 45px #0004; }
 .prompt-card p { margin: 0; color: var(--muted-foreground); }

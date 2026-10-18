@@ -156,8 +156,9 @@ export interface ToolActivity {
 }
 
 export interface SessionUsage {
-  used: number
-  limit: number
+  used: number | null
+  limit: number | null
+  estimated?: boolean
 }
 
 export interface SessionInfoSnapshot {
@@ -177,6 +178,7 @@ export interface PendingPrompt {
 export interface ChatState {
   availability: 'empty' | 'cached' | 'synchronizing' | 'live' | 'unavailable'
   lastSyncedAt: number | null
+  lastResponseAt: number | null
   contractVersion: number | null
   error: null | string
   historyBackfilled: boolean

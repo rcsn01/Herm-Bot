@@ -4,6 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { MessageMarkdown } from '~/components/message-markdown'
 import { CopyTextButton } from '~/components/copy-text-button'
 import { MessageBubble } from '~/components/message-bubble'
+import { ContextStatus } from '~/components/context-status'
 import { localPrivacy } from '~/state/local-privacy'
 
 import { Badge, Button, Textarea } from '~/compat/primitives'
@@ -24,7 +25,6 @@ import { BotFace } from '~/features/agents/bot-face'
 import { useApi } from '~/gateway/gateway-api-hooks'
 import { errorMessage } from '~/gateway/gateway-error'
 import { Conversation, $chat } from '~/state/conversation'
-import type { SessionUsage } from '~/lib/types'
 import type { GatewayController } from '~/state/gateway-controller'
 import { $gatewayReady, $connection, $preferences, $profileSwitching, $sessionSelecting } from '~/state/store'
 
@@ -358,7 +358,7 @@ export function ChatScreen({ active = true, controller, conversation, mediaConne
           </div>
         </div>
         <div className="composer-meta">
-          {chat.info?.usage && <ContextUsage usage={chat.info.usage} />}
+          {(chat.runtimeSessionId || chat.storedSessionId) && <ContextStatus active={active && localReady} lastResponseAt={chat.lastResponseAt} usage={chat.info?.usage ?? null} />}
           {chat.info && (
             <div className="composer-model" role="group" aria-label={composerReady ? 'Session model and effort' : 'Last-known session model and effort'}>
               <span className="composer-model-name" title={`Model: ${chat.info.model ?? 'unavailable'}`}>{chat.info.model ?? 'Model unavailable'}</span>
@@ -396,11 +396,6 @@ function EmptyChat() {
       <h2>What can {displayName} do for you?</h2>
     </>
   )
-}
-
-function ContextUsage({ usage }: { usage: SessionUsage }) {
-  const { used, limit } = usage
-  return <div className="context-usage"><span>Context</span><progress max={limit || used || 1} value={used} /><span>{used.toLocaleString()}{limit ? ` / ${limit.toLocaleString()}` : ''}</span></div>
 }
 
 function PromptCard({ conversation }: { conversation: Conversation }) {

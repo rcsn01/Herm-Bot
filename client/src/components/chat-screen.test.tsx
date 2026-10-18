@@ -252,7 +252,7 @@ describe('chat interaction wiring', () => {
 describe('session footer metadata', () => {
   it('shows session model and effort before status, updates live, and preserves context usage', () => {
     $chat.set(reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
-      type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/first', reasoning_effort: 'high', usage: { total: 25, context_limit: 100 } }
+      type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/first', reasoning_effort: 'high', usage: { context_used: 25, context_max: 100, total: 9999 } }
     }))
     render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
     const model = screen.getByRole('group', { name: 'Session model and effort' })
@@ -262,7 +262,7 @@ describe('session footer metadata', () => {
     expect(screen.getByText('25 / 100')).not.toBeNull()
     act(() => {
       $chat.set(reduceGatewayEvent($chat.get(), {
-        type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/second', reasoning_effort: 'low', running: true, usage: { total: 50, context_limit: 100 } }
+        type: 'session.info', session_id: 'runtime-1', payload: { model: 'provider/second', reasoning_effort: 'low', running: true, usage: { context_used: 50, context_max: 100, total: 99999 } }
       }))
     })
     expect(model.textContent).toBe('provider/second·low')
@@ -303,12 +303,12 @@ describe('transcript rendering and durable edits', () => {
   })
 
   it.each([
-    { name: 'total only', payload: { usage: { total: 25 } }, label: '25', max: 25 },
-    { name: 'limit only', payload: { usage: { context_limit: 100 } }, label: '0 / 100', max: 100 },
-    { name: 'absent usage', payload: {}, label: null, max: null },
-    { name: 'empty usage', payload: { usage: {} }, label: null, max: null },
-    { name: 'all-zero usage', payload: { usage: { total: 0, context_limit: 0 } }, label: null, max: null },
-    { name: 'NaN with a valid limit', payload: { usage: { total: 'bad', context_limit: 100 } }, label: 'NaN / 100', max: 100 }
+    { name: 'cumulative total only', payload: { usage: { total: 25 } }, label: 'Usage unavailable', max: null },
+    { name: 'capacity only', payload: { usage: { context_max: 100 } }, label: 'Usage unavailable', max: null },
+    { name: 'occupancy only', payload: { usage: { context_used: 25 } }, label: '25 tokens · limit unknown', max: null },
+    { name: 'absent usage', payload: {}, label: 'Usage unavailable', max: null },
+    { name: 'zero occupancy', payload: { usage: { context_used: 0, context_max: 100 } }, label: '0 / 100', max: 100 },
+    { name: 'invalid occupancy with a valid limit', payload: { usage: { context_used: 'bad', context_max: 100 } }, label: 'Usage unavailable', max: null }
   ])('renders the projected context usage: $name', ({ payload, label, max }) => {
     const state = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
       type: 'session.info', session_id: 'runtime-1', payload
@@ -317,12 +317,10 @@ describe('transcript rendering and durable edits', () => {
     const { container } = render(<ChatScreen controller={controllerStub()} conversation={conversationStub()} />)
 
     const contextUsage = container.querySelector('.context-usage')
-    if (label === null) {
-      expect(contextUsage).toBeNull()
-    } else {
-      expect(contextUsage?.textContent).toContain(label)
-      expect(contextUsage?.querySelector('progress')?.max).toBe(max)
-    }
+    expect(contextUsage?.textContent).toContain(label)
+    expect(contextUsage?.textContent).toContain('Est. cache: unknown')
+    if (max === null) expect(contextUsage?.querySelector('progress')).toBeNull()
+    else expect(contextUsage?.querySelector('progress')?.max).toBe(max)
   })
 
   it('shows whether the current session is working', () => {

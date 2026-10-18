@@ -113,6 +113,14 @@ const server = http.createServer(async (req, res) => {
         const stored = update.longHistorySession
         state.messages.set(stored, [...initialMessages(stored), ...Array.from({ length: 30 }, (_, i) => ({ row_id: i + 3, role: i % 2 ? 'assistant' : 'user', content: `Saved history ${i + 1}. ${'Readable fixture paragraph. '.repeat(40)}` }))])
       }
+      if (Object.hasOwn(update, 'contextUsage')) {
+        for (const ws of state.sockets) {
+          if (!ws.fixtureRuntime || ws.readyState !== 1) continue
+          ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
+            type: 'session.usage', session_id: ws.fixtureRuntime, payload: { usage: update.contextUsage }
+          } }))
+        }
+      }
       if (['delta', 'complete', 'error'].includes(update.answerEvent?.type)) {
         for (const ws of state.sockets) {
           if (!ws.fixtureAnswer || ws.readyState !== 1) continue
@@ -122,7 +130,7 @@ const server = http.createServer(async (req, res) => {
           ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
             type: type === 'delta' ? 'message.delta' : type === 'complete' ? 'message.complete' : 'error',
             session_id: ws.fixtureRuntime,
-            payload: type === 'delta' ? { delta } : type === 'error' ? { message: 'Fixture stream failed' } : {}
+            payload: type === 'delta' ? { delta } : type === 'error' ? { message: 'Fixture stream failed' } : { status: 'complete', ...(Object.hasOwn(update.answerEvent, 'usage') ? { usage: update.answerEvent.usage } : {}) }
           } }))
           if (type !== 'delta') ws.fixtureAnswer = null
         }
@@ -383,7 +391,7 @@ sockets.on('connection', (ws, _req, id, profile) => {
       currentStored = stored
       ws.fixtureRuntime = runtime
       ws.fixtureAnswer = null
-      result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: stored === 'footer-fixture' ? 'fixture/a-very-long-model-name-that-must-not-hide-the-status' : 'fixture/test-model', reasoning_effort: 'high', title: stored, ...(stored === 'footer-fixture' ? { usage: { total: 25000, context_limit: 100000 } } : {}) } }
+      result = { session_id: runtime, stored_session_id: stored, info: { desktop_contract: 6, model: stored === 'footer-fixture' ? 'fixture/a-very-long-model-name-that-must-not-hide-the-status' : 'fixture/test-model', reasoning_effort: 'high', title: stored, ...(stored === 'footer-fixture' ? { usage: { context_used: 25000, context_max: 100000, total: 900000 } } : {}) } }
     } else if (request.method === 'session.history') {
       result = { messages: state.messages.get(stored) ?? initialMessages(stored) }
     } else if (request.method === 'session.list') {

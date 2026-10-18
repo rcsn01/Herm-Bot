@@ -137,32 +137,32 @@ describe('reduceGatewayEvent', () => {
   })
 
   it.each([
-    { name: 'standard usage, title, and truthy running', payload: { title: 'Planning', running: true, usage: { context_limit: 100, total: 25 } }, info: { title: 'Planning', running: true, usage: { used: 25, limit: 100 } }, running: true },
+    { name: 'current context rather than cumulative totals', payload: { title: 'Planning', running: true, usage: { context_used: 25, context_max: 100, total: 9999 } }, info: { title: 'Planning', running: true, usage: { used: 25, limit: 100 } }, running: true },
     { name: 'trimmed session model and effort', payload: { model: '  provider/model  ', reasoning_effort: ' high ' }, info: { title: '', running: false, model: 'provider/model', reasoningEffort: 'high', usage: null }, running: false },
     { name: 'empty model and effort', payload: { model: '  ', reasoning_effort: '' }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'malformed model and effort', payload: { model: { name: 'model' }, reasoning_effort: false }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'title preserves surrounding whitespace', payload: { title: '  Planning  ' }, info: { title: '  Planning  ', running: false, usage: null }, running: false },
-    { name: 'legacy usage names', payload: { usage: { max_tokens: 100, total_tokens: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
-    { name: 'current usage names win over legacy names', payload: { usage: { total: 25, total_tokens: 99, context_limit: 100, max_tokens: 999 } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
-    { name: 'null current usage names fall back to legacy names', payload: { usage: { total: null, total_tokens: '25', context_limit: null, max_tokens: '100' } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
-    { name: 'empty current total suppresses the legacy value', payload: { usage: { total: '', total_tokens: 25, context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
-    { name: 'false current total suppresses the legacy value', payload: { usage: { total: false, total_tokens: 25, context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
-    { name: 'zero current total suppresses the legacy value', payload: { usage: { total: 0, total_tokens: 25, context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
-    { name: 'empty current limit suppresses the legacy value', payload: { usage: { total: 25, context_limit: '', max_tokens: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
-    { name: 'false current limit suppresses the legacy value', payload: { usage: { total: 25, context_limit: false, max_tokens: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
-    { name: 'zero current limit suppresses the legacy value', payload: { usage: { total: 25, context_limit: 0, max_tokens: 100 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
+    { name: 'cumulative aliases are not context', payload: { usage: { max_tokens: 100, total_tokens: 25 } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'estimated context is identified', payload: { usage: { context_used: 25, context_max: 100, context_estimated: true } }, info: { title: '', running: false, usage: { used: 25, limit: 100, estimated: true } }, running: false },
+    { name: 'null context does not fall back to totals', payload: { usage: { context_used: null, total: 25, context_max: 100 } }, info: { title: '', running: false, usage: { used: null, limit: 100 } }, running: false },
+    { name: 'blank counts are unknown rather than zero', payload: { usage: { context_used: '', context_max: 100 } }, info: { title: '', running: false, usage: { used: null, limit: 100 } }, running: false },
+    { name: 'boolean counts are unknown rather than zero', payload: { usage: { context_used: false, context_max: 100 } }, info: { title: '', running: false, usage: { used: null, limit: 100 } }, running: false },
+    { name: 'reported zero occupancy is retained', payload: { usage: { context_used: 0, context_max: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
+    { name: 'zero capacity is unknown', payload: { usage: { context_used: 25, context_max: 0 } }, info: { title: '', running: false, usage: { used: 25, limit: null } }, running: false },
+    { name: 'negative and infinite counts are rejected', payload: { usage: { context_used: -1, context_max: Infinity } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'fractional and unsafe counts are rejected', payload: { usage: { context_used: 1.5, context_max: Number.MAX_SAFE_INTEGER + 1 } }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'absent usage and title', payload: {}, info: { title: '', running: false, usage: null }, running: false },
     { name: 'null usage', payload: { usage: null }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'primitive usage', payload: { usage: 'legacy' }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'array usage', payload: { usage: [] }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'empty usage object', payload: { usage: {} }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'total only', payload: { usage: { total: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: 0 } }, running: false },
-    { name: 'limit only', payload: { usage: { context_limit: 100 } }, info: { title: '', running: false, usage: { used: 0, limit: 100 } }, running: false },
-    { name: 'all-zero usage', payload: { usage: { total: 0, context_limit: 0 } }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'numeric strings are coerced', payload: { usage: { total: '25', context_limit: '100' } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
-    { name: 'garbage in both fields yields no usage', payload: { usage: { total: 'bad', context_limit: 'bad' } }, info: { title: '', running: false, usage: null }, running: false },
-    { name: 'non-numeric total beside valid limit is retained as NaN', payload: { usage: { total: 'bad', context_limit: 100 } }, info: { title: '', running: false, usage: { used: Number.NaN, limit: 100 } }, running: false },
-    { name: 'non-numeric limit beside valid total is retained as NaN', payload: { usage: { total: 25, context_limit: 'bad' } }, info: { title: '', running: false, usage: { used: 25, limit: Number.NaN } }, running: false },
+    { name: 'total only is not occupancy', payload: { usage: { total: 25 } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'capacity only leaves occupancy unknown', payload: { usage: { context_max: 100 } }, info: { title: '', running: false, usage: { used: null, limit: 100 } }, running: false },
+    { name: 'occupancy without capacity', payload: { usage: { context_used: 25 } }, info: { title: '', running: false, usage: { used: 25, limit: null } }, running: false },
+    { name: 'numeric strings are validated', payload: { usage: { context_used: '25', context_max: '100' } }, info: { title: '', running: false, usage: { used: 25, limit: 100 } }, running: false },
+    { name: 'garbage in both fields yields no usage', payload: { usage: { context_used: 'bad', context_max: 'bad' } }, info: { title: '', running: false, usage: null }, running: false },
+    { name: 'invalid occupancy beside valid capacity is unknown', payload: { usage: { context_used: 'bad', context_max: 100 } }, info: { title: '', running: false, usage: { used: null, limit: 100 } }, running: false },
+    { name: 'invalid capacity beside valid occupancy is unknown', payload: { usage: { context_used: 25, context_max: 'bad' } }, info: { title: '', running: false, usage: { used: 25, limit: null } }, running: false },
     { name: 'non-string title', payload: { title: 42 }, info: { title: '', running: false, usage: null }, running: false },
     { name: 'truthy non-boolean running', payload: { running: 'yes' }, info: { title: '', running: true, usage: null }, running: true },
     { name: 'false running', payload: { running: false }, info: { title: '', running: false, usage: null }, running: false }
@@ -177,7 +177,7 @@ describe('reduceGatewayEvent', () => {
   it('replaces the complete info snapshot when a later session.info omits fields', () => {
     const populated = reduceGatewayEvent({ ...emptyChatState(), runtimeSessionId: 'runtime-1' }, {
       type: 'session.info', session_id: 'runtime-1', payload: {
-        title: 'Planning', running: true, model: 'provider/model', reasoning_effort: 'high', usage: { total: 25, context_limit: 100 }
+        title: 'Planning', running: true, model: 'provider/model', reasoning_effort: 'high', usage: { context_used: 25, context_max: 100 }
       }
     })
 
@@ -187,6 +187,41 @@ describe('reduceGatewayEvent', () => {
 
     expect(replaced.info).toEqual({ title: '', running: false, usage: null })
     expect(replaced.running).toBe(false)
+  })
+
+  it('updates live context usage without erasing session metadata or running state', () => {
+    const state = { ...emptyChatState(), runtimeSessionId: 'active', running: true,
+      info: { title: 'Planning', running: true, model: 'provider/model', reasoningEffort: 'high', usage: null } }
+    const updated = reduceGatewayEvent(state, { type: 'session.usage', session_id: 'active', payload: {
+      usage: { total: 900000, context_used: 25000, context_max: 100000 }
+    } })
+    expect(updated.info).toEqual({ ...state.info, usage: { used: 25000, limit: 100000 } })
+    expect(updated.running).toBe(true)
+    expect(updated.lastResponseAt).toBeNull()
+    expect(reduceGatewayEvent(updated, { type: 'session.usage', session_id: 'other', payload: { usage: {} } })).toBe(updated)
+  })
+
+  it('anchors the cache estimate only to successful observed completion, and consumes final usage', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(123456)
+    const state = { ...emptyChatState(), runtimeSessionId: 'active' }
+    const complete = reduceGatewayEvent(state, { type: 'message.complete', session_id: 'active', payload: {
+      status: 'complete', usage: { total: 900000, context_used: 50, context_max: 100 }
+    } })
+    expect(complete.lastResponseAt).toBe(123456)
+    expect(complete.info?.usage).toEqual({ used: 50, limit: 100 })
+    for (const status of ['error', 'interrupted', 'unknown']) {
+      expect(reduceGatewayEvent(state, { type: 'message.complete', session_id: 'active', payload: { status } }).lastResponseAt).toBeNull()
+    }
+    expect(reduceGatewayEvent(state, { type: 'message.complete', session_id: 'other', payload: {} })).toBe(state)
+    expect(reduceGatewayEvent(complete, { type: 'message.start', session_id: 'active', payload: {} }).lastResponseAt).toBe(123456)
+    expect(reduceGatewayEvent(complete, { type: 'message.complete', session_id: 'active', payload: { status: 'error' } }).lastResponseAt).toBe(123456)
+  })
+
+  it('retires the cache estimate when the session model changes', () => {
+    const state = { ...emptyChatState(), runtimeSessionId: 'active', lastResponseAt: 123456,
+      info: { title: '', running: false, model: 'first', usage: null } }
+    const changed = reduceGatewayEvent(state, { type: 'session.info', session_id: 'active', payload: { model: 'second' } })
+    expect(changed.lastResponseAt).toBeNull()
   })
 
   it('ignores events for another runtime session and unknown future events', () => {
@@ -814,12 +849,31 @@ describe('slash execution', () => {
 })
 
 describe('session adoption', () => {
+  it('preserves an observed cache anchor only for reconnection to the same conversation and model', () => {
+    const { conversation, dispose } = subject(new MemoryGateway())
+    const session = { contractVersion: null, info: { model: 'provider/model' }, rows: [], runtimeSessionId: 'runtime-1', storedSessionId: 'stored-1' }
+    try {
+      conversation.adopt(session)
+      $chat.set({ ...$chat.get(), lastResponseAt: 123456 })
+      conversation.suspend()
+      conversation.adopt({ ...session, runtimeSessionId: 'runtime-2' })
+      expect($chat.get().lastResponseAt).toBe(123456)
+      conversation.adopt({ ...session, storedSessionId: 'stored-2' })
+      expect($chat.get().lastResponseAt).toBeNull()
+      $chat.set({ ...$chat.get(), lastResponseAt: 123456 })
+      conversation.adopt({ ...session, storedSessionId: 'stored-2', info: { model: 'other' } })
+      expect($chat.get().lastResponseAt).toBeNull()
+      conversation.reset()
+      expect($chat.get().lastResponseAt).toBeNull()
+    } finally { dispose() }
+  })
+
   it('installs raw info from the runtime and starts idle until history reconciliation', async () => {
     const rawInfo = {
       desktop_contract: MINIMUM_CONTRACT,
       title: 'Adopted session',
       running: true,
-      usage: { context_limit: 100, total: 25 }
+      usage: { context_max: 100, context_used: 25 }
     }
     const gateway = new MemoryGateway().handle('session.create', () => ({
       info: rawInfo,
