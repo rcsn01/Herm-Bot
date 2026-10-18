@@ -48,7 +48,8 @@ test('holding a message reveals its actions without permanent edit or copy butto
   await captureClipboard(page)
   await expect(page.getByRole('button', { name: 'Edit & retry' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy answer', exact: true })).toHaveCount(0)
-  await expect(answer(page).getByRole('button', { name: 'Read aloud' })).toBeVisible()
+  await expect(answer(page).getByRole('button', { name: 'Read aloud' })).toHaveCount(0)
+  await expect(answer(page).locator('svg')).toHaveCount(0)
   const question = page.getByRole('article', { name: 'Your message', exact: true })
   const hold = async (message: Locator) => {
     const box = (await message.boundingBox())!
@@ -72,6 +73,7 @@ test('holding a message reveals its actions without permanent edit or copy butto
     document.documentElement.dataset.theme = 'dark'
   })
   await hold(answer(page))
+  await expect(options(page).getByRole('button', { name: 'Read aloud', exact: true })).toBeVisible()
   await expect(options(page).getByRole('button', { name: 'Copy answer', exact: true })).toBeFocused()
   expect((await options(page).boundingBox())!.height).toBeLessThan(260)
   await page.screenshot({ path: testInfo.outputPath('message-options-copy-dark.png') })

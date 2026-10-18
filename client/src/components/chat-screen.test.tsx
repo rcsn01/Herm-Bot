@@ -194,7 +194,10 @@ describe('chat interaction wiring', () => {
     vi.stubGlobal('Audio', class { play = play; pause = vi.fn() })
 
     render(<ChatScreen mediaConnection={connection} controller={controllerStub()} conversation={conversationStub()} />)
+    expect(screen.queryByRole('button', { name: 'Read aloud' })).toBeNull()
+    fireEvent.contextMenu(screen.getByRole('article', { name: 'Assistant answer' }))
     fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }))
+    expect(screen.queryByRole('dialog', { name: 'Message options' })).toBeNull()
 
     await waitFor(() => expect(connection.request).toHaveBeenCalledWith({
       body: { text: 'Read this' }, method: 'POST', path: '/api/audio/speak', signal: expect.any(AbortSignal)
@@ -463,6 +466,8 @@ describe('transcript rendering and durable edits', () => {
 
     expect(screen.getByText('because')).not.toBeNull()
     expect(screen.getByText('Streaming')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Read aloud' })).toBeNull()
+    fireEvent.contextMenu(screen.getByText('future event').closest('article')!)
     expect(screen.getByRole('button', { name: 'Read aloud' })).not.toBeNull()
   })
 

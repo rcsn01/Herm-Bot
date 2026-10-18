@@ -19,6 +19,10 @@ async function count(page: Page, method: string) {
     return calls.filter((call: { method: string; path?: string }) => call.method === method || call.path === method).length as number
   }, method)
 }
+async function openAnswerOptions(page: Page) {
+  await page.getByRole('article', { name: 'Assistant answer', exact: true }).last().press('Enter')
+  await expect(page.getByRole('dialog', { name: 'Message options' })).toBeVisible()
+}
 const userMessage = (page: Page, text: string) => page.getByRole('article', { name: 'Your message', exact: true }).filter({ has: page.getByText(text, { exact: true }) })
 const files = (page: Page) => page.locator('input[type="file"][multiple]')
 const recording = (page: Page) => page.locator('input[type="file"][capture]')
@@ -256,9 +260,13 @@ test('320px keyboard-reduced layout keeps Queue/Stop reachable and Enter respect
 test('speech generation can be stopped before response and cannot restart after navigating away', async ({ page }) => {
   await login(page)
   await control(page, { delaySpeech: true })
+  await openAnswerOptions(page)
   await page.getByRole('button', { name: 'Read aloud' }).click()
+  await expect(page.getByRole('dialog', { name: 'Message options' })).toHaveCount(0)
   await expect(page.getByText('Generating speech…', { exact: true })).toBeVisible()
+  await openAnswerOptions(page)
   await expect(page.getByRole('button', { name: 'Read aloud' })).toBeDisabled()
+  await page.getByRole('dialog', { name: 'Message options' }).getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect.poll(() => count(page, '/api/audio/speak')).toBe(1)
   await page.getByLabel('Message Hermes').fill('typing does not cancel audio')
   await page.getByRole('button', { name: 'Stop audio' }).click()
@@ -266,6 +274,7 @@ test('speech generation can be stopped before response and cannot restart after 
   await control(page, { delaySpeech: false })
   await expect(page.getByLabel('Message Hermes')).toHaveValue('typing does not cancel audio')
   await control(page, { delaySpeech: true })
+  await openAnswerOptions(page)
   await page.getByRole('button', { name: 'Read aloud' }).click()
   await expect.poll(() => count(page, '/api/audio/speak')).toBe(2)
   await page.getByRole('button', { name: 'Back to bots' }).click()
@@ -276,6 +285,7 @@ test('speech generation can be stopped before response and cannot restart after 
 
 test('real browser audio can pause, resume, and stop without another synthesis request', async ({ page }, testInfo) => {
   await login(page)
+  await openAnswerOptions(page)
   await page.getByRole('button', { name: 'Read aloud' }).click()
   await expect(page.getByRole('button', { name: 'Pause audio' })).toBeVisible()
   await page.getByRole('button', { name: 'Pause audio' }).focus()
