@@ -62,8 +62,17 @@ and blocked-permission states give instructions outside gateway inert controls.
 The relay verifies browser and bridge identity against fixed-gateway `/api/auth/me`.
 Stable identity is required; unsupported identity modes fail closed. State v2 binds
 subscriptions to owner and random binding ID, quarantines legacy ownerless rows,
-and preserves VAPID keys. Completion fanout is owner-scoped, currently through the
-existing default-profile bridge. `/push/v1/status` and `/push/v1/test` are protected
+and preserves VAPID keys. Completion fanout is owner-scoped. The bridge watches
+ordinary chat events on the default profile and separately polls authenticated
+`/api/cron/jobs?profile=all` every five seconds for cron completion stamps, including
+named profiles and runs without an active chat. Cron checkpoints persist separately
+from runtime session epochs. First observation baselines existing results instead
+of pushing historical runs; later polls notify once per observed completion stamp
+and retry failed push attempts without advancing the checkpoint or blocking other
+jobs. Polling sees the latest run per job, so runs between polls can coalesce. Cron notifications identify
+the job and open the app normally; they do not include prompts or output content.
+A registered, owner-matched device is required for either completion path.
+`/push/v1/status` and `/push/v1/test` are protected
 POST routes alongside subscription PUT/DELETE. Tests target one stored binding,
 use fixed nonsensitive content and root navigation, and enforce account cooldown,
 bounded concurrency and short-lived retry deduplication. No real push is sent by

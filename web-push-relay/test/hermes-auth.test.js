@@ -44,6 +44,52 @@ test("password authentication logs in once and requests a fresh ticket per socke
   });
 });
 
+test("cron polling is an authenticated read across profiles on the fixed gateway", async () => {
+  const requests = [];
+  const auth = new HermesAuthenticator({
+    gateway: "https://gateway.example", token: "configured-token",
+    fetchImpl: async (url, options) => {
+      requests.push({ url: url.toString(), options });
+      return Response.json([{ id: "job", profile: "work" }]);
+    },
+  });
+  assert.deepEqual(await auth.cronJobs(), [{ id: "job", profile: "work" }]);
+  assert.equal(requests[0].url, "https://gateway.example/api/cron/jobs?profile=all");
+  assert.deepEqual(requests[0].options.headers, { "X-Hermes-Session-Token": "configured-token" });
+  assert.equal(requests[0].options.redirect, "error");
+  assert.equal(requests[0].options.method, undefined);
+});
+
+test("cron polling refreshes an expired password cookie once", async () => {
+  let logins = 0;
+  let reads = 0;
+  const auth = new HermesAuthenticator({
+    gateway: "https://gateway.example", username: "bridge", password: "password",
+    fetchImpl: async (url, options) => {
+      if (url.pathname === "/auth/password-login") {
+        return Response.json({}, { headers: { "set-cookie": `session=${++logins}; Path=/; HttpOnly` } });
+      }
+      reads++;
+      if (reads === 1) return Response.json({}, { status: 401 });
+      assert.equal(options.headers.Cookie, "session=2");
+      return Response.json([]);
+    },
+  });
+  assert.deepEqual(await auth.cronJobs(), []);
+  assert.equal(logins, 2);
+  assert.equal(reads, 2);
+});
+
+test("invalid static credentials fail closed rather than falling back or looping", async () => {
+  let reads = 0;
+  const auth = new HermesAuthenticator({
+    gateway: "https://gateway.example", token: "expired",
+    fetchImpl: async () => { reads++; return Response.json({}, { status: 401 }); },
+  });
+  await assert.rejects(auth.cronJobs(), /HTTP 401/);
+  assert.equal(reads, 1);
+});
+
 test("authentication requires an existing Hermes credential", () => {
   assert.throws(
     () => new HermesAuthenticator({ gateway: "http://gateway.internal:9119" }),

@@ -50,6 +50,7 @@ if (bridgeEnabled) {
   completionBridge = new HermesCompletionBridge({
     appUrl,
     authenticator,
+    cronSource: () => authenticator.cronJobs(),
     state: bridgeState,
     deliver: async (notification) => {
       const owner = await authenticator.verifiedOwner();

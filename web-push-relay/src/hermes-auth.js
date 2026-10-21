@@ -54,12 +54,29 @@ export class HermesAuthenticator {
     }
   }
 
-  async verifiedOwner() {
+  async #get(path) {
     if (!this.token) await this.#login();
-    const response = await this.fetchImpl(new URL("/api/auth/me", this.baseUrl), {
+    const request = () => this.fetchImpl(new URL(path, this.baseUrl), {
       headers: this.token ? { "X-Hermes-Session-Token": this.token } : { Cookie: this.cookie },
       redirect: "error", signal: AbortSignal.timeout(10000),
     });
+    const cookie = this.cookie;
+    const response = await request();
+    if (!this.token && [401, 403].includes(response.status)) {
+      await response.body?.cancel();
+      if (this.cookie === cookie) { this.cookie = ""; this.loginPromise = undefined; }
+      await this.#login();
+      return request();
+    }
+    return response;
+  }
+
+  async cronJobs() {
+    return jsonResponse(await this.#get("/api/cron/jobs?profile=all"), "cron completion polling");
+  }
+
+  async verifiedOwner() {
+    const response = await this.#get("/api/auth/me");
     if (!response.ok) throw new Error("Bridge identity verification failed");
     const owner = ownerFromIdentity(await response.json(), this.baseUrl.origin);
     if (!owner) throw new Error("Bridge identity unavailable");

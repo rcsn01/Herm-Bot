@@ -93,7 +93,10 @@ function validateState(value) {
   if (
     !object(value) || value.version !== STATE_VERSION ||
     !(value.epoch === null || typeof value.epoch === "string") ||
-    !object(value.sessions) || !Array.isArray(value.delivered)
+    !object(value.sessions) || !Array.isArray(value.delivered) ||
+    (value.cron !== undefined && (!object(value.cron) || !Number.isFinite(value.cron.baselineAt) ||
+      !object(value.cron.jobs) || Object.entries(value.cron.jobs).some(([key, stamp]) =>
+        !/^[a-f0-9]{64}$/.test(key) || (stamp !== null && (typeof stamp !== "string" || !Number.isFinite(Date.parse(stamp)))))))
   ) {
     throw new Error("completion bridge state is invalid");
   }
@@ -142,7 +145,8 @@ export class CompletionBridgeState {
     await this.mutate((current) => {
       if (current.epoch === epoch) return current;
       if (current.epoch === null) return { ...current, epoch };
-      return { ...initialState(), epoch };
+      return { ...initialState(), epoch, ...(current.cron ? { cron: current.cron } : {}),
+        delivered: current.delivered.filter(key => key.startsWith("cron:")) };
     });
   }
 
@@ -209,6 +213,26 @@ export class CompletionBridgeState {
     });
   }
 
+  async baselineCron(jobs) {
+    await this.mutate(current => current.cron ? current : {
+      ...current,
+      cron: { baselineAt: Date.now(), jobs: Object.fromEntries(jobs.map(job => [job.key, job.stamp])) },
+    });
+  }
+
+  async advanceCron(job, deliveredKey) {
+    await this.mutate(current => {
+      const jobs = { ...current.cron.jobs };
+      delete jobs[job.key];
+      jobs[job.key] = job.stamp;
+      return {
+        ...current,
+        cron: { ...current.cron, jobs: Object.fromEntries(Object.entries(jobs).slice(-DELIVERED_LIMIT)) },
+        delivered: deliveredKey && !current.delivered.includes(deliveredKey) ? [...current.delivered, deliveredKey].slice(-DELIVERED_LIMIT) : current.delivered,
+      };
+    });
+  }
+
   async markDelivered(sessionId, lastSeen, key, metadata = {}) {
     await this.mutate((current) => {
       const previous = current.sessions[sessionId] ?? {};
@@ -240,6 +264,8 @@ export class HermesCompletionBridge {
     authenticator,
     state,
     deliver,
+    cronSource,
+    cronPollIntervalMs = 5_000,
     connectionFactory = (url) => new JsonRpcSocket({ url }),
     pollIntervalMs = 1_000,
     reconnectMinMs = 1_000,
@@ -252,6 +278,8 @@ export class HermesCompletionBridge {
     this.authenticator = authenticator;
     this.state = state;
     this.deliver = deliver;
+    this.cronSource = cronSource;
+    this.cronPollIntervalMs = cronPollIntervalMs;
     this.connectionFactory = connectionFactory;
     this.pollIntervalMs = pollIntervalMs;
     this.reconnectMinMs = reconnectMinMs;
@@ -278,6 +306,7 @@ export class HermesCompletionBridge {
       });
     }
     this.controlPromise = this.#controlLoop();
+    if (this.cronSource) this.cronPromise = this.#cronLoop();
   }
 
   async stop() {
@@ -286,8 +315,66 @@ export class HermesCompletionBridge {
     for (const observer of this.observers.values()) observer.connection?.close();
     for (const wake of this.sleepWaiters) wake();
     const observerPromises = [...this.observers.values()].map((observer) => observer.promise);
-    await Promise.allSettled([this.controlPromise, ...observerPromises, this.deliveryQueue]);
+    await Promise.allSettled([this.controlPromise, this.cronPromise, ...observerPromises, this.deliveryQueue]);
     this.observers.clear();
+  }
+
+  async #cronLoop() {
+    while (this.running) {
+      try {
+        const raw = await this.cronSource();
+        if (!this.running) return;
+        if (!Array.isArray(raw) || raw.length > DELIVERED_LIMIT) throw new Error("Invalid cron job list");
+        const jobs = raw.map(value => {
+          if (!object(value) || typeof value.id !== "string" || !value.id.trim() || value.id.length > 512) {
+            throw new Error("Invalid cron job identity");
+          }
+          const profile = value.profile ?? value.profile_name ?? "default";
+          if (typeof profile !== "string" || !profile || profile.length > 128) throw new Error("Invalid cron profile");
+          const stamp = value.last_run_at ?? null;
+          if (stamp !== null && (typeof stamp !== "string" || stamp.length > 128 || !Number.isFinite(Date.parse(stamp)))) {
+            throw new Error("Invalid cron completion timestamp");
+          }
+          return { key: createHash("sha256").update(JSON.stringify([profile, value.id])).digest("hex"), stamp, value };
+        });
+        if (!this.state.snapshot().cron) {
+          // First observation is a baseline, not a request to push historical results.
+          await this.state.baselineCron(jobs);
+        } else {
+          for (const job of jobs) {
+            if (!this.running) return;
+            const cron = this.state.snapshot().cron;
+            const previous = cron.jobs[job.key];
+            if (job.stamp === null || job.stamp === previous) continue;
+            const at = Date.parse(job.stamp);
+            if ((previous && at < Date.parse(previous)) || (previous === undefined && at <= cron.baselineAt)) continue;
+            const hash = createHash("sha256").update(JSON.stringify([job.key, job.stamp])).digest("hex");
+            const key = `cron:${hash}`;
+            if (!this.state.hasDelivered(key)) {
+              const name = boundedString(job.value.name, 180).trim() || "Scheduled task";
+              const status = job.value.last_status;
+              const failed = status && !["ok", "success", "completed", "delivery_failed"].includes(status);
+              const deliveryFailed = status === "delivery_failed";
+              try {
+                await this.deliver({
+                  title: failed ? "Hermes: scheduled task needs attention" : "Hermes: scheduled task finished",
+                  body: `${name}${failed ? " did not complete successfully" : deliveryFailed ? " finished, but another delivery target failed" : " finished"}. Open Automations to view the result.`,
+                  url: new URL("/", this.appUrl).toString(),
+                  tag: `hermes-cron-${hash.slice(0, 32)}`,
+                });
+              } catch (error) {
+                if (this.running) this.onError(error);
+                continue;
+              }
+            }
+            await this.state.advanceCron(job, key);
+          }
+        }
+      } catch (error) {
+        if (this.running) this.onError(error);
+      }
+      if (this.running) await this.#sleep(this.cronPollIntervalMs);
+    }
   }
 
   async #controlLoop() {
