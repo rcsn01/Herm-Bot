@@ -12,6 +12,6 @@
     "test:proxy": "node scripts/proxy.integration.js"
   },
   "dependencies": {
-    "web-push": ">=3.6.7 <4"
+    "web-push": ">=3.6.7 <5"
   }
 }
